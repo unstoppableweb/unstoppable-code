@@ -42,6 +42,8 @@ import {
   getWorktreeAttachmentsDir,
 } from '../lib/paths';
 import { readPreferencesFile } from '../lib/preferences-store';
+import { assertTurnModelGatewayRoute } from '../lib/model-gateway-turn';
+import { resolveAiCreditsScopeOwner } from '../agents/work-owner';
 import { requireLaneAwareDefaultSelection } from '../lib/default-model-lane-resolver';
 import { resolveLaneSubstitutedProviderType } from '../lib/lane-substituted-provider';
 import { scheduleChatSummary } from '../lib/worktree-chat-turn';
@@ -311,6 +313,22 @@ export async function dispatchPipelineEditorChatMessage(
         'Pipeline Editor execution harness does not match host-owned routing',
       );
     }
+    // An enforced organization gateway is judged here, before the prompt or
+    // settings are saved, so the composer keeps the draft (CAN-6701). The
+    // session gate re-checks after saving.
+    await assertTurnModelGatewayRoute(
+      selectedModel,
+      selectedProviderType,
+      () =>
+        resolveAiCreditsScopeOwner({
+          kind: 'work',
+          projectId: request.projectId,
+          worktreeId: request.worktreeId,
+          chatId: request.chatId,
+        }),
+      'before-save',
+      { deferToPolicy: true },
+    );
     const pluginSelections =
       runtime.pluginSelections ?? selectedPluginSelections;
     const runtimeSystemPromptAppend =

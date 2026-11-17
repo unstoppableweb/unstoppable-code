@@ -152,27 +152,28 @@ function buildFallbackPr(options: GeneratePrContentOptions): PrContent {
   return { title, body };
 }
 
-export async function generatePrContentWithUsage(
-  options: GeneratePrContentOptions,
-  runner: StructuredHelperRunner = (queryOptions) => {
-    const provider = requireProviderForModel(queryOptions.model);
-    if (
-      provider === 'codex' ||
-      provider === 'cursor' ||
-      provider === 'copilot' ||
-      provider === 'antigravity' ||
-      provider === 'opencode'
-    ) {
-      throw new Error(
-        `This model cannot run through the Claude helper: ${queryOptions.model}`,
-      );
-    }
-    return runClaudeStructuredHelperQuery({
-      ...queryOptions,
-      provider,
-    });
-  },
-): Promise<GeneratedPrContent> {
+/**
+ * The PR-content model request, built once for every caller: the in-process
+ * Claude and Codex paths, and a workflow step whose turn runs on its host
+ * runner (CAN-6702).
+ */
+export async function buildPrContentModelRequest(
+  options: Pick<
+    GeneratePrContentOptions,
+    | 'repoPath'
+    | 'prTemplate'
+    | 'branchName'
+    | 'baseBranch'
+    | 'commitLog'
+    | 'diff'
+    | 'instructions'
+    | 'instructionMode'
+  >,
+): Promise<{
+  systemPrompt: string;
+  userMessage: string;
+  schema: Record<string, unknown>;
+}> {
   const template =
     options.prTemplate ?? (await loadPrTemplate(options.repoPath));
 
@@ -196,6 +197,37 @@ export async function generatePrContentWithUsage(
     '## Diff',
     options.diff || '(no diff)',
   ].join('\n');
+  return { systemPrompt, userMessage, schema: PR_CONTENT_SCHEMA };
+}
+
+/** The title and body from a structured model result, or null. */
+export function parsePrContentModelResult(value: unknown): PrContent | null {
+  return isPrContent(value) ? value : null;
+}
+
+export async function generatePrContentWithUsage(
+  options: GeneratePrContentOptions,
+  runner: StructuredHelperRunner = (queryOptions) => {
+    const provider = requireProviderForModel(queryOptions.model);
+    if (
+      provider === 'codex' ||
+      provider === 'cursor' ||
+      provider === 'copilot' ||
+      provider === 'antigravity' ||
+      provider === 'opencode'
+    ) {
+      throw new Error(
+        `This model cannot run through the Claude helper: ${queryOptions.model}`,
+      );
+    }
+    return runClaudeStructuredHelperQuery({
+      ...queryOptions,
+      provider,
+    });
+  },
+): Promise<GeneratedPrContent> {
+  const { systemPrompt, userMessage } =
+    await buildPrContentModelRequest(options);
 
   const useCodex =
     (options.executionHarness ?? getExecutionHarnessForModel(options.model)) ===

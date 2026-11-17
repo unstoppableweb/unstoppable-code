@@ -91,7 +91,10 @@ import { countArchivedContainers } from './archived-containers';
 import { readWorkEntrySidebarSummary } from './cowork-work-entries-file';
 import { settleAll } from '@canopy/desktop-shared/node/lib/detached-work';
 import { workspaceStorageUnavailable } from './workspace-storage-availability';
-import { runWithMetadataReadCaller } from '@canopy/desktop-shared/node/work-counters';
+import {
+  runWithMetadataReadCaller,
+  type MetadataReadCaller,
+} from '@canopy/desktop-shared/node/work-counters';
 
 export {
   WorkspaceIndexUnreadableError,
@@ -597,29 +600,6 @@ async function readSingleRepoWorkspace(
         ]),
       );
 
-  const worktreeEffective = isW5ProjectionOnlyView()
-    ? undefined
-    : await resolveWorktreeEffective(entry.id, worktrees, (wtPath) =>
-        settleAll([
-          resolveProjectScripts(
-            { repoPath, scripts: rawScripts },
-            wtPath,
-          ).catch(() => ({})),
-          resolveProjectHooks(
-            {
-              id: entry.id,
-              owner: config.owner,
-              repoPath,
-              hooks: config.hooks,
-            },
-            wtPath,
-          ).catch(() => ({})),
-        ]).then(([s, h]) => ({
-          effectiveScripts: toScriptOverrides(s),
-          effectiveHooks: toHookOverrides(h),
-        })),
-      );
-
   return {
     type: 'single-repo',
     privateMemory: config.privateMemory,
@@ -642,7 +622,6 @@ async function readSingleRepoWorkspace(
     activitySectionOrder: entry.activitySectionOrder,
     alwaysShow: config.alwaysShow,
     owner: config.owner,
-    worktreeEffective,
     externalPath: config.externalPath,
     archivedContainerCount,
     archiveRetentionDays: config.archiveRetentionDays,
@@ -693,66 +672,6 @@ async function readMultiRepoWorkspace(
         ]),
       );
 
-  const repoIds = effectiveConfig.repos.map((repo) => repo.id);
-  const worktreeEffective = isW5ProjectionOnlyView()
-    ? undefined
-    : await resolveWorktreeEffective(
-        entry.id,
-        worktrees,
-        async (wtPath, worktreeId) => {
-          const paths = {
-            workspaceRootPath: wtPath,
-            localConfig: effectiveConfig.localConfig,
-          };
-          const [wtScripts, wtHooks] = await settleAll([
-            resolveWorkspaceRootScripts(entry.id, paths).catch(() => ({})),
-            resolveWorkspaceRootHooks(entry.id, paths).catch(() => ({})),
-          ]);
-
-          const repoEntries = await settleAll(
-            repoIds.map(async (repoId) => {
-              const repoPath = getWorkspaceWorktreeRepoDir(
-                entry.id,
-                worktreeId,
-                repoId,
-              );
-              const repoPaths = {
-                workspaceRootPath: wtPath,
-                repoPath,
-                localConfig: effectiveConfig.localConfig,
-              };
-              const [rs, rh] = await settleAll([
-                resolveWorkspaceRepoScripts(entry.id, repoId, repoPaths).catch(
-                  () => ({}),
-                ),
-                resolveWorkspaceRepoHooks(entry.id, repoId, repoPaths).catch(
-                  () => ({}),
-                ),
-              ]);
-              return [
-                repoId,
-                {
-                  effectiveScripts: toScriptOverrides(rs),
-                  effectiveHooks: toHookOverrides(rh),
-                },
-              ] satisfies [
-                string,
-                {
-                  effectiveScripts?: ScriptOverrides;
-                  effectiveHooks?: HookOverrides;
-                },
-              ];
-            }),
-          );
-
-          return {
-            effectiveScripts: toScriptOverrides(wtScripts),
-            effectiveHooks: toHookOverrides(wtHooks),
-            repos: Object.fromEntries(repoEntries),
-          };
-        },
-      );
-
   return {
     type: 'multi-repo',
     privateMemory: effectiveConfig.localConfig.privateMemory,
@@ -790,7 +709,6 @@ async function readMultiRepoWorkspace(
           temporaryRepoIdentityKeys: effectiveConfig.temporaryRepoIdentityKeys,
         }
       : {}),
-    worktreeEffective,
     externalPath: effectiveConfig.localConfig.externalPath,
     archivedContainerCount,
     archiveRetentionDays: effectiveConfig.localConfig.archiveRetentionDays,
@@ -808,17 +726,16 @@ async function resolveWorktreeEffective(
     worktreePath: string,
     worktreeId: string,
   ) => Promise<WorktreeEffectiveOverrides>,
+  strict: boolean,
 ): Promise<Record<string, WorktreeEffectiveOverrides>> {
   const entries = await settleAll(
     worktrees.map(async (wt) => {
       try {
         const wtPath = getWorkspaceWorktreeDir(workspaceId, wt.id);
-        const overrides = await runWithMetadataReadCaller(
-          'sidebar.worktree',
-          () => resolver(wtPath, wt.id),
-        );
+        const overrides = await resolver(wtPath, wt.id);
         return [wt.id, overrides] as const;
-      } catch {
+      } catch (error) {
+        if (strict) throw workspaceStorageUnavailable(error);
         return null;
       }
     }),
@@ -830,6 +747,142 @@ async function resolveWorktreeEffective(
     }
   }
   return result;
+}
+
+/**
+ * CAN-6933: the scripts and hooks each worktree's own checkout resolves, for
+ * the worktrees asked about (every listed worktree when `worktreeIds` is
+ * omitted). Sidebar reads no longer build this for every worktree.
+ */
+export async function resolveWorktreeEffectiveFor(
+  workspaceId: string,
+  caller: MetadataReadCaller,
+  worktreeIds?: readonly string[],
+): Promise<Record<string, WorktreeEffectiveOverrides>> {
+  if (isW5ProjectionOnlyView()) return {};
+  // A failed read must refuse, never answer "no overrides": callers would run
+  // the project's scripts, or none, in place of the worktree's own.
+  const entry = (await readWorkspaceIndexEntryDetailed(workspaceId))?.entry;
+  if (!entry || entry.type === 'cowork') return {};
+  const [configRead, worktreesRead] = await settleAll([
+    readWorkspaceConfigDetailed(workspaceId),
+    readWorkspaceWorktreesDetailed(workspaceId),
+  ]);
+  assertWorkspaceConfigReadable(configRead.authority);
+  if (worktreesRead.authority === 'unreadable')
+    throw workspaceStorageUnavailable(worktreesRead.unserved);
+  const wanted = worktreeIds ? new Set(worktreeIds) : null;
+  const worktrees = worktreesRead.worktrees.filter(
+    (worktree) => !wanted || wanted.has(worktree.id),
+  );
+  // A partial list may have lost a requested row; it cannot prove it gone.
+  if (
+    worktreesRead.authority === 'partial' &&
+    worktreeIds?.some((id) => !worktrees.some((row) => row.id === id))
+  )
+    throw workspaceStorageUnavailable();
+  const config = configRead.config;
+  // An on-demand read feeds Launch, lifecycle runs and archive's teardown, so
+  // a failed resolution refuses. The remote projects:load projection keeps
+  // answering the rest of the project around one unreadable worktree.
+  const strict = caller !== 'remote.projects-load';
+  const orEmpty = <T>(read: Promise<T>, empty: T): Promise<T> =>
+    strict ? read : read.catch(() => empty);
+  return runWithMetadataReadCaller(caller, async () => {
+    if (entry.type === 'single-repo') {
+      const repoPath = config.repoPath;
+      if (!repoPath || !isAbsolute(repoPath)) return {};
+      const rawScripts = normalizeLegacyScriptFields(config);
+      return resolveWorktreeEffective(
+        entry.id,
+        worktrees,
+        (wtPath) =>
+          settleAll([
+            orEmpty(
+              resolveProjectScripts({ repoPath, scripts: rawScripts }, wtPath),
+              {},
+            ),
+            orEmpty(
+              resolveProjectHooks(
+                {
+                  id: entry.id,
+                  owner: config.owner,
+                  repoPath,
+                  hooks: config.hooks,
+                },
+                wtPath,
+              ),
+              {},
+            ),
+          ]).then(([scripts, hooks]) => ({
+            effectiveScripts: toScriptOverrides(scripts),
+            effectiveHooks: toHookOverrides(hooks),
+          })),
+        strict,
+      );
+    }
+    const effectiveConfig = await readEffectiveWorkspaceConfig(
+      entry.id,
+      config,
+    );
+    const repoIds = effectiveConfig.repos.map((repo) => repo.id);
+    return resolveWorktreeEffective(
+      entry.id,
+      worktrees,
+      async (wtPath, worktreeId) => {
+        const paths = {
+          workspaceRootPath: wtPath,
+          localConfig: effectiveConfig.localConfig,
+        };
+        const [wtScripts, wtHooks] = await settleAll([
+          orEmpty(resolveWorkspaceRootScripts(entry.id, paths), {}),
+          orEmpty(resolveWorkspaceRootHooks(entry.id, paths), {}),
+        ]);
+        const repoEntries = await settleAll(
+          repoIds.map(async (repoId) => {
+            const repoPaths = {
+              workspaceRootPath: wtPath,
+              repoPath: getWorkspaceWorktreeRepoDir(
+                entry.id,
+                worktreeId,
+                repoId,
+              ),
+              localConfig: effectiveConfig.localConfig,
+            };
+            const [repoScripts, repoHooks] = await settleAll([
+              orEmpty(
+                resolveWorkspaceRepoScripts(entry.id, repoId, repoPaths),
+                {},
+              ),
+              orEmpty(
+                resolveWorkspaceRepoHooks(entry.id, repoId, repoPaths),
+                {},
+              ),
+            ]);
+            return [
+              repoId,
+              {
+                effectiveScripts: toScriptOverrides(repoScripts),
+                effectiveHooks: toHookOverrides(repoHooks),
+              },
+            ] satisfies [
+              string,
+              {
+                effectiveScripts?: ScriptOverrides;
+                effectiveHooks?: HookOverrides;
+              },
+            ];
+          }),
+        );
+        return {
+          effectiveScripts: toScriptOverrides(wtScripts),
+          effectiveHooks: toHookOverrides(wtHooks),
+          repos: Object.fromEntries(repoEntries),
+        };
+      },
+      strict,
+    );
+  });
 }
 
 function buildWorkspaceTypeMap(

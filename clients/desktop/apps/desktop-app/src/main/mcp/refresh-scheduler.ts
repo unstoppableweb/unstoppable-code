@@ -13,7 +13,8 @@ export interface CuratedMcpRefreshDependencies {
   /**
    * Resolves to `null` when the sync (or its post-sync reaction) failed and
    * was already logged by the plugin service; the scheduler treats that the
-   * same as a non-committed sync.
+   * same as a non-committed sync. Publication/effect invalidation belongs to
+   * the plugin service even for null/noop results, not this status.
    */
   syncCuratedPlugins: () => Promise<CuratedPluginSyncResult | null>;
   refreshInvocableInventory: () => Promise<unknown>;
@@ -78,6 +79,8 @@ export async function runCuratedMcpRefresh(
   }
   try {
     const result = await dependencies.syncCuratedPlugins();
+    // Additive compatibility notification: the service also invalidates after
+    // Codex-copy publication on noop, or partial/uncertain failure.
     if (result?.status === 'synced') {
       try {
         await dependencies.refreshInvocableInventory();

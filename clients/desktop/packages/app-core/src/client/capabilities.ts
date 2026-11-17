@@ -201,6 +201,12 @@ export interface CanopyCapabilities {
    */
   readonly chatTabFork?: boolean;
   /**
+   * A chat can be forked whole into a new task of its project, from its
+   * latest completed turn. Optional and default-deny. A cloud chat scope
+   * reports it once its fork reaches the web core (CAN-7007).
+   */
+  readonly chatTaskFork?: boolean;
+  /**
    * The scope's first chat can be closed or archived like any other tab,
    * and every archived tab can be restored. Optional and default-deny;
    * desktop reports `true` for local chats. A cloud task's first chat is the

@@ -27,8 +27,9 @@ import {
  * The W5 commit log worker: a thread inside its host process that holds the
  * commit log's only connection, so synchronous SQLite stays off the host's
  * event loop (CAN-3805). It opens the log, runs launch recovery, reports
- * `ready` or `openFailed`, and then runs each request to completion before it
- * starts the next, so commits and their file writes never interleave.
+ * `ready` or `openFailed`, and then runs writes one at a time in the order
+ * they arrive, so commits and their file writes never interleave; reads run
+ * beside them (CAN-5589, `W5CommitLogRequestHandler.dispatch`).
  *
  * The host stops it with `Worker.terminate()`. Node closes the connection as
  * it tears down the thread, which releases the exclusive lock for the next
@@ -74,7 +75,11 @@ async function answer(
   request: W5CommitLogRequest,
 ): Promise<W5CommitLogResponse> {
   try {
-    return { id: request.id, ok: true, result: await worker.run(request) };
+    return {
+      id: request.id,
+      ok: true,
+      result: await worker.dispatch(request),
+    };
   } catch (error) {
     return {
       id: request.id,
@@ -85,25 +90,22 @@ async function answer(
 }
 
 function listen(port: MessagePort, worker: W5CommitLogRequestHandler): void {
-  // Requests run one after another even if the host sent a second early.
-  let tail: Promise<void> = Promise.resolve();
   port.on('message', (message: unknown): void => {
-    tail = tail.then(async (): Promise<void> => {
-      if (isW5CommitLogRequest(message)) {
-        respond(port, await answer(worker, message));
-        return;
-      }
-      // Answer a malformed request that has an id, so the caller fails at
-      // once instead of waiting for its timeout.
-      const id = readW5CommitLogRequestId(message);
-      if (id !== undefined) {
-        respond(port, {
-          id,
-          ok: false,
-          error: { kind: 'malformed', message: MALFORMED_REQUEST_MESSAGE },
-        });
-      }
-    });
+    if (isW5CommitLogRequest(message)) {
+      // The handler orders writes and runs reads beside them.
+      void answer(worker, message).then((response) => respond(port, response));
+      return;
+    }
+    // Answer a malformed request that has an id, so the caller fails at
+    // once instead of waiting for its timeout.
+    const id = readW5CommitLogRequestId(message);
+    if (id !== undefined) {
+      respond(port, {
+        id,
+        ok: false,
+        error: { kind: 'malformed', message: MALFORMED_REQUEST_MESSAGE },
+      });
+    }
   });
 }
 

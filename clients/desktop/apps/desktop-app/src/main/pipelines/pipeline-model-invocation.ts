@@ -21,8 +21,69 @@ import {
   isModelBlockedByStoredPolicy,
   isOrgModelPolicyActiveForStoredAccount,
 } from '../lib/model-policy-state';
+import { checkModelGatewayRoute } from '../lib/model-gateway-state';
 import { getObservabilityService } from '../observability';
 import { resolveCodexCompatibleOllamaInvocation } from '../ollama/codex-compatible';
+import {
+  isNativeOnlyHarness,
+  isNativeOnlyModelSource,
+} from '@canopy/execution-engine/model-harnesses';
+
+/**
+ * The step owner's gateway requirement for a model that never passes through
+ * AI Credits or gateway routing: one on a native-only harness (Cursor,
+ * Copilot, OpenCode, Antigravity) or an Ollama model on the Codex harness.
+ * The chat session checks the same requirement for these providers
+ * (CAN-6701), so an enforced gateway or unavailable gateway settings refuse
+ * before dispatch. The owner is resolved as for the organization policy.
+ */
+export async function checkDesktopPipelineNativeGatewayRoute(
+  modelId: string,
+  scope: PipelineModelPolicyScope,
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  const owner = await resolveBackgroundWorkOwner(
+    {
+      ...(scope.projectId ? { projectId: scope.projectId } : {}),
+      ...(scope.worktreeId ? { worktreeId: scope.worktreeId } : {}),
+    },
+    scope.executionContext,
+  );
+  const route = await checkModelGatewayRoute(modelId, owner);
+  return route.ok ? { ok: true } : { ok: false, message: route.message };
+}
+
+function pipelinePolicyScope(
+  options: ModelHarnessInvocationOptions | undefined,
+): PipelineModelPolicyScope {
+  return {
+    ...(options?.workspaceId !== undefined
+      ? { projectId: options.workspaceId }
+      : {}),
+    ...(options?.worktreeId !== undefined
+      ? { worktreeId: options.worktreeId }
+      : {}),
+    ...(options?.executionContext !== undefined
+      ? { executionContext: options.executionContext }
+      : {}),
+  };
+}
+
+/**
+ * Refuses with the chat's gateway message. It is a typed model-selection
+ * error, the same kind as an organization policy block here, so the daemon's
+ * owner request forwards the message instead of a generic failure.
+ */
+async function assertDesktopPipelineGatewayRoute(
+  model: ChatModel,
+  options: ModelHarnessInvocationOptions | undefined,
+): Promise<void> {
+  const route = await checkDesktopPipelineNativeGatewayRoute(
+    model,
+    pipelinePolicyScope(options),
+  );
+  if (!route.ok)
+    throw new AgentModelSelectionError('policy_blocked', route.message);
+}
 
 /** The pipeline model invocation both compositions use (CAN-5095 D23). */
 export async function resolveDesktopPipelineHarnessInvocation(
@@ -32,6 +93,17 @@ export async function resolveDesktopPipelineHarnessInvocation(
   const source = model ? getModelSource(model) : 'claude-managed';
   const harness =
     options?.harness ?? (model ? getExecutionHarnessForModel(model) : 'claude');
+  // The executor already checks native-only steps before dispatch. This
+  // guard is defense in depth for the daemon owner request and any caller
+  // that resolves a native model directly. It keys on the model's source or
+  // the requested harness, because either one routes to a native runtime
+  // below.
+  if (
+    model &&
+    (isNativeOnlyModelSource(source) || isNativeOnlyHarness(harness))
+  ) {
+    await assertDesktopPipelineGatewayRoute(model, options);
+  }
   if (source === 'antigravity-managed' || harness === 'antigravity') {
     return {
       source: 'antigravity-managed',
@@ -86,6 +158,12 @@ export async function resolveDesktopPipelineHarnessInvocation(
   }
   if (model && source === 'ollama') {
     if (harness === 'codex') {
+      // The Codex prompt runner skips gateway routing for this invocation.
+      // The executor checks it before the step starts; this covers the
+      // daemon owner request. An Ollama model on the Claude harness is
+      // checked when the step resolves its AI Credits routing
+      // (resolveAiCreditsRoutingOverride).
+      await assertDesktopPipelineGatewayRoute(model, options);
       return resolveCodexCompatibleOllamaInvocation(model, {
         ensureRunningReason: 'pipeline',
         assertInstalled: true,

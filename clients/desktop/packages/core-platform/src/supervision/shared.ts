@@ -1,7 +1,6 @@
-import { execFile } from 'node:child_process';
+import { execFile, type ExecFileException } from 'node:child_process';
 import { readFile, readlink } from 'node:fs/promises';
 import path from 'node:path';
-import { promisify } from 'node:util';
 
 /** Host-only test seams; production composition uses NODE_SUPERVISION. */
 export interface SupervisionOperations {
@@ -26,17 +25,33 @@ export interface SupervisionOperations {
 }
 
 export const NODE_SUPERVISION: SupervisionOperations = {
-  run: async (file, args, signal, env): Promise<string> => {
-    const { stdout } = await promisify(execFile)(file, [...args], {
-      encoding: 'utf8',
-      windowsHide: true,
-      maxBuffer: 64 * 1024,
-      timeout: 4000,
-      signal,
-      env,
-    });
-    return stdout;
-  },
+  // The callback form, not promisify: its `{ stdout }` result comes from
+  // execFile's own promisify hook, which a wrapped execFile (logging or
+  // instrumentation) drops, so every read would see undefined (CAN-6745).
+  // A failure keeps stdout and stderr on the error, as that hook does.
+  run: (file, args, signal, env): Promise<string> =>
+    new Promise((resolve, reject) => {
+      execFile(
+        file,
+        [...args],
+        {
+          encoding: 'utf8',
+          windowsHide: true,
+          maxBuffer: 64 * 1024,
+          timeout: 4000,
+          signal,
+          env,
+        },
+        (error: ExecFileException | null, stdout: string, stderr: string) => {
+          if (!error) {
+            resolve(stdout);
+            return;
+          }
+          const failure: Error = Object.assign(error, { stdout, stderr });
+          reject(failure);
+        },
+      );
+    }),
   kill: (pid, signal): void => {
     process.kill(pid, signal);
   },

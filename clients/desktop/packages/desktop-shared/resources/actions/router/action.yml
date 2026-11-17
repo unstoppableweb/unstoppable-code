@@ -16,7 +16,10 @@ inputs:
     description: Optional routing guidance.
     required: false
   model:
-    description: Optional Claude model override.
+    description: >
+      Optional model override. Codex, Cursor, Copilot, OpenCode and Google
+      models run the model turn through the host runner with at most read
+      access.
     required: false
   permission_preset:
     description: Permission preset for the classifier.
@@ -24,6 +27,9 @@ inputs:
     default: read_only
   system_prompt:
     description: Optional system prompt appendix.
+    required: false
+  fast_mode:
+    description: Codex models only. Run the model turn in fast mode.
     required: false
   max_turns:
     description: Maximum Claude turns.

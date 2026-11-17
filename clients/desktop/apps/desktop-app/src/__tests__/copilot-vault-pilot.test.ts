@@ -1,3 +1,13 @@
+import type {
+  CopilotVaultRenewalCase,
+  CopilotVaultFieldCoverage,
+} from '@canopy/desktop-shared/node/copilot/consumer-transport';
+import {
+  CopilotHandoffPhaseSchema,
+  COPILOT_VAULT_IMPORT_PATHS,
+} from '@canopy/protocol/copilot-handoff';
+import { createCopilotQualificationConnection } from '../main/copilot/qualification-connection';
+import type { CopilotQualificationHandoff } from '../main/copilot/qualification-handoff';
 import { CoreDeferredToolReloads } from '@canopy/core-runtime/node/agent/deferred-tools';
 import { OperationService } from '@canopy/core-runtime/node/operations';
 import { OperationLedger } from '@canopy/core-runtime/node/operations/ledger';
@@ -27,7 +37,12 @@ import type * as ChatStateModule from '../main/services/chat-state-service';
 import type * as AttentionModule from '../main/services/attention-tracker';
 import type * as IngestModule from '../main/observability/ingest';
 import { app, BrowserWindow } from 'electron';
-import { CopilotAssistantPatchSchema } from '@canopy/protocol/copilot-recipient';
+import {
+  CopilotAssistantPatchSchema,
+  CopilotLocalFrameSchema,
+  CopilotLocalRequestSchema,
+  COPILOT_RECIPIENT_LIMITS,
+} from '@canopy/protocol/copilot-recipient';
 import {
   hasPendingApprovalForSession,
   pendingApprovalRequests,
@@ -1865,6 +1880,76 @@ it('uses legacy only before durable selection and never after selection, a missi
   h.pilot.close();
 });
 
+it.each(['selected', 'unselected'] as const)(
+  'refuses a %s acquisition revoked while selection is unresolved',
+  async (custody) => {
+    const h = fixture();
+    const admission = deferred<boolean>();
+    const entered = deferred<void>();
+    const open = jest.fn(h.backend.openManagedCopilotRuntime);
+    const proxy = createCopilotConnectionProxy({
+      legacy: { ...h.backend, openManagedCopilotRuntime: open },
+      selected: () => {
+        entered.resolve();
+        return admission.promise;
+      },
+      vault: () => ({ ...h.backend, openManagedCopilotRuntime: open }),
+      assertEnabled: () => undefined,
+    });
+    try {
+      ready(await h.pilot.setup(grant(), null));
+      const input = { owner: TEST_OWNER, signal: new AbortController().signal };
+      const pending = proxy.openManagedCopilotRuntime(input);
+      const rejected = expect(pending).rejects.toThrow('revoked');
+      await entered.promise;
+      await proxy.revokeCopilotRuntimes();
+      admission.resolve(custody === 'selected');
+      await rejected;
+      expect(open).not.toHaveBeenCalled();
+      const runtime = await proxy.openManagedCopilotRuntime(input);
+      expect(open).toHaveBeenCalledTimes(1);
+      await runtime.close();
+    } finally {
+      h.pilot.close();
+    }
+  },
+);
+
+it('refuses an acquisition revoked during the initial selection drain', async () => {
+  const h = fixture();
+  const draining = deferred<void>();
+  const released = deferred<void>();
+  const open = jest.fn(h.backend.openManagedCopilotRuntime);
+  const proxy = createCopilotConnectionProxy({
+    legacy: {
+      ...h.backend,
+      revokeCopilotRuntimes: jest
+        .fn(h.backend.revokeCopilotRuntimes)
+        .mockImplementationOnce(() => {
+          draining.resolve();
+          return released.promise;
+        }),
+    },
+    selected: () => Promise.resolve(true),
+    vault: () => ({ ...h.backend, openManagedCopilotRuntime: open }),
+    assertEnabled: () => undefined,
+  });
+  try {
+    const pending = proxy.openManagedCopilotRuntime({
+      owner: TEST_OWNER,
+      signal: new AbortController().signal,
+    });
+    const rejected = expect(pending).rejects.toThrow();
+    await draining.promise;
+    await proxy.revokeCopilotRuntimes();
+    released.resolve();
+    await rejected;
+    expect(open).not.toHaveBeenCalled();
+  } finally {
+    h.pilot.close();
+  }
+});
+
 it('never interprets served defaults from unreadable preferences as legacy custody or a durable pin acknowledgement', async () => {
   jest.mocked(readPreferencesFileDetailed).mockResolvedValue({
     authority: 'unreadable',
@@ -2055,7 +2140,14 @@ it('releases proxy recipient tracking when a pipeline-owned one-shot turn settle
   h.pilot.close();
 });
 
-it('expires a selected turn and denies its pending approval without legacy fallback or a hanging caller', async () => {
+const RENEWAL_PARITY = {
+  'slow-open':
+    'renews immediately after a slow successful open before any run and stops renewal after completion',
+  'callback-crossing-expiry':
+    'renews a selected turn across multiple TTLs and an approval crossing original expiry without legacy fallback',
+  'completion-race': 'completion/renewal race has one terminal winner: %s',
+} satisfies Record<CopilotVaultRenewalCase, string>;
+it(RENEWAL_PARITY['callback-crossing-expiry'], async () => {
   const h = fixture(true);
   ready(await h.pilot.setup(grant(), null));
   jest.useFakeTimers({
@@ -2138,14 +2230,24 @@ it('expires a selected turn and denies its pending approval without legacy fallb
     );
     await checkpoint(asked.promise, 'asked');
     expect(settled).toBe(false);
-    await jest.advanceTimersByTimeAsync(1001);
-    expect(
-      await checkpoint(Promise.resolve(approving), 'denied'),
-    ).toMatchObject({ permissionDecision: 'deny' });
-    await expect(checkpoint(running, 'running')).rejects.toMatchObject({
-      code: 'unavailable',
-    });
+    await jest.advanceTimersByTimeAsync(2001);
     answer.resolve({ decision: 'allow' });
+    expect(
+      await checkpoint(Promise.resolve(approving), 'allowed'),
+    ).toMatchObject({ permissionDecision: 'allow' });
+    await jest.advanceTimersByTimeAsync(180_000);
+    expect(settled).toBe(false);
+    config.onEvent({
+      id: 'renewed-idle',
+      type: 'session.idle',
+      ephemeral: true,
+      timestamp: new Date().toISOString(),
+      parentId: null,
+      data: {},
+    });
+    await expect(checkpoint(running, 'running')).resolves.toMatchObject({
+      sessionId: 'session-1',
+    });
     expect(oldOpen).not.toHaveBeenCalled();
   } finally {
     h.pilot.close();
@@ -6858,6 +6960,770 @@ it.each([
         expect(JSON.stringify(patches)).not.toContain(fragment);
       }
       expect(JSON.stringify(patches)).not.toContain(ACCESS);
+    } finally {
+      h.pilot.close();
+    }
+  },
+);
+
+it.each(['dropped', 'refused', 'hung', 'delayed'] as const)(
+  'a %s renewal denies pending approval and terminates the selected caller without fallback',
+  async (fault) => {
+    const h = fixture(true);
+    ready(await h.pilot.setup(grant(), null));
+    jest.useFakeTimers({
+      doNotFake: [
+        'nextTick',
+        'queueMicrotask',
+        'setImmediate',
+        'clearImmediate',
+      ],
+    });
+    const open = h.port.open.bind(h.port);
+    let renewals = 0;
+    const late = deferred<void>();
+    const lateSettled = deferred<void>();
+    let lateRejected = false;
+    h.port.open = async (...args): ReturnType<typeof h.port.open> => {
+      const channel = await open(...args);
+      return {
+        ...channel,
+        receive: async (encoded): Promise<void> => {
+          const frame = CopilotLocalRequestSchema.parse(JSON.parse(encoded));
+          if (frame.command.kind === 'renew' && ++renewals === 3) {
+            if (fault === 'delayed') {
+              await late.promise;
+              try {
+                await args[3](
+                  JSON.stringify({
+                    kind: 'response',
+                    requestId: frame.requestId,
+                    outcome: { kind: 'accepted' },
+                  }),
+                );
+              } catch {
+                lateRejected = true;
+              } finally {
+                lateSettled.resolve();
+              }
+              return;
+            }
+            if (fault === 'hung') return new Promise<void>(() => undefined);
+            if (fault === 'refused')
+              await args[3](
+                JSON.stringify({
+                  kind: 'response',
+                  requestId: frame.requestId,
+                  outcome: { kind: 'refused', reason: 'stale' },
+                }),
+              );
+            return;
+          }
+          await channel.receive(encoded);
+        },
+      };
+    };
+    const oldOpen = jest.fn(h.backend.openManagedCopilotRuntime);
+    const proxy = createCopilotConnectionProxy({
+      legacy: { ...h.backend, openManagedCopilotRuntime: oldOpen },
+      selected: () => Promise.resolve(true),
+      vault: () => h.backend,
+      assertEnabled: () => undefined,
+    });
+    try {
+      const accepted = deferred<void>();
+      const asked = deferred<void>();
+      const answer = deferred<{ decision: 'allow' }>();
+      const runtime = await proxy.openManagedCopilotRuntime({
+        owner: TEST_OWNER,
+        signal: new AbortController().signal,
+      });
+      const running = runtime.runTurn(
+        turn({
+          onPromptAccepted: () => {
+            accepted.resolve();
+          },
+          authorize: () => {
+            asked.resolve();
+            return answer.promise;
+          },
+        }),
+      );
+      const result = running.then(
+        () => 'completed',
+        () => 'refused',
+      );
+      await accepted.promise;
+      await jest.advanceTimersByTimeAsync(119_000);
+      const config = h.natives[1]?.configs[0];
+      if (!config?.onEvent || !config.hooks?.onPreToolUse)
+        throw new Error('Missing approval hook');
+      config.onEvent({
+        id: 'renewal-start',
+        type: 'tool.execution_start',
+        timestamp: new Date().toISOString(),
+        parentId: null,
+        data: { toolCallId: 'renewal-call', toolName: 'edit', arguments: {} },
+      });
+      const approving = config.hooks.onPreToolUse(
+        {
+          sessionId: 'session-1',
+          timestamp: new Date(),
+          workingDirectory: '/trusted/workspace',
+          toolName: 'edit',
+          toolArgs: {},
+        },
+        { sessionId: 'session-1' },
+      );
+      await asked.promise;
+      await jest.advanceTimersByTimeAsync(31_001);
+      expect(await result).toBe('refused');
+      expect(await approving).toMatchObject({ permissionDecision: 'deny' });
+      answer.resolve({ decision: 'allow' });
+      expect(oldOpen).not.toHaveBeenCalled();
+      expect(renewals).toBe(3);
+      if (fault === 'delayed') {
+        late.resolve();
+        await lateSettled.promise;
+        expect(lateRejected).toBe(true);
+        expect(await result).toBe('refused');
+      }
+    } finally {
+      h.pilot.close();
+      jest.useRealTimers();
+    }
+  },
+);
+
+it(RENEWAL_PARITY['slow-open'], async () => {
+  const h = fixture();
+  ready(await h.pilot.setup(grant(), null));
+  jest.useFakeTimers({
+    doNotFake: ['nextTick', 'queueMicrotask', 'setImmediate', 'clearImmediate'],
+  });
+  const open = h.port.open.bind(h.port);
+  const acquired = deferred<void>();
+  const release = deferred<void>();
+  const commands: string[] = [];
+  h.port.open = async (...args): ReturnType<typeof h.port.open> => {
+    const channel = await open(...args);
+    acquired.resolve();
+    await release.promise;
+    return {
+      ...channel,
+      receive: async (encoded): Promise<void> => {
+        commands.push(
+          CopilotLocalRequestSchema.parse(JSON.parse(encoded)).command.kind,
+        );
+        await channel.receive(encoded);
+      },
+    };
+  };
+  try {
+    const runtime = await h.backend.openManagedCopilotRuntime({
+      owner: TEST_OWNER,
+      signal: new AbortController().signal,
+    });
+    const running = runtime.runTurn(turn());
+    await acquired.promise;
+    await jest.advanceTimersByTimeAsync(119_000);
+    expect(commands).toEqual([]);
+    release.resolve();
+    await expect(running).resolves.toMatchObject({ sessionId: 'session-1' });
+    expect(commands.slice(0, 2)).toEqual(['renew', 'run']);
+    const count = commands.length;
+    await jest.advanceTimersByTimeAsync(240_000);
+    expect(commands).toHaveLength(count);
+  } finally {
+    h.pilot.close();
+    jest.useRealTimers();
+  }
+});
+
+it.each(['completion-first', 'renewal-first'] as const)(
+  RENEWAL_PARITY['completion-race'],
+  async (order) => {
+    const h = fixture(true);
+    ready(await h.pilot.setup(grant(), null));
+    jest.useFakeTimers({
+      doNotFake: [
+        'nextTick',
+        'queueMicrotask',
+        'setImmediate',
+        'clearImmediate',
+      ],
+    });
+    const open = h.port.open.bind(h.port);
+    const held = deferred<void>();
+    const release = deferred<void>();
+    let renewals = 0;
+    h.port.open = async (...args): ReturnType<typeof h.port.open> => {
+      const channel = await open(...args);
+      return {
+        ...channel,
+        receive: async (encoded): Promise<void> => {
+          const frame = CopilotLocalRequestSchema.parse(JSON.parse(encoded));
+          if (frame.command.kind === 'renew' && ++renewals === 2) {
+            held.resolve();
+            await release.promise;
+            // Its admission raced the host's completion teardown.
+            await args[3](
+              JSON.stringify({
+                kind: 'response',
+                requestId: frame.requestId,
+                outcome: { kind: 'refused', reason: 'stale' },
+              }),
+            );
+            return;
+          }
+          await channel.receive(encoded);
+        },
+      };
+    };
+    try {
+      const accepted = deferred<void>();
+      const runtime = await h.backend.openManagedCopilotRuntime({
+        owner: TEST_OWNER,
+        signal: new AbortController().signal,
+      });
+      const running = runtime.runTurn(
+        turn({
+          onPromptAccepted: () => {
+            accepted.resolve();
+          },
+        }),
+      );
+      const result = running.then(
+        () => 'completed',
+        () => 'refused',
+      );
+      await accepted.promise;
+      await jest.advanceTimersByTimeAsync(60_000);
+      await held.promise;
+      const idle = (): void =>
+        h.natives[1]?.configs[0]?.onEvent?.({
+          id: 'race-idle',
+          type: 'session.idle',
+          ephemeral: true,
+          timestamp: new Date().toISOString(),
+          parentId: null,
+          data: {},
+        });
+      if (order === 'renewal-first') {
+        release.resolve();
+        expect(await result).toBe('refused');
+        idle();
+      } else {
+        idle();
+        expect(await result).toBe('completed');
+        release.resolve();
+      }
+      await jest.advanceTimersByTimeAsync(COPILOT_RECIPIENT_LIMITS.callbackMs);
+      expect(renewals).toBe(2);
+    } finally {
+      h.pilot.close();
+      jest.useRealTimers();
+    }
+  },
+);
+
+it.each(['duplicate', 'unknown'] as const)(
+  'refuses a live %s renewal acknowledgement using exact request membership',
+  async (kind) => {
+    const h = fixture(true);
+    ready(await h.pilot.setup(grant(), null));
+    const open = h.port.open.bind(h.port);
+    let write: ((encoded: string) => Promise<void>) | undefined;
+    h.port.open = async (...args): ReturnType<typeof h.port.open> => {
+      write = args[3];
+      return open(...args);
+    };
+    try {
+      const accepted = deferred<void>();
+      const runtime = await h.backend.openManagedCopilotRuntime({
+        owner: TEST_OWNER,
+        signal: new AbortController().signal,
+      });
+      const running = runtime.runTurn(
+        turn({
+          onPromptAccepted: () => {
+            accepted.resolve();
+          },
+        }),
+      );
+      const result = running.then(
+        () => 'completed',
+        () => 'refused',
+      );
+      await accepted.promise;
+      if (!write) throw new Error('Missing channel writer');
+      await expect(
+        write(
+          JSON.stringify({
+            kind: 'response',
+            requestId: kind === 'duplicate' ? 1 : 4096,
+            outcome: { kind: 'accepted' },
+          }),
+        ),
+      ).rejects.toMatchObject({ code: 'unavailable' });
+      expect(await result).toBe('refused');
+    } finally {
+      h.pilot.close();
+    }
+  },
+);
+
+it('caller timeout still wins after an admitted renewal extends the lease', async () => {
+  const h = fixture(true);
+  ready(await h.pilot.setup(grant(), null));
+  jest.useFakeTimers({
+    doNotFake: ['nextTick', 'queueMicrotask', 'setImmediate', 'clearImmediate'],
+  });
+  try {
+    const accepted = deferred<void>();
+    const runtime = await h.backend.openManagedCopilotRuntime({
+      owner: TEST_OWNER,
+      signal: new AbortController().signal,
+    });
+    const running = runtime.runTurn(
+      turn({
+        timeoutMs: 125_000,
+        onPromptAccepted: () => {
+          accepted.resolve();
+        },
+      }),
+    );
+    const result = running.then(
+      () => 'completed',
+      () => 'refused',
+    );
+    await accepted.promise;
+    await jest.advanceTimersByTimeAsync(125_001);
+    expect(await result).toBe('refused');
+  } finally {
+    h.pilot.close();
+    jest.useRealTimers();
+  }
+});
+
+it.each([
+  'abort',
+  'hung',
+  'unknown-response',
+  'replayed-renewal',
+  'replayed-run',
+] as const)(
+  'completion still requires a bounded acknowledged delivery: %s',
+  async (fault) => {
+    const h = fixture();
+    ready(await h.pilot.setup(grant(), null));
+    jest.useFakeTimers({
+      doNotFake: [
+        'nextTick',
+        'queueMicrotask',
+        'setImmediate',
+        'clearImmediate',
+      ],
+    });
+    const open = h.port.open.bind(h.port);
+    const delivered = deferred<void>();
+    let write: ((encoded: string) => Promise<void>) | undefined;
+    h.port.open = async (...args): ReturnType<typeof h.port.open> => {
+      write = args[3];
+      const channel = await open(...args);
+      return {
+        ...channel,
+        receive: async (encoded): Promise<void> => {
+          await channel.receive(encoded);
+          if (
+            CopilotLocalRequestSchema.parse(JSON.parse(encoded)).command
+              .kind === 'run'
+          ) {
+            delivered.resolve();
+            await new Promise<void>(() => undefined);
+          }
+        },
+      };
+    };
+    const abort = new AbortController();
+    try {
+      const runtime = await h.backend.openManagedCopilotRuntime({
+        owner: TEST_OWNER,
+        signal: abort.signal,
+      });
+      let result = 'pending';
+      const running = runtime.runTurn(turn({ signal: abort.signal })).then(
+        () => {
+          result = 'completed';
+        },
+        () => {
+          result = 'refused';
+        },
+      );
+      await delivered.promise;
+      if (fault === 'abort') abort.abort();
+      else if (fault !== 'hung') {
+        if (!write) throw new Error('Missing channel writer');
+        await expect(
+          write(
+            JSON.stringify({
+              kind: 'response',
+              requestId:
+                fault === 'replayed-renewal'
+                  ? 1
+                  : fault === 'replayed-run'
+                    ? 2
+                    : 4096,
+              outcome: { kind: 'accepted' },
+            }),
+          ),
+        ).rejects.toMatchObject({ code: 'unavailable' });
+      } else {
+        await jest.advanceTimersByTimeAsync(
+          COPILOT_RECIPIENT_LIMITS.callbackMs + 1,
+        );
+        expect(result).toBe('refused');
+      }
+      await running;
+      expect(result).toBe('refused');
+    } finally {
+      h.pilot.close();
+      jest.useRealTimers();
+    }
+  },
+);
+
+it.each(['accepted', 'refused', 'duplicate', 'wrong-kind'] as const)(
+  'completion admits only one exact outstanding ancillary response: %s',
+  async (outcome) => {
+    const h = fixture(true);
+    ready(await h.pilot.setup(grant(), null));
+    jest.useFakeTimers({
+      doNotFake: [
+        'nextTick',
+        'queueMicrotask',
+        'setImmediate',
+        'clearImmediate',
+      ],
+    });
+    const open = h.port.open.bind(h.port);
+    const release = deferred<void>();
+    const renewed = deferred<void>();
+    let renewals = 0;
+    h.port.open = async (...args): ReturnType<typeof h.port.open> => {
+      const channel = await open(
+        args[0],
+        args[1],
+        args[2],
+        async (encoded): Promise<void> => {
+          await args[3](encoded);
+          const frame = CopilotLocalFrameSchema.parse(JSON.parse(encoded));
+          if (frame.kind === 'response' && frame.outcome.kind === 'completed') {
+            release.resolve();
+            await renewed.promise;
+          }
+        },
+        args[4],
+      );
+      return {
+        ...channel,
+        receive: async (encoded): Promise<void> => {
+          const frame = CopilotLocalRequestSchema.parse(JSON.parse(encoded));
+          if (frame.command.kind === 'renew' && ++renewals === 2) {
+            await release.promise;
+            const response = JSON.stringify({
+              kind: 'response',
+              requestId: frame.requestId,
+              outcome:
+                outcome === 'refused'
+                  ? { kind: 'refused', reason: 'stale' }
+                  : outcome === 'wrong-kind'
+                    ? {
+                        kind: 'completed',
+                        result: { kind: 'models', models: [] },
+                      }
+                    : { kind: 'accepted' },
+            });
+            try {
+              if (outcome === 'duplicate') await args[3](response);
+              if (outcome === 'duplicate' || outcome === 'wrong-kind')
+                await expect(args[3](response)).rejects.toMatchObject({
+                  code: 'unavailable',
+                });
+              else await args[3](response);
+            } finally {
+              renewed.resolve();
+            }
+          } else await channel.receive(encoded);
+        },
+      };
+    };
+    try {
+      const accepted = deferred<void>();
+      const runtime = await h.backend.openManagedCopilotRuntime({
+        owner: TEST_OWNER,
+        signal: new AbortController().signal,
+      });
+      const running = runtime.runTurn(
+        turn({ onPromptAccepted: () => accepted.resolve() }),
+      );
+      const result = running.then(
+        () => 'completed',
+        () => 'refused',
+      );
+      await accepted.promise;
+      await jest.advanceTimersByTimeAsync(60_000);
+      expect(renewals).toBe(2);
+      h.natives[1]?.configs[0]?.onEvent?.({
+        id: 'acknowledgement-race-idle',
+        type: 'session.idle',
+        ephemeral: true,
+        timestamp: new Date().toISOString(),
+        parentId: null,
+        data: {},
+      });
+      expect(await result).toBe(
+        outcome === 'duplicate' || outcome === 'wrong-kind'
+          ? 'refused'
+          : 'completed',
+      );
+    } finally {
+      release.resolve();
+      h.pilot.close();
+      jest.useRealTimers();
+    }
+  },
+);
+
+it('a refused run stops renewal before its delivery acknowledgement settles', async () => {
+  const h = fixture();
+  ready(await h.pilot.setup(grant(), null));
+  jest.useFakeTimers({
+    doNotFake: ['nextTick', 'queueMicrotask', 'setImmediate', 'clearImmediate'],
+  });
+  const open = h.port.open.bind(h.port);
+  const started = deferred<void>();
+  const refuse = deferred<void>();
+  const delivered = deferred<void>();
+  let renewals = 0;
+  h.port.open = async (...args): ReturnType<typeof h.port.open> => {
+    const channel = await open(...args);
+    return {
+      ...channel,
+      receive: async (encoded): Promise<void> => {
+        const frame = CopilotLocalRequestSchema.parse(JSON.parse(encoded));
+        if (frame.command.kind === 'run') {
+          started.resolve();
+          await refuse.promise;
+          await args[3](
+            JSON.stringify({
+              kind: 'response',
+              requestId: frame.requestId,
+              outcome: { kind: 'refused', reason: 'stale' },
+            }),
+          );
+          delivered.resolve();
+          await new Promise<void>(() => undefined);
+        } else {
+          if (frame.command.kind === 'renew') renewals++;
+          await channel.receive(encoded);
+        }
+      },
+    };
+  };
+  try {
+    const runtime = await h.backend.openManagedCopilotRuntime({
+      owner: TEST_OWNER,
+      signal: new AbortController().signal,
+    });
+    const running = runtime.runTurn(turn()).then(
+      () => 'completed',
+      () => 'refused',
+    );
+    await started.promise;
+    await jest.advanceTimersByTimeAsync(45_000);
+    refuse.resolve();
+    await delivered.promise;
+    await jest.advanceTimersByTimeAsync(15_001);
+    expect(renewals).toBe(1);
+    await jest.advanceTimersByTimeAsync(COPILOT_RECIPIENT_LIMITS.callbackMs);
+    expect(await running).toBe('refused');
+  } finally {
+    h.pilot.close();
+    jest.useRealTimers();
+  }
+});
+
+it('the selected consumer closes at 4096 allocated requests without sending or wrapping the next ID', async () => {
+  const h = fixture();
+  ready(await h.pilot.setup(grant(), null));
+  const start = h.pilotOptions.start.bind(h.pilotOptions);
+  h.pilotOptions.start = async (...args): ReturnType<typeof start> => ({
+    ...(await start(...args)),
+    async execute(_purpose, context): Promise<never> {
+      for (let index = 0; index < 4096; index++) {
+        await context.callback({ kind: 'notice', name: 'before-prompt' });
+      }
+      throw new Error('The request ceiling did not close the recipient.');
+    },
+  });
+  const open = h.port.open.bind(h.port);
+  const ids: number[] = [];
+  h.port.open = async (...args): ReturnType<typeof h.port.open> => {
+    const channel = await open(...args);
+    return {
+      ...channel,
+      receive: async (encoded): Promise<void> => {
+        ids.push(
+          CopilotLocalRequestSchema.parse(JSON.parse(encoded)).requestId,
+        );
+        await channel.receive(encoded);
+      },
+    };
+  };
+  try {
+    const runtime = await h.backend.openManagedCopilotRuntime({
+      owner: TEST_OWNER,
+      signal: new AbortController().signal,
+    });
+    await expect(runtime.runTurn(turn())).rejects.toMatchObject({
+      code: 'unavailable',
+    });
+    expect(ids).toEqual(Array.from({ length: 4096 }, (_, index) => index + 1));
+    expect(h.natives[1]?.runtime.close).toHaveBeenCalledTimes(1);
+  } finally {
+    h.pilot.close();
+  }
+});
+
+const P7_IMPORT_MATRIX = Object.entries(COPILOT_VAULT_IMPORT_PATHS).flatMap(
+  ([phase, paths]) =>
+    Object.entries(paths).map(([entry, path]) => ({
+      phase: CopilotHandoffPhaseSchema.parse(phase),
+      entry,
+      path,
+    })),
+);
+it('q-48 remeasures unchanged consumer shapes and covers every authenticated P7 admission state', () => {
+  expect(Object.keys(COPILOT_VAULT_TURN_FIELDS)).toHaveLength(26);
+  expect(Object.keys(COPILOT_VAULT_OPEN_FIELDS)).toHaveLength(9);
+  expect(Object.keys(COPILOT_VAULT_PENDING_PATHS)).toHaveLength(5);
+  expect(Object.keys(COPILOT_VAULT_SETUP_CANCEL_PATHS)).toHaveLength(6);
+  expect(Object.keys(COPILOT_VAULT_IMPORT_PATHS)).toEqual(
+    CopilotHandoffPhaseSchema.options,
+  );
+  expect(P7_IMPORT_MATRIX).toHaveLength(63);
+  expect(
+    Object.values(PENDING_STATES).reduce(
+      (n, variants) => n + variants.length,
+      0,
+    ) *
+      Object.keys(PENDING_ENTRIES).length *
+      Object.keys(PENDING_ORIGINS).length,
+  ).toBe(126);
+  const coverage: readonly CopilotVaultFieldCoverage[] = [
+    ...Object.values(COPILOT_VAULT_TURN_FIELDS),
+    ...Object.values(COPILOT_VAULT_OPEN_FIELDS),
+  ];
+  for (const row of coverage) {
+    if (row.renewalCases)
+      for (const renewal of row.renewalCases)
+        expect(RENEWAL_PARITY[renewal]).toBeDefined();
+  }
+  expect(
+    copilotVaultFieldsCovered(
+      {},
+      COPILOT_VAULT_OPEN_FIELDS,
+      'bound_pre_ingress',
+    ),
+  ).toBe(false);
+  for (const phase of CopilotHandoffPhaseSchema.options) {
+    expect(
+      copilotVaultFieldsCovered(
+        { prompt: 'prompt' },
+        COPILOT_VAULT_TURN_FIELDS,
+        phase,
+      ),
+    ).toBe(phase === 'published');
+    expect(
+      copilotVaultFieldsCovered(
+        { requireAccount: true },
+        COPILOT_VAULT_OPEN_FIELDS,
+        phase,
+      ),
+    ).toBe(phase === 'published');
+  }
+});
+it.each(P7_IMPORT_MATRIX)(
+  'q-48 P7 $phase/$entry = $path never confuses bound recovery with generic setup',
+  async ({ phase, entry, path }) => {
+    const h = fixture();
+    let cancelled: boolean | undefined;
+    let legacyCalls = 0;
+    const selectedCalls: string[] = [];
+    const selectedFailure = (): Promise<never> => {
+      selectedCalls.push(entry);
+      return Promise.reject(new Error('selected marker'));
+    };
+    const selected = {
+      ...h.backend,
+      copilotConnectionStatus: selectedFailure,
+      openManagedCopilotRuntime: selectedFailure,
+      connectCopilot: selectedFailure,
+      disconnectCopilot: selectedFailure,
+    };
+    const handoff: CopilotQualificationHandoff = {
+      phase: () => Promise.resolve(phase),
+      custody: () =>
+        Promise.resolve(phase === 'published' ? 'selected' : 'pending'),
+      connect: (cancel) => {
+        cancelled = !!cancel;
+        return Promise.resolve([]);
+      },
+      verify: () => Promise.resolve([]),
+      cleanup: () => Promise.resolve([]),
+      close: () => Promise.resolve(),
+    };
+    const backend = createCopilotQualificationConnection({
+      handoff,
+      legacy: {
+        ...selected,
+        connectCopilot: () => {
+          legacyCalls++;
+          return selectedFailure();
+        },
+      },
+      vault: selected,
+      agreed: () => phase === 'published',
+      closeAdmission: () => undefined,
+    });
+    try {
+      const signal = new AbortController().signal;
+      const invocation =
+        entry === 'connect' || entry === 'change-account'
+          ? backend.connectCopilot(
+              signal,
+              () => undefined,
+              entry === 'change-account',
+            )
+          : entry === 'disconnect' || entry === 'setup-cancel'
+            ? backend.disconnectCopilot()
+            : entry === 'startup'
+              ? backend.recoverCopilotAtStartup()
+              : entry === 'status'
+                ? backend.copilotConnectionStatus()
+                : backend.openManagedCopilotRuntime({
+                    owner: TEST_OWNER,
+                    signal,
+                  });
+      await invocation.catch(() => undefined);
+      expect(legacyCalls).toBe(0);
+      if (path === 'cancel') expect(cancelled).toBe(true);
+      else if (path === 'recover') expect(cancelled).toBe(false);
+      else expect(cancelled).toBeUndefined();
+      if (path === 'unavailable' || entry === 'startup')
+        expect(selectedCalls).toEqual([]);
+      if (phase !== 'published') expect(selectedCalls).toEqual([]);
     } finally {
       h.pilot.close();
     }

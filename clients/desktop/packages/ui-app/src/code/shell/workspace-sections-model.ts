@@ -1,4 +1,8 @@
 import type { WorkspaceContext } from '@canopy/protocol/workspace-context';
+import {
+  NEW_WORKTREE_DISPLAY_NAME,
+  pickUniqueAnimalName,
+} from '@canopy/protocol/worktree-branch-names';
 import type { WorktreeRowProps } from '@canopy/ui-shared/components';
 import { orderWorktreesForSidebar } from './sidebar-model';
 import type { SidebarSortMode } from './sidebar/sidebar-ordering';
@@ -329,37 +333,6 @@ export function workspaceWorktreeIds(
   return ids;
 }
 
-/**
- * Resolves pending creates from authoritative snapshots without a request
- * correlation id. A workspace remains pending until at least one local id not
- * present at dispatch appears; one addition is selectable by the caller, while
- * multiple additions are deliberately treated as ambiguous.
- */
-export function pendingWorkspaceIdsAfterSnapshot(
-  pendingBaselines: ReadonlyMap<string, ReadonlySet<string>>,
-  worktrees: readonly SnapshotWorktree[],
-): ReadonlyMap<string, ReadonlySet<string>> {
-  const remaining = new Map<string, ReadonlySet<string>>();
-  let resolved = false;
-  pendingBaselines.forEach((baseline, workspaceLocalId) => {
-    const addedIds = newWorktreeIdsAfterSnapshot(
-      baseline,
-      workspaceLocalId,
-      worktrees,
-    );
-    if (addedIds.length === 0) {
-      remaining.set(workspaceLocalId, baseline);
-    } else {
-      resolved = true;
-    }
-  });
-  // INVARIANT: return the ORIGINAL map reference when nothing resolved.
-  // The consuming effect lists pendingBaselines in its dependency array; a
-  // fresh Map on the unchanged path would commit a new reference every
-  // snapshot and drive an infinite re-render/effect loop.
-  return resolved ? remaining : pendingBaselines;
-}
-
 export function newWorktreeIdsAfterSnapshot(
   baseline: ReadonlySet<string>,
   workspaceLocalId: string,
@@ -372,4 +345,244 @@ export function newWorktreeIdsAfterSnapshot(
         !baseline.has(worktree.localId),
     )
     .map((worktree) => worktree.localId);
+}
+
+/**
+ * One in-flight sidebar worktree create, per workspace. The surface renders it
+ * as a synthetic {@link SnapshotWorktree} through the real row pipeline (see
+ * {@link mergePendingCreateRows}) until the host lists the created row.
+ */
+export interface PendingWorktreeCreate {
+  /**
+   * The client-claimed worktree id when `claimed`, else a temporary
+   * `pending-create:<n>` key that names no worktree.
+   */
+  readonly key: string;
+  readonly claimed: boolean;
+  /** The workspace's worktree ids when the create was dispatched. */
+  readonly baseline: ReadonlySet<string>;
+  readonly groupId?: string;
+  /** ISO time of the click; the synthetic row's `createdAt`. */
+  readonly createdAt: string;
+  readonly startedAtMs: number;
+  /** The id the host's `completed` result named, authoritative over `key`. */
+  readonly resolvedId?: string;
+  readonly completedAtMs?: number;
+  /** The host answered `pending` (the Portal): only the snapshot can name the row. */
+  readonly snapshotResolves?: boolean;
+  /** The selection key at the click; the pending row shows selected only while it holds. */
+  readonly selectionKey: string | null;
+  /** Identity of this attempt; a newer create in the workspace replaces it. */
+  readonly attempt: { readonly selectionRevision: number };
+}
+
+/**
+ * A pending create's claim: an id `pickUniqueAnimalName` draws for the
+ * workspace's published `worktreeIdClaimPrefix`, or `undefined` when the
+ * workspace does not publish one (a host that names every worktree itself).
+ * The prefix is `''` in production, so presence is tested, not truthiness.
+ *
+ * Only the ids this client can see are avoided. The host also skips ids that
+ * archived or quarantined worktrees reserve, and then names the worktree
+ * itself; the pending row re-keys once to the host's id. That rare swap is
+ * accepted rather than publishing the host's reserved ids in the snapshot.
+ */
+export function claimPendingWorktreeId(
+  workspace: Pick<SnapshotWorkspace, 'worktreeIdClaimPrefix'>,
+  existingIds: ReadonlySet<string>,
+): string | undefined {
+  const prefix = workspace.worktreeIdClaimPrefix;
+  if (prefix === undefined) return undefined;
+  return pickUniqueAnimalName(existingIds, { prefix });
+}
+
+/** The local id the pending row renders with (its React key and `data-worktree-id`). */
+export function pendingCreateRowId(entry: PendingWorktreeCreate): string {
+  return entry.resolvedId ?? entry.key;
+}
+
+export type PendingCreateTarget =
+  /** No created row can be named yet. */
+  | { readonly kind: 'waiting' }
+  /** More than one addition without the claim: none can be correlated with the create. */
+  | { readonly kind: 'ambiguous' }
+  | { readonly kind: 'target'; readonly worktreeId: string };
+
+/**
+ * The id the pending create resolves to: the host's `completed` id, else the
+ * claim, else the single id the baseline diff finds. A create adopts another
+ * addition, or gives up as ambiguous, only once the host has answered
+ * `pending`: until then the host's own answer will name the id, so an
+ * unrelated worktree arriving first is never taken for this create, and a
+ * burst of rows never releases a create the host is about to name.
+ *
+ * Known tradeoff (no wire correlation id): once only the snapshot can name the
+ * row, a single new id is assumed to be this create, so an unrelated worktree
+ * landing in the same workspace may be adopted. Duplicate creation per
+ * workspace is suppressed and creates resolve quickly, and the effect is a
+ * navigation, not a mutation.
+ */
+export function pendingCreateTarget(
+  entry: PendingWorktreeCreate,
+  workspaceLocalId: string,
+  worktrees: readonly SnapshotWorktree[],
+): PendingCreateTarget {
+  if (entry.resolvedId !== undefined) {
+    return { kind: 'target', worktreeId: entry.resolvedId };
+  }
+  const added = newWorktreeIdsAfterSnapshot(
+    entry.baseline,
+    workspaceLocalId,
+    worktrees,
+  );
+  if (entry.claimed) {
+    // A host still answering will name the id itself.
+    if (
+      added.includes(entry.key) ||
+      added.length === 0 ||
+      entry.snapshotResolves !== true
+    ) {
+      return { kind: 'target', worktreeId: entry.key };
+    }
+    if (added.length === 1) return { kind: 'target', worktreeId: added[0] };
+    // Several rows arrived without the claim and the host will never name
+    // one, so none can be correlated: release now, not at the deadline.
+    return { kind: 'ambiguous' };
+  }
+  // A host still answering will name the id itself.
+  if (entry.snapshotResolves !== true) return { kind: 'waiting' };
+  if (added.length === 1) return { kind: 'target', worktreeId: added[0] };
+  return added.length > 1 ? { kind: 'ambiguous' } : { kind: 'waiting' };
+}
+
+/**
+ * The synthetic row for a pending create. It differs from the real row only
+ * in data, so listing, ordering, grouping and the shared row render it exactly
+ * as they will render the created worktree. In manual order it takes the
+ * slot before every existing row, where hosts insert a new worktree.
+ */
+export function buildPendingCreateWorktree(
+  workspace: Pick<SnapshotWorkspace, 'localId' | 'backend'>,
+  entry: PendingWorktreeCreate,
+  worktrees: readonly SnapshotWorktree[],
+): SnapshotWorktree {
+  let minOrder: number | undefined;
+  for (const worktree of worktrees) {
+    if (worktree.workspaceLocalId !== workspace.localId) continue;
+    const order = worktree.order ?? 0;
+    if (minOrder === undefined || order < minOrder) minOrder = order;
+  }
+  return {
+    localId: pendingCreateRowId(entry),
+    workspaceLocalId: workspace.localId,
+    branch: '',
+    label: NEW_WORKTREE_DISPLAY_NAME,
+    setupPhase: 'git-pending',
+    createdAt: entry.createdAt,
+    order: minOrder === undefined ? 0 : minOrder - 1,
+    ...(workspace.backend === undefined ? {} : { backend: workspace.backend }),
+  };
+}
+
+/**
+ * The snapshot's worktrees with each pending create's synthetic row merged
+ * in. One row per id: while a create is pending, any snapshot row with its
+ * target id (or its row id) is dropped in favour of the synthetic row, so the
+ * swap on release keeps one React key and never renders a duplicate.
+ * Returns `worktrees` itself when nothing is pending.
+ */
+export function mergePendingCreateRows(
+  workspaces: readonly Pick<SnapshotWorkspace, 'localId' | 'backend'>[],
+  worktrees: readonly SnapshotWorktree[],
+  pending: ReadonlyMap<string, PendingWorktreeCreate>,
+): readonly SnapshotWorktree[] {
+  if (pending.size === 0) return worktrees;
+  const synthetic: SnapshotWorktree[] = [];
+  const replaced = new Set<string>();
+  pending.forEach((entry, workspaceLocalId) => {
+    const workspace = workspaces.find(
+      (candidate) => candidate.localId === workspaceLocalId,
+    );
+    if (!workspace) return;
+    const target = pendingCreateTarget(entry, workspaceLocalId, worktrees);
+    if (target.kind === 'target') {
+      replaced.add(worktreeRowKey(workspaceLocalId, target.worktreeId));
+    }
+    replaced.add(worktreeRowKey(workspaceLocalId, pendingCreateRowId(entry)));
+    synthetic.push(buildPendingCreateWorktree(workspace, entry, worktrees));
+  });
+  if (synthetic.length === 0) return worktrees;
+  return [
+    ...synthetic,
+    ...worktrees.filter(
+      (worktree) =>
+        !replaced.has(
+          worktreeRowKey(worktree.workspaceLocalId, worktree.localId),
+        ),
+    ),
+  ];
+}
+
+/**
+ * Whether `worktreeLocalId` is the synthetic row of a pending create in that
+ * workspace. Such a row is inert: no drag, menu, actions, preview, dialogs,
+ * activation or bulk selection.
+ */
+export function isPendingCreateRow(
+  pending: ReadonlyMap<string, PendingWorktreeCreate>,
+  workspaceLocalId: string,
+  worktreeLocalId: string,
+): boolean {
+  const entry = pending.get(workspaceLocalId);
+  return entry !== undefined && pendingCreateRowId(entry) === worktreeLocalId;
+}
+
+/**
+ * The workspace's item groups with a pending create's row as the first member
+ * of the group it was created in, so the synthetic row lists inside that group
+ * as the created row will. Returns `groups` itself when nothing changes.
+ */
+export function withPendingGroupMember<
+  Group extends { readonly id: string; readonly memberIds: readonly string[] },
+>(
+  groups: readonly Group[],
+  entry: PendingWorktreeCreate | undefined,
+): readonly Group[] {
+  const groupId = entry?.groupId;
+  if (entry === undefined || groupId === undefined) return groups;
+  const rowId = pendingCreateRowId(entry);
+  if (!groups.some((group) => group.id === groupId)) return groups;
+  return groups.map((group) => {
+    const others = group.memberIds.filter((id) => id !== rowId);
+    if (group.id === groupId)
+      return { ...group, memberIds: [rowId, ...others] };
+    return others.length === group.memberIds.length
+      ? group
+      : { ...group, memberIds: others };
+  });
+}
+
+/**
+ * How long a pending create may wait with no matching row before the surface
+ * abandons it: twice the Portal's 30 s create wait while the create is in
+ * flight or `pending`, and a short grace once the host reported `completed`.
+ */
+export const PENDING_CREATE_TIMEOUT_MS = 60_000;
+export const COMPLETED_CREATE_TIMEOUT_MS = 15_000;
+
+/**
+ * The last resort for an entry the deadline above deliberately keeps, such as
+ * an in-flight create whose row is listed but vetoed or not yet answered for:
+ * a create that never settles still cannot pin the row and disable `+`.
+ */
+export const PENDING_CREATE_BACKSTOP_MS = 5 * 60_000;
+
+export function pendingCreateDeadline(entry: PendingWorktreeCreate): number {
+  return entry.completedAtMs === undefined
+    ? entry.startedAtMs + PENDING_CREATE_TIMEOUT_MS
+    : entry.completedAtMs + COMPLETED_CREATE_TIMEOUT_MS;
+}
+
+export function pendingCreateBackstop(entry: PendingWorktreeCreate): number {
+  return entry.startedAtMs + PENDING_CREATE_BACKSTOP_MS;
 }

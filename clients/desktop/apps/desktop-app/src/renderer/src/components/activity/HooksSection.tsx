@@ -53,6 +53,7 @@ import {
   watchersForHook,
   visibleWatchers,
 } from '@/components/watchers/watcherFilters';
+import { useWorktreeEffective } from '@/hooks/useWorktreeEffective';
 
 function HookOutputModal({
   run,
@@ -406,6 +407,7 @@ export function HooksSection({
   worktreeId: string;
   onOpenSettings?: (tab: 'scripts' | 'hooks') => void;
 }): JSX.Element {
+  useWorktreeEffective(projectId, worktreeId);
   const headerChrome = useHooksHeaderChrome({ projectId, worktreeId });
   const hooksSection = useHooksSectionHostModel({ projectId, worktreeId });
 

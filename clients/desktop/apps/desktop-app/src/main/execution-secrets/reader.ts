@@ -14,6 +14,7 @@ import { readGitHubPatForExecution } from '../lib/github-pat-env';
 import { resolveLinearToken } from '../lib/linear-auth';
 import { storedSecretRef } from '../lib/stored-secrets';
 import { getMcpServerFilePath } from '../lib/paths';
+import { getChatSecretStore } from '../agent-secrets/chat-secret-store';
 import {
   classifyServerDocument,
   readDocument,
@@ -74,6 +75,9 @@ async function storedValues(
           slot.value,
         );
     }
+  } else if (source.family === 'agent.chat') {
+    // Decrypts only the ref this binding names.
+    return getChatSecretStore().readForExecution(source.record, [source.ref]);
   } else {
     const family: never = source.family;
     throw new Error(`Unknown stored secret family: ${String(family)}`);
@@ -114,7 +118,11 @@ export const desktopExecutionSecretReader: ExecutionSecretReader = {
         reads.push({ status: 'missing' });
         continue;
       }
-      const key = `${source.family}\0${source.record}`;
+      // A chat-secret read decrypts only the ref it names, so it caches per ref.
+      const key =
+        source.family === 'agent.chat'
+          ? `${source.family}\0${source.record}\0${source.ref}`
+          : `${source.family}\0${source.record}`;
       let values = stored.get(key);
       if (!values) {
         values = storedValues(source);

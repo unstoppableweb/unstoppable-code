@@ -131,6 +131,7 @@ export {
   isInheritingAgentModel,
   isOllamaModel,
   isSupportedOllamaModelEntry,
+  normalizeCursorIdentity,
   requireProviderForModel,
   resetGatewayCatalogHydrationForTests,
   resolveAgentModelDefinition,
@@ -5031,6 +5032,12 @@ export interface RemoveRepoFromWorkspaceRequest {
 export interface CreateWorkspaceWorktreeRequest extends SidebarItemGroupCreationOptions {
   workspaceId: string;
   existingWorktreeIds: string[];
+  /**
+   * A client-claimed worktree id, honored when free and generator-shaped for
+   * this host's mode; otherwise the host names the worktree. The response id
+   * is authoritative. A malformed id is rejected.
+   */
+  worktreeId?: string;
   /** Use this worktree as the base. Mutually exclusive with baseBranch and existingBranch. */
   baseWorktreeId?: string;
   /**
@@ -8930,6 +8937,12 @@ export interface CreateWorktreeRequest extends SidebarItemGroupCreationOptions {
   projectId: string;
   repoPath: string;
   existingWorktreeIds: string[];
+  /**
+   * A client-claimed worktree id, honored when free and generator-shaped for
+   * this host's mode; otherwise the host names the worktree. The response id
+   * is authoritative. A malformed id is rejected.
+   */
+  worktreeId?: string;
   /** Use this worktree as the base. Mutually exclusive with baseBranch and existingBranch. */
   baseWorktreeId?: string;
   /**
@@ -10087,6 +10100,19 @@ export interface ChatSendAuthRefusal {
 }
 
 /**
+ * A send the host refused before saving anything, for a stable reason the
+ * composer can act on without reading the sentence (CAN-6701). The draft,
+ * attachments and selections go back to the composer. A refusal after the
+ * message is saved is a turn error instead, never this field.
+ */
+export interface ChatSendRefusal {
+  /** An enforced organization gateway excludes the model's route. */
+  code: 'model_gateway_refused';
+  /** Host-authored sentence for the composer notice. */
+  message: string;
+}
+
+/**
  * Result of `chat:send-message`.
  *
  * An empty object means the host accepted the send (dispatched it or enqueued
@@ -10096,6 +10122,8 @@ export interface ChatSendAuthRefusal {
 export interface ChatSendMessageResult {
   /** Present ONLY when a required dependency is known-unauthenticated. */
   refusedAuthDependencies?: ChatSendAuthRefusal;
+  /** Present ONLY when the send was refused before anything was saved. */
+  refusedSend?: ChatSendRefusal;
   /** Quiet, non-transcript Auto fallback/capability notice. */
   modelRoutingNotice?: string;
   /** Idempotent dispatch outcome when the caller needs replay bookkeeping. */
@@ -13637,6 +13665,13 @@ export interface ChatApi {
   onMcpExpireAskUser(cb: (event: McpExpireAskUserEvent) => void): () => void;
   answerMcpQuestion(req: McpAnswerUserRequest): Promise<McpAnswerUserResponse>;
   dismissMcpQuestion(req: McpDismissUserRequest): Promise<void>;
+  /** Local window only: never tunneled to remote control or hosted agents. */
+  submitSecretRequest(
+    req: SecretRequestSubmitRequest,
+  ): Promise<SecretRequestSettleResponse>;
+  declineSecretRequest(
+    req: SecretRequestDeclineRequest,
+  ): Promise<SecretRequestSettleResponse>;
   onPlanExitRequest(cb: (event: PlanExitRequestEvent) => void): () => void;
   approvePlanExit(req: PlanExitApproveRequest): Promise<void>;
   denyPlanExit(req: PlanExitDenyRequest): Promise<void>;
@@ -13983,6 +14018,69 @@ export interface McpQuestion extends PortalQuestionControl {
   allowOther?: boolean;
   secret?: boolean;
   keepTextOnPick?: boolean;
+  /**
+   * Set only on the one question a RequestSecrets call shows: the request's
+   * metadata, never a value. Its answer is settled only through
+   * `secretRequest.submit` / `secretRequest.decline`, never as an ordinary
+   * question answer.
+   */
+  secretRequest?: McpSecretRequest;
+}
+
+/** One requested secret as the form shows it: metadata only. */
+export interface McpSecretRequestItem {
+  name: string;
+  label?: string;
+  description?: string;
+  kind?: 'password' | 'token' | 'multiline';
+  required?: boolean;
+  hint?: { prefix?: string; minLength?: number };
+  /** The chat already holds a value for this name. */
+  held?: boolean;
+}
+
+/** What a RequestSecrets form shows. Never holds a value. */
+export interface McpSecretRequest {
+  reason: string;
+  /** The agent's display name, such as Claude or Codex. */
+  agentName: string;
+  /** Footer copy: `full` in Full access, `cloud` in a cloud chat, `ask` otherwise. */
+  accessMode: 'ask' | 'full' | 'cloud';
+  /** `session` when secure storage is unavailable: values stay in memory. */
+  storage: 'encrypted' | 'session';
+  secrets: McpSecretRequestItem[];
+}
+
+/**
+ * The metadata a settled secret request records as its answer, in the
+ * answer's `freeformText` as JSON. Names and states only, never a value.
+ */
+export interface McpSecretRequestOutcome {
+  action: 'provide' | 'decline';
+  secrets: Array<{
+    name: string;
+    state: 'provided' | 'skipped';
+    source?: 'entered' | 'chat';
+  }>;
+}
+
+/** Renderer → main, local window only: the person's values for a request. */
+export interface SecretRequestSubmitRequest {
+  requestId: string;
+  /** Entered values by name; each 1..16384 characters. */
+  values: Record<string, string>;
+  /** Held names the person chose to keep using. */
+  useHeld: string[];
+}
+
+export interface SecretRequestDeclineRequest {
+  requestId: string;
+}
+
+export interface SecretRequestSettleResponse {
+  accepted: boolean;
+  /** Why the submission was refused, safe to show. Never echoes a value. */
+  error?: string;
 }
 
 export interface McpQuestionAnswer {
@@ -20228,6 +20326,11 @@ export interface CanopyApi {
     request: MergeWorkspaceScriptsRequest,
   ) => Promise<void>;
   invalidateDesktopSessionSnapshot: () => Promise<void>;
+  /** CAN-6933: each listed worktree's own scripts and hooks, on demand. */
+  getWorktreeEffective: (request: {
+    projectId: string;
+    worktreeIds?: string[];
+  }) => Promise<Record<string, WorktreeEffectiveOverrides>>;
   saveProjectDefaultPlugins: (
     request: SaveDefaultPluginsRequest,
   ) => Promise<void>;
@@ -27820,6 +27923,7 @@ export const IPC_CHANNELS = {
   worktreeActivityEntities: REMOTE_IPC_CHANNELS.worktreeActivityEntities,
   worktreeCheckRemovalAdmission: 'worktree:check-removal-admission',
   worktreeRecoveryList: REMOTE_IPC_CHANNELS.worktreeRecoveryList,
+  worktreeEffectiveGet: 'worktree:effective-get',
   worktreeRecoveryResolve: REMOTE_IPC_CHANNELS.worktreeRecoveryResolve,
   worktreeRecoveryFinish: REMOTE_IPC_CHANNELS.worktreeRecoveryFinish,
   worktreeDiscardDescribe: REMOTE_IPC_CHANNELS.worktreeDiscardDescribe,
@@ -28079,6 +28183,9 @@ export const IPC_CHANNELS = {
   mcpAnswerUser: 'mcp:answer-user',
   mcpDismissUser: 'mcp:dismiss-user',
   mcpExpireAskUser: 'mcp:expire-user',
+  // Agent secret requests: local renderer → main only; never tunneled.
+  secretRequestSubmit: 'secret-request:submit',
+  secretRequestDecline: 'secret-request:decline',
   approvalRequest: 'approval:request', // main → renderer event
   approvalCancelled: 'approval:cancelled', // main → renderer event
   // main → renderer event. Distinct from `approval:cancelled`, which means

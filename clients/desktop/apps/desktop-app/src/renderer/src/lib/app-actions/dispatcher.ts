@@ -463,6 +463,8 @@ import {
 } from '@canopy/agent-actions/families/pipeline-executions/cloud-runs';
 import { AgentPortError } from '@canopy/agent-actions/port/environment-port';
 import { cloudExecutionAnswer, withCloudRuns } from './cloud-run-actions';
+import { isWebCoreScope, webCoreScopeId } from '@/lib/chat-authority';
+import { forkCloudChat } from '@/stores/chat/web-core/cloud-forks';
 
 /**
  * A worktree failure as an agent reads it: the reason behind our sentence,
@@ -6559,6 +6561,43 @@ async function runWorktreeChatActionResult(
     };
   }
 
+  if (action.action === 'fork' && isWebCoreScope(target.projectId)) {
+    // A cloud fork is a new task, keyed by its claim (CAN-7007).
+    if (
+      ipcCanopyClient.capabilitiesFor?.(target.projectId).chatTaskFork !== true
+    )
+      return {
+        ok: false,
+        error: {
+          code: 'surface_unavailable',
+          message: "Forking isn't available for this cloud chat yet.",
+          retryable: false,
+        },
+      };
+    const outcome = await forkCloudChat(target);
+    if (outcome.kind === 'forked')
+      return {
+        ok: true,
+        result: {
+          action: action.action,
+          projectId: target.projectId,
+          worktreeId: webCoreScopeId(outcome.taskId),
+          sourceChatId: target.chatId,
+        },
+      };
+    return {
+      ok: false,
+      error: {
+        code: 'execution_failed',
+        message:
+          outcome.kind === 'refused'
+            ? "The chat wasn't forked."
+            : "The fork's outcome isn't known yet. Fork again to finish it; it won't make a second copy.",
+        retryable: outcome.kind !== 'refused',
+      },
+    };
+  }
+
   if (action.action === 'fork') {
     useChatStore.getState().forkTab(target.chatId, {
       projectId: target.projectId,
@@ -11304,8 +11343,24 @@ async function routeAction(
           },
         };
       }
+      // CAN-6933: this worktree's own hooks, read now. Without them the
+      // pause set would miss the hooks only this worktree declares.
+      const hooksRead = await useProjectsStore
+        .getState()
+        .ensureWorktreeEffective(action.projectId, [action.worktreeId]);
+      if (!hooksRead) {
+        return {
+          ok: false,
+          error: {
+            code: 'execution_failed',
+            message: "Couldn't read this worktree's hooks. Try again.",
+            retryable: true,
+          },
+        };
+      }
+      const current = getGitWorkspaceOrError(action.projectId);
       const entries = buildHookEntries(
-        workspace,
+        'error' in current ? workspace : current,
         action.worktreeId,
         useProjectsStore.getState().appliedProjectWorktreeHooks,
       );

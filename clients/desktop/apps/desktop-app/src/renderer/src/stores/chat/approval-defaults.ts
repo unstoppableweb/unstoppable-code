@@ -55,6 +55,29 @@ export function approvalDefaultCacheKey(
   return projectId;
 }
 
+const provisionalApprovalModeResolutions = new Map<string, Promise<void>>();
+
+function provisionalResolutionKey(
+  sel: WorktreeSelection,
+  chatId: string,
+): string {
+  return `${worktreeKey(sel)}/${chatId}`;
+}
+
+/**
+ * The fresh approval-default lookup still pending for a starter that shows a
+ * provisional (cached) mode, or `undefined` when none is. Senders await it
+ * before reading the tab's mode, so a provisional value never reaches a turn.
+ */
+export function pendingProvisionalApprovalMode(
+  sel: WorktreeSelection,
+  chatId: string,
+): Promise<void> | undefined {
+  return provisionalApprovalModeResolutions.get(
+    provisionalResolutionKey(sel, chatId),
+  );
+}
+
 /**
  * Resolves the default (`ChatApprovalsSlice.fetchApprovalDefault`) for a
  * just-created tab and stamps `approvalMode` onto
@@ -65,8 +88,12 @@ export function approvalDefaultCacheKey(
  * user choice that won the race) atomically with the new tab.
  *
  * Explicit tab creation stays synchronous and can use a cached value while a
- * fresh lookup is pending. Initial starter-tab creation resolves this helper's
- * source before exposing the tab, so its first rendered mode is authoritative.
+ * fresh lookup is pending. A new worktree's starter may also be exposed at
+ * once with the cached default, marked `approvalModeProvisional` (CAN-6957):
+ * this helper still runs the fresh lookup for it, replaces the mode only while
+ * the marker is set (the picker clears it, so a user choice wins), and clears
+ * the marker on every exit. Without a cached value the starter waits for the
+ * lookup before it is exposed, so its first rendered mode is authoritative.
  */
 export async function applyResolvedApprovalModeForNewTab(
   sel: WorktreeSelection,
@@ -79,6 +106,12 @@ export async function applyResolvedApprovalModeForNewTab(
     (entry) => entry.id === chatId,
   );
   if (existingTab?.kind !== 'file' && existingTab?.approvalMode !== undefined) {
+    if (existingTab.approvalModeProvisional === true) {
+      // Keep this path free of any `await` before the resolution registers:
+      // senders find the pending lookup only once it is registered, so a gap
+      // here would let the cached mode reach a turn.
+      return resolveProvisionalApprovalMode(sel, chatId, set, get);
+    }
     return existingTab.approvalMode;
   }
 
@@ -103,6 +136,93 @@ export async function applyResolvedApprovalModeForNewTab(
     const updated = { ...wc, tabs: updatedTabs };
     return { worktreeChats: { ...state.worktreeChats, [key]: updated } };
   });
+  const tab = get().worktreeChats[key]?.tabs.find(
+    (entry) => entry.id === chatId,
+  );
+  return tab?.kind === 'file' ? undefined : tab?.approvalMode;
+}
+
+/** Applies the fresh mode, unless the tab is gone or the picker won. */
+function clearProvisionalMarker(
+  set: ChatSet,
+  key: string,
+  chatId: string,
+  fresh: ApprovalMode | undefined,
+): void {
+  set((state) => {
+    const wc = state.worktreeChats[key];
+    if (!wc) return state;
+    const tab = wc.tabs.find((t) => t.id === chatId);
+    // Closed mid-lookup, or the picker already cleared the marker.
+    if (!tab || tab.kind === 'file' || tab.approvalModeProvisional !== true) {
+      return state;
+    }
+    const updatedTabs = wc.tabs.map((t) =>
+      t.id === chatId
+        ? {
+            ...t,
+            ...(fresh === undefined ? {} : { approvalMode: fresh }),
+            approvalModeProvisional: undefined,
+          }
+        : t,
+    );
+    return {
+      worktreeChats: {
+        ...state.worktreeChats,
+        [key]: { ...wc, tabs: updatedTabs },
+      },
+    };
+  });
+}
+
+async function resolveProvisionalApprovalMode(
+  sel: WorktreeSelection,
+  chatId: string,
+  set: ChatSet,
+  get: ChatGet,
+): Promise<ApprovalMode | undefined> {
+  const key = worktreeKey(sel);
+  const resolutionKey = provisionalResolutionKey(sel, chatId);
+  // One lookup per tab: a second caller joins the one in flight, so every
+  // waiter is released by the same lookup and none is replaced.
+  const inFlight = provisionalApprovalModeResolutions.get(resolutionKey);
+  if (inFlight) {
+    await inFlight;
+    const joined = get().worktreeChats[key]?.tabs.find(
+      (entry) => entry.id === chatId,
+    );
+    return joined?.kind === 'file' ? undefined : joined?.approvalMode;
+  }
+  const resolution = (async (): Promise<void> => {
+    let fresh: ApprovalMode | undefined;
+    try {
+      // Same durability boundary as above: never trust the cached value that
+      // the provisional mode came from. `fetchApprovalDefault` already falls
+      // back to the cache or 'ask' on a failed lookup.
+      fresh = await get().fetchApprovalDefault(sel.projectId, sel.worktreeId, {
+        forceFresh: true,
+      });
+    } finally {
+      // Clear the marker on every exit. A lookup that throws keeps the shown
+      // cached mode, the value a failed lookup resolves to anyway, and
+      // propagates like the non-provisional path.
+      clearProvisionalMarker(set, key, chatId, fresh);
+    }
+  })();
+  // Senders and canonical creation only wait for the marker to clear; a failed
+  // lookup leaves the cached mode in place, so they must never see it reject.
+  const settled = resolution.then(
+    () => undefined,
+    () => undefined,
+  );
+  provisionalApprovalModeResolutions.set(resolutionKey, settled);
+  try {
+    await resolution;
+  } finally {
+    if (provisionalApprovalModeResolutions.get(resolutionKey) === settled) {
+      provisionalApprovalModeResolutions.delete(resolutionKey);
+    }
+  }
   const tab = get().worktreeChats[key]?.tabs.find(
     (entry) => entry.id === chatId,
   );

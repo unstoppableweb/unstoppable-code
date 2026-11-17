@@ -32,20 +32,29 @@ export interface ChatStateServiceFixture {
   dispose(): Promise<void>;
 }
 
-export function createChatStateServiceFixture(): ChatStateServiceFixture {
+export function createChatStateServiceFixture(options?: {
+  canonicalPaths: true;
+}): ChatStateServiceFixture {
   const tempDir = mkdtempSync(join(tmpdir(), 'canopy-chat-state-fixture-'));
-  const repository = new ChatStateV2Repository({
-    resolvePaths: (
-      scope,
-    ): { tabs: string; archives: string; journal: string } => {
-      const prefix = join(tempDir, `${scope.projectId}--${scope.worktreeId}`);
-      return {
-        tabs: `${prefix}-chats.json`,
-        archives: `${prefix}-archives.json`,
-        journal: `${prefix}-journal.jsonl`,
-      };
-    },
-  });
+  const repository = new ChatStateV2Repository(
+    options?.canonicalPaths
+      ? {}
+      : {
+          resolvePaths: (
+            scope,
+          ): { tabs: string; archives: string; journal: string } => {
+            const prefix = join(
+              tempDir,
+              `${scope.projectId}--${scope.worktreeId}`,
+            );
+            return {
+              tabs: `${prefix}-chats.json`,
+              archives: `${prefix}-archives.json`,
+              journal: `${prefix}-journal.jsonl`,
+            };
+          },
+        },
+  );
   let ids = 0;
   const service = new ChatStateService({
     repository,

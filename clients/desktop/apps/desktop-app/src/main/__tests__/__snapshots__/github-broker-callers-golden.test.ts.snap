@@ -1,0 +1,137 @@
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+
+exports[`broker callers PR tracking derives one opaque scope per credential, with an account scope when signed out 1`] = `
+{
+  "authenticationScopeIsOpaque": true,
+  "credential": "with-source",
+  "differsPerToken": true,
+  "signedOutAccountScopeIsOpaque": true,
+}
+`;
+
+exports[`broker callers shared-container code materialization probes the repository, commit and tree with the resolved credential 1`] = `
+{
+  "calls": [
+    {
+      "caller": null,
+      "conditional": false,
+      "credential": "with-source",
+      "idempotency": "safe",
+      "operation": "read",
+      "priority": "interactive",
+      "resourceKey": null,
+    },
+    {
+      "caller": null,
+      "conditional": false,
+      "credential": "with-source",
+      "idempotency": "safe",
+      "operation": "read",
+      "priority": "interactive",
+      "resourceKey": null,
+    },
+    {
+      "caller": null,
+      "conditional": false,
+      "credential": "with-source",
+      "idempotency": "safe",
+      "operation": "read",
+      "priority": "interactive",
+      "resourceKey": null,
+    },
+  ],
+  "outcome": "Shared-container repository tree is too large to inspect",
+}
+`;
+
+exports[`broker callers the permission probe reads with the credential its source names 1`] = `
+[
+  {
+    "caller": null,
+    "conditional": false,
+    "credential": "with-source",
+    "idempotency": "safe",
+    "operation": "read",
+    "priority": "interactive",
+    "resourceKey": null,
+  },
+  {
+    "caller": null,
+    "conditional": false,
+    "credential": "stored-pat",
+    "idempotency": "safe",
+    "operation": "read",
+    "priority": "interactive",
+    "resourceKey": null,
+  },
+  {
+    "caller": null,
+    "conditional": false,
+    "credential": "gh-cli",
+    "idempotency": "safe",
+    "operation": "read",
+    "priority": "interactive",
+    "resourceKey": null,
+  },
+]
+`;
+
+exports[`broker callers the reference preview reads with the resolved credential under the reference-preview label 1`] = `
+[
+  {
+    "caller": "reference-preview",
+    "conditional": false,
+    "credential": "with-source",
+    "idempotency": "safe",
+    "operation": "read",
+    "priority": "interactive",
+    "resourceKey": null,
+  },
+  {
+    "caller": "reference-preview",
+    "conditional": false,
+    "credential": "broker-default",
+    "idempotency": "safe",
+    "operation": "read",
+    "priority": "interactive",
+    "resourceKey": null,
+  },
+]
+`;
+
+exports[`broker callers the shared client passes a caller credential through and otherwise uses the broker default 1`] = `
+[
+  {
+    "caller": null,
+    "conditional": false,
+    "credential": "broker-default",
+    "idempotency": "safe",
+    "operation": "read",
+    "priority": "interactive",
+    "resourceKey": null,
+  },
+  {
+    "caller": null,
+    "conditional": false,
+    "credential": "with-source",
+    "idempotency": "safe",
+    "operation": "read",
+    "priority": "background",
+    "resourceKey": null,
+  },
+]
+`;
+
+exports[`broker callers the shared-container pushed base probes commits with the resolved credential 1`] = `
+[
+  {
+    "caller": null,
+    "conditional": false,
+    "credential": "with-source",
+    "idempotency": "safe",
+    "operation": "read",
+    "priority": "interactive",
+    "resourceKey": null,
+  },
+]
+`;

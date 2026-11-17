@@ -1,4 +1,3 @@
-import { CodeBlock } from '@canopy/ui-shared/components/CodeBlock';
 import type {
   WorktreeRecoveryFinishResult,
   WorktreeRecoveryResolveResult,
@@ -11,6 +10,8 @@ import {
 } from '@canopy/protocol/portal/worktree-recovery';
 import {
   Button,
+  CodeBlock,
+  CopyButton,
   DialogModal,
   Disclosure,
   ErrorBanner,
@@ -54,7 +55,11 @@ export function WorktreeRecoveryDialog({
     | WorktreeRecoveryFinishResult
     | WorktreeRecoveryResolveResult;
   readonly error: 'transport-failed' | 'unconfirmed' | null;
-  readonly unconfirmedAction?: 'keep-worktree' | 'release' | 'finish';
+  readonly unconfirmedAction?:
+    | 'keep-worktree'
+    | 'release'
+    | 'finish'
+    | 'finish-cleanup';
   readonly onAction: (
     action: 'retry' | 'finishArchive' | 'keepWorktree' | 'release',
   ) => void;
@@ -67,6 +72,9 @@ export function WorktreeRecoveryDialog({
     : null;
   const settled =
     outcome && outcome.status !== 'refused' && outcome.status !== 'interrupted';
+  const completedCleanup =
+    recovery.check === 'completed-turn-diff-cleanup' ||
+    unconfirmedAction === 'finish-cleanup';
   const recommended =
     resolution === 'finish' ||
     (!canResolve && recovery.actions.finishArchive.eligible)
@@ -86,6 +94,8 @@ export function WorktreeRecoveryDialog({
       title={
         outcome ? (
           'Archive recovery result'
+        ) : completedCleanup ? (
+          'Archive cleanup'
         ) : (
           <>
             {resolution !== null ||
@@ -182,12 +192,18 @@ export function WorktreeRecoveryDialog({
                   loadingLabel={
                     recommended === 'retry'
                       ? 'Trying again…'
-                      : 'Finishing archive…'
+                      : completedCleanup
+                        ? 'Finishing cleanup…'
+                        : 'Finishing archive…'
                   }
                   onClick={() => onAction(recommended)}
                   data-testid={`worktree-recovery-${recommended}`}
                 >
-                  {recommended === 'retry' ? 'Try again' : 'Finish archive'}
+                  {recommended === 'retry'
+                    ? 'Try again'
+                    : completedCleanup
+                      ? 'Finish cleanup'
+                      : 'Finish archive'}
                 </LoadingButton>
               ) : (
                 <LoadingButton
@@ -212,7 +228,10 @@ export function WorktreeRecoveryDialog({
           className="text-pretty"
           data-testid="worktree-recovery-result"
         >
-          {worktreeRecoveryResultCopy(outcome, resolution ?? undefined)}
+          {worktreeRecoveryResultCopy(
+            outcome,
+            completedCleanup ? 'finish-cleanup' : (resolution ?? undefined),
+          )}
         </p>
       ) : null}
       {!outcome && resolution ? (
@@ -230,7 +249,9 @@ export function WorktreeRecoveryDialog({
       {!outcome ? (
         <>
           <p className="text-pretty" data-testid="worktree-recovery-reason">
-            {formatWorktreeRecoveryReason(recovery)}
+            {completedCleanup
+              ? 'The archive finished. Only cleanup of saved change data remains.'
+              : formatWorktreeRecoveryReason(recovery)}
           </p>
           <section className="flex flex-col gap-2">
             <Heading level={3} variant="title">
@@ -255,12 +276,27 @@ export function WorktreeRecoveryDialog({
           error={
             error === 'unconfirmed'
               ? unconfirmedAction
-                ? worktreeRecoveryUnconfirmedCopy(unconfirmedAction)
+                ? worktreeRecoveryUnconfirmedCopy(
+                    completedCleanup && unconfirmedAction === 'finish'
+                      ? 'finish-cleanup'
+                      : unconfirmedAction,
+                  )
                 : WORKTREE_REMOVAL_UNCONFIRMED
               : "Couldn't check this worktree. Check again before continuing."
           }
         />
       ) : null}
+      {!settled ? (
+        <p className="text-pretty">
+          If recovery cannot continue, keep the files in place. Copy the
+          recovery details before changing or deleting files. Use Send feedback
+          in the account menu to share them with support.
+        </p>
+      ) : null}
+      <CopyButton
+        label="Copy recovery details"
+        value={JSON.stringify({ ...recovery, result: outcome }, null, 2)}
+      />
       <Disclosure label="Details">
         <CodeBlock
           variant="bare"

@@ -3,20 +3,35 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
-import {
-  decodePluginCatalog,
-  decodePluginCacheIndex,
-  readPluginCatalog,
-  readPluginCacheIndex,
-  type PluginCacheIndex,
-  type PluginReadHealth,
-} from '@canopy/execution-engine/node/plugins/catalog-read-health';
+import { type PluginCacheIndex } from '@canopy/execution-engine/node/plugins/catalog-read-health';
 import { BRAND } from '@canopy/brand/current';
 import {
   claudeMarketplaceNames,
   type InheritedPluginMarketplace,
 } from './inherited-cursor-plugins';
-import { runSerializedPluginMutation } from './plugin-mutation-queue';
+import {
+  runSerializedPluginMutation,
+  enqueueDetachedPluginMutation,
+  afterPluginMutationSettled,
+} from './plugin-mutation-queue';
+import {
+  assertPluginCatalogAdmission,
+  assertPluginPayloadAdmission,
+  assertPluginCatalogHealth,
+  observePluginCatalog,
+  isPluginCatalogObservationCurrent,
+  assertPluginCatalogObservation,
+  notePluginCatalogEffects,
+  setPluginCatalogChangeListener,
+  normalizePluginCatalog,
+  normalizePluginCacheIndex,
+  publishPluginCatalog,
+  publishPluginCachePair,
+  updatePluginCatalog,
+  readPluginCatalogHealth,
+  readPluginIndexHealth,
+  withPluginCatalogScan,
+} from './plugin-catalog-store';
 import { pruneInstalledItemRefs } from '../installed-items/installed-item-ref-prune';
 import { prunePipelinePreferenceSelections } from '@canopy/execution-engine/node/pipelines/plugin-collection-store';
 import {
@@ -181,6 +196,69 @@ const MARKETPLACE_PROVIDER_REFRESH_TTL_MS = 24 * 60 * 60 * 1000;
 // Only an explicit provider refresh may consume supported legacy sources.
 const providerRevalidation = new AsyncLocalStorage<boolean>();
 
+async function withPluginEffects<T>(effect: () => Promise<T>): Promise<T> {
+  assertCatalogHealth({
+    allowLegacy: providerRevalidation.getStore() === true,
+  });
+  notePluginCatalogEffects();
+  try {
+    return await effect();
+  } finally {
+    notePluginCatalogEffects();
+  }
+}
+
+function projectPluginPayloadPath(candidate: string): string {
+  const suffix: string[] = [];
+  let ancestor = path.resolve(candidate);
+  for (;;) {
+    try {
+      return path.join(fs.realpathSync(ancestor), ...suffix.reverse());
+    } catch (error) {
+      if (
+        typeof error !== 'object' ||
+        error === null ||
+        !('code' in error) ||
+        error.code !== 'ENOENT'
+      )
+        throw error;
+      const parent = path.dirname(ancestor);
+      if (parent === ancestor) throw error;
+      suffix.push(path.basename(ancestor));
+      ancestor = parent;
+    }
+  }
+}
+
+function assertPluginPayloadPathAdmission(candidate: string): void {
+  assertPluginPayloadAdmission();
+  const managedRoot = path.resolve(getPluginCacheDir());
+  const target = path.resolve(candidate);
+  const resolvedRoot = projectPluginPayloadPath(managedRoot);
+  const resolvedTarget = projectPluginPayloadPath(target);
+  const compatibilityRoot = path.resolve(getCodexCompatibilityCacheRootDir());
+  const roots = [
+    compatibilityRoot,
+    projectPluginPayloadPath(compatibilityRoot),
+  ];
+  const targets = [target, resolvedTarget];
+  if (
+    roots.some((root) =>
+      targets.some(
+        (entry) => isPathInside(root, entry) || isPathInside(entry, root),
+      ),
+    )
+  )
+    throw new Error('Codex compatibility cache has a separate owner.');
+  if (
+    target === managedRoot ||
+    !isPathInside(managedRoot, target) ||
+    resolvedTarget === resolvedRoot ||
+    !isPathInside(resolvedRoot, resolvedTarget)
+  )
+    throw new Error('Plugin cache is outside its managed directory.');
+}
+
 async function execPluginCli(
   file: string,
   args: string[],
@@ -189,12 +267,14 @@ async function execPluginCli(
   assertCatalogHealth({
     allowLegacy: providerRevalidation.getStore() === true,
   });
-  await runClaudeCliProcessOffMain({
-    command: file,
-    args,
-    env,
-    timeoutMs: PLUGIN_CLI_TIMEOUT_MS,
-  });
+  await withPluginEffects(() =>
+    runClaudeCliProcessOffMain({
+      command: file,
+      args,
+      env,
+      timeoutMs: PLUGIN_CLI_TIMEOUT_MS,
+    }),
+  );
   assertCatalogHealth({
     allowLegacy: providerRevalidation.getStore() === true,
   });
@@ -206,7 +286,9 @@ async function addCodexMarketplace(
   assertCatalogHealth({
     allowLegacy: providerRevalidation.getStore() === true,
   });
-  const result = await addCodexMarketplaceUnchecked(...args);
+  const result = await withPluginEffects(() =>
+    addCodexMarketplaceUnchecked(...args),
+  );
   assertCatalogHealth({
     allowLegacy: providerRevalidation.getStore() === true,
   });
@@ -219,7 +301,9 @@ async function removeCodexMarketplace(
   assertCatalogHealth({
     allowLegacy: providerRevalidation.getStore() === true,
   });
-  const result = await removeCodexMarketplaceUnchecked(...args);
+  const result = await withPluginEffects(() =>
+    removeCodexMarketplaceUnchecked(...args),
+  );
   assertCatalogHealth({
     allowLegacy: providerRevalidation.getStore() === true,
   });
@@ -232,7 +316,9 @@ async function upgradeCodexMarketplace(
   assertCatalogHealth({
     allowLegacy: providerRevalidation.getStore() === true,
   });
-  const result = await upgradeCodexMarketplaceUnchecked(...args);
+  const result = await withPluginEffects(() =>
+    upgradeCodexMarketplaceUnchecked(...args),
+  );
   assertCatalogHealth({
     allowLegacy: providerRevalidation.getStore() === true,
   });
@@ -245,7 +331,9 @@ async function installCodexPlugin(
   assertCatalogHealth({
     allowLegacy: providerRevalidation.getStore() === true,
   });
-  const result = await installCodexPluginUnchecked(...args);
+  const result = await withPluginEffects(() =>
+    installCodexPluginUnchecked(...args),
+  );
   assertCatalogHealth({
     allowLegacy: providerRevalidation.getStore() === true,
   });
@@ -261,10 +349,6 @@ type CodexPluginListResult =
   | { success: false; error: string };
 
 let backgroundSelectionPruneQueue: Promise<void> = Promise.resolve();
-
-function getPluginsCacheFilePath(): string {
-  return path.join(getDataDir(), 'plugins-cache.json');
-}
 
 function getKnownMarketplacesPath(): string {
   return path.join(
@@ -346,7 +430,7 @@ export function readClaudeInstalledItemState(
   return { ids, enabled: ids.every((id) => flags[id] !== false) };
 }
 
-export async function setClaudeInstalledItemEnabled(
+async function setClaudeInstalledItemEnabledUnlocked(
   id: string,
   enabled: boolean,
 ): Promise<void> {
@@ -357,7 +441,7 @@ export async function setClaudeInstalledItemEnabled(
   );
 }
 
-export async function uninstallClaudeInstalledItem(id: string): Promise<void> {
+async function uninstallClaudeInstalledItemUnlocked(id: string): Promise<void> {
   await execPluginCli(
     getBundledClaudeBinaryPath(),
     ['plugin', 'uninstall', id, '--scope', 'user', '--keep-data'],
@@ -366,11 +450,11 @@ export async function uninstallClaudeInstalledItem(id: string): Promise<void> {
 }
 
 /** Remove only cache directories owned by Canopy, never an external source tree. */
-export async function removeInstalledPluginCache(
+async function removeInstalledPluginCacheUnlocked(
   marketplaceId: string,
   pluginName: string,
 ): Promise<void> {
-  await withCacheLock(() => {
+  await withCacheLock(async () => {
     assertCatalogHealth();
     const index = readCacheIndex();
     const prefix = `${marketplaceId}/`;
@@ -408,76 +492,86 @@ export async function removeInstalledPluginCache(
       const target = fs.realpathSync(candidate);
       if (target === root || !isPathInside(root, target))
         throw new Error('Plugin cache is outside its managed directory.');
-      fs.rmSync(target, { recursive: true, force: true });
+      if (ownedRoot === getPluginCacheDir())
+        assertPluginPayloadPathAdmission(candidate);
+      try {
+        fs.rmSync(target, { recursive: true, force: true });
+      } finally {
+        notePluginCatalogEffects();
+      }
     }
     if (entries.length) {
       for (const [key] of entries) delete index.entries[key];
-      writeCacheIndex(index);
+      // Published together below after both candidates are assembled.
     }
-    if (cache?.version === 2)
-      writeCache({
-        ...cache,
-        marketplaces: cache.marketplaces.map((marketplace) =>
-          marketplace.id !== marketplaceId
-            ? marketplace
-            : {
-                ...marketplace,
-                plugins: marketplace.plugins.map((plugin) =>
-                  plugin.name.toLowerCase() !== pluginName.toLowerCase()
-                    ? plugin
-                    : {
-                        ...plugin,
-                        cachePath: undefined,
-                        cachedAt: undefined,
-                        details: undefined,
-                        globalInstallStatus: plugin.globalInstallStatus
-                          ? {
-                              ...plugin.globalInstallStatus,
-                              ...(plugin.globalInstallStatus.claude
+    const nextCache: PluginsCache | undefined =
+      cache?.version === 2
+        ? {
+            ...cache,
+            marketplaces: cache.marketplaces.map((marketplace) =>
+              marketplace.id !== marketplaceId
+                ? marketplace
+                : {
+                    ...marketplace,
+                    plugins: marketplace.plugins.map((plugin) =>
+                      plugin.name.toLowerCase() !== pluginName.toLowerCase()
+                        ? plugin
+                        : {
+                            ...plugin,
+                            cachePath: undefined,
+                            cachedAt: undefined,
+                            details: undefined,
+                            globalInstallStatus: plugin.globalInstallStatus
+                              ? {
+                                  ...plugin.globalInstallStatus,
+                                  ...(plugin.globalInstallStatus.claude
+                                    ? {
+                                        claude: {
+                                          ...plugin.globalInstallStatus.claude,
+                                          installed: false,
+                                          installError: undefined,
+                                        },
+                                      }
+                                    : {}),
+                                  ...(plugin.globalInstallStatus.codex
+                                    ? {
+                                        codex: {
+                                          ...plugin.globalInstallStatus.codex,
+                                          installed: false,
+                                          installError: undefined,
+                                        },
+                                      }
+                                    : {}),
+                                }
+                              : undefined,
+                            facets: {
+                              ...plugin.facets,
+                              codexCompatibility: undefined,
+                              claude: plugin.facets.claude
                                 ? {
-                                    claude: {
-                                      ...plugin.globalInstallStatus.claude,
-                                      installed: false,
-                                      installError: undefined,
-                                    },
+                                    ...plugin.facets.claude,
+                                    cachePath: undefined,
+                                    cachedAt: undefined,
+                                    details: undefined,
                                   }
-                                : {}),
-                              ...(plugin.globalInstallStatus.codex
+                                : undefined,
+                              codex: plugin.facets.codex
                                 ? {
-                                    codex: {
-                                      ...plugin.globalInstallStatus.codex,
-                                      installed: false,
-                                      installError: undefined,
-                                    },
+                                    ...plugin.facets.codex,
+                                    cachePath: undefined,
+                                    cachedAt: undefined,
+                                    details: undefined,
                                   }
-                                : {}),
-                            }
-                          : undefined,
-                        facets: {
-                          ...plugin.facets,
-                          codexCompatibility: undefined,
-                          claude: plugin.facets.claude
-                            ? {
-                                ...plugin.facets.claude,
-                                cachePath: undefined,
-                                cachedAt: undefined,
-                                details: undefined,
-                              }
-                            : undefined,
-                          codex: plugin.facets.codex
-                            ? {
-                                ...plugin.facets.codex,
-                                cachePath: undefined,
-                                cachedAt: undefined,
-                                details: undefined,
-                              }
-                            : undefined,
-                        },
-                      },
-                ),
-              },
-        ),
-      });
+                                : undefined,
+                            },
+                          },
+                    ),
+                  },
+            ),
+          }
+        : undefined;
+    if (entries.length > 0) await publishPluginCachePair(index, nextCache);
+    else if (nextCache) await writeCache(nextCache);
     invalidateManagedMarketplaceScanCache(marketplaceId);
   });
 }
@@ -490,16 +584,10 @@ function getBuiltInMarketplaceDisplayName(): string {
   return `${BRAND.displayName} Marketplace`;
 }
 
-export function readPluginCatalogHealth(): PluginReadHealth<
-  PluginsCache,
-  PluginsCacheV1
-> {
-  return readPluginCatalog(getPluginsCacheFilePath());
-}
-
-export function readPluginIndexHealth(): PluginReadHealth<PluginCacheIndex> {
-  return readPluginCacheIndex(getCacheIndexPath());
-}
+export {
+  readPluginCatalogHealth,
+  readPluginIndexHealth,
+} from './plugin-catalog-store';
 
 function catalogReadError(state: string): Error {
   return new Error(
@@ -508,19 +596,29 @@ function catalogReadError(state: string): Error {
 }
 
 function assertCatalogHealth(options?: { allowLegacy?: boolean }): void {
-  const catalog = readPluginCatalogHealth();
-  if (
-    catalog.state !== 'valid' &&
-    catalog.state !== 'absent' &&
-    !(options?.allowLegacy && catalog.state === 'legacy')
-  ) {
-    throw catalogReadError(catalog.state);
-  }
-  const index = readPluginIndexHealth();
-  if (index.state !== 'valid' && index.state !== 'absent') {
-    throw catalogReadError(index.state);
-  }
+  assertPluginCatalogHealth(options?.allowLegacy);
+  assertPluginCatalogAdmission();
 }
+
+function scheduleCatalogConsumerRefresh(): void {
+  trackDetachedWork(() =>
+    (async (): Promise<void> => {
+      const { refreshInvocableInventoryAfterMutation } =
+        await import('./invocable-inventory-service');
+      refreshInvocableInventoryAfterMutation('plugin-catalog:settled-change');
+    })().catch((error) => {
+      process.stderr.write(
+        `[plugins] Catalog consumer refresh failed: ${errorMessage(error)}\n`,
+      );
+    }),
+  );
+}
+
+setPluginCatalogChangeListener(() => {
+  invalidateBuiltInMarketplaceScanCache();
+  invalidateCuratedMarketplaceScanCache();
+  afterPluginMutationSettled(scheduleCatalogConsumerRefresh);
+});
 
 // Strict internal read: callers must translate failure, never treat it as absence.
 function readCache(): AnyPluginsCache | null {
@@ -531,32 +629,20 @@ function readCache(): AnyPluginsCache | null {
 }
 
 function validateCachePayload(cache: PluginsCache): PluginsCache {
-  // Preserve the provider-refresh stamp across writers that rebuild the
-  // cache literal (single-marketplace updates, install/uninstall, etc.) so
-  // only refreshes that actually ran provider updates move it forward.
-  const previous = readCache();
-  const lastProviderRefreshAt =
-    cache.lastProviderRefreshAt ??
-    (previous?.version === 2 ? previous.lastProviderRefreshAt : undefined);
-  const nextCache: PluginsCache = {
-    ...cache,
-    ...(lastProviderRefreshAt ? { lastProviderRefreshAt } : {}),
-  };
-  const outgoing = decodePluginCatalog(nextCache);
-  if (outgoing.state !== 'valid') {
-    throw new Error(
-      "Couldn't save the plugin catalog because the updated data doesn't match the supported format. The existing file hasn't changed.",
-    );
-  }
-  return outgoing.data;
+  return normalizePluginCatalog(cache);
 }
 
-function writeCache(cache: PluginsCache, revalidatedLegacy = false): void {
-  assertCatalogHealth({ allowLegacy: revalidatedLegacy });
-  const outgoing = validateCachePayload(cache);
-  const filePath = getPluginsCacheFilePath();
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, JSON.stringify(outgoing, null, 2), 'utf-8');
+function writeCache(
+  cache: PluginsCache,
+  revalidatedLegacy = false,
+  advanceProviderStamp = false,
+  observation?: ReturnType<typeof observePluginCatalog>,
+): Promise<PluginsCache> {
+  return publishPluginCatalog(cache, {
+    allowLegacy: revalidatedLegacy,
+    advanceProviderStamp,
+    observation,
+  });
 }
 
 interface CodexDiscoveredMarketplaceSource {
@@ -584,10 +670,6 @@ interface MarketplaceRefreshSource {
   sourceType?: string;
 }
 
-function getCacheIndexPath(): string {
-  return path.join(getDataDir(), 'plugin-cache-index.json');
-}
-
 function readCacheIndex(): PluginCacheIndex {
   const result = readPluginIndexHealth();
   if (result.state === 'valid') return result.data;
@@ -596,21 +678,7 @@ function readCacheIndex(): PluginCacheIndex {
 }
 
 function validateCacheIndexPayload(index: PluginCacheIndex): PluginCacheIndex {
-  const outgoing = decodePluginCacheIndex(index);
-  if (outgoing.state !== 'valid') {
-    throw new Error(
-      "Couldn't save the plugin cache index because the updated data doesn't match the supported format. The existing file hasn't changed.",
-    );
-  }
-  return outgoing.data;
-}
-
-function writeCacheIndex(index: PluginCacheIndex): void {
-  assertCatalogHealth();
-  const outgoing = validateCacheIndexPayload(index);
-  const filePath = getCacheIndexPath();
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, JSON.stringify(outgoing, null, 2), 'utf-8');
+  return normalizePluginCacheIndex(index);
 }
 
 function normalizeLocalMarketplaceRoot(sourceRoot: string): string | null {
@@ -784,12 +852,8 @@ function isAlreadyRegisteredMessage(message: string): boolean {
   return /already (added|exists|installed|registered)/i.test(message);
 }
 
-let cacheWriteChain: Promise<unknown> = Promise.resolve();
-
 function withCacheLock<T>(work: () => Promise<T> | T): Promise<T> {
-  const next = cacheWriteChain.then(() => work());
-  cacheWriteChain = next.catch(() => undefined);
-  return next;
+  return updatePluginCatalog(work);
 }
 
 function mergePreservedCacheState(
@@ -2174,30 +2238,53 @@ async function scanCodexMarketplace(input: {
 const BUILTIN_MARKETPLACE_SCAN_TTL_MS = 30_000;
 let builtInMarketplaceScanCache: {
   scannedAt: number;
+  observation: ReturnType<typeof observePluginCatalog>;
   marketplace: MarketplaceInfo | null;
 } | null = null;
+let builtInScanGeneration = 0;
+
+function invalidateBuiltInMarketplaceScanCache(): void {
+  builtInScanGeneration += 1;
+  builtInMarketplaceScanCache = null;
+}
 
 /**
  * @internal — exposed for testing only. Resets every locally managed
  * marketplace scan memo (built-in and curated).
  */
 export function resetBuiltInMarketplaceScanCacheForTests(): void {
-  builtInMarketplaceScanCache = null;
+  invalidateBuiltInMarketplaceScanCache();
   invalidateCuratedMarketplaceScanCache();
 }
 
 async function scanBuiltInMarketplace(): Promise<MarketplaceInfo | null> {
   if (
     builtInMarketplaceScanCache &&
+    isPluginCatalogObservationCurrent(
+      builtInMarketplaceScanCache.observation,
+    ) &&
     Date.now() - builtInMarketplaceScanCache.scannedAt <
       BUILTIN_MARKETPLACE_SCAN_TTL_MS
   ) {
     // Clone so downstream merge/overlay steps can never mutate the cache.
     return structuredClone(builtInMarketplaceScanCache.marketplace);
   }
-  const marketplace = await scanBuiltInMarketplaceUncached();
-  builtInMarketplaceScanCache = { scannedAt: Date.now(), marketplace };
-  return structuredClone(marketplace);
+  for (;;) {
+    const generation = builtInScanGeneration;
+    const observation = observePluginCatalog();
+    const marketplace = await scanBuiltInMarketplaceUncached();
+    if (
+      generation !== builtInScanGeneration ||
+      !isPluginCatalogObservationCurrent(observation)
+    )
+      continue;
+    builtInMarketplaceScanCache = {
+      scannedAt: Date.now(),
+      marketplace,
+      observation,
+    };
+    return structuredClone(marketplace);
+  }
 }
 
 async function scanBuiltInMarketplaceUncached(): Promise<MarketplaceInfo | null> {
@@ -2353,8 +2440,11 @@ async function scanManagedMarketplace(
  * before callers trigger it. An empty scan removes the stale cached row.
  */
 async function persistCuratedMarketplaceAfterSync(): Promise<void> {
-  const marketplace = await scanCuratedMarketplace(curatedMarketplaceScanDeps);
-  await withCacheLock(() => {
+  const { value: marketplace, observation } = await withPluginCatalogScan(() =>
+    scanCuratedMarketplace(curatedMarketplaceScanDeps),
+  );
+  await withCacheLock(async () => {
+    assertPluginCatalogObservation(observation);
     const latestCache = readCache();
     if (!latestCache) {
       if (!marketplace) return;
@@ -2362,11 +2452,16 @@ async function persistCuratedMarketplaceAfterSync(): Promise<void> {
       // even before the first full marketplace discovery. Keep the refresh
       // stamp empty so the normal load path still performs that discovery
       // instead of treating this curated-only bootstrap cache as complete.
-      writeCache({
-        version: 2,
-        lastRefreshed: '',
-        marketplaces: [marketplace],
-      });
+      await writeCache(
+        {
+          version: 2,
+          lastRefreshed: '',
+          marketplaces: [marketplace],
+        },
+        false,
+        false,
+        observation,
+      );
       return;
     }
     const baseCache =
@@ -2381,11 +2476,16 @@ async function persistCuratedMarketplaceAfterSync(): Promise<void> {
         mergePreservedCacheState([marketplace], latestCache)[0] ?? marketplace,
       );
     }
-    writeCache({
-      ...baseCache,
-      lastRefreshed: baseCache.lastRefreshed,
-      marketplaces,
-    });
+    await writeCache(
+      {
+        ...baseCache,
+        lastRefreshed: baseCache.lastRefreshed,
+        marketplaces,
+      },
+      false,
+      false,
+      observation,
+    );
   });
 }
 
@@ -2395,7 +2495,7 @@ function invalidateManagedMarketplaceScanCache(marketplaceId: string): void {
     invalidateCuratedMarketplaceScanCache();
     return;
   }
-  builtInMarketplaceScanCache = null;
+  invalidateBuiltInMarketplaceScanCache();
 }
 
 /**
@@ -2407,7 +2507,7 @@ function invalidateManagedMarketplaceScanCache(marketplaceId: string): void {
 export async function scanManagedMarketplacesFresh(): Promise<
   MarketplaceInfo[]
 > {
-  builtInMarketplaceScanCache = null;
+  invalidateBuiltInMarketplaceScanCache();
   invalidateCuratedMarketplaceScanCache();
   const rows = await settleAll([
     scanBuiltInMarketplace(),
@@ -2889,7 +2989,7 @@ async function buildMarketplaces(
     'managed marketplace receipts',
   );
 
-  const marketplaces = await mapWithConcurrency(
+  const checkedSources = await mapWithConcurrency(
     Array.from(sources.values()),
     MARKETPLACE_REFRESH_CONCURRENCY,
     async (source, sourceIndex) => {
@@ -2922,6 +3022,13 @@ async function buildMarketplaces(
         },
         options,
       );
+      return { source, recheck };
+    },
+  );
+  const marketplaces = await mapWithConcurrency(
+    checkedSources,
+    MARKETPLACE_REFRESH_CONCURRENCY,
+    async ({ source, recheck }) => {
       const refreshedKnown = readKnownMarketplaces();
       const refreshedKnownMatch =
         source.codexScanOnly === true || source.sourceType === 'codex'
@@ -3058,8 +3165,7 @@ async function loadMarketplacesWithoutDefaults(
         filteredCachedMarketplaces,
       );
       const nextCache: PluginsCache = {
-        version: 2,
-        lastRefreshed: cache.lastRefreshed,
+        ...cache,
         marketplaces,
       };
       return await applyCodexCompatDisabledOverlay({
@@ -3141,28 +3247,36 @@ export async function loadMarketplacesCacheOnly(): Promise<
 }
 
 /** Refresh installed metadata after a serialized lifecycle operation, without provider updates or curated seeding. */
-export async function refreshInstalledPluginCatalog(
+async function refreshInstalledPluginCatalogUnlocked(
   marketplaceId: string,
 ): Promise<void> {
   const cached = readCache();
   if (cached?.version !== 2 || !cached.lastRefreshed) return;
   invalidateManagedMarketplaceScanCache(marketplaceId);
-  const refreshed = await loadMarketplacesWithoutDefaults();
+  const { value: refreshed, observation } = await withPluginCatalogScan(() =>
+    loadMarketplacesWithoutDefaults(),
+  );
   if (!refreshed.success || !refreshed.data)
     throw new Error('Installed plugin catalog could not be refreshed.');
   const marketplace = refreshed.data.marketplaces.find(
     (row) => row.id === marketplaceId,
   );
   if (!marketplace) return;
-  await withCacheLock(() => {
+  await withCacheLock(async () => {
+    assertPluginCatalogObservation(observation);
     const latest = readCache();
     if (latest?.version !== 2) return;
-    writeCache({
-      ...latest,
-      marketplaces: latest.marketplaces.map((row) =>
-        row.id === marketplaceId ? marketplace : row,
-      ),
-    });
+    await writeCache(
+      {
+        ...latest,
+        marketplaces: latest.marketplaces.map((row) =>
+          row.id === marketplaceId ? marketplace : row,
+        ),
+      },
+      false,
+      false,
+      observation,
+    );
   });
 }
 
@@ -3307,9 +3421,7 @@ export async function syncCuratedPluginsForRefresh(options?: {
   try {
     return await runSerializedPluginMutation(() =>
       withMarketplaceRefreshLock(() =>
-        syncCuratedPluginsForRefreshUnlocked(options, {
-          lockBackgroundNudge: true,
-        }),
+        syncCuratedPluginsForRefreshUnlocked(options),
       ),
     );
   } catch (error) {
@@ -3320,16 +3432,13 @@ export async function syncCuratedPluginsForRefresh(options?: {
   }
 }
 
-async function syncCuratedPluginsForRefreshUnlocked(
-  options?: {
-    force?: boolean;
-    providerNudge?: 'await' | 'background';
-  },
-  behavior?: { lockBackgroundNudge?: boolean },
-): Promise<CuratedPluginSyncResult | null> {
+async function syncCuratedPluginsForRefreshUnlocked(options?: {
+  force?: boolean;
+  providerNudge?: 'await' | 'background';
+}): Promise<CuratedPluginSyncResult | null> {
   try {
     assertCatalogHealth();
-    const result = await syncCuratedPlugins(options);
+    const result = await withPluginEffects(() => syncCuratedPlugins(options));
     assertCatalogHealth();
     if (result.status === 'synced') invalidateCuratedMarketplaceScanCache();
     // A no-op sync can be an existing user's first run with curated defaults.
@@ -3340,9 +3449,11 @@ async function syncCuratedPluginsForRefreshUnlocked(
       if (marketplace) await initializeCuratedPluginDefaults([marketplace]);
     }
     if (result.status !== 'skipped') {
-      const refreshed = await refreshCuratedCodexPlugins(
-        getCuratedPluginMarketplaceName(),
-        getCuratedPluginsMarketplaceDir(),
+      const refreshed = await withPluginEffects(() =>
+        refreshCuratedCodexPlugins(
+          getCuratedPluginMarketplaceName(),
+          getCuratedPluginsMarketplaceDir(),
+        ),
       ).catch((error) => {
         process.stderr.write(
           `[plugins] Curated Codex refresh deferred: ${errorMessage(error)}\n`,
@@ -3364,17 +3475,16 @@ async function syncCuratedPluginsForRefreshUnlocked(
       await persistCuratedMarketplaceAfterSync();
     };
     if (options?.providerNudge === 'background') {
-      const providerNudge = behavior?.lockBackgroundNudge
-        ? withMarketplaceRefreshLock(nudgeProvider)
-        : nudgeProvider();
       trackDetachedWork(() =>
-        providerNudge.catch((error) => {
-          process.stderr.write(
-            `[plugins] Failed to refresh the curated marketplace: ${errorMessage(
-              error,
-            )}\n`,
-          );
-        }),
+        providerRevalidation.run(false, () =>
+          enqueueDetachedPluginMutation(() =>
+            withMarketplaceRefreshLock(nudgeProvider),
+          ).catch((error) => {
+            process.stderr.write(
+              `[plugins] Failed to refresh the curated marketplace: ${errorMessage(error)}\n`,
+            );
+          }),
+        ),
       );
     } else {
       await nudgeProvider();
@@ -3431,10 +3541,13 @@ async function refreshMarketplacesUnlocked(
         skipCurated: curatedSync?.status === 'synced',
       });
     }
-    const marketplaces = await buildMarketplaces(progress, {
-      providerUpdates,
-    });
-    const result = await withCacheLock<IPCResult<PluginsCache>>(() => {
+    const { value: marketplaces, observation } = await withPluginCatalogScan(
+      () =>
+        buildMarketplaces(progress, {
+          providerUpdates,
+        }),
+    );
+    const result = await withCacheLock<IPCResult<PluginsCache>>(async () => {
       const previousCache = readCache();
       const externalMarketplaces = marketplaces.filter(
         (marketplace) =>
@@ -3470,8 +3583,13 @@ async function refreshMarketplacesUnlocked(
         ...(providerUpdates ? { lastProviderRefreshAt: nowIso() } : {}),
         marketplaces: mergedMarketplaces,
       };
-      writeCache(cache, true);
-      return { success: true, data: cache };
+      const committed = await writeCache(
+        cache,
+        true,
+        providerUpdates,
+        observation,
+      );
+      return { success: true, data: committed };
     });
     if (!result.success) {
       return result;
@@ -3550,7 +3668,9 @@ export async function addMarketplace(
 ): ReturnType<typeof addMarketplaceUnlocked> {
   try {
     assertCatalogHealth();
-    const result = await addMarketplaceUnlocked(...args);
+    const result = await runSerializedPluginMutation(() =>
+      addMarketplaceUnlocked(...args),
+    );
     assertCatalogHealth();
     return result;
   } catch (error) {
@@ -3587,13 +3707,15 @@ async function addMarketplaceUnlocked(
   });
   const known = readKnownMarketplaces();
   const knownMatch = findKnownMarketplaceBySource(known, sourceUrl);
-  const marketplace = await assembleMarketplace({
-    id: knownMatch?.id ?? id,
-    sourceUrl,
-    knownEntry: knownMatch?.entry ?? null,
-    claudeResult: claudeAdd,
-    codexAddResult: codexAdd,
-  });
+  const { value: marketplace, observation } = await withPluginCatalogScan(() =>
+    assembleMarketplace({
+      id: knownMatch?.id ?? id,
+      sourceUrl,
+      knownEntry: knownMatch?.entry ?? null,
+      claudeResult: claudeAdd,
+      codexAddResult: codexAdd,
+    }),
+  );
 
   if (marketplace.validProviders.length === 0) {
     reportMarketplaceProgress(progress, 'add', {
@@ -3620,7 +3742,7 @@ async function addMarketplaceUnlocked(
     repo: sourceUrl,
     message: 'Saving marketplace...',
   });
-  await withCacheLock(() => {
+  const committedMarketplace = await withCacheLock(async () => {
     const cache = readCache();
     const marketplaces =
       cache?.version === 2
@@ -3632,7 +3754,11 @@ async function addMarketplaceUnlocked(
       lastRefreshed: nowIso(),
       marketplaces,
     };
-    writeCache(nextCache);
+    const committed = await writeCache(nextCache, false, false, observation);
+    return (
+      committed.marketplaces.find((entry) => entry.id === marketplace.id) ??
+      marketplace
+    );
   });
   reportMarketplaceProgress(progress, 'add', {
     status: 'complete',
@@ -3645,8 +3771,8 @@ async function addMarketplaceUnlocked(
   return {
     success: true,
     data: {
-      marketplace,
-      providerOutcomes: marketplace.providerStatus,
+      marketplace: committedMarketplace,
+      providerOutcomes: committedMarketplace.providerStatus,
     },
   };
 }
@@ -3664,27 +3790,37 @@ async function updateMarketplaceUnlocked(
       };
     }
     if (id === BUILTIN_PLUGIN_MARKETPLACE_ID) {
-      const marketplace = await scanBuiltInMarketplace();
+      const { value: marketplace, observation } = await withPluginCatalogScan(
+        scanBuiltInMarketplace,
+      );
       if (!marketplace) {
         return {
           success: false,
           error: 'Built-in marketplace resources were not found.',
         };
       }
-      await withCacheLock(() => {
+      const committedMarketplace = await withCacheLock(async () => {
         const latestCache = readCache();
         const marketplaces =
           latestCache?.version === 2
             ? latestCache.marketplaces.filter((entry) => entry.id !== id)
             : [];
         marketplaces.push(marketplace);
-        writeCache({
-          version: 2,
-          lastRefreshed: nowIso(),
-          marketplaces,
-        });
+        const committed = await writeCache(
+          {
+            version: 2,
+            lastRefreshed: nowIso(),
+            marketplaces,
+          },
+          false,
+          false,
+          observation,
+        );
+        return (
+          committed.marketplaces.find((entry) => entry.id === id) ?? marketplace
+        );
       });
-      return { success: true, data: marketplace };
+      return { success: true, data: committedMarketplace };
     }
     reportMarketplaceProgress(progress, 'update', {
       status: 'running',
@@ -3704,6 +3840,9 @@ async function updateMarketplaceUnlocked(
       (existing
         ? findKnownMarketplaceBySource(known, existing.sourceUrl)
         : null) ?? (known[id] ? { id, entry: known[id] } : null);
+    if (!existing && !knownMatch) {
+      return { success: false, error: 'Marketplace not found.' };
+    }
     const sourceUrl =
       existing?.sourceUrl || knownMarketplaceSourceUrl(knownMatch?.entry) || id;
     const claudeRegistered = !!knownMatch;
@@ -3810,17 +3949,20 @@ async function updateMarketplaceUnlocked(
             : {}),
         }
       : codexUpdate;
-    const marketplace = await assembleMarketplace({
-      id,
-      sourceUrl,
-      sourceType: existing?.sourceType,
-      knownEntry: refreshedKnownMatch?.entry ?? knownMatch?.entry ?? null,
-      codexMarketplaceName:
-        existing?.providerStatus.codex.marketplaceName ?? existing?.name,
-      codexInstalledRoot: existing?.providerStatus.codex.installLocation,
-      claudeResult: claudeUpdate,
-      codexAddResult: codexUpdateWithStructuralState,
-    });
+    const { value: marketplace, observation } = await withPluginCatalogScan(
+      () =>
+        assembleMarketplace({
+          id,
+          sourceUrl,
+          sourceType: existing?.sourceType,
+          knownEntry: refreshedKnownMatch?.entry ?? knownMatch?.entry ?? null,
+          codexMarketplaceName:
+            existing?.providerStatus.codex.marketplaceName ?? existing?.name,
+          codexInstalledRoot: existing?.providerStatus.codex.installLocation,
+          claudeResult: claudeUpdate,
+          codexAddResult: codexUpdateWithStructuralState,
+        }),
+    );
     reportMarketplaceProgress(progress, 'update', {
       status: 'running',
       currentStep: 3,
@@ -3830,7 +3972,7 @@ async function updateMarketplaceUnlocked(
       message: 'Saving refreshed marketplace...',
     });
     let savedMarketplace = marketplace;
-    await withCacheLock(() => {
+    await withCacheLock(async () => {
       const latestCache = readCache();
       const marketplaces =
         latestCache?.version === 2
@@ -3839,11 +3981,19 @@ async function updateMarketplaceUnlocked(
       savedMarketplace =
         mergePreservedCacheState([marketplace], latestCache)[0] ?? marketplace;
       marketplaces.push(savedMarketplace);
-      writeCache({
-        version: 2,
-        lastRefreshed: nowIso(),
-        marketplaces,
-      });
+      const committed = await writeCache(
+        {
+          version: 2,
+          lastRefreshed: nowIso(),
+          marketplaces,
+        },
+        false,
+        false,
+        observation,
+      );
+      savedMarketplace =
+        committed.marketplaces.find((entry) => entry.id === id) ??
+        savedMarketplace;
     });
     reportMarketplaceProgress(progress, 'update', {
       status: 'complete',
@@ -3869,8 +4019,8 @@ export async function updateMarketplace(
   progress?: MarketplaceProgressReporter,
 ): Promise<IPCResult<MarketplaceInfo>> {
   try {
-    const result = await withMarketplaceRefreshLock(() =>
-      updateMarketplaceUnlocked(id, progress),
+    const result = await runSerializedPluginMutation(() =>
+      withMarketplaceRefreshLock(() => updateMarketplaceUnlocked(id, progress)),
     );
     assertCatalogHealth();
     return result;
@@ -4453,7 +4603,9 @@ export async function removeMarketplace(
 ): ReturnType<typeof removeMarketplaceUnlocked> {
   try {
     assertCatalogHealth();
-    const result = await removeMarketplaceUnlocked(...args);
+    const result = await runSerializedPluginMutation(() =>
+      removeMarketplaceUnlocked(...args),
+    );
     assertCatalogHealth();
     return result;
   } catch (error) {
@@ -4541,7 +4693,7 @@ async function removeMarketplaceUnlocked(
     marketplaceId: id,
     message: 'Updating marketplace cache...',
   });
-  const cacheUpdate = await withCacheLock(() => {
+  const cacheUpdate = await withCacheLock(async () => {
     const latestCache = readCache();
     const latestMarketplace =
       latestCache?.version === 2
@@ -4590,14 +4742,16 @@ async function removeMarketplaceUnlocked(
     if (!deleteMarketplace) {
       marketplaces.push(updated);
     }
-    writeCache({
+    const committed = await writeCache({
       version: 2,
       lastRefreshed: nowIso(),
       marketplaces,
     });
     return {
       shouldDelete: deleteMarketplace,
-      marketplace: deleteMarketplace ? null : updated,
+      marketplace: deleteMarketplace
+        ? null
+        : (committed.marketplaces.find((entry) => entry.id === id) ?? updated),
     };
   });
   const { shouldDelete } = cacheUpdate;
@@ -4681,23 +4835,26 @@ async function prepareCodexCompatibilityPluginUnlocked(
       let compatibility: MaterializedCodexPlugin | undefined;
       try {
         assertCatalogHealth();
-        const materialized = await materializeCodexPluginsOffMain({
-          nativeProjectionRoot,
-          plugins: [
-            {
-              pluginName: claudeFacet.name,
-              pluginPath: claudeFacet.cachePath ?? claudeFacet.installLocation,
-              marketplaceId,
-              category: claudeFacet.category ?? plugin.category ?? '',
-              provider: 'claude',
-              mode: 'compat',
-              removeMcpServers: false,
-              includeMcpServers: true,
-              scanDetails: true,
-            },
-          ],
-          skills: [],
-        });
+        const materialized = await withPluginEffects(() =>
+          materializeCodexPluginsOffMain({
+            nativeProjectionRoot,
+            plugins: [
+              {
+                pluginName: claudeFacet.name,
+                pluginPath:
+                  claudeFacet.cachePath ?? claudeFacet.installLocation,
+                marketplaceId,
+                category: claudeFacet.category ?? plugin.category ?? '',
+                provider: 'claude',
+                mode: 'compat',
+                removeMcpServers: false,
+                includeMcpServers: true,
+                scanDetails: true,
+              },
+            ],
+            skills: [],
+          }),
+        );
         compatibility = materialized.selectedPlugins[0];
         if (!compatibility) {
           return {
@@ -4760,14 +4917,22 @@ async function prepareCodexCompatibilityPluginUnlocked(
             : entry,
         ),
       };
-      writeCache({
+      const committed = await writeCache({
         version: 2,
         lastRefreshed: nowIso(),
         marketplaces: cache.marketplaces.map((entry) =>
           entry.id === marketplaceId ? updatedMarketplace : entry,
         ),
       });
-      return { success: true, data: updatedPlugin };
+      return {
+        success: true,
+        data:
+          committed.marketplaces
+            .find((entry) => entry.id === marketplaceId)
+            ?.plugins.find(
+              (entry) => entry.name.toLowerCase() === pluginName.toLowerCase(),
+            ) ?? updatedPlugin,
+      };
     });
   } catch (error) {
     return { success: false, error: errorMessage(error) };
@@ -5366,11 +5531,13 @@ async function installBuiltInPluginUnlocked(
     // The install just changed provider state the scan memo cannot know about,
     // so re-read it rather than serving the pre-install snapshot back.
     invalidateManagedMarketplaceScanCache(marketplaceId);
-    const refreshed = await scanManagedMarketplace(marketplaceId);
+    const { value: refreshed, observation } = await withPluginCatalogScan(() =>
+      scanManagedMarketplace(marketplaceId),
+    );
     assertCatalogHealth();
-    const refreshedPlugin = findBuiltInPlugin(refreshed, pluginName) ?? plugin;
+    let refreshedPlugin = findBuiltInPlugin(refreshed, pluginName) ?? plugin;
     if (refreshed) {
-      await withCacheLock(() => {
+      await withCacheLock(async () => {
         const latestCache = readCache();
         const marketplaces =
           latestCache?.version === 2
@@ -5379,11 +5546,22 @@ async function installBuiltInPluginUnlocked(
               )
             : [];
         marketplaces.push(refreshed);
-        writeCache({
-          version: 2,
-          lastRefreshed: nowIso(),
-          marketplaces,
-        });
+        const committed = await writeCache(
+          {
+            version: 2,
+            lastRefreshed: nowIso(),
+            marketplaces,
+          },
+          false,
+          false,
+          observation,
+        );
+        refreshedPlugin =
+          committed.marketplaces
+            .find((entry) => entry.id === marketplaceId)
+            ?.plugins.find(
+              (entry) => entry.name.toLowerCase() === pluginName.toLowerCase(),
+            ) ?? refreshedPlugin;
       });
     }
 
@@ -5428,12 +5606,12 @@ async function installBuiltInPluginUnlocked(
  * detail page can show it beside the Install button that retries it. A plugin
  * the cache does not carry, or one without install status, writes nothing.
  */
-export async function recordBuiltInPluginInstallError(
+async function recordBuiltInPluginInstallErrorUnlocked(
   target: { marketplaceId: string; pluginName: string },
   provider: PluginProvider,
   error: string,
 ): Promise<void> {
-  await withCacheLock(() => {
+  await withCacheLock(async () => {
     const cache = readCache();
     if (cache?.version !== 2) return;
     let changed = false;
@@ -5460,7 +5638,7 @@ export async function recordBuiltInPluginInstallError(
         }),
       };
     });
-    if (changed) writeCache({ ...cache, marketplaces });
+    if (changed) await writeCache({ ...cache, marketplaces });
   });
   // A load served from the scan memo would carry the pre-record snapshot and
   // could write it back over the recorded error; the next load scans anew.
@@ -5496,103 +5674,142 @@ async function installPluginUnlocked(
     const randomId = crypto.randomBytes(4).toString('hex');
     const safeName = pluginName.replace(/[^a-zA-Z0-9_-]/g, '-');
     const cacheDir = path.join(getPluginCacheDir(), `${safeName}-${randomId}`);
-    fs.mkdirSync(path.dirname(cacheDir), { recursive: true });
-    await cloneRepo(sourceUrl, cacheDir, {
-      followRedirects: options?.disableRedirects !== true,
+    assertPluginPayloadPathAdmission(cacheDir);
+    await withPluginEffects(async () => {
+      fs.mkdirSync(path.dirname(cacheDir), { recursive: true });
+      await cloneRepo(sourceUrl, cacheDir, {
+        followRedirects: options?.disableRedirects !== true,
+      });
     });
 
     assertCatalogHealth();
+    const observation = observePluginCatalog();
     const pluginManifest = safeReadJson<PluginManifest>(
       path.join(cacheDir, '.claude-plugin', 'plugin.json'),
     );
     const details = scanPluginDetails(cacheDir, pluginManifest);
     const cachedAt = nowIso();
 
-    const index = readCacheIndex();
-    const key = cacheKey(marketplaceId, pluginName);
-    const prev = index.entries[key];
-    index.entries[key] = {
-      cachePath: cacheDir,
-      sourceUrl,
-      cachedAt,
-    };
-
-    const facet: PluginProviderFacet = {
-      provider: 'claude',
-      mode: 'native',
-      name: manifestText(pluginManifest?.name) || pluginName,
-      description: manifestText(pluginManifest?.description) || '',
-      version: manifestText(pluginManifest?.version) || '',
-      author: manifestAuthor(pluginManifest?.author) || '',
-      category: '',
-      homepage: manifestText(pluginManifest?.homepage) || '',
-      installLocation: cacheDir,
-      sourcePath: cacheDir,
-      externalSource: { source: 'github', url: sourceUrl },
-      cachePath: cacheDir,
-      cachedAt,
-      details,
-    };
-    const cache = readCache();
-    const currentPlugin =
-      cache?.version === 2
-        ? cache.marketplaces
-            .find((entry) => entry.id === marketplaceId)
-            ?.plugins.find(
-              (entry) => entry.name.toLowerCase() === pluginName.toLowerCase(),
-            )
-        : undefined;
-    const existingCodexFacet = currentPlugin?.facets.codex;
-    const pluginInfo = mergeProviderPluginFacets({
-      marketplaceId,
-      claudePlugins: [facet],
-      codexPlugins: existingCodexFacet ? [existingCodexFacet] : [],
-    })[0];
-
-    // Persist the install into the cache synchronously so a reload (e.g. after
-    // navigating away from and back to the plugins page) reflects it
-    // immediately. The background refresh below re-hydrates external installs
-    // from the cache index, so it stays consistent with this write.
-    let persisted: PluginsCache | undefined;
-    if (cache?.version === 2) {
-      const target = pluginName.toLowerCase();
-      persisted = {
-        ...cache,
-        marketplaces: cache.marketplaces.map((entry) =>
-          entry.id !== marketplaceId
-            ? entry
-            : {
-                ...entry,
-                plugins: entry.plugins.map((existing) =>
-                  existing.name.toLowerCase() === target
-                    ? pluginInfo
-                    : existing,
-                ),
-              },
-        ),
+    const committedPlugin = await withCacheLock(async () => {
+      const index = readCacheIndex();
+      const key = cacheKey(marketplaceId, pluginName);
+      const prev = index.entries[key];
+      index.entries[key] = {
+        cachePath: cacheDir,
+        sourceUrl,
+        cachedAt,
       };
-    }
 
-    // Reject inconsistent output before publishing either file or retiring
-    // the previous payload. I/O failures are not a cross-file transaction.
-    const validatedIndex = validateCacheIndexPayload(index);
-    const validatedCache = persisted
-      ? validateCachePayload(persisted)
-      : undefined;
-    writeCacheIndex(validatedIndex);
-    if (validatedCache) writeCache(validatedCache);
-    if (
-      prev?.cachePath &&
-      prev.cachePath !== cacheDir &&
-      fs.existsSync(prev.cachePath)
-    ) {
-      fs.rmSync(prev.cachePath, { recursive: true, force: true });
-    }
+      const facet: PluginProviderFacet = {
+        provider: 'claude',
+        mode: 'native',
+        name: manifestText(pluginManifest?.name) || pluginName,
+        description: manifestText(pluginManifest?.description) || '',
+        version: manifestText(pluginManifest?.version) || '',
+        author: manifestAuthor(pluginManifest?.author) || '',
+        category: '',
+        homepage: manifestText(pluginManifest?.homepage) || '',
+        installLocation: cacheDir,
+        sourcePath: cacheDir,
+        externalSource: { source: 'github', url: sourceUrl },
+        cachePath: cacheDir,
+        cachedAt,
+        details,
+      };
+      const cache = readCache();
+      const currentPlugin =
+        cache?.version === 2
+          ? cache.marketplaces
+              .find((entry) => entry.id === marketplaceId)
+              ?.plugins.find(
+                (entry) =>
+                  entry.name.toLowerCase() === pluginName.toLowerCase(),
+              )
+          : undefined;
+      const existingCodexFacet = currentPlugin?.facets.codex;
+      const pluginInfo = mergeProviderPluginFacets({
+        marketplaceId,
+        claudePlugins: [facet],
+        codexPlugins: existingCodexFacet ? [existingCodexFacet] : [],
+      })[0];
+
+      // Publish before returning; the detached refresh rehydrates from this index.
+      let persisted: PluginsCache | undefined;
+      if (cache?.version === 2) {
+        const target = pluginName.toLowerCase();
+        persisted = {
+          ...cache,
+          marketplaces: cache.marketplaces.map((entry) =>
+            entry.id !== marketplaceId
+              ? entry
+              : {
+                  ...entry,
+                  plugins: entry.plugins.map((existing) =>
+                    existing.name.toLowerCase() === target
+                      ? pluginInfo
+                      : existing,
+                  ),
+                },
+          ),
+        };
+      }
+
+      // Reject inconsistent output before publishing either file or retiring
+      // the previous payload. I/O failures are not a cross-file transaction.
+      const validatedIndex = validateCacheIndexPayload(index);
+      const validatedCache = persisted
+        ? validateCachePayload(persisted)
+        : undefined;
+      const committed = await publishPluginCachePair(
+        validatedIndex,
+        validatedCache,
+        observation,
+      );
+      if (
+        prev?.cachePath &&
+        prev.cachePath !== cacheDir &&
+        fs.existsSync(prev.cachePath)
+      ) {
+        assertPluginPayloadPathAdmission(prev.cachePath);
+        try {
+          fs.rmSync(prev.cachePath, { recursive: true, force: true });
+        } finally {
+          notePluginCatalogEffects();
+        }
+      }
+
+      return (
+        committed.catalog?.marketplaces
+          .find((entry) => entry.id === marketplaceId)
+          ?.plugins.find(
+            (entry) =>
+              entry.name.toLowerCase() === pluginInfo.name.toLowerCase(),
+          ) ?? pluginInfo
+      );
+    });
 
     if (options?.skipRefresh !== true) {
-      trackDetachedWork(() => refreshMarketplaces());
+      trackDetachedWork(() =>
+        providerRevalidation.run(false, () =>
+          enqueueDetachedPluginMutation(() => refreshMarketplaces()),
+        ),
+      );
     }
-    return { success: true, data: pluginInfo };
+    // JSON omits undefined fields; retain the scanner's optional display shape.
+    const presentedPlugin: PluginInfo = {
+      ...committedPlugin,
+      details: committedPlugin.details
+        ? {
+            ...committedPlugin.details,
+            lspServers: committedPlugin.details.lspServers.map((server) => ({
+              ...server,
+              args: server.args,
+              languages: server.languages,
+            })),
+          }
+        : committedPlugin.details,
+    };
+    return { success: true, data: presentedPlugin };
   } catch (error) {
     return { success: false, error: errorMessage(error) };
   }
@@ -5674,4 +5891,49 @@ async function pluginUninstallPending(
         canonicalInstalledItemRef(entry.target, marketplaces),
       ) === key,
   );
+}
+
+export function removeInstalledPluginCache(
+  ...args: Parameters<typeof removeInstalledPluginCacheUnlocked>
+): ReturnType<typeof removeInstalledPluginCacheUnlocked> {
+  return runSerializedPluginMutation(async () => {
+    assertCatalogHealth();
+    return removeInstalledPluginCacheUnlocked(...args);
+  });
+}
+
+export function refreshInstalledPluginCatalog(
+  ...args: Parameters<typeof refreshInstalledPluginCatalogUnlocked>
+): ReturnType<typeof refreshInstalledPluginCatalogUnlocked> {
+  return runSerializedPluginMutation(async () => {
+    assertCatalogHealth();
+    return refreshInstalledPluginCatalogUnlocked(...args);
+  });
+}
+
+export function recordBuiltInPluginInstallError(
+  ...args: Parameters<typeof recordBuiltInPluginInstallErrorUnlocked>
+): ReturnType<typeof recordBuiltInPluginInstallErrorUnlocked> {
+  return runSerializedPluginMutation(async () => {
+    assertCatalogHealth();
+    return recordBuiltInPluginInstallErrorUnlocked(...args);
+  });
+}
+
+export function setClaudeInstalledItemEnabled(
+  ...args: Parameters<typeof setClaudeInstalledItemEnabledUnlocked>
+): ReturnType<typeof setClaudeInstalledItemEnabledUnlocked> {
+  return runSerializedPluginMutation(async () => {
+    assertCatalogHealth();
+    return setClaudeInstalledItemEnabledUnlocked(...args);
+  });
+}
+
+export function uninstallClaudeInstalledItem(
+  ...args: Parameters<typeof uninstallClaudeInstalledItemUnlocked>
+): ReturnType<typeof uninstallClaudeInstalledItemUnlocked> {
+  return runSerializedPluginMutation(async () => {
+    assertCatalogHealth();
+    return uninstallClaudeInstalledItemUnlocked(...args);
+  });
 }

@@ -3,6 +3,7 @@ import type {
   ChatApi,
   ChatCancelRequest,
   ChatCancelResult,
+  SecretRequestSettleResponse,
 } from '@canopy/desktop-shared/types';
 import { CoreCoworkRequestError } from '@canopy/app-state/core-cowork';
 import { isWebCoreScope } from '@/lib/chat-authority';
@@ -98,9 +99,29 @@ export type ChatBackendApprovalsApi = Pick<
  * (CAN-6175 D3). The store's state and the components over it are the same
  * for every authority; only this I/O differs.
  */
+/**
+ * Where a chat's secret request answer goes (agent secret requests): a local
+ * chat's to main over `secretRequest.submit`/`decline`, a cloud chat's to the
+ * web core's `core.chat.secretRequest.submit`. Values travel once and are
+ * kept nowhere on the way.
+ */
+export interface ChatBackendSecretRequestApi {
+  submit(req: {
+    readonly chatId: string;
+    readonly requestId: string;
+    readonly values: Readonly<Record<string, string>>;
+    readonly useHeld: readonly string[];
+  }): Promise<SecretRequestSettleResponse>;
+  decline(req: {
+    readonly chatId: string;
+    readonly requestId: string;
+  }): Promise<SecretRequestSettleResponse>;
+}
+
 export interface ChatBackend {
   readonly chat: ChatBackendChatApi;
   readonly approvals: ChatBackendApprovalsApi;
+  readonly secretRequests: ChatBackendSecretRequestApi;
 }
 
 /** The part of a chat scope that names its authority. */
@@ -121,6 +142,17 @@ const localBackend: ChatBackend & {
   },
   get approvals(): ApprovalsApi {
     return window.api.approvals;
+  },
+  // The local secretRequest.submit/decline IPC (U2a), as the form called it.
+  secretRequests: {
+    submit: ({ requestId, values, useHeld }) =>
+      localBackend.chat.submitSecretRequest({
+        requestId,
+        values: { ...values },
+        useHeld: [...useHeld],
+      }),
+    decline: ({ requestId }) =>
+      localBackend.chat.declineSecretRequest({ requestId }),
   },
 };
 

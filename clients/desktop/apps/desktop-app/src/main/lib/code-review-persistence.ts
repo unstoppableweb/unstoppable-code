@@ -58,12 +58,11 @@ const scopeKey = (projectId: string, worktreeId: string): string =>
 async function readStoredState(
   projectId: string,
   worktreeId: string,
+  filePath = getCodeReviewStateFilePath(projectId, worktreeId),
 ): Promise<StoredReview> {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(
-      await readFile(getCodeReviewStateFilePath(projectId, worktreeId), 'utf8'),
-    );
+    parsed = JSON.parse(await readFile(filePath, 'utf8'));
   } catch {
     skippedThreadCounts.delete(scopeKey(projectId, worktreeId));
     return { file: emptyCodeReviewFile(), unreadable: [] };
@@ -123,6 +122,7 @@ async function writeFileState(
   worktreeId: string,
   file: CodeReviewFile,
   unreadable: readonly unknown[],
+  filePath: string,
 ): Promise<void> {
   // A thread saved under the same id replaces the unreadable one.
   const kept = unreadable.filter(
@@ -135,7 +135,7 @@ async function writeFileState(
       ),
   );
   await writeReviewStateText(
-    getCodeReviewStateFilePath(projectId, worktreeId),
+    filePath,
     JSON.stringify(
       { ...file, commentThreads: [...file.commentThreads, ...kept] },
       null,
@@ -171,13 +171,17 @@ export async function setCodeReviewArmed(
   const filePath = getCodeReviewStateFilePath(projectId, worktreeId);
   return runCodeReviewMutation(projectId, worktreeId, () =>
     withFileLock(filePath, async () => {
-      const { file, unreadable } = await readStoredState(projectId, worktreeId);
+      const { file, unreadable } = await readStoredState(
+        projectId,
+        worktreeId,
+        filePath,
+      );
       const next: CodeReviewFile = {
         ...file,
         armed: true,
         armedAt: file.armedAt ?? new Date().toISOString(),
       };
-      await writeFileState(projectId, worktreeId, next, unreadable);
+      await writeFileState(projectId, worktreeId, next, unreadable, filePath);
       return next;
     }),
   );
@@ -296,6 +300,7 @@ export async function saveCodeReviewComments(
       const { file, unreadable } = await readStoredState(
         request.projectId,
         request.worktreeId,
+        filePath,
       );
       const next: CodeReviewFile = {
         ...file,
@@ -311,6 +316,7 @@ export async function saveCodeReviewComments(
         request.worktreeId,
         next,
         unreadable,
+        filePath,
       );
       return next;
     }),
@@ -343,6 +349,7 @@ export async function appendReviewCommentReply(
       const { file, unreadable } = await readStoredState(
         request.projectId,
         request.worktreeId,
+        filePath,
       );
       const thread = file.commentThreads.find(
         (entry) => entry.id === request.threadId,
@@ -373,6 +380,7 @@ export async function appendReviewCommentReply(
         request.worktreeId,
         next,
         unreadable,
+        filePath,
       );
       return { ok: true, review: next };
     }),
@@ -433,7 +441,11 @@ export async function setCodeReviewArtifact(
   const filePath = getCodeReviewStateFilePath(projectId, worktreeId);
   return runCodeReviewMutation(projectId, worktreeId, () =>
     withFileLock(filePath, async () => {
-      const { file, unreadable } = await readStoredState(projectId, worktreeId);
+      const { file, unreadable } = await readStoredState(
+        projectId,
+        worktreeId,
+        filePath,
+      );
       const next: CodeReviewFile = { ...file, diagrams: { ...file.diagrams } };
       if (key === 'annotations' && isAnnotationsArtifact(artifact)) {
         next.annotations = artifact;
@@ -444,7 +456,7 @@ export async function setCodeReviewArtifact(
       } else {
         return file;
       }
-      await writeFileState(projectId, worktreeId, next, unreadable);
+      await writeFileState(projectId, worktreeId, next, unreadable, filePath);
       return next;
     }),
   );
@@ -459,7 +471,11 @@ export async function removeCodeReviewDiagramArtifact(
   const filePath = getCodeReviewStateFilePath(projectId, worktreeId);
   return runCodeReviewMutation(projectId, worktreeId, () =>
     withFileLock(filePath, async () => {
-      const { file, unreadable } = await readStoredState(projectId, worktreeId);
+      const { file, unreadable } = await readStoredState(
+        projectId,
+        worktreeId,
+        filePath,
+      );
       const existing = file.diagrams[key];
       if (!existing) {
         return file;
@@ -473,7 +489,7 @@ export async function removeCodeReviewDiagramArtifact(
       const nextDiagrams = { ...file.diagrams };
       delete nextDiagrams[key];
       const next: CodeReviewFile = { ...file, diagrams: nextDiagrams };
-      await writeFileState(projectId, worktreeId, next, unreadable);
+      await writeFileState(projectId, worktreeId, next, unreadable, filePath);
       return next;
     }),
   );
@@ -486,7 +502,11 @@ export async function reevaluateReviewAnchors(
   const filePath = getCodeReviewStateFilePath(projectId, worktreeId);
   return runCodeReviewMutation(projectId, worktreeId, () =>
     withFileLock(filePath, async () => {
-      const { file, unreadable } = await readStoredState(projectId, worktreeId);
+      const { file, unreadable } = await readStoredState(
+        projectId,
+        worktreeId,
+        filePath,
+      );
       if (file.commentThreads.length === 0) {
         return file;
       }
@@ -582,7 +602,7 @@ export async function reevaluateReviewAnchors(
         );
       }
       const next: CodeReviewFile = { ...file, commentThreads: nextThreads };
-      await writeFileState(projectId, worktreeId, next, unreadable);
+      await writeFileState(projectId, worktreeId, next, unreadable, filePath);
       return next;
     }),
   );

@@ -70,6 +70,12 @@ export type ChatQuestionResponse =
 export type QuestionCommandExecutionOptions = ChatCommandExecutionOptions & {
   agentSent?: ExternalAgentSender;
   answeredByPerson?: true;
+  /**
+   * Set only by the `secretRequest.submit` / `secretRequest.decline`
+   * handlers, after they stored the values. A RequestSecrets question
+   * refuses every other answer or dismissal.
+   */
+  secretRequestSettlement?: true;
 };
 
 export interface RespondToChatQuestionRequest {
@@ -153,15 +159,36 @@ export async function respondToChatQuestion(
   const { scope, chatId, questionId, response } = request;
 
   let record: PersistedPendingQuestion | undefined;
+  let secretRequestPending = false;
   try {
     const state = await port.getState(scope);
     record = state.tabsFile.pendingQuestions?.find(
       (question) =>
         question.requestId === questionId && question.chatId === chatId,
     );
+    // The chat state also settles a question by its tool-use id alias.
+    secretRequestPending =
+      state.tabsFile.pendingQuestions?.some(
+        (question) =>
+          question.chatId === chatId &&
+          (question.requestId === questionId ||
+            question.toolUseId === questionId) &&
+          question.questions.some((entry) => entry.secretRequest !== undefined),
+      ) === true;
   } catch {
     return { status: 'unavailable' };
   }
+  // A secret request settles only through its own form's channel, which
+  // stores the values first; any other caller would resume the agent without
+  // them, or with an answer it made up.
+  if (
+    secretRequestPending &&
+    request.executionOptions?.secretRequestSettlement !== true
+  )
+    return {
+      status: 'invalid',
+      message: 'Answer this secret request in its form on this computer.',
+    };
   // An answer must never commit for a provider that stopped listening (D7).
   if (
     response.kind === 'answer' &&
@@ -223,6 +250,15 @@ export async function respondToChatQuestion(
         ? { status: 'cancelled' }
         : { status: 'unavailable' };
   }
+}
+
+/** The chat of a waiting or recently settled question, by its request id. */
+export function chatQuestionScope(requestId: string): ChatWaitScope | null {
+  return (
+    questionWaits().scopeOf(requestId) ??
+    settledQuestionScopes.get(requestId) ??
+    null
+  );
 }
 
 /** Renderer IPC: settle a question by its request id, with a fresh command id. */

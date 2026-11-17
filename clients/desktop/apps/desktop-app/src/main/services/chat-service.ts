@@ -124,6 +124,7 @@ import {
   narrowSessionApprovalRules,
 } from '@canopy/desktop-shared/lib/send-approval-narrowing';
 import { isModelBlockedByStoredPolicy } from '../lib/model-policy-state';
+import { assertTurnModelGatewayRoute } from '../lib/model-gateway-turn';
 import { resolveAiCreditsScopeOwner } from '../agents/work-owner';
 import { previewAccountProxySessionRoute } from '../account-proxy/routing';
 import { assertTurnAuthDependencies } from '../lib/auth-preflight';
@@ -819,6 +820,23 @@ async function dispatchLocalWorktreeChatMessageNow(
         : {}),
       ...(request.providerType ? { providerType: request.providerType } : {}),
     }),
+  );
+  // An enforced organization gateway is judged here too, before anything is
+  // durable, so the composer keeps the draft (CAN-6701). The session gate
+  // re-checks after saving.
+  await assertTurnModelGatewayRoute(
+    request.model,
+    request.providerType ??
+      (request.model ? getProviderForModel(request.model) : undefined),
+    () =>
+      resolveAiCreditsScopeOwner({
+        kind: 'work',
+        projectId: request.projectId,
+        worktreeId: request.worktreeId,
+        chatId: request.chatId,
+      }),
+    'before-save',
+    { deferToPolicy: true },
   );
   if (request.watcherFired && request.watcherDeliveryId)
     await assertWatcherDeliveryIngress(request);
@@ -3456,6 +3474,14 @@ async function sendWorktreeChatMessageNow(
   ) {
     throw new Error('This model is blocked by your organization policy.');
   }
+  // After the policy gate, so a model that is both gets the policy message.
+  await assertTurnModelGatewayRoute(
+    request.model,
+    request.providerType ??
+      (request.model ? getProviderForModel(request.model) : undefined),
+    policyOwner,
+    'before-save',
+  );
 
   // A concrete model whose every lane is confirmed dead is refused here, as
   // cowork and the Portal adapter already do (CAN-5233): past this point the

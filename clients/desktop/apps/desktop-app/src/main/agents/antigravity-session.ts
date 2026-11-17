@@ -1,23 +1,43 @@
+import type { SessionResumeFailure } from '@canopy/protocol/session-recovery';
 import { managedDelegationEnabled } from './delegation/gate';
+import { assertAntigravityMcpServersRouted } from '@canopy/desktop-shared/node/antigravity/runtime';
 import type { ManagedDelegationSession } from './delegation/service';
 import {
   openAntigravityExtensions,
   type AntigravityExtensions,
 } from '../antigravity/extensions';
 import {
+  antigravityAppToolServerNames,
   openAntigravityAppTools,
   type AntigravityAppTools,
 } from '../antigravity/app-tools';
 import { assertAntigravityHarnessEnabled } from '../antigravity/feature-flag';
-import { logMainProcessWarn } from '../lib/main-process-logging';
+import {
+  mayExposeLedgerTools,
+  openLedgerChatTools,
+  type LedgerChatSettings,
+  type LedgerChatTarget,
+  type LedgerChatToolsSession,
+} from '../canopy-tools/ledger-tools-runtime';
+import { isCoworkWorkspace } from '../lib/workspace-registry';
+import {
+  captureAntigravityCapabilitySnapshot,
+  saveAntigravityCapabilitySnapshot,
+  type AntigravityToolListCache,
+} from '../antigravity/capability-snapshot';
+import type { EffectiveCapabilitySnapshot } from '@canopy/desktop-shared/node/capabilities/effective-snapshot';
+import {
+  logMainProcessInfo,
+  logMainProcessWarn,
+} from '../lib/main-process-logging';
 import { createHash, randomUUID } from 'node:crypto';
+import { resolve } from 'node:path';
 import type { BrowserWindow } from 'electron';
 import type {
   NewSessionResponse,
   ResumeSessionResponse,
 } from '@agentclientprotocol/sdk';
 import type { ApprovalMode } from '@canopy/desktop-shared/types';
-import { clampThinkingLevelToDeclared } from '@canopy/protocol/thinking';
 import type { TurnBinding } from '@canopy/protocol/canopy-core';
 import {
   antigravityModelsFromConfig,
@@ -27,11 +47,27 @@ import {
 import { CursorEventProjection } from '@canopy/desktop-shared/node/cursor/events';
 import {
   readAntigravityAttachments,
+  readAntigravityHistoricalAttachments,
+  antigravityHistoryNotice,
+  antigravityPromptContent,
+  antigravityUnrestoredCounts,
   assertAntigravityAttachmentCapabilities,
+  type AntigravityHistoricalAttachments,
 } from '@canopy/desktop-shared/node/antigravity/prompt';
-import { isAntigravitySessionMissing } from '@canopy/desktop-shared/node/antigravity/recovery';
+import {
+  AntigravityResumeFailure,
+  antigravityResumeFailure,
+  isAntigravitySessionMissing,
+} from '@canopy/desktop-shared/node/antigravity/recovery';
 import { antigravityTokenUsage } from '@canopy/desktop-shared/node/antigravity/usage';
+import {
+  AntigravitySessionConfigError,
+  applyAntigravitySessionConfig,
+} from '@canopy/desktop-shared/node/antigravity/session-config';
+import { getAntigravityModelEntries } from '@canopy/execution-engine/model-catalog';
+import { markAntigravityCatalogStale } from '../antigravity/models';
 import { assertAgentWorkerContext } from '../agent-runs/agent-worker-context';
+import { resolveAgentAttachmentsDirCandidates } from '../lib/agent-attachments';
 import {
   antigravityProfileDirectory,
   openAntigravityRuntime,
@@ -57,6 +93,7 @@ import { createOwnedTurnState } from './owned-turn-state';
 import {
   TranscriptForkContext,
   readTranscriptRecoveryPrompt,
+  type TranscriptContext,
 } from './transcript-fork-context';
 import { CursorEventBuffer } from './cursor-event-buffer';
 import type {
@@ -66,6 +103,9 @@ import type {
   AgentSessionSendOptions,
   AgentSessionTurnSettings,
 } from './types';
+
+/** How long a finished turn waits for capability discovery before stopping it. */
+const SNAPSHOT_GRACE_MS = 250;
 
 /** Personal Google subscriptions execute only inside the existing worker turn. */
 export class AntigravityProvider implements AgentProvider {
@@ -101,6 +141,38 @@ export class AntigravityProvider implements AgentProvider {
     let active: { abort: AbortController; done: Promise<void> } | undefined;
     let approval: ApprovalSessionHandle | undefined;
     let runtime: AntigravityRuntime | undefined;
+    const toolLists: AntigravityToolListCache = new Map();
+    // Default-mode worktree chats only, as for OpenCode and Copilot.
+    const codeGraphToolsAdvertised =
+      !isCoworkWorkspace(opts.projectId) &&
+      (!opts.assistantMode || opts.assistantMode === 'default') &&
+      opts.codeGraphToolsAdvertised === true;
+    // Feed tools are decided once per session, when the first turn registers
+    // the app route: later turns neither add nor drop them, and each call
+    // re-checks the flag and the setting.
+    const ledgerTarget: LedgerChatTarget = {
+      projectId: opts.projectId,
+      worktreeId: opts.worktreeId,
+      chatId: opts.chatId,
+      ...(opts.assistantMode ? { assistantMode: opts.assistantMode } : {}),
+    };
+    const ledger: { decided: boolean; tools: LedgerChatToolsSession | null } = {
+      decided: false,
+      tools: null,
+    };
+    let ledgerSettings: LedgerChatSettings = {
+      model: model ?? null,
+      thinkingEffort: null,
+      planMode,
+    };
+    lifetime.signal.addEventListener(
+      'abort',
+      () => {
+        ledger.tools?.dispose();
+        ledger.tools = null;
+      },
+      { once: true },
+    );
 
     const emit = async (
       event: Record<string, unknown>,
@@ -183,6 +255,8 @@ export class AntigravityProvider implements AgentProvider {
       approval = currentApproval;
       let appTools: AntigravityAppTools | undefined;
       let extensions: AntigravityExtensions | undefined;
+      // Settles this turn's snapshot; runs in finally, before routes close.
+      let finishSnapshot: (() => Promise<void>) | undefined;
       try {
         if (!managedDelegation && managedDelegationEnabled(opts)) {
           const { createManagedDelegationSession } =
@@ -239,9 +313,18 @@ export class AntigravityProvider implements AgentProvider {
           ownsSessionResources: () => turnState.ownsKeyResources(),
         });
         assertCurrent();
+        const appToolServers = antigravityAppToolServerNames();
+        // Built once: the native gate and the delivered servers must agree.
+        const routedMcpServers = [
+          appToolServers.main,
+          appToolServers.ui,
+          ...extensions.servers.map((server) => server.name),
+        ];
         const opened = await openAntigravityRuntime({
           cwd: opts.cwd,
           owner: { kind: worker.kind, id: worker.runId },
+          // The native tool gate admits MCP tools only from these routes.
+          mcpServerNames: routedMcpServers,
           onUpdate: async (update): Promise<void> => {
             if (
               abort.signal.aborted ||
@@ -296,8 +379,46 @@ export class AntigravityProvider implements AgentProvider {
           throw new Error(
             'This Antigravity runtime does not support app tools. Update Antigravity and try again.',
           );
+        if (!ledger.decided) {
+          ledger.decided = true;
+          // A failed open leaves this session without Feed tools rather than
+          // failing the turn. Cowork routes never list them.
+          const opened =
+            !isCoworkWorkspace(opts.projectId) &&
+            mayExposeLedgerTools(ledgerTarget)
+              ? await openLedgerChatTools({
+                  target: ledgerTarget,
+                  harness: 'antigravity',
+                  readSettings: () => ledgerSettings,
+                  ...(opts.selectedRepoId
+                    ? { selectedRepoId: opts.selectedRepoId }
+                    : {}),
+                }).catch((error: unknown) => {
+                  logMainProcessWarn(
+                    '[antigravity-session] Feed tools unavailable',
+                    error,
+                  );
+                  return null;
+                })
+              : null;
+          if (lifetime.signal.aborted) opened?.dispose();
+          else ledger.tools = opened;
+        }
+        assertCurrent();
+        ledgerSettings = {
+          model: requested.model ?? null,
+          thinkingEffort: requested.thinkingLevel ?? null,
+          planMode,
+        };
+        const ledgerHint = ledger.tools
+          ? await ledger.tools.assignmentHint()
+          : undefined;
+        assertCurrent();
         appTools = await openAntigravityAppTools({
           sessionKey: key,
+          codeGraphToolsAdvertised,
+          deferredToolsAllowed: opts.deferredToolsAllowed !== false,
+          ledgerTools: ledger.tools,
           options: { ...opts, model: requested.model, sdkSessionId: sessionId },
           approval: currentApproval,
           signal: abort.signal,
@@ -315,6 +436,85 @@ export class AntigravityProvider implements AgentProvider {
               }
             : {}),
         });
+        // Evidence of what this turn was given (CAP-09). Discovery runs beside
+        // the native turn and never delays the prompt; it authorizes nothing.
+        const stopSnapshot = new AbortController();
+        // Filled in once the native conversation is known.
+        const snapshotTarget: { sessionId?: string } = {};
+        const snapshotPending: Promise<
+          | { ok: true; snapshot: EffectiveCapabilitySnapshot }
+          | { ok: false; error: unknown }
+        > = captureAntigravityCapabilitySnapshot({
+          appServers: appTools.servers,
+          extensions: extensions.snapshot,
+          grants: {
+            ...appTools.grants,
+            planMode,
+            approvalMode,
+            childInheritance: 'none',
+          },
+          signal: abort.signal,
+          stop: stopSnapshot.signal,
+          toolLists,
+        }).then(
+          (snapshot) => ({ ok: true, snapshot }),
+          (error: unknown) => ({ ok: false, error }),
+        );
+        finishSnapshot = async (): Promise<void> => {
+          // A short grace, then whatever has not finished is recorded as
+          // unavailable: evidence never holds the end of the turn. Until the
+          // turn is bound to its native conversation nothing will be saved,
+          // so stop at once.
+          if (snapshotTarget.sessionId) {
+            let grace: ReturnType<typeof setTimeout> | undefined;
+            await Promise.race([
+              snapshotPending,
+              new Promise<void>((resolve) => {
+                grace = setTimeout(resolve, SNAPSHOT_GRACE_MS);
+              }),
+            ]);
+            clearTimeout(grace);
+          }
+          stopSnapshot.abort();
+          // Closing a stopped stdio child is bounded too.
+          let closing: ReturnType<typeof setTimeout> | undefined;
+          const captured = await Promise.race([
+            snapshotPending,
+            new Promise<{ ok: false; error: unknown }>((resolve) => {
+              closing = setTimeout(
+                () =>
+                  resolve({
+                    ok: false,
+                    error: new Error(
+                      'Snapshot discovery did not stop in time.',
+                    ),
+                  }),
+                1_000,
+              );
+            }),
+          ]);
+          clearTimeout(closing);
+          // No native conversation: nothing to bind the evidence to.
+          const nativeId = snapshotTarget.sessionId;
+          if (!nativeId) return;
+          try {
+            if (!captured.ok) throw captured.error;
+            await saveAntigravityCapabilitySnapshot(
+              nativeId,
+              captured.snapshot,
+              AbortSignal.timeout(5_000),
+            );
+          } catch (error) {
+            // A missing record means nothing may inherit from this turn; the
+            // turn itself keeps its own live grants and approvals. A cancelled
+            // turn leaves no record by design and is not worth a warning.
+            if (!abort.signal.aborted)
+              logMainProcessWarn(
+                '[antigravity-session] Capability snapshot unavailable',
+                error,
+              );
+          }
+        };
         const append = [
           opts.globalInstructionsBlock,
           opts.globalInstructionsSnapshot,
@@ -322,6 +522,8 @@ export class AntigravityProvider implements AgentProvider {
           appTools.instructions,
           managedDelegation?.systemPromptGuidance,
           extensions.instructions,
+          // Last, so it sits next to the turn it opens.
+          ledgerHint,
         ]
           .filter(Boolean)
           .join('\n\n');
@@ -330,27 +532,41 @@ export class AntigravityProvider implements AgentProvider {
           mcpServers: [...appTools.servers, ...extensions.servers],
           _meta: { antigravity: { systemPrompt: { append } } },
         };
+        // New and resumed sessions use these params. Both lists come from the
+        // same sources, so this is a tripwire against future drift.
+        assertAntigravityMcpServersRouted(params.mcpServers, routedMcpServers);
         assertCurrent();
-        let recoveryContext: string | undefined;
+        let recovery: TranscriptContext | undefined;
         const native = await (async (): Promise<
           NewSessionResponse | ResumeSessionResponse
         > => {
           if (!sessionId) return opened.client.newSession(params);
+          const resumeId = sessionId;
           try {
-            return await opened.client.resumeSession({ ...params, sessionId });
+            return await opened.client.resumeSession({
+              ...params,
+              sessionId: resumeId,
+            });
           } catch (error) {
             assertCurrent();
             if (
               !(await isAntigravitySessionMissing(
                 opened.client,
                 error,
-                sessionId,
+                resumeId,
                 abort.signal,
-              ))
+              ).catch((inventoryError: unknown) => {
+                assertCurrent();
+                // Inventory failure cannot prove absence or authorize replay.
+                // Retain the original provider resume refusal as an optional offer.
+                throw (
+                  antigravityResumeFailure(error, resumeId) ?? inventoryError
+                );
+              }))
             )
-              throw error;
+              throw antigravityResumeFailure(error, resumeId) ?? error;
             assertCurrent();
-            recoveryContext = await readTranscriptRecoveryPrompt(
+            recovery = await readTranscriptRecoveryPrompt(
               scope,
               send?.userMessageId,
             );
@@ -367,39 +583,50 @@ export class AntigravityProvider implements AgentProvider {
           throw new Error(
             'This Google model is unavailable on your account. Refresh models and choose an available model.',
           );
+        // The catalog holds the levels the picker showed for this model; the
+        // live entry cannot, because session options describe only the
+        // current model. Without a catalog entry (for example before the first
+        // discovery), the live levels are the only declared set.
+        const catalogEntry = getAntigravityModelEntries().find(
+          (candidate) => candidate.rawModelId === rawModel,
+        );
         const nativeSessionId =
           'sessionId' in native && typeof native.sessionId === 'string'
             ? native.sessionId
             : sessionId;
         if (!nativeSessionId)
           throw new Error('Google did not create a conversation.');
-        await opened.client.setSessionConfigOption({
-          sessionId: nativeSessionId,
-          configId: 'model',
-          value: rawModel,
+        // Native current-session options are authoritative. Each step is
+        // fenced, and a setting the runtime does not confirm fails the turn
+        // before the prompt is sent.
+        const applied = await applyAntigravitySessionConfig(
+          opened.client,
+          nativeSessionId,
+          {
+            model: rawModel,
+            ...(requested.thinkingLevel
+              ? { thinkingLevel: requested.thinkingLevel }
+              : {}),
+            ...(catalogEntry
+              ? { declaredThinkingLevels: catalogEntry.supportedThinkingLevels }
+              : {}),
+            mode: planMode ? 'plan' : 'default',
+          },
+          { signal: abort.signal, assertCurrent },
+        ).catch((error: unknown) => {
+          // Only a missing model or level suggests catalog drift. Read-back
+          // mismatches do not, and must not force a rediscovery each turn.
+          if (
+            error instanceof AntigravitySessionConfigError &&
+            (error.code === 'model' || error.code === 'thinking-unsupported')
+          )
+            markAntigravityCatalogStale();
+          throw error;
         });
-        assertCurrent();
-        const turnThinking =
-          requested.thinkingLevel && entry.supportedThinkingLevels.length > 0
-            ? clampThinkingLevelToDeclared(
-                requested.thinkingLevel,
-                entry.supportedThinkingLevels,
-              )
-            : undefined;
-        if (turnThinking) {
-          await opened.client.setSessionConfigOption({
-            sessionId: nativeSessionId,
-            configId: 'thought_level',
-            value: turnThinking,
-          });
-        }
-        assertCurrent();
-        await opened.client.setSessionConfigOption({
-          sessionId: nativeSessionId,
-          configId: 'mode',
-          value: planMode ? 'plan' : 'default',
-        });
-        assertCurrent();
+        // The reverse drift is not an error: nothing was sent, as the picker
+        // showed. Rediscover so the picker can offer the new levels.
+        if (applied.thinkingControlAdded) markAntigravityCatalogStale();
+        const turnThinking = applied.thinkingLevel;
         turnSettings = {
           model: requested.model,
           ...(turnThinking ? { thinkingLevel: turnThinking } : {}),
@@ -424,7 +651,39 @@ export class AntigravityProvider implements AgentProvider {
         };
         // A failed or cancelled replacement must leave the missing ID saved.
         // Otherwise a reload could resume the new session without its history.
-        if (recoveryContext === undefined) await publishSession();
+        if (recovery === undefined) await publishSession();
+        const profile = antigravityProfileDirectory();
+        const inherited =
+          recovery ??
+          (await forkContext.context(
+            profile,
+            nativeSessionId,
+            send?.userMessageId,
+          ));
+        assertCurrent();
+        // Replayed history names earlier attachments. Restore the ones still in
+        // this chat's attachment folder (the one uploads are saved to), and
+        // say which ones were not. Files the new message attaches again are
+        // sent once, with it.
+        const resent = new Set(
+          (send?.attachments?.paths ?? []).map((path) => resolve(path)),
+        );
+        const history: AntigravityHistoricalAttachments | undefined =
+          inherited.prompt && inherited.attachmentPaths.length > 0
+            ? await readAntigravityHistoricalAttachments({
+                attachmentDirectories: resolveAgentAttachmentsDirCandidates(
+                  opts.projectId,
+                  opts.worktreeId,
+                ),
+                paths: inherited.attachmentPaths.filter(
+                  (path) => !resent.has(resolve(path)),
+                ),
+                current: attachments,
+                initialization: opened.client.getInitialization(),
+                signal: abort.signal,
+              })
+            : undefined;
+        assertCurrent();
         const extensionNotices = managedDelegation
           ? [
               ...extensions.notices,
@@ -454,7 +713,16 @@ export class AntigravityProvider implements AgentProvider {
             send?.userMessageId,
           );
         }
-        if (recoveryContext !== undefined) {
+        if (history && history.unrestored.length > 0)
+          logMainProcessWarn(
+            '[antigravity-session] Earlier attachments not restored',
+            antigravityUnrestoredCounts(history),
+          );
+        const historyNotice = antigravityHistoryNotice(
+          recovery !== undefined,
+          history,
+        );
+        if (historyNotice !== undefined) {
           assertCurrent();
           await emit(
             {
@@ -468,7 +736,7 @@ export class AntigravityProvider implements AgentProvider {
                   index: 0,
                   block: {
                     type: 'text',
-                    text: "Google's saved conversation is unavailable. Continuing with this chat's saved messages; earlier attachment contents may need to be attached again.",
+                    text: historyNotice,
                   },
                 },
               ],
@@ -476,29 +744,22 @@ export class AntigravityProvider implements AgentProvider {
             send?.userMessageId,
           );
         }
-        const profile = antigravityProfileDirectory();
-        const inheritedContext =
-          recoveryContext ??
-          (await forkContext.prompt(
-            profile,
-            nativeSessionId,
-            send?.userMessageId,
-          ));
+        snapshotTarget.sessionId = nativeSessionId;
+        const inheritedContext = inherited.prompt;
         assertCurrent();
         const expanded = extensions.expandPrompt(text);
-        const prompt = inheritedContext
-          ? `${inheritedContext}\n\n${expanded}`
-          : expanded;
+        const content = antigravityPromptContent({
+          history: inheritedContext,
+          restored: history,
+          message: expanded,
+          attachments,
+          guide: (value) =>
+            managedDelegation?.applyPolicyGuidance(value) ?? value,
+        });
         const result = await opened.client.prompt(
           {
             sessionId: nativeSessionId,
-            prompt: [
-              {
-                type: 'text',
-                text: managedDelegation?.applyPolicyGuidance(prompt) ?? prompt,
-              },
-              ...attachments,
-            ],
+            prompt: content,
           },
           1,
           abort.signal,
@@ -509,7 +770,7 @@ export class AntigravityProvider implements AgentProvider {
         if (result.stopReason === 'end_turn') {
           if (inheritedContext)
             await forkContext.delivered(profile, nativeSessionId);
-          if (recoveryContext !== undefined) await publishSession();
+          if (recovery !== undefined) await publishSession();
         }
         for (const event of projection.finish()) await buffer.push(event);
         const isError =
@@ -535,6 +796,8 @@ export class AntigravityProvider implements AgentProvider {
                 : projection.getResponseText(),
         };
       } finally {
+        // Discovery reads this turn's routes, so settle it before they close.
+        await finishSnapshot?.();
         appTools?.close();
         currentApproval.invalidatePending?.();
         currentApproval.dispose();
@@ -543,6 +806,17 @@ export class AntigravityProvider implements AgentProvider {
         runtime = undefined;
         try {
           await opened?.close();
+          // Reported for diagnosis only: `none` and `reaped` cover recorded
+          // descendants, never every process the turn started (CAN-6738).
+          void opened
+            ?.descendantCleanup?.()
+            .then((cleanup) => {
+              if (cleanup)
+                logMainProcessInfo('Antigravity descendant cleanup', {
+                  cleanup,
+                });
+            })
+            .catch(() => undefined);
         } finally {
           await extensions?.close();
         }
@@ -611,6 +885,16 @@ export class AntigravityProvider implements AgentProvider {
                 ? error.message
                 : 'Google chat failed.',
             ...(abort.signal.aborted ? { subtype: 'cancelled' } : {}),
+            ...(!abort.signal.aborted &&
+            error instanceof AntigravityResumeFailure
+              ? {
+                  canopy_session_recovery: {
+                    kind: 'resume-failed',
+                    provider: 'antigravity',
+                    sessionId: error.sessionId,
+                  } satisfies SessionResumeFailure,
+                }
+              : {}),
           }))
           .then(async (value: Record<string, unknown>): Promise<void> => {
             const result =
@@ -656,7 +940,16 @@ export class AntigravityProvider implements AgentProvider {
               });
               await emit(
                 result.is_error === true
-                  ? { type: 'error', error: result.result }
+                  ? {
+                      type: 'error',
+                      error: result.result,
+                      ...(result.canopy_session_recovery
+                        ? {
+                            canopy_session_recovery:
+                              result.canopy_session_recovery,
+                          }
+                        : {}),
+                    }
                   : result,
                 send?.userMessageId,
               );
@@ -734,7 +1027,7 @@ export class AntigravityProvider implements AgentProvider {
       opts.model,
       opts.assistantMode,
       opts.toolProfileHash,
-      false,
+      codeGraphToolsAdvertised,
       'antigravity',
     );
     return session;

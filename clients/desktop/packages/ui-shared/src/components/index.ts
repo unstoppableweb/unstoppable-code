@@ -1,5 +1,6 @@
 export * from './ActivityDonut';
 export * from './OpenCodeAccountCard';
+export * from './AntigravityAccountCard';
 // Pure display components shared between the desktop renderer and the web
 // portal. Components in this barrel must be callback-driven and free of
 // window.api, Zustand stores, Next router/server actions, Prisma, Electron,
@@ -116,6 +117,8 @@ export * from './InlineTextInput';
 export * from './chat/InputDeliveryList';
 export * from './chat/SteeringTitle';
 export * from './chat/SteeringRequestTitle';
+export * from './chat/request-secrets-display';
+export * from './chat/ChatSecretsChip';
 export * from './SuggestionRow';
 export * from './InterruptedSessionRow';
 export * from './HeaderActionButton';
@@ -401,6 +404,7 @@ export * from './CustomizeInstalledRow';
 export * from './CustomizeInstalledList';
 export * from './CustomizeRowMenu';
 export * from './CustomizeRowSplitButton';
+export * from './ItemStateMark';
 export * from './CustomizeWorksWithChips';
 export * from './CustomizeInstalledUnavailable';
 export * from './UpdateMarker';
@@ -547,6 +551,10 @@ export * from './OrchestratorRetentionCard';
 
 export * from './DialogActionFooter';
 
+export {
+  SessionResumeNotice,
+  SESSION_RESUME_NOTICE_COPY,
+} from './SessionResumeNotice';
 export { BotGlyph, BotGlyphControl, BotGlyphPicker } from './bots';
 export * from './MediaEditOverlay';
 export * from './OrganizationFeedCard';

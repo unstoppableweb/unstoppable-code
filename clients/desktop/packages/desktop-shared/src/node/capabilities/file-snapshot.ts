@@ -9,7 +9,7 @@ const MAX_CAPABILITY_BYTES = 100 * 1024 * 1024;
 export async function capabilityFiles(
   roots: readonly string[],
   signal: AbortSignal,
-  provider: 'Copilot' | 'OpenCode',
+  provider: 'Copilot' | 'OpenCode' | 'Antigravity',
 ): Promise<Record<string, string>> {
   const files: Record<string, string> = {};
   let bytes = 0;

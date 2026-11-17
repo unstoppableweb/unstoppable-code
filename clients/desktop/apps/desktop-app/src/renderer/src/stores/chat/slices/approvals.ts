@@ -437,6 +437,34 @@ export const createApprovalsSlice: StateCreator<
     if (!tab) return;
     if (tab.kind === 'file') return;
 
+    // A pick on a starter still showing its provisional (cached) mode wins
+    // over the pending fresh lookup (CAN-6957): take the mode now and clear
+    // the marker, so canonical creation commits the user's choice and the
+    // lookup no longer replaces it.
+    if (tab.approvalModeProvisional === true) {
+      set((state) => {
+        const currentWc = state.worktreeChats[key];
+        if (!currentWc) return state;
+        return {
+          worktreeChats: {
+            ...state.worktreeChats,
+            [key]: {
+              ...currentWc,
+              tabs: currentWc.tabs.map((entry) =>
+                entry.id === chatId && entry.kind !== 'file'
+                  ? {
+                      ...entry,
+                      approvalMode: mode,
+                      approvalModeProvisional: undefined,
+                    }
+                  : entry,
+              ),
+            },
+          },
+        };
+      });
+    }
+
     const transitionKey = approvalModeTransitionKey(
       sel.projectId,
       sel.worktreeId,

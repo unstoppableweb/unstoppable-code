@@ -1,12 +1,10 @@
 /**
  * Copy for the first-run account row (CAN-4762, CAN-4765): the way into AI
- * Credits, shown to every user beside Claude and Codex. AI Credits are
+ * Credits, shown to every user beside Claude and Codex. What it offers
+ * before a state is known is `CREDITS_ROW_DESCRIPTION`, shared with the
+ * Switch provider dialog. AI Credits are
  * bought, never granted, so nothing here says "free".
  */
-
-/** What the account offers, shown until it has credits. */
-export const FIRST_RUN_ACCOUNT_OFFER =
-  'Use top models from multiple providers, including open models.';
 
 /**
  * Shown once the account has spendable AI Credits, in the same shape as the

@@ -11,6 +11,7 @@ import {
   type CanopyCallerDescriptor,
   type WorktreeRecoveryFinishResult,
 } from '@canopy/protocol/canopy-core';
+import { worktreeRecoveryResolutionAction } from '@canopy/protocol/portal/worktree-recovery';
 import type {
   ArchivedContainerSummary,
   ArchivedContainerSummaryV1,
@@ -506,7 +507,7 @@ describe('core.archive on the desktop dispatcher (CAN-6007)', () => {
     expect(touched).toEqual([]);
   });
 
-  it("refuses the web core's worktree id, first chat and first message, before the lifecycle host runs (CAN-6114)", async () => {
+  it("refuses the web core's first chat and first message before the lifecycle host runs, and passes a claimed worktree id to it (CAN-6114)", async () => {
     const touched: string[] = [];
     const refuse = (name: string) => (): Promise<never> => {
       touched.push(name);
@@ -535,7 +536,6 @@ describe('core.archive on the desktop dispatcher (CAN-6007)', () => {
       grants: ['core.worktree.write'],
     };
     for (const [field, extra] of [
-      ['worktreeId', { worktreeId: '0c000000-0000-4000-8000-0000000000cc' }],
       ['firstChat', { firstChat: { model: 'model-1' } }],
       [
         'firstMessage',
@@ -560,6 +560,35 @@ describe('core.archive on the desktop dispatcher (CAN-6007)', () => {
         },
       });
     expect(touched).toEqual([]);
+
+    // The desktop serves a claimed worktree id: the host honors it when free
+    // and otherwise names the worktree, and its answer is authoritative.
+    const served: unknown[] = [];
+    const claiming = runtimeWith(fakeHost().host, {
+      ...lifecycle,
+      createWorktree: (request) => {
+        served.push(request);
+        return Promise.resolve({
+          workspaceId: 'ws',
+          worktreeId: 'host-named',
+          branchName: 'host-named',
+          setupPhase: 'git-ready',
+          status: 'completed',
+        });
+      },
+    });
+    await claiming.instruction(
+      'core.worktree.create',
+      { workspaceId: 'ws', worktreeId: 'otter', _meta: meta('worktreeId') },
+      { caller: desktopUser, metadata: meta('worktreeId') },
+    );
+    expect(served).toEqual([
+      expect.objectContaining({
+        kind: 'worktree',
+        workspaceId: 'ws',
+        worktreeId: 'otter',
+      }),
+    ]);
   });
 
   it('reads the end of a chat only inside its own container and project', async () => {
@@ -1627,6 +1656,167 @@ it.each([
   PERSISTENCE_TEST_TIMEOUT_MS,
 );
 
+persistenceIt(
+  'finishes manifest-less completed turn-diff debt through the dispatcher without removing sibling refs',
+  async () => {
+    const { mkdir, lstat, readFile } = await import('node:fs/promises');
+    const { execFileSync } = await import('node:child_process');
+    const { randomUUID } = await import('node:crypto');
+    const paths = await import('../../lib/paths');
+    const { lifecycleJournalSlotName } =
+      await import('../../lib/w5-destructive-recovery');
+    const previous = process.env.CANOPY_DATA_DIR;
+    process.env.CANOPY_DATA_DIR = join(root, 'data');
+    const runtime = runtimeWith(fakeHost().host);
+    const user: CanopyCallerDescriptor = {
+      ...caller(['core.worktree.read', 'core.worktree.write']),
+      interfaceKind: 'desktop',
+    };
+    const git = (repo: string, ...args: string[]): string =>
+      execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim();
+    try {
+      const workspaceId = 'completed-cleanup';
+      const worktreeId = 'removed';
+      const repo = join(root, 'repo');
+      await mkdir(repo);
+      git(repo, 'init');
+      git(
+        repo,
+        '-c',
+        'user.name=Test',
+        '-c',
+        'user.email=test@example.invalid',
+        'commit',
+        '--allow-empty',
+        '-m',
+        'fixture',
+      );
+      const tree = git(repo, 'rev-parse', 'HEAD^{tree}');
+      const prefix = `refs/app/turn-diff-trees/${workspaceId}/${worktreeId}/`;
+      const sibling = `refs/app/turn-diff-trees/${workspaceId}/${worktreeId}-other/${tree}`;
+      git(repo, 'update-ref', prefix + tree, tree);
+      git(repo, 'update-ref', sibling, tree);
+      await writeFixtureFile(
+        join(paths.getDataDir(), 'workspaces', 'index.json'),
+        JSON.stringify({
+          version: 1,
+          workspaces: [
+            { id: workspaceId, type: 'single-repo', name: 'Recovery' },
+          ],
+        }),
+      );
+      await writeFixtureFile(
+        paths.getWorkspaceConfigPath(workspaceId),
+        JSON.stringify({
+          version: 1,
+          type: 'single-repo',
+          repoPath: repo,
+          repos: [],
+        }),
+      );
+      await writeFixtureFile(
+        paths.getWorkspaceWorktreesFilePath(workspaceId),
+        JSON.stringify({ version: 1, worktrees: [] }),
+      );
+      const stat = await lstat(paths.getWorkspaceDir(workspaceId));
+      const operationId = randomUUID();
+      const record = {
+        version: 1,
+        operationId,
+        operation: 'worktree-archive',
+        workspaceId,
+        worktreeId,
+        createdAt: '2026-10-20T00:00:00.000Z',
+        directoryIdentity: `${stat.dev}:${stat.ino}:${stat.birthtimeMs}`,
+        state: 'completed',
+        cleanupRequired: true,
+        ownedPaths: [
+          {
+            path: paths.getWorkspaceWorktreeDir(workspaceId, worktreeId),
+            identity: null,
+          },
+        ],
+        steps: [
+          { phase: 'canonical-row-removal', state: 'done' },
+          { phase: 'turn-diff-cleanup', state: 'failed' },
+        ],
+        outcome: {
+          success: true,
+          warnings: [
+            'Failed to remove persisted turn diff tree refs for this worktree.',
+            'Unrelated warning',
+          ],
+        },
+      };
+      const journal = join(
+        paths.getW5DestructiveLifecycleDir(),
+        lifecycleJournalSlotName(workspaceId, worktreeId),
+      );
+      await writeFixtureFile(journal, JSON.stringify(record));
+      const query = (): ReturnType<
+        typeof runtime.query<'core.worktree.recovery.list'>
+      > =>
+        runtime.query(
+          'core.worktree.recovery.list',
+          { workspaceId },
+          { caller: user },
+        );
+      const before = await query();
+      expect(before.entries[0]?.diagnosis?.check).toBe(
+        'completed-turn-diff-cleanup',
+      );
+      const params = {
+        workspaceId,
+        operationId,
+        revision: before.entries[0]?.diagnosis?.revision ?? '',
+      };
+      const duplicate = join(
+        paths.getW5DestructiveLifecycleDir(),
+        `${operationId}.json`,
+      );
+      await writeFixtureFile(duplicate, JSON.stringify(record));
+      expect(
+        (
+          await runtime.instruction('core.worktree.recovery.finish', params, {
+            caller: user,
+          })
+        ).status,
+      ).toBe('refused');
+      await (await import('node:fs/promises')).rm(duplicate);
+      expect(git(repo, 'rev-parse', prefix + tree)).toBe(tree);
+      expect(
+        await runtime.instruction('core.worktree.recovery.finish', params, {
+          caller: user,
+        }),
+      ).toMatchObject({ status: 'finished', cleanupRequired: false });
+      expect(git(repo, 'for-each-ref', '--format=%(refname)', prefix)).toBe('');
+      expect(git(repo, 'rev-parse', sibling)).toBe(tree);
+      const bytes = await readFile(journal, 'utf8');
+      expect(JSON.parse(bytes)).toMatchObject({
+        state: 'completed',
+        cleanupRequired: false,
+        outcome: { warnings: ['Unrelated warning'] },
+        steps: [
+          { phase: 'canonical-row-removal', state: 'done' },
+          { phase: 'turn-diff-cleanup', state: 'done' },
+        ],
+      });
+      expect((await query()).entries).toEqual([]);
+      expect(
+        (
+          await runtime.instruction('core.worktree.recovery.finish', params, {
+            caller: user,
+          })
+        ).status,
+      ).toBe('refused');
+      expect(await readFile(journal, 'utf8')).toBe(bytes);
+    } finally {
+      if (previous === undefined) delete process.env.CANOPY_DATA_DIR;
+      else process.env.CANOPY_DATA_DIR = previous;
+    }
+  },
+);
+
 it.each(['failed', 'pending'] as const)(
   'repairs every multi-repo turn-diff obligation (%s) only with matching files-only evidence',
   (secondStepState) =>
@@ -1807,6 +1997,16 @@ it.each(['failed', 'pending'] as const)(
           { caller: user },
         );
         expect(before.entries[0]?.diagnosis?.verdict).toBe('cleanup-debt');
+        expect(before.entries[0]?.diagnosis?.check).toBe(
+          'completed-cleanup-required',
+        );
+        expect(before.entries[0]?.check).not.toBe(
+          'completed-turn-diff-cleanup',
+        );
+        expect(
+          before.entries[0] &&
+            worktreeRecoveryResolutionAction(before.entries[0]),
+        ).toBe('finish');
         expect(before.entries[0]?.actions.finishArchive.eligible).toBe(false);
         expect(before.entries[0]?.actions.retry.eligible).toBe(false);
         const result = await runtime.instruction(
@@ -1875,6 +2075,17 @@ it.each(['failed', 'pending'] as const)(
           { workspaceId, operationId },
           { caller: user },
         );
+        // The failed Finish persisted recovery-required; this is no longer a completed journal.
+        expect(retry.entries[0]?.diagnosis).toMatchObject({
+          rawState: 'recovery-required',
+          verdict: 'finish-journal',
+          check: 'committed-cleanup-only',
+        });
+        expect(retry.entries[0]?.check).not.toBe('completed-turn-diff-cleanup');
+        expect(
+          retry.entries[0] &&
+            worktreeRecoveryResolutionAction(retry.entries[0]),
+        ).toBe('finish');
         expect(
           await runtime.instruction(
             'core.worktree.recovery.finish',

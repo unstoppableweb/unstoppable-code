@@ -110,6 +110,12 @@ export {
   type WorktreeDiscardOffer,
 } from './worktree-discard/discard-offer';
 export {
+  registerArchiveRecoveryReview,
+  requestArchiveRecoveryReview,
+  useArchiveRecoveryReviewRequest,
+  useArchiveRecoveryWorkspaceIds,
+} from './worktree-discard/recovery-review';
+export {
   offerProjectDeletionDiscard,
   useProjectDeletionDiscardOffer,
   type ProjectDeletionDiscardOffer,

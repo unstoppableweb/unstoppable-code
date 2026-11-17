@@ -10,6 +10,7 @@ import type {
   MultiRepoSidebarItem,
   ScriptDescriptor,
   SidebarItem,
+  SingleRepoSidebarItem,
 } from '@canopy/desktop-shared/types';
 import {
   createProjectScriptDescriptor,
@@ -296,6 +297,30 @@ export function buildScriptEntries(
   return entries;
 }
 
+/**
+ * CAN-6933: `project` as Launch sees `worktreeId` once that worktree's own
+ * scripts have been read: those scripts alone, even an empty map, so the
+ * Launch shown always matches what runs. A row not read yet keeps the
+ * project's scripts.
+ */
+export function launchScriptsProject(
+  project: SingleRepoSidebarItem | MultiRepoSidebarItem,
+  worktreeId: string,
+): SingleRepoSidebarItem | MultiRepoSidebarItem {
+  const own = project.worktreeEffective?.[worktreeId];
+  if (!own) return project;
+  if (project.type === 'single-repo')
+    return { ...project, effectiveScripts: own.effectiveScripts ?? {} };
+  return {
+    ...project,
+    effectiveScripts: own.effectiveScripts ?? {},
+    repos: project.repos.map((repo) => ({
+      ...repo,
+      effectiveScripts: own.repos?.[repo.id]?.effectiveScripts ?? {},
+    })),
+  };
+}
+
 export function hasRunScripts(
   projects: SidebarItem[],
   projectId: string | null,
@@ -303,9 +328,10 @@ export function hasRunScripts(
   appliedProjectWorktreeScripts: AppliedProjectWorktreeScripts,
 ): boolean {
   if (!projectId) return false;
-  const project = projects.find((p) => p.id === projectId);
-  if (!project) return false;
-  if (project.type === 'cowork') return false;
+  const found = projects.find((p) => p.id === projectId);
+  if (!found) return false;
+  if (found.type === 'cowork') return false;
+  const project = worktreeId ? launchScriptsProject(found, worktreeId) : found;
   if (project.type === 'single-repo') {
     if (!worktreeId) {
       return false;

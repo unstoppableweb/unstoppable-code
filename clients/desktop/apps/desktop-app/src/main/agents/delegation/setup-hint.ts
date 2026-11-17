@@ -113,15 +113,17 @@ export function isolatedDelegationSetupHint(
   // Both harnesses keep long commands in a managed task the model can check:
   // Claude's run_in_background task, or Codex's pollable exec session.
   const run =
-    harness === 'opencode'
-      ? 'Before building or testing, run the setup script with bash from this working directory and confirm it completes. Do not detach background processes. Commands follow the parent approval policy.'
-      : harness === 'copilot'
-        ? 'Before building or testing, run the setup script with bash or powershell from this working directory and confirm it completes. Use read_bash or read_powershell to check a running command. Do not detach background processes. Commands follow the parent approval policy.'
-        : harness === 'cursor'
-          ? 'Before building or testing, run the setup script with Shell from this working directory and confirm it completes. Do not detach background processes. Commands follow the parent approval policy.'
-          : harness === 'claude'
-            ? 'Start the setup script now with Bash from this working directory, using run_in_background: true. Continue with read-only work meanwhile. You are notified when it finishes, and you can Read the output file the Bash result reports; confirm it succeeded before you build, run, or test anything that needs it. Background tasks end with this run.'
-            : 'Before you build, run, or test anything that needs them, start the setup script from this working directory with exec_command. If it is still running when the call returns, continue with read-only work and poll its session with write_stdin until it finishes. Your shell sandbox blocks network access and writes outside your granted paths, so if setup cannot complete, report the missing dependencies instead of working around the sandbox.';
+    harness === 'antigravity'
+      ? 'Before building or testing, run the setup script with run_command from this working directory and confirm it completes. Do not detach background processes, and wait for each command to finish. Commands follow the parent approval policy.'
+      : harness === 'opencode'
+        ? 'Before building or testing, run the setup script with bash from this working directory and confirm it completes. Do not detach background processes. Commands follow the parent approval policy.'
+        : harness === 'copilot'
+          ? 'Before building or testing, run the setup script with bash or powershell from this working directory and confirm it completes. Use read_bash or read_powershell to check a running command. Do not detach background processes. Commands follow the parent approval policy.'
+          : harness === 'cursor'
+            ? 'Before building or testing, run the setup script with Shell from this working directory and confirm it completes. Do not detach background processes. Commands follow the parent approval policy.'
+            : harness === 'claude'
+              ? 'Start the setup script now with Bash from this working directory, using run_in_background: true. Continue with read-only work meanwhile. You are notified when it finishes, and you can Read the output file the Bash result reports; confirm it succeeded before you build, run, or test anything that needs it. Background tasks end with this run.'
+              : 'Before you build, run, or test anything that needs them, start the setup script from this working directory with exec_command. If it is still running when the call returns, continue with read-only work and poll its session with write_stdin until it finishes. Your shell sandbox blocks network access and writes outside your granted paths, so if setup cannot complete, report the missing dependencies instead of working around the sandbox.';
   return [
     `Isolated worktree setup: this working directory is a fresh checkout of the parent's last commit. The parent's uncommitted changes are not included, and the project's setup script has not run here, so dependencies and generated files may be missing. ${run}`,
     setupScripts.length === 1

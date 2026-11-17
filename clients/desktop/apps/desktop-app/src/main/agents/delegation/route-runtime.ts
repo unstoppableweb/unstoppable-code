@@ -26,6 +26,18 @@ import { readCursorAccount } from '../../cursor/connection';
 import { readPreferencesFile } from '../../lib/preferences-store';
 import { assertCursorHarnessEnabled } from '../../cursor/feature-flag';
 import type { CursorDelegationPreparation } from './cursor-runner';
+import { getRawAntigravityModelId } from '@canopy/execution-engine/lib/antigravity-models';
+import { ANTIGRAVITY_RUNTIME_VERSION } from '@canopy/desktop-shared/node/antigravity/runtime-metadata';
+import { isAntigravityConnectionEnabled } from '../../antigravity/connection';
+import {
+  ANTIGRAVITY_DELEGATE_MODEL_REQUIRED,
+  antigravityChildAdmission,
+  antigravityDelegateRawModel,
+} from '../../antigravity/delegation-admission';
+import {
+  antigravityChildCapabilityRefusal,
+  type AntigravityDelegationPreparation,
+} from './antigravity-runner';
 import { createHash, randomUUID } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import path from 'node:path';
@@ -423,10 +435,14 @@ export async function isDelegationRouteAuthorized(options: {
     route.harnessId !== 'codex' &&
     route.harnessId !== 'cursor' &&
     route.harnessId !== 'copilot' &&
+    route.harnessId !== 'antigravity' &&
     route.harnessId !== 'opencode'
   )
     return false;
   return (
+    (route.harnessId !== 'antigravity' ||
+      (antigravityChildAdmission().admitted &&
+        (await isAntigravityConnectionEnabled()))) &&
     (route.harnessId !== 'cursor' ||
       (await readPreferencesFile()).cursorEnabled === true) &&
     (route.harnessId !== 'copilot' ||
@@ -774,11 +790,26 @@ export class DelegationRouteRuntime {
             harness !== 'codex' &&
             harness !== 'cursor' &&
             harness !== 'copilot' &&
+            harness !== 'antigravity' &&
             harness !== 'opencode') ||
           runtime.providerType === 'ollama' ||
           !model?.enabled
         )
           return unavailable('capability_unavailable');
+        // Antigravity children are refused until their native discovery
+        // boundary is qualified; see antigravityChildAdmission.
+        if (harness === 'antigravity') {
+          if (!antigravityDelegateRawModel(runtime.runtimeModel))
+            return unavailable(
+              'capability_unavailable',
+              ANTIGRAVITY_DELEGATE_MODEL_REQUIRED,
+            );
+          const admission = antigravityChildAdmission();
+          if (!admission.admitted)
+            return unavailable('capability_unavailable', admission.reason);
+          if (!(await isAntigravityConnectionEnabled()))
+            return unavailable('auth_required');
+        }
         // No pinned managed runtime for this provider on this host (e.g. Linux
         // Cursor/Copilot/OpenCode). Reject before any provider auth or billing
         // probe, with the same reason advisory discovery shows. Static pin
@@ -828,6 +859,7 @@ export class DelegationRouteRuntime {
         const routed =
           harness === 'cursor' ||
           harness === 'copilot' ||
+          harness === 'antigravity' ||
           harness === 'opencode'
             ? {
                 harness,
@@ -837,7 +869,9 @@ export class DelegationRouteRuntime {
                     ? getRawOpenCodeModelId(runtime.runtimeModel)
                     : harness === 'copilot'
                       ? getRawCopilotModelId(runtime.runtimeModel)
-                      : getRawCursorModelId(runtime.runtimeModel),
+                      : harness === 'antigravity'
+                        ? getRawAntigravityModelId(runtime.runtimeModel)
+                        : getRawCursorModelId(runtime.runtimeModel),
                 aiCreditsRouted:
                   openCodeSelection?.kind === 'gateway' &&
                   openCodeSelection.funding === 'ai-credits',
@@ -978,6 +1012,7 @@ export class DelegationRouteRuntime {
             mock &&
             harness !== 'cursor' &&
             harness !== 'copilot' &&
+            harness !== 'antigravity' &&
             harness !== 'opencode'
           )
             billingAuthority = 'e2e';
@@ -986,15 +1021,17 @@ export class DelegationRouteRuntime {
             model.supportedThinkingLevels
           ).filter((level) => level !== 'ultra');
           const runtimeVersion =
-            harness === 'opencode'
-              ? OPENCODE_RUNTIME_VERSION
-              : harness === 'copilot'
-                ? COPILOT_RUNTIME_VERSION
-                : harness === 'cursor'
-                  ? CURSOR_RUNTIME_VERSION
-                  : harness === 'claude'
-                    ? __DEP_CLAUDE_CLI__
-                    : __DEP_CODEX_CLI__;
+            harness === 'antigravity'
+              ? ANTIGRAVITY_RUNTIME_VERSION
+              : harness === 'opencode'
+                ? OPENCODE_RUNTIME_VERSION
+                : harness === 'copilot'
+                  ? COPILOT_RUNTIME_VERSION
+                  : harness === 'cursor'
+                    ? CURSOR_RUNTIME_VERSION
+                    : harness === 'claude'
+                      ? __DEP_CLAUDE_CLI__
+                      : __DEP_CODEX_CLI__;
           const route: ResolvedAgentRouteSnapshot = {
             selectedModelId: runtime.selectedModel,
             selectedModelLabel:
@@ -1005,15 +1042,17 @@ export class DelegationRouteRuntime {
             runtimeModelId: runtime.runtimeModel,
             harnessId: harness,
             runtimeKind:
-              harness === 'opencode'
-                ? 'opencode-acp'
-                : harness === 'copilot'
-                  ? 'copilot-sdk'
-                  : harness === 'cursor'
-                    ? 'cursor-acp'
-                    : harness === 'claude'
-                      ? 'claude-sdk'
-                      : 'codex-app-server',
+              harness === 'antigravity'
+                ? 'antigravity-acp'
+                : harness === 'opencode'
+                  ? 'opencode-acp'
+                  : harness === 'copilot'
+                    ? 'copilot-sdk'
+                    : harness === 'cursor'
+                      ? 'cursor-acp'
+                      : harness === 'claude'
+                        ? 'claude-sdk'
+                        : 'codex-app-server',
             runnerRegistrationId: `local-delegation-${harness}-v1`,
             runtimeVersion,
             adapterVersion: '1',
@@ -1052,27 +1091,32 @@ export class DelegationRouteRuntime {
             }),
             capabilityGeneration: 1,
             policyRevision: 'delegation-explicit-grants-v2',
+            // Google keeps the native account; the connection generation
+            // and consent are rechecked for every authorization instead.
             authAccountKey:
-              harness === 'opencode'
-                ? openCodeSelection?.kind === 'gateway'
-                  ? openCodeSelection.inferenceBindingKey
-                  : undefined
-                : harness === 'copilot'
-                  ? fingerprint(copilotAccount)
-                  : harness === 'cursor'
-                    ? fingerprint(cursorAccount)
-                    : billingAuthority === 'native'
-                      ? peekProviderAccountIdentity(harness)?.providerAccountKey
-                      : // The loopback route is new on every resolution, so
-                        // the proxy is identified by its connection instead.
-                        billingAuthority === 'account-proxy' &&
-                          'accountProxyAccountKey' in routed &&
-                          routed.accountProxyAccountKey
-                        ? fingerprint({
-                            accountProxy: routed.accountProxyAccountKey,
-                            harness,
-                          })
-                        : fingerprint({ credentials, config }),
+              harness === 'antigravity'
+                ? undefined
+                : harness === 'opencode'
+                  ? openCodeSelection?.kind === 'gateway'
+                    ? openCodeSelection.inferenceBindingKey
+                    : undefined
+                  : harness === 'copilot'
+                    ? fingerprint(copilotAccount)
+                    : harness === 'cursor'
+                      ? fingerprint(cursorAccount)
+                      : billingAuthority === 'native'
+                        ? peekProviderAccountIdentity(harness)
+                            ?.providerAccountKey
+                        : // The loopback route is new on every resolution, so
+                          // the proxy is identified by its connection instead.
+                          billingAuthority === 'account-proxy' &&
+                            'accountProxyAccountKey' in routed &&
+                            routed.accountProxyAccountKey
+                          ? fingerprint({
+                              accountProxy: routed.accountProxyAccountKey,
+                              harness,
+                            })
+                          : fingerprint({ credentials, config }),
           };
           invocation = {
             waitForQuotaRecovery:
@@ -1407,6 +1451,42 @@ export class DelegationRouteRuntime {
     };
   }
 
+  async prepareAntigravity(
+    context: LocalDelegationContext,
+  ): Promise<AntigravityDelegationPreparation> {
+    const session = await this.prepareSession(context);
+    // Refuse before any MCP route, stdio broker or provider process starts.
+    const refusal = antigravityChildCapabilityRefusal(
+      session.captured.capabilities,
+    );
+    if (refusal)
+      throw new DelegationRunnerError({
+        code: 'capability_unavailable',
+        message: refusal,
+        retryable: false,
+      });
+    const prepared = await this.prepareCapabilities(
+      session,
+      session.captured.capabilities,
+    );
+    const profileDir = path.join(
+      this.options.directory,
+      'antigravity-sessions',
+      context.request.delegationId,
+    );
+    session.readRoots.push(
+      path.join(profileDir, 'selected-capabilities', 'skills'),
+      path.join(profileDir, 'selected-capabilities', 'commands'),
+    );
+    return {
+      profileDir,
+      tools: session.tools,
+      appTools: prepared.appTools,
+      plugins: prepared.claudePlugins,
+      mcpServers: prepared.mcpServers,
+    };
+  }
+
   async prepareCodex(
     context: LocalDelegationContext,
   ): Promise<CodexDelegationPreparation> {
@@ -1506,15 +1586,17 @@ export class DelegationRouteRuntime {
           worktreeId: parent.worktreeId,
           chatId: parent.chatId,
           provider:
-            route.harnessId === 'opencode'
-              ? 'opencode'
-              : route.harnessId === 'copilot'
-                ? 'copilot'
-                : route.harnessId === 'cursor'
-                  ? 'cursor'
-                  : route.harnessId === 'codex'
-                    ? 'codex'
-                    : 'claude',
+            route.harnessId === 'antigravity'
+              ? 'antigravity'
+              : route.harnessId === 'opencode'
+                ? 'opencode'
+                : route.harnessId === 'copilot'
+                  ? 'copilot'
+                  : route.harnessId === 'cursor'
+                    ? 'cursor'
+                    : route.harnessId === 'codex'
+                      ? 'codex'
+                      : 'claude',
           workspaceRoot: owner.cwd,
           mode: owner.approvalMode ?? 'auto',
           sessionRules,
@@ -1541,15 +1623,17 @@ export class DelegationRouteRuntime {
             : {}),
           delegateCwd: cwd,
           harness:
-            route.harnessId === 'opencode'
-              ? 'opencode'
-              : route.harnessId === 'copilot'
-                ? 'copilot'
-                : route.harnessId === 'cursor'
-                  ? 'cursor'
-                  : route.harnessId === 'codex'
-                    ? 'codex'
-                    : 'claude',
+            route.harnessId === 'antigravity'
+              ? 'antigravity'
+              : route.harnessId === 'opencode'
+                ? 'opencode'
+                : route.harnessId === 'copilot'
+                  ? 'copilot'
+                  : route.harnessId === 'cursor'
+                    ? 'cursor'
+                    : route.harnessId === 'codex'
+                      ? 'codex'
+                      : 'claude',
         })
       : undefined;
     // Claude writes `run_in_background` output under CLAUDE_CODE_TMPDIR. The
@@ -1616,6 +1700,7 @@ export class DelegationRouteRuntime {
     const reload =
       route.harnessId !== 'cursor' &&
       route.harnessId !== 'copilot' &&
+      route.harnessId !== 'antigravity' &&
       route.harnessId !== 'opencode' &&
       this.options.extendCapabilityGrant &&
       this.options.capabilityContext?.(delegationId)?.grant

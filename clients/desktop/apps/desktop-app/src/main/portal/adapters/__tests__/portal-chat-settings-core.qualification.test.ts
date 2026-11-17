@@ -45,6 +45,18 @@ jest.mock('../chat-state-query', () => ({
 jest.mock('../../../copilot/runtime-availability', () => ({
   isCopilotRuntimeAvailable: jest.fn(() => Promise.resolve(true)),
 }));
+// CAN-6701: the model change reads the Antigravity connection and the
+// gateway; keep both hermetic and allowed here.
+jest.mock('../../../antigravity/connection', () => ({
+  ...jest.requireActual<object>('../../../antigravity/connection'),
+  isAntigravityConnectionEnabled: jest.fn(() => Promise.resolve(true)),
+}));
+jest.mock('../../../lib/model-gateway-state', () => ({
+  ...jest.requireActual<object>('../../../lib/model-gateway-state'),
+  checkModelGatewayRoute: jest.fn(() =>
+    Promise.resolve({ ok: true, orgRoute: false }),
+  ),
+}));
 jest.mock('../../../ipc/portal-composer-command', () => ({
   requestPortalComposerCommand: jest.fn(),
 }));

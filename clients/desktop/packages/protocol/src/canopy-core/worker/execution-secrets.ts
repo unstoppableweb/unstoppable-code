@@ -7,6 +7,9 @@ export const EXECUTION_SECRET_STORED_FAMILIES = [
   'environment',
   'shared_container.run_env',
   'mcp.server',
+  // Secrets a person gave an agent through RequestSecrets; `record` names the
+  // chat (an opaque digest), `ref` the secret.
+  'agent.chat',
 ] as const;
 export const EXECUTION_SECRET_INTEGRATIONS = ['linear', 'github-pat'] as const;
 export const EXECUTION_SECRET_PROXY_HARNESSES = ['claude', 'codex'] as const;
@@ -15,7 +18,7 @@ export const ExecutionSecretSourceSchema = z.discriminatedUnion('kind', [
   z.strictObject({
     kind: z.literal('stored-secret'),
     family: z.enum(EXECUTION_SECRET_STORED_FAMILIES),
-    /** `config` for `environment`; the container id for `shared_container.run_env`; the server id for `mcp.server`. */
+    /** `config` for `environment`; the container id for `shared_container.run_env`; the server id for `mcp.server`; the chat's record digest for `agent.chat`. */
     record: id,
     ref: z.string().regex(STORED_SECRET_REF_PATTERN),
   }),

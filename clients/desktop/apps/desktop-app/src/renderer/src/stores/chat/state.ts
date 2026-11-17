@@ -486,6 +486,11 @@ export interface ChatTabsSlice {
       preserveActiveTab?: boolean;
       eager?: boolean;
       approvalMode?: ApprovalMode;
+      /**
+       * `approvalMode` is a cached value shown until the fresh lookup
+       * resolves; see `ChatTab.approvalModeProvisional`.
+       */
+      approvalModeProvisional?: boolean;
     },
   ) => Promise<void>;
   /**

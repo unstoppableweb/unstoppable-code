@@ -15,6 +15,8 @@ export function buildCodexSessionDynamicToolSpecs(options: {
   interfaceTools: readonly InterfaceToolName[];
   /** Only for a session that passed the Ledger exposure gate. */
   includeLedger?: boolean;
+  /** Only for an interactive root chat with secret requests on. */
+  includeSecretRequests?: boolean;
   toolSchemaProfile: AiGatewayToolSchemaProfile;
 }): DynamicToolSpec[] {
   if (options.assistantMode === 'app-advisor') {
@@ -39,6 +41,7 @@ export function buildCodexSessionDynamicToolSpecs(options: {
     includeChatVisuals: options.includeChatVisuals,
     includeShowFiles: options.interfaceTools.includes('ui.show_files'),
     includeLedger: options.includeLedger === true,
+    includeSecretRequests: options.includeSecretRequests === true,
     isCodeReview: options.isCodeReview,
     toolSchemaProfile: options.toolSchemaProfile,
   });

@@ -34,6 +34,7 @@ import {
 import {
   AgentMcpConnections,
   type McpProxiedToolCallGate,
+  type McpProxiedToolListTransform,
 } from './agent-mcp-connections';
 import {
   getHeaderValue,
@@ -86,7 +87,10 @@ export interface McpProxyBroadcastHandlers {
 
 type WindowAccessor = () => BrowserWindow | null;
 
-export type { McpProxiedToolCallGate } from './agent-mcp-connections';
+export type {
+  McpProxiedToolCallGate,
+  McpProxiedToolListTransform,
+} from './agent-mcp-connections';
 
 /**
  * Registration input. The integration server binds `oauthDefinition` and `oauthConfig` into an owner-held credential; neither reaches the connection service (CAN-4126).
@@ -599,6 +603,14 @@ export class McpHttpProxyService {
     gate: McpProxiedToolCallGate,
   ): void {
     this.connections.setSessionToolCallGate(sessionId, gate);
+  }
+
+  /** Installs (or replaces) the session's `tools/list` rewrite for its gated routes. */
+  setSessionToolListTransform(
+    sessionId: string,
+    transform: McpProxiedToolListTransform,
+  ): void {
+    this.connections.setSessionToolListTransform(sessionId, transform);
   }
 
   unregisterRoutesForSession(sessionId: string): void {

@@ -153,3 +153,37 @@ it('guards native snapshot directories and exact members without admitting neste
       admittedStorageRowForPath(join(ROOT, tail), ROOT, SECURE),
     ).toBeUndefined();
 });
+
+it('guards plugin catalog files and payload trees without claiming the compatibility subnamespace', () => {
+  for (const [tail, row] of [
+    ['plugins-cache.json', 'plugins_cache'],
+    ['plugin-cache-index.json', 'plugin_cache_index'],
+    ['plugin-cache', 'plugin_cache'],
+    ['plugin-cache/p-abcd', 'plugin_cache'],
+    ['plugin-cache/p-abcd/.claude-plugin/plugin.json', 'plugin_cache'],
+  ]) {
+    const target = join(ROOT, tail);
+    expect(isAdmittedStorageCandidate(target)).toBe(true);
+    expect(admittedStorageRowForPath(target, ROOT)).toBe(row);
+    expect(
+      admittedStorageRowForPath(target, join(ROOT, 'another-root')),
+    ).toBeUndefined();
+    expect(() => writeFileAtomicallySync(target, '{}')).toThrow(
+      /unadmitted_writer/,
+    );
+  }
+  for (const tail of [
+    'plugin-cache/codex-compatibility',
+    'plugin-cache/codex-compatibility/p-abcd/plugin.json',
+    'plugin-cache/codex-compatibility/plugin-cache/p-abcd',
+    'unrelated/plugin-cache/p-abcd',
+  ])
+    expect(admittedStorageRowForPath(join(ROOT, tail), ROOT)).toBeUndefined();
+  // Null-root synchronous admission also must not swallow a nested name in the separate tree.
+  expect(
+    admittedStorageRowForPath(
+      join(ROOT, 'plugin-cache/codex-compatibility/plugin-cache/p-abcd'),
+      null,
+    ),
+  ).toBeUndefined();
+});

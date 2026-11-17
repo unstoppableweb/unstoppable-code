@@ -9,6 +9,7 @@ import type {
   ExecutionHostPort,
   ExecutionHostProcess,
 } from '@canopy/desktop-shared/node/execution-host/port';
+import { hostPlatformOperatingSystem } from '@canopy/core-platform';
 import {
   isProviderProcessOwner,
   PROVIDER_PROCESS_DEFAULT_GRACE_MS,
@@ -19,6 +20,7 @@ import {
   type ProviderProcessRequest,
   type ProviderProcessSpawner,
   type ProviderProcessStdin,
+  type ProviderProcessCleanup,
   type ProviderProcessStopOptions,
 } from '@canopy/desktop-shared/node/provider-process/spawn';
 import {
@@ -62,11 +64,18 @@ class ProviderProcessProxy extends EventEmitter implements ProviderProcess {
   private readonly closed = new Promise<void>((resolve) => {
     this.markClosed = resolve;
   });
+  private settleCleanup: (outcome: ProviderProcessCleanup) => void = () =>
+    undefined;
+  /** The host reports a reaping child's cleanup after its close (CAN-6738). */
+  private readonly cleanup = new Promise<ProviderProcessCleanup>((resolve) => {
+    this.settleCleanup = resolve;
+  });
 
   constructor(
     readonly requestId: string,
     private readonly send: Send,
     stdin: ProviderProcessStdin | undefined,
+    readonly reapsDescendants = false,
   ) {
     super();
     this.stdin = stdin === 'ignore' ? null : this.relayStdin(requestId);
@@ -112,14 +121,44 @@ class ProviderProcessProxy extends EventEmitter implements ProviderProcess {
     return this.exited || this.finished;
   }
 
+  /** True once a stop was requested whose cleanup the host still owes. */
+  get awaitsCleanup(): boolean {
+    return this.reapsDescendants && this.stopping !== undefined;
+  }
+
+  stopCleanup(): Promise<ProviderProcessCleanup | undefined> {
+    if (!this.awaitsCleanup) return Promise.resolve(undefined);
+    return this.cleanup;
+  }
+
+  /** The host's report, or `unverified` when the host is gone without one. */
+  cleaned(outcome: ProviderProcessCleanup): void {
+    this.settleCleanup(outcome);
+  }
+
+  /** Forwarded to the host, which records for its own child (CAN-6738). */
+  recordDescendants(): void {
+    if (this.finished || this.stopping) return;
+    this.trySend({ type: 'record-descendants', requestId: this.requestId });
+  }
+
   stop(options?: ProviderProcessStopOptions): Promise<void> {
     this.stopping ??= ((): Promise<void> => {
       // Parent closure does not imply group closure: a child that already
-      // closed may have left descendants in its group, which the host no
-      // longer tracks.
+      // closed may have left descendants in its own group, which the host
+      // no longer tracks, so that group is killed here, with no grace, as
+      // before. The host's later signal to it is a no-op.
       if (this.finished) {
         if (this.childPid !== undefined)
           signalExitedProcessGroup(this.childPid, 'SIGKILL');
+        // The host keeps a closed reaping child until its stop, and reaps
+        // what it recorded then (CAN-6738).
+        if (this.reapsDescendants)
+          this.trySend({
+            type: 'stop',
+            requestId: this.requestId,
+            graceMs: options?.graceMs ?? PROVIDER_PROCESS_DEFAULT_GRACE_MS,
+          });
       } else
         this.trySend({
           type: 'stop',
@@ -198,6 +237,8 @@ interface LaunchedHost {
   readonly proxies: Map<string, ProviderProcessProxy>;
   /** Pids of children this host reported started, by request. */
   readonly startedGroups: Map<string, number>;
+  /** Closed children whose stop's descendant cleanup the host still owes. */
+  readonly reaping: Map<string, ProviderProcessProxy>;
   readonly exited: Promise<void>;
 }
 
@@ -235,7 +276,9 @@ export function createProviderProcessHostClient(
     response: ProviderProcessHostResponse,
   ): void => {
     if (response.type === 'shutdown-complete') return;
-    const proxy = launched.proxies.get(response.requestId);
+    const proxy =
+      launched.proxies.get(response.requestId) ??
+      launched.reaping.get(response.requestId);
     if (!proxy) return;
     switch (response.type) {
       case 'started':
@@ -257,7 +300,16 @@ export function createProviderProcessHostClient(
       case 'close':
         launched.proxies.delete(response.requestId);
         launched.startedGroups.delete(response.requestId);
+        // A reaping child's cleanup arrives after its close, whether its stop
+        // came before the close or comes later; the host's exit settles any
+        // still owed.
+        if (proxy.reapsDescendants)
+          launched.reaping.set(response.requestId, proxy);
         proxy.close(response.code, response.signal);
+        return;
+      case 'stopped':
+        launched.reaping.delete(response.requestId);
+        proxy.cleaned(response.cleanup);
         return;
     }
   };
@@ -272,6 +324,13 @@ export function createProviderProcessHostClient(
       else void killProcessGroupByPid(pid, 'SIGKILL').catch(() => undefined);
     }
     launched.startedGroups.clear();
+    // A cleanup the host never reported cannot be shown complete.
+    for (const proxy of [
+      ...launched.reaping.values(),
+      ...launched.proxies.values(),
+    ])
+      proxy.cleaned('unverified');
+    launched.reaping.clear();
     const proxies = Array.from(launched.proxies.values());
     launched.proxies.clear();
     for (const proxy of proxies) {
@@ -289,6 +348,7 @@ export function createProviderProcessHostClient(
     const launched: LaunchedHost = {
       process: hostProcess,
       proxies: new Map(),
+      reaping: new Map(),
       startedGroups: new Map(),
       exited: new Promise<void>((resolve) => {
         markExited = resolve;
@@ -339,7 +399,15 @@ export function createProviderProcessHostClient(
       );
     }
     const send: Send = (message) => launched.process.postMessage(message);
-    const proxy = new ProviderProcessProxy(requestId, send, request.stdin);
+    const proxy = new ProviderProcessProxy(
+      requestId,
+      send,
+      request.stdin,
+      // As the host: Windows' forced tree kill already covers descendants,
+      // so no cleanup is reported there.
+      request.reapDescendantGroups === true &&
+        hostPlatformOperatingSystem() !== 'win32',
+    );
     try {
       send({
         type: 'spawn',
@@ -351,6 +419,7 @@ export function createProviderProcessHostClient(
         owner: { kind: request.owner.kind, id: request.owner.id },
         windowsVerbatimArguments: request.windowsVerbatimArguments,
         ...(request.stdin ? { stdin: request.stdin } : {}),
+        ...(request.reapDescendantGroups ? { reapDescendantGroups: true } : {}),
       });
     } catch {
       return new ProviderProcessProxy(

@@ -5,9 +5,11 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { act as reactAct } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { CanopyCapabilities } from '@canopy/app-core';
+import type * as OpenBillingPageModule from '@/lib/openBillingPage';
 import type { PersistedChatMessage } from '@canopy/desktop-shared/types';
 import { CanopyClientProvider } from '@canopy/app-state/CanopyClientProvider';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
+import { MODEL_LIBRARY_UNLOCK_LABELS } from '@canopy/ui-shared/components';
 // eslint-disable-next-line no-restricted-imports
 import { DEFAULT_PREFERENCES } from '@canopy/desktop-shared/node/preferences/defaults';
 import { DesktopTerminalRuntime } from '@/client/DesktopTerminalRuntime';
@@ -33,6 +35,7 @@ import {
 } from '@/cloud-chats/useCloudCoworkSidebar';
 import { webCoreFilePath } from '@/lib/chat-authority';
 import { openCoworkWorkEntryFromSidebar } from '@/lib/openCoworkWorkEntryFromSidebar';
+import { announceCanopyCloudAccountChanged } from '@/lib/canopyCloudAccountChange';
 import {
   disposeWorktreePanelHydration,
   ensureWorktreePanelLayout,
@@ -83,6 +86,12 @@ import { persistedMessageToPortalMessage } from '@canopy/desktop-shared/portal/p
 import { useExperimentalFeaturesStore } from '@/stores/experimentalFeaturesStore';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { useNavigationStore } from '@/stores/navigationStore';
+import { useObservabilityStore } from '@/stores/observabilityStore';
+import {
+  clearCloudForks,
+  forkCloudChat,
+} from '@/stores/chat/web-core/cloud-forks';
+import { UsagePanel } from '@/components/panels/usage/UsagePanel';
 import { usePanelLayoutStore } from '@/stores/panelLayoutStore';
 import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
 import { StandaloneChatPage } from '../StandaloneChatPage';
@@ -306,6 +315,26 @@ let snapshotReads = 0;
 const chatUpdates: unknown[] = [];
 /** The catalog model's thinking levels; null for a model that declares none. */
 let cloudModelLevels: string[] | null = ['low', 'medium', 'high'];
+/** The owner's library access the hosted catalog names (CAN-6937). */
+let cloudModelLibrary: string = 'unlocked';
+/** Whether the owner's library has unlocked the locked model (CAN-6937). */
+let lockedModelEligibility: 'available' | 'locked' = 'locked';
+/** The unlock a locked row starts, the one a local chat's locked row starts. */
+const mockUnlockModels = jest.fn(
+  (): Promise<{ outcome: string }> => Promise.resolve({ outcome: 'opened' }),
+);
+/** The open model menu's locked row named `label`, if it lists one. */
+function lockedRowNamed(label: string): HTMLElement | undefined {
+  return Array.from(
+    document.querySelectorAll<HTMLElement>(
+      '[data-testid="portal-chat-model-menu"] [data-locked="true"]',
+    ),
+  ).find((row) => (row.textContent ?? '').includes(label));
+}
+jest.mock('@/lib/openBillingPage', () => ({
+  ...jest.requireActual<typeof OpenBillingPageModule>('@/lib/openBillingPage'),
+  useUnlockModelsAction: (): typeof mockUnlockModels => mockUnlockModels,
+}));
 
 /**
  * The hosted model catalog, as `GET /api/cloud/models` sends it and the web
@@ -369,7 +398,7 @@ function cloudCatalogModels(): FakeCloudModel[] {
       family: 'family-a',
       familyLabel: 'Family A',
       harness: 'claude',
-      libraryEligibility: 'locked',
+      libraryEligibility: lockedModelEligibility,
     },
   ];
 }
@@ -557,6 +586,13 @@ const uncreated = (id: unknown): boolean =>
  * fails once `createGate` lets it.
  */
 let loseCreateReply = false;
+/**
+ * How the stub answers the next core.chat.fork (CAN-7007): apply it, refuse
+ * it, or apply it and lose the reply.
+ */
+let forkAnswer: 'apply' | 'refuse' | 'lose' = 'apply';
+/** The claim each core.chat.fork carried, in order. */
+const forkClaims: string[] = [];
 /**
  * Whether the stub lists projects and tasks, so the cloud cowork store can
  * connect through the relay. Off by default: the cases that seed the store
@@ -1299,7 +1335,7 @@ Object.defineProperty(window, 'canopyCore', {
                     ),
                     defaultModelId: 'cloud-model',
                     defaultModelBlocked: false,
-                    modelLibrary: 'unlocked',
+                    modelLibrary: cloudModelLibrary,
                   },
                 }
               : {}),
@@ -1425,6 +1461,48 @@ Object.defineProperty(window, 'canopyCore', {
               };
             createdTasks.add(tabId);
             return { ok: true, value: reply };
+          });
+        }
+        case 'core.chat.fork': {
+          const action = request.params?.action;
+          const claim =
+            typeof action === 'object' &&
+            action !== null &&
+            'targetTabId' in action &&
+            typeof action.targetTabId === 'string'
+              ? action.targetTabId
+              : '';
+          forkClaims.push(claim);
+          const answer = forkAnswer;
+          forkAnswer = 'apply';
+          if (answer === 'refuse')
+            return Promise.resolve({
+              ok: false,
+              error: {
+                kind: 'failed_precondition',
+                code: 'core.chat.notTransferable',
+                message: 'This chat cannot be forked.',
+                retry: { kind: 'never' },
+              },
+            });
+          // The fork is a new task whose own chat it is; this stub names it
+          // by its claim.
+          const replayed = createdTasks.has(claim);
+          createdTasks.add(claim);
+          if (answer === 'lose')
+            return Promise.resolve({
+              ok: false,
+              error: {
+                kind: 'unavailable',
+                message: 'The reply was lost.',
+                retry: { kind: 'same_idempotency_key' },
+              },
+            });
+          return ok({
+            commandId: request.params?.commandId,
+            revision: 0,
+            outcome: replayed ? 'already_applied' : 'applied',
+            entityId: claim,
           });
         }
         case 'core.chat.update': {
@@ -2116,6 +2194,9 @@ beforeEach(() => {
   heldCancels.length = 0;
   sendOutcomeUnknown = false;
   createdTasks.clear();
+  forkAnswer = 'apply';
+  forkClaims.length = 0;
+  clearCloudForks();
   loseCreateReply = false;
   servesCoworkLists = false;
   servesCost = false;
@@ -2140,6 +2221,9 @@ beforeEach(() => {
   listRevisionLag = 0;
   setModelRefusal = null;
   cloudModelLevels = ['low', 'medium', 'high'];
+  cloudModelLibrary = 'unlocked';
+  lockedModelEligibility = 'locked';
+  mockUnlockModels.mockClear();
   openedStreams.clear();
   deletedTasks.clear();
   removedChats.clear();
@@ -2265,10 +2349,33 @@ function ChatPrefetch(): null {
 function renderPage(options?: {
   readonly followsEvents?: boolean;
   readonly prefetches?: boolean;
+  /** Capabilities a cloud scope gains in this harness only (CAN-7007). */
+  readonly cloudScopeExtras?: Partial<CanopyCapabilities>;
 }): void {
-  const client = createDesktopCanopyClient(
+  const desktopClient = createDesktopCanopyClient(
     createDesktopCapabilities('darwin', {}, {}),
   );
+  const extras = options?.cloudScopeExtras;
+  const extended = new Map<string, CanopyCapabilities>();
+  const client =
+    extras !== undefined
+      ? new Proxy(desktopClient, {
+          get(target, property, receiver): unknown {
+            if (property !== 'capabilitiesFor')
+              return Reflect.get(target, property, receiver);
+            return (localId: string): CanopyCapabilities => {
+              const capabilities =
+                target.capabilitiesFor?.(localId) ?? target.capabilities;
+              if (!localId.startsWith('web-core:')) return capabilities;
+              const known = extended.get(localId);
+              if (known !== undefined) return known;
+              const withExtras = { ...capabilities, ...extras };
+              extended.set(localId, withExtras);
+              return withExtras;
+            };
+          },
+        })
+      : desktopClient;
   act(() => {
     root.render(
       <CanopyClientProvider client={client}>
@@ -3200,6 +3307,223 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
     });
   });
 
+  /** The navigation context, read; the unlock bills it (CAN-6937). */
+  const withNavigationContext = (
+    context:
+      | { kind: 'personal' }
+      | { kind: 'organization'; organizationId: string },
+  ): (() => void) => {
+    const before = useWorkspaceContextStore.getState();
+    useWorkspaceContextStore.setState((store) => ({
+      hydrated: true,
+      state: { ...store.state, context },
+    }));
+    return () =>
+      useWorkspaceContextStore.setState({
+        hydrated: before.hydrated,
+        state: before.state,
+      });
+  };
+
+  it("lists a model the owner's library keeps locked as locked, as the web does, and unlocks it without selecting it (CAN-6937)", async () => {
+    cloudModelLibrary = 'needs_purchase';
+    // The cloud workspace is personal; another organization's context
+    // can't unlock it, so its locked model isn't listed there.
+    let restoreContext = withNavigationContext({
+      kind: 'organization',
+      organizationId: 'org-2',
+    });
+    try {
+      renderPage();
+      act(() => {
+        openCoworkWorkEntryFromSidebar('web-core:ws-1', 'web-core:wt-1');
+      });
+      await settle();
+      const target = {
+        projectId: 'web-core:ws-1',
+        worktreeId: 'web-core:wt-1',
+        chatId: 'web-core:wt-1',
+      };
+      act(() => {
+        useChatStore.getState().switchTab(target.chatId, target);
+      });
+      await settle();
+      const shownModel = (): string | undefined =>
+        useChatStore
+          .getState()
+          .worktreeChats[
+            'web-core:ws-1/web-core:wt-1'
+          ]?.tabs.find((tab) => tab.id === target.chatId)?.model;
+      const before = shownModel();
+      act(() => {
+        container
+          .querySelector<HTMLElement>(
+            '[data-testid="portal-chat-model-picker"]',
+          )
+          ?.click();
+      });
+      await settle();
+      expect(lockedRowNamed('Locked model')).toBeUndefined();
+      expect(
+        document.querySelector('[data-testid="portal-chat-model-menu"]')
+          ?.textContent ?? '',
+      ).not.toContain('Locked model');
+      act(() => {
+        document.dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+        );
+      });
+      await settle();
+      restoreContext();
+      restoreContext = withNavigationContext({ kind: 'personal' });
+      await settle();
+      const trigger = container.querySelector<HTMLElement>(
+        '[data-testid="portal-chat-model-picker"]',
+      );
+      act(() => {
+        trigger?.click();
+      });
+      await settle();
+      const menu = document.querySelector(
+        '[data-testid="portal-chat-model-menu"]',
+      );
+      // Listed, greyed out as locked, with the web's shared unlock label.
+      const locked = Array.from(
+        menu?.querySelectorAll<HTMLElement>('[data-locked="true"]') ?? [],
+      ).find((row) => (row.textContent ?? '').includes('Locked model'));
+      expect(locked).toBeDefined();
+      expect(locked?.textContent ?? '').toContain(
+        MODEL_LIBRARY_UNLOCK_LABELS.needs_purchase,
+      );
+      const updatesBefore = chatUpdates.length;
+      act(() => {
+        locked?.click();
+      });
+      await settle();
+      // Its action starts the unlock, naming no model to apply afterwards.
+      expect(mockUnlockModels).toHaveBeenCalledTimes(1);
+      expect(mockUnlockModels).toHaveBeenCalledWith({ source: 'desktop' });
+      // It is never selected: no model change goes out, and the chat keeps its own.
+      expect(chatUpdates.slice(updatesBefore).map(modelOf)).not.toContain(
+        'locked-model',
+      );
+      expect(shownModel()).toBe(before);
+      expect(shownModel()).not.toBe('locked-model');
+      // An unlock that opened says nothing more.
+      expect(
+        container.querySelector('[data-testid="chat-input-unlock-failed"]'),
+      ).toBeNull();
+      // One that couldn't open says so in the composer, never as a toast.
+      mockUnlockModels.mockResolvedValueOnce({ outcome: 'failed' });
+      act(() => {
+        container
+          .querySelector<HTMLElement>(
+            '[data-testid="portal-chat-model-picker"]',
+          )
+          ?.click();
+      });
+      await settle();
+      act(() => {
+        Array.from(
+          document.querySelectorAll<HTMLElement>(
+            '[data-testid="portal-chat-model-menu"] [data-locked="true"]',
+          ),
+        )
+          .find((row) => (row.textContent ?? '').includes('Locked model'))
+          ?.click();
+      });
+      await settle();
+      expect(
+        container.querySelector('[data-testid="chat-input-unlock-failed"]'),
+      ).not.toBeNull();
+      expect(shownModel()).toBe(before);
+      // One that finds the library already unlocked lists the model as it now
+      // is, still without selecting it.
+      cloudModelLibrary = 'unlocked';
+      lockedModelEligibility = 'available';
+      mockUnlockModels.mockResolvedValueOnce({ outcome: 'unlocked' });
+      act(() => {
+        container
+          .querySelector<HTMLElement>(
+            '[data-testid="portal-chat-model-picker"]',
+          )
+          ?.click();
+      });
+      await settle();
+      act(() => {
+        lockedRowNamed('Locked model')?.click();
+      });
+      await settle();
+      expect(shownModel()).toBe(before);
+      act(() => {
+        container
+          .querySelector<HTMLElement>(
+            '[data-testid="portal-chat-model-picker"]',
+          )
+          ?.click();
+      });
+      await settle();
+      expect(lockedRowNamed('Locked model')).toBeUndefined();
+      expect(
+        document.querySelector('[data-testid="portal-chat-model-menu"]')
+          ?.textContent ?? '',
+      ).toContain('Locked model');
+    } finally {
+      restoreContext();
+    }
+  });
+
+  it("reads a cloud chat's locked models again when a confirmed unlock refreshes the account (CAN-6937)", async () => {
+    cloudModelLibrary = 'needs_purchase';
+    const restoreContext = withNavigationContext({ kind: 'personal' });
+    try {
+      renderPage();
+      act(() => {
+        openCoworkWorkEntryFromSidebar('web-core:ws-1', 'web-core:wt-1');
+      });
+      await settle();
+      act(() => {
+        useChatStore.getState().switchTab('web-core:wt-1', {
+          projectId: 'web-core:ws-1',
+          worktreeId: 'web-core:wt-1',
+        });
+      });
+      await settle();
+      const openPicker = async (): Promise<void> => {
+        act(() => {
+          container
+            .querySelector<HTMLElement>(
+              '[data-testid="portal-chat-model-picker"]',
+            )
+            ?.click();
+        });
+        await settle();
+      };
+      await openPicker();
+      expect(lockedRowNamed('Locked model')).toBeDefined();
+      act(() => {
+        document.dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+        );
+      });
+      await settle();
+      // The purchase is confirmed elsewhere, which refreshes the account.
+      cloudModelLibrary = 'unlocked';
+      lockedModelEligibility = 'available';
+      act(() => {
+        announceCanopyCloudAccountChanged('same-account-refresh');
+      });
+      await settle();
+      await openPicker();
+      expect(lockedRowNamed('Locked model')).toBeUndefined();
+      expect(
+        document.querySelector('[data-testid="portal-chat-model-menu"]')
+          ?.textContent ?? '',
+      ).toContain('Locked model');
+    } finally {
+      restoreContext();
+    }
+  });
   it('keeps a cloud model pick shown while a snapshot refresh lands during the change (CAN-6328)', async () => {
     renderPage();
     act(() => {
@@ -6899,6 +7223,337 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
     const withoutCost = webCoreScopeCapabilities(local);
     expect(withoutCost.costInsights).toBe(false);
     expect(withoutCost.activitySectionIds).not.toContain('cost');
+  });
+
+  it('forks a cloud chat into a new task from its latest turn under one claim: a refusal changes nothing, and a lost reply waits for Try again with the same claim (CAN-7007)', async () => {
+    transcripts['wt-1'] = [
+      {
+        id: 'fork-u1',
+        role: 'user',
+        blocks: [{ type: 'text', text: 'Draft the brief' }],
+        timestamp: 1,
+      },
+      {
+        id: 'fork-a1',
+        role: 'assistant',
+        blocks: [{ type: 'text', text: 'Drafted.' }],
+        timestamp: 2,
+      },
+      {
+        id: 'fork-u2',
+        role: 'user',
+        blocks: [{ type: 'text', text: 'Shorter, please' }],
+        timestamp: 3,
+      },
+      {
+        id: 'fork-a2',
+        role: 'assistant',
+        blocks: [{ type: 'text', text: 'Shortened.' }],
+        timestamp: 4,
+      },
+    ];
+    act(() => {
+      cloudCoworkStore.getState().disconnect('offline');
+    });
+    connectCloud();
+    const forkButtons = (): HTMLElement[] =>
+      Array.from(
+        container.querySelectorAll<HTMLElement>(
+          '[data-testid="fork-chat-button"]',
+        ),
+      );
+    try {
+      // A cloud scope that can't fork into a new task offers no Fork.
+      renderPage({ followsEvents: true });
+      act(() => {
+        openCoworkWorkEntryFromSidebar('web-core:ws-1', 'web-core:wt-1');
+      });
+      await settle();
+      expect(forkButtons()).toHaveLength(0);
+
+      // The tab fork gate, which the local scope reports, offers Fork on
+      // every completed turn.
+      renderPage({
+        followsEvents: true,
+        cloudScopeExtras: { chatTabFork: true },
+      });
+      await settle();
+      expect(forkButtons()).toHaveLength(2);
+      expect(createDesktopCapabilities('darwin', {}, {})).toMatchObject({
+        chatTabFork: true,
+      });
+      expect(
+        createDesktopCapabilities('darwin', {}, {}).chatTaskFork,
+      ).toBeUndefined();
+      // The cloud scope ships neither until its fork reaches the web core.
+      const cloud = webCoreScopeCapabilities(
+        createDesktopCapabilities('darwin', {}, {}),
+      );
+      expect(cloud.chatTabFork).not.toBe(true);
+      expect(cloud.chatTaskFork).not.toBe(true);
+
+      renderPage({
+        followsEvents: true,
+        cloudScopeExtras: { chatTaskFork: true },
+      });
+      await settle();
+      // A whole-chat fork into a new task has no fork point, so only the
+      // latest completed turn offers it.
+      expect(forkButtons()).toHaveLength(1);
+      // Branch, Share and Run comments act on a local session, so a cloud
+      // turn offers none of them beside its Fork, inline or in its menu.
+      expect(
+        container.querySelector('[data-testid="turn-share-session"]'),
+      ).toBeNull();
+      const moreMenus = Array.from(
+        container.querySelectorAll<HTMLElement>(
+          '[data-testid="turn-more-actions"]',
+        ),
+      );
+      expect(moreMenus.length).toBeGreaterThan(0);
+      for (const menu of moreMenus) {
+        act(() => {
+          menu.click();
+        });
+        await settle();
+        expect(
+          document.querySelector('[data-testid="turn-more-actions-menu"]'),
+        ).not.toBeNull();
+        expect(
+          document.querySelector(
+            '[data-testid="turn-more-share"], [data-testid="turn-more-branch"]',
+          ),
+        ).toBeNull();
+        act(() => {
+          menu.click();
+        });
+        await settle();
+      }
+
+      // A repository project's fork would stay in a worktree this window
+      // can't open (CAN-6177), so it offers no Fork and forks nothing.
+      const asKind = (kind: 'cowork' | 'git'): void => {
+        act(() => {
+          cloudCoworkStore.setState((state) => ({
+            projects: state.projects.map((project) =>
+              project.key === 'web-core:ws-1' ? { ...project, kind } : project,
+            ),
+          }));
+        });
+      };
+      asKind('git');
+      await settle();
+      expect(forkButtons()).toHaveLength(0);
+      await act(async () => {
+        expect(
+          await forkCloudChat({
+            projectId: 'web-core:ws-1',
+            worktreeId: 'web-core:wt-1',
+            chatId: 'web-core:wt-1',
+          }),
+        ).toEqual({ kind: 'refused', reason: 'not_openable' });
+      });
+      expect(forkClaims).toEqual([]);
+      clearCloudForks();
+      asKind('cowork');
+      await settle();
+      expect(forkButtons()).toHaveLength(1);
+
+      // A stray tab fork on a cloud chat is still refused: it never reaches
+      // the web core as a fork or a new chat.
+      const sentBefore = coreRequests.length;
+      let strayDisposition: unknown;
+      await act(async () => {
+        strayDisposition = await useChatStore
+          .getState()
+          .dispatchChatCommand(
+            { projectId: 'web-core:ws-1', worktreeId: 'web-core:wt-1' },
+            {
+              type: 'chat.fork_tab',
+              sourceTabId: 'web-core:wt-1',
+              targetTabId: 'web-core:stray-fork',
+            },
+          )
+          .catch(() => 'rejected');
+      });
+      expect(strayDisposition).not.toBe('accepted');
+      expect(
+        coreRequests
+          .slice(sentBefore)
+          .filter(
+            (method) =>
+              method === 'core.chat.fork' || method === 'core.chat.create',
+          ),
+      ).toEqual([]);
+
+      // A refusal makes no fork and leaves the chat where it was.
+      forkAnswer = 'refuse';
+      act(() => {
+        forkButtons()[0]?.click();
+      });
+      await settle();
+      expect(shown('cloud-fork-refused')).toBe(true);
+      expect(useChatStore.getState().selectedWorktree).toEqual({
+        projectId: 'web-core:ws-1',
+        worktreeId: 'web-core:wt-1',
+      });
+
+      // A lost reply is an unknown outcome: nothing retries on its own.
+      forkAnswer = 'lose';
+      act(() => {
+        forkButtons()[0]?.click();
+      });
+      await settle();
+      expect(shown('cloud-fork-unknown')).toBe(true);
+      expect(forkClaims).toHaveLength(2);
+      expect(forkClaims[1]).not.toBe(forkClaims[0]);
+      await settle();
+      expect(forkClaims).toHaveLength(2);
+      expect(useChatStore.getState().selectedWorktree?.worktreeId).toBe(
+        'web-core:wt-1',
+      );
+
+      // Try again sends the same claim, so the web core can't fork twice,
+      // then opens the new task.
+      act(() => {
+        Array.from(
+          container.querySelectorAll<HTMLElement>(
+            '[data-testid="cloud-fork-unknown"] button',
+          ),
+        )
+          .find((button) => button.textContent === 'Try again')
+          ?.click();
+      });
+      await settle();
+      const claim = forkClaims[1];
+      expect(forkClaims).toEqual([forkClaims[0], claim, claim]);
+      expect(claim).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+      );
+      expect(
+        coreRequestLog.filter((entry) => entry.method === 'core.chat.fork')[2]
+          ?.params,
+      ).toMatchObject({
+        projectId: 'ws-1',
+        worktreeId: 'wt-1',
+        commandId: claim,
+        action: {
+          type: 'chat.fork_tab',
+          sourceTabId: 'wt-1',
+          targetTabId: claim,
+        },
+        _meta: { idempotencyKey: claim },
+      });
+      expect(useChatStore.getState().selectedWorktree).toEqual({
+        projectId: 'web-core:ws-1',
+        worktreeId: `web-core:${claim}`,
+      });
+      expect(shown('cloud-fork-unknown')).toBe(false);
+      expect(callsCarryingWebCoreIds()).toEqual([]);
+    } finally {
+      act(() => {
+        cloudCoworkStore.getState().disconnect('offline');
+      });
+    }
+  });
+
+  it("shows a cloud chat's AI Credits in Usage (Active Chat), never this computer's account for its model's provider (CAN-6942)", async () => {
+    // A cloud scope's chats don't run on this computer's subscriptions; a
+    // local scope's do.
+    const local = createDesktopCapabilities('darwin', {}, {});
+    expect(local.subscriptionProviders).toBe(true);
+    expect(webCoreScopeCapabilities(local).subscriptionProviders).not.toBe(
+      true,
+    );
+    renderPage();
+    act(() => {
+      openCoworkWorkEntryFromSidebar('web-core:ws-1', 'web-core:wt-1');
+    });
+    await settle();
+    const target = {
+      projectId: 'web-core:ws-1',
+      worktreeId: 'web-core:wt-1',
+      chatId: 'web-core:wt-1',
+    };
+    // The cloud chat's tab resolves to a provider this computer is signed in
+    // to, as a cloud chat on staging did.
+    const key = `${target.projectId}/${target.worktreeId}`;
+    act(() => {
+      useChatStore.setState((state) => {
+        const chat = state.worktreeChats[key];
+        if (chat === undefined) throw new Error('No cloud chat state.');
+        return {
+          worktreeChats: {
+            ...state.worktreeChats,
+            [key]: {
+              ...chat,
+              tabs: chat.tabs.map((tab) =>
+                tab.id === target.chatId
+                  ? { ...tab, providerType: 'codex' }
+                  : tab,
+              ),
+            },
+          },
+        };
+      });
+    });
+    const observability = useObservabilityStore.getState();
+    act(() => {
+      useObservabilityStore.setState({
+        initialize: () => Promise.resolve(),
+        usage: {
+          updatedAt: new Date(0).toISOString(),
+          providers: [
+            {
+              provider: 'codex',
+              authState: 'authenticated',
+              hasRemainingLimits: true,
+              accountEmail: 'local-account@example.com',
+              subscriptionLabel: 'Local plan',
+            },
+          ],
+        },
+      });
+    });
+    const panel = document.createElement('div');
+    document.body.appendChild(panel);
+    const panelRoot = createRoot(panel);
+    try {
+      act(() => {
+        panelRoot.render(
+          <CanopyClientProvider
+            client={createDesktopCanopyClient(
+              createDesktopCapabilities('darwin', {}, {}),
+            )}
+          >
+            <UsagePanel
+              variant="active-chat"
+              projectId={target.projectId}
+              worktreeId={target.worktreeId}
+              visible
+            />
+          </CanopyClientProvider>,
+        );
+      });
+      await settle();
+      const text = panel.textContent ?? '';
+      expect(text).not.toContain('local-account@example.com');
+      expect(text).not.toContain('Local plan');
+      expect(
+        panel.querySelector('[data-testid="usage-panel-cloud-chat"]'),
+      ).not.toBeNull();
+    } finally {
+      act(() => {
+        panelRoot.unmount();
+      });
+      panel.remove();
+      act(() => {
+        useObservabilityStore.setState({
+          initialize: observability.initialize,
+          usage: observability.usage,
+        });
+      });
+    }
   });
 
   it('offers a cloud task only the Activity it has data for, and its Activity shows it (CAN-6430, CAN-6431)', async () => {

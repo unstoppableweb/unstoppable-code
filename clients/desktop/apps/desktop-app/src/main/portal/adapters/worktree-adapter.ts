@@ -784,7 +784,8 @@ export async function handlePortalWorktreeCreate(
           : payload.baseBranchEncoding !==
             PORTAL_WORKTREE_BASE_BRANCH_ENCODING))) ||
     (payload.sidebarItemGroupId !== undefined &&
-      !isSidebarItemGroupId(payload.sidebarItemGroupId))
+      !isSidebarItemGroupId(payload.sidebarItemGroupId)) ||
+    (payload.worktreeId !== undefined && typeof payload.worktreeId !== 'string')
   ) {
     context.fail(
       command,
@@ -821,6 +822,10 @@ export async function handlePortalWorktreeCreate(
     typeof payload.baseWorktreeId === 'string'
       ? payload.baseWorktreeId
       : undefined;
+  // A client-claimed id: honored when free and generator-shaped, otherwise
+  // the service names the worktree. Malformed fails below.
+  const claimedWorktreeId =
+    typeof payload.worktreeId === 'string' ? payload.worktreeId : undefined;
 
   let explicitBaseBranch: string | undefined;
   try {
@@ -854,11 +859,14 @@ export async function handlePortalWorktreeCreate(
     if (baseWorktreeId) {
       validateId(baseWorktreeId, 'baseWorktreeId');
     }
+    if (claimedWorktreeId !== undefined) {
+      validateId(claimedWorktreeId, 'worktreeId');
+    }
   } catch {
     context.fail(
       command,
       'invalid_payload',
-      'Invalid worktree create payload: workspaceId and baseWorktreeId must use lowercase letters, numbers, and hyphens.',
+      'Invalid worktree create payload: workspaceId, baseWorktreeId and worktreeId must use lowercase letters, numbers, and hyphens.',
       false,
     );
     return;
@@ -949,6 +957,7 @@ export async function handlePortalWorktreeCreate(
         : {}),
       existingWorktreeIds,
       baseWorktreeId,
+      ...(claimedWorktreeId === undefined ? {} : { claimedWorktreeId }),
       ...(explicitBaseBranch === undefined
         ? {}
         : { baseBranchResolution: 'exact-branch' }),

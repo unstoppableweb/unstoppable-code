@@ -124,6 +124,10 @@ export interface AccountMcpSeam {
 }
 
 /** One of this computer's items the cloud account doesn't have yet (CAN-6176). */
+const LOCAL_ROW_PREFIX = 'local:';
+const LOCAL_SOURCE_ID = 'this-computer';
+const LOCAL_SOURCE_LABEL = 'On this computer';
+
 export interface PortalPluginsLocalItem {
   readonly key: string;
   readonly name: string;
@@ -916,36 +920,39 @@ const PortalPluginsPickerContent = memo(function PortalPluginsPickerContent({
     },
     [projection],
   );
-  const addLocal = async (key: string): Promise<void> => {
-    if (localItems === undefined || addingLocal !== null) return;
-    setAddingLocal(key);
-    try {
-      const added = await localItems.onAdd(key);
-      if (added === null) return;
-      // The cloud copy joins the draft, as if it had been ticked.
-      setDraft((current) =>
-        current === null
-          ? current
-          : {
-              ...current,
-              skillKeys: new Set([
-                ...current.skillKeys,
-                ...added.skillRefs.map((ref) =>
-                  skillKey(ref.sourceId, ref.skillName),
-                ),
-              ]),
-              pluginKeys: new Set([
-                ...current.pluginKeys,
-                ...added.pluginRefs.map((ref) =>
-                  pluginKey(ref.marketplaceId, ref.pluginName),
-                ),
-              ]),
-            },
-      );
-    } finally {
-      setAddingLocal(null);
-    }
-  };
+  const addLocal = useCallback(
+    async (key: string): Promise<void> => {
+      if (localItems === undefined || addingLocal !== null) return;
+      setAddingLocal(key);
+      try {
+        const added = await localItems.onAdd(key);
+        if (added === null) return;
+        // The cloud copy joins the draft, as if it had been ticked.
+        setDraft((current) =>
+          current === null
+            ? current
+            : {
+                ...current,
+                skillKeys: new Set([
+                  ...current.skillKeys,
+                  ...added.skillRefs.map((ref) =>
+                    skillKey(ref.sourceId, ref.skillName),
+                  ),
+                ]),
+                pluginKeys: new Set([
+                  ...current.pluginKeys,
+                  ...added.pluginRefs.map((ref) =>
+                    pluginKey(ref.marketplaceId, ref.pluginName),
+                  ),
+                ]),
+              },
+        );
+      } finally {
+        setAddingLocal(null);
+      }
+    },
+    [localItems, addingLocal],
+  );
   const selectedRowKeys = useMemo(() => {
     if (!draft) return new Set<string>();
     const result = new Set<string>();
@@ -973,6 +980,54 @@ const PortalPluginsPickerContent = memo(function PortalPluginsPickerContent({
           : row,
       ),
     [projection, selectedRowKeys, toggle],
+  );
+  // This computer's items join the same searchable table (CAN-6943): each is
+  // added through the host's own flow, and is never ticked here.
+  const localRows = useMemo(
+    (): UnifiedTableRow[] =>
+      (localItems?.items ?? []).map((item) => ({
+        kind: item.kind,
+        key: `${LOCAL_ROW_PREFIX}${item.key}`,
+        name: item.name,
+        description: 'Not in your cloud account yet.',
+        source: LOCAL_SOURCE_LABEL,
+        sourceId: LOCAL_SOURCE_ID,
+        sourceSubtitle: '',
+        sourceIcon: 'app',
+        lastUpdated: '',
+        toggleMode: 'disabled',
+        toggleReason: 'Add it to your cloud account to use it in cloud chats.',
+        viewDisabled: true,
+        excludeFromSelectionCount: true,
+        testId: 'portal-plugins-local-item',
+        rowAction: (
+          <Button
+            size="compact"
+            onClick={(): void => {
+              void addLocal(item.key);
+            }}
+            disabled={addingLocal !== null || saving}
+            data-testid="portal-plugins-local-add"
+          >
+            {item.replacing ? 'Update in cloud' : 'Add to cloud'}
+          </Button>
+        ),
+      })),
+    [localItems, addingLocal, saving, addLocal],
+  );
+  const allRows = useMemo(
+    () => [...tableRows, ...localRows],
+    [tableRows, localRows],
+  );
+  const sourceOptions = useMemo(
+    (): UnifiedTableSourceOption[] =>
+      localRows.length === 0
+        ? (projection?.sources ?? [])
+        : [
+            ...(projection?.sources ?? []),
+            { value: LOCAL_SOURCE_ID, label: LOCAL_SOURCE_LABEL, icon: 'app' },
+          ],
+    [projection, localRows.length],
   );
   const selectedCount = draft
     ? draft.collectionIds.size +
@@ -1180,8 +1235,8 @@ const PortalPluginsPickerContent = memo(function PortalPluginsPickerContent({
               </div>
             )}
             <UnifiedTable
-              rows={tableRows}
-              sourceOptions={projection?.sources ?? []}
+              rows={allRows}
+              sourceOptions={sourceOptions}
               selectedKeys={selectedRowKeys}
               onToggle={toggle}
               onView={(row): void => {
@@ -1198,49 +1253,15 @@ const PortalPluginsPickerContent = memo(function PortalPluginsPickerContent({
               rowCheckboxTestId="portal-plugins-row-checkbox"
               selectionCopy={selectionCopy}
             />
-            {localItems !== undefined && localItems.items.length > 0 && (
-              <div className="pt-3" data-testid="portal-plugins-local-items">
-                <Divider />
-                <div className="flex flex-col gap-2 pt-3">
-                  <div>
-                    <p className="text-xs font-medium fg-primary">
-                      On this computer
-                    </p>
-                    <p className="text-xs fg-secondary">
-                      Not in your cloud account yet. Add one to use it in cloud
-                      chats; you see which files go first.
-                    </p>
-                  </div>
-                  <ul className="flex flex-col gap-1">
-                    {localItems.items.map((item) => (
-                      <li
-                        key={item.key}
-                        className="flex items-center justify-between gap-3"
-                        data-testid="portal-plugins-local-item"
-                      >
-                        <span className="flex min-w-0 items-baseline gap-2">
-                          <span className="truncate text-m fg-primary">
-                            {item.name}
-                          </span>
-                          <span className="text-xs fg-secondary">
-                            {item.kind === 'skill' ? 'Skill' : 'Plugin'}
-                          </span>
-                        </span>
-                        <Button
-                          size="compact"
-                          onClick={(): void => {
-                            void addLocal(item.key);
-                          }}
-                          disabled={addingLocal !== null || saving}
-                          data-testid="portal-plugins-local-add"
-                        >
-                          {item.replacing ? 'Update in cloud' : 'Add to cloud'}
-                        </Button>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              </div>
+            {localRows.length > 0 && (
+              <p
+                className="pt-2 text-xs fg-secondary"
+                data-testid="portal-plugins-local-items"
+              >
+                Items {LOCAL_SOURCE_LABEL.toLowerCase()} aren't in your cloud
+                account yet. Add one to use it in cloud chats; you see which
+                files go first.
+              </p>
             )}
             {marketplaceAdded && (
               <div className="pt-3">

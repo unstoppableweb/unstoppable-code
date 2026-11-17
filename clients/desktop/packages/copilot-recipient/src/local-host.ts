@@ -1,3 +1,4 @@
+import { VaultSecretPinSchema } from '@canopy/protocol/canopy-core';
 import { randomUUID } from 'node:crypto';
 import {
   COPILOT_RECIPIENT_LIMITS as limits,
@@ -68,6 +69,21 @@ export interface CopilotLocalRuntime {
   ): Promise<CopilotRecipientResult>;
   close(): Promise<void>;
 }
+/** Trusted in-process evidence only. Never serialized in a recipient result. */
+export interface CopilotLocalPresentation {
+  readonly id: string;
+  readonly handle: string;
+  readonly binding: CopilotRecipientBinding;
+  readonly committedPin: CopilotRecipientHead['pin'] | null;
+  readonly expiresAt: number;
+}
+export interface CopilotLocalCompletion {
+  readonly handle: string;
+  readonly binding: CopilotRecipientBinding;
+  readonly presentations: readonly CopilotLocalPresentation[];
+  readonly providerSuccess: true;
+  readonly admittedCompletion: true;
+}
 export interface CopilotLocalHostOptions {
   readonly platform: 'darwin' | 'win32' | 'linux';
   /** Checked before any process or recipient creation. */
@@ -78,6 +94,8 @@ export interface CopilotLocalHostOptions {
   current(binding: CopilotRecipientBinding): boolean;
   /** P4 present(handle, epoch); only the fixed recipient port below can receive access. */
   present(handle: string, epoch: string): Promise<unknown>;
+  /** Synchronous trusted owner; invoked only after acknowledged, admitted success. */
+  completed?(evidence: CopilotLocalCompletion): void;
   readonly monotonicNow?: () => number;
   readonly wallNow?: () => number;
 }
@@ -86,7 +104,10 @@ export interface CopilotLocalDelivery {
   /** Revalidate immediately before the encoded writer accepts its next frame. */
   admit(): void;
 }
-type Completion = Extract<CopilotRecipientOutcome, { kind: 'completed' }>;
+type Completion = Extract<
+  CopilotRecipientOutcome,
+  { kind: 'completed' | 'accepted' }
+>;
 type Complete = (
   outcome: Completion,
   delivery: CopilotLocalDelivery,
@@ -127,12 +148,13 @@ interface Pending {
 }
 interface Lease {
   readonly handle: string;
-  readonly binding: CopilotRecipientBinding;
+  binding: CopilotRecipientBinding;
   readonly runtime: CopilotLocalRuntime;
   readonly identity: CopilotRecipientIdentity;
   readonly abort: AbortController;
   readonly channel: CopilotLocalChannel;
   readonly pending: Map<string, Pending>;
+  readonly setupDeadline: number | undefined;
   deadlineTimer: ReturnType<typeof setTimeout>;
   readonly secrets: string[];
   readonly events: CopilotProjectedEvent[];
@@ -142,6 +164,11 @@ interface Lease {
   closed: boolean;
   access?: { token: string; expiresAt: number; monotonicExpiresAt: number };
   accessDeadline?: number;
+  provenance?: CopilotLocalPresentation;
+  readonly used: Map<
+    string,
+    { presentation: CopilotLocalPresentation; monotonicExpiry: number }
+  >;
   sessionId?: string;
   presentation?: Promise<string>;
   closePromise?: Promise<void>;
@@ -192,7 +219,11 @@ export function createCopilotLocalRecipientHost(
       if (closed || lease.closed || lease.abort.signal.aborted) return 'stale';
       if (
         now() >=
-        Math.min(lease.binding.deadline, lease.accessDeadline ?? Infinity)
+        Math.min(
+          lease.binding.deadline,
+          lease.setupDeadline ?? Infinity,
+          lease.accessDeadline ?? Infinity,
+        )
       )
         return 'expired';
       const identityMatches = (): boolean => {
@@ -204,13 +235,19 @@ export function createCopilotLocalRecipientHost(
           live.started === lease.identity.started
         );
       };
+      if (lease.access && wallNow() >= lease.access.expiresAt) return 'expired';
       if (!identityMatches()) return 'identity';
       if (!options.current(structuredClone(lease.binding))) return 'stale';
       // Trusted ports can revoke or replace a process reentrantly.
       if (closed || lease.closed || lease.abort.signal.aborted) return 'stale';
       if (!identityMatches()) return 'identity';
+      if (lease.access && wallNow() >= lease.access.expiresAt) return 'expired';
       return now() >=
-        Math.min(lease.binding.deadline, lease.accessDeadline ?? Infinity)
+        Math.min(
+          lease.binding.deadline,
+          lease.setupDeadline ?? Infinity,
+          lease.accessDeadline ?? Infinity,
+        )
         ? 'expired'
         : undefined;
     } catch {
@@ -245,18 +282,17 @@ export function createCopilotLocalRecipientHost(
   async function bounded<T>(
     lease: Lease,
     work: Promise<T>,
-    timeoutMs: number = limits.callbackMs,
+    timeoutMs: number | null = limits.callbackMs,
   ): Promise<T> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let abort!: () => void;
     const cancelled = new Promise<never>((_resolve, reject) => {
       abort = (): void => reject(failure());
       lease.abort.signal.addEventListener('abort', abort, { once: true });
-      timer = setTimeout(
-        abort,
-        Math.min(timeoutMs, Math.max(0, lease.binding.deadline - now())),
-      );
-      timer.unref();
+      if (timeoutMs !== null) {
+        timer = setTimeout(abort, timeoutMs);
+        timer.unref();
+      }
       if (lease.abort.signal.aborted) abort();
     });
     try {
@@ -265,6 +301,23 @@ export function createCopilotLocalRecipientHost(
       clearTimeout(timer);
       lease.abort.signal.removeEventListener('abort', abort);
     }
+  }
+  function armDeadline(lease: Lease): void {
+    const deadline = Math.min(
+      lease.binding.deadline,
+      lease.setupDeadline ?? Infinity,
+    );
+    lease.accessDeadline = lease.access
+      ? Math.min(deadline, lease.access.monotonicExpiresAt)
+      : undefined;
+    clearTimeout(lease.deadlineTimer);
+    lease.deadlineTimer = setTimeout(
+      () => {
+        void stop(lease);
+      },
+      Math.max(0, (lease.accessDeadline ?? deadline) - now()),
+    );
+    lease.deadlineTimer.unref();
   }
   function scrub<T>(lease: Lease, value: T, parse: (value: unknown) => T): T {
     return parse(redactCopilotToolValue(value, lease.secrets));
@@ -374,17 +427,29 @@ export function createCopilotLocalRecipientHost(
       throw failure();
     }
   }
+  function useAccess(lease: Lease): string {
+    if (!lease.access) throw failure();
+    // Cached access keeps the presentation that originally supplied it.
+    if (options.completed) {
+      if (!lease.provenance) throw failure();
+      lease.used.set(lease.provenance.id, {
+        presentation: lease.provenance,
+        monotonicExpiry: lease.access.monotonicExpiresAt,
+      });
+    }
+    return lease.access.token;
+  }
   async function token(lease: Lease): Promise<string> {
     requireAdmission(lease);
     if (lease.access && lease.access.expiresAt > wallNow())
-      return lease.access.token;
+      return useAccess(lease);
     if (lease.presentation) return lease.presentation;
     lease.access = undefined;
     const work = (async (): Promise<string> => {
       // Admission is checked at mint, here before P4 presentation, in P4 admitted,
       // and once more at synchronous deliver; no bearer crosses the wire.
       requireAdmission(lease);
-      await bounded(
+      const presented = await bounded(
         lease,
         Promise.resolve().then(() => {
           requireAdmission(lease);
@@ -393,7 +458,29 @@ export function createCopilotLocalRecipientHost(
       );
       requireAdmission(lease);
       if (!lease.access || lease.access.expiresAt <= wallNow()) throw failure();
-      return lease.access.token;
+      if (options.completed) {
+        if (
+          typeof presented !== 'object' ||
+          presented === null ||
+          !('kind' in presented) ||
+          presented.kind !== 'delivered' ||
+          !('committedPin' in presented) ||
+          !('expiresAt' in presented) ||
+          presented.expiresAt !== lease.access.expiresAt
+        )
+          throw failure();
+        lease.provenance = {
+          id: randomUUID(),
+          handle: lease.handle,
+          binding: structuredClone(lease.binding),
+          committedPin:
+            presented.committedPin === null
+              ? null
+              : VaultSecretPinSchema.parse(presented.committedPin),
+          expiresAt: lease.access.expiresAt,
+        };
+      }
+      return useAccess(lease);
     })();
     lease.presentation = work;
     try {
@@ -436,19 +523,8 @@ export function createCopilotLocalRecipientHost(
         throw failure();
       }
       const monotonicExpiresAt = now() + expiresAt - wallNow();
-      lease.accessDeadline = Math.min(
-        lease.binding.deadline,
-        monotonicExpiresAt,
-      );
       lease.access = { token: accessToken, expiresAt, monotonicExpiresAt };
-      clearTimeout(lease.deadlineTimer);
-      lease.deadlineTimer = setTimeout(
-        () => {
-          void stop(lease);
-        },
-        Math.max(0, lease.accessDeadline - now()),
-      );
-      lease.deadlineTimer.unref();
+      armDeadline(lease);
       // Reentrant closure during a trusted delivery never reopens this lease.
       requireAdmission(lease);
     },
@@ -559,6 +635,9 @@ export function createCopilotLocalRecipientHost(
         abort,
         channel,
         pending: new Map(),
+        used: new Map(),
+        setupDeadline:
+          frozen.purpose === 'setup-probe' ? frozen.deadline : undefined,
         deadlineTimer,
         secrets: [],
         events: [],
@@ -616,6 +695,23 @@ export function createCopilotLocalRecipientHost(
     if (refusal) {
       void stop(lease);
       return refused(refusal);
+    }
+    if (command.kind === 'renew') {
+      // Admission above fences the old deadline; unused lifetime never accumulates.
+      lease.binding = { ...lease.binding, deadline: now() + limits.lifetimeMs };
+      armDeadline(lease);
+      try {
+        requireAdmission(lease);
+        const outcome: Completion = { kind: 'accepted' };
+        if (complete) {
+          await bounded(lease, complete(outcome, deliveryGuard(lease)));
+          requireAdmission(lease);
+        }
+        return outcome;
+      } catch {
+        void stop(lease);
+        return refused('channel');
+      }
     }
     if (command.kind === 'cancel' || command.kind === 'close') {
       void stop(lease);
@@ -719,7 +815,7 @@ export function createCopilotLocalRecipientHost(
             },
           });
         }),
-        limits.lifetimeMs,
+        null,
       );
       requireAdmission(lease);
       const projected = scrub(
@@ -814,6 +910,29 @@ export function createCopilotLocalRecipientHost(
       // not just through returning an in-process result to the adapter.
       if (complete) {
         await bounded(lease, complete(outcome, deliveryGuard(lease)));
+        requireAdmission(lease);
+      }
+      if (options.completed) {
+        requireAdmission(lease);
+        if (!lease.used.size) throw failure();
+        for (const { presentation, monotonicExpiry } of lease.used.values()) {
+          if (
+            wallNow() >= presentation.expiresAt ||
+            now() >= monotonicExpiry ||
+            !options.current(structuredClone(presentation.binding))
+          )
+            throw failure();
+        }
+        requireAdmission(lease);
+        options.completed({
+          handle: lease.handle,
+          binding: structuredClone(lease.binding),
+          presentations: structuredClone(
+            [...lease.used.values()].map((u) => u.presentation),
+          ),
+          providerSuccess: true,
+          admittedCompletion: true,
+        });
         requireAdmission(lease);
       }
       return outcome;

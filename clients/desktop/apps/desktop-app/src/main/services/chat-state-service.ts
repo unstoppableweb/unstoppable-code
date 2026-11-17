@@ -1,4 +1,9 @@
 import type { CapturedTranscriptPreview } from '../lib/chat-transcript-log';
+import { isCodeReviewTargetRetiringSync } from '../lib/code-review-registry';
+import {
+  revokeClosedChatSecrets,
+  revokeScopeChatSecrets,
+} from '../agent-secrets/lifecycle';
 import { TrackedPlanImplementationInputSchema } from '@canopy/protocol/portal';
 import { supersedeToolInterruptions } from '@canopy/agent-transcript/settlement';
 import { readAutoResumeMetadata } from '@canopy/protocol/portal';
@@ -639,6 +644,12 @@ export interface TrustedChatCommandExecutionOptions extends ChatCommandExecution
    * answer reaches the waiting tool as an agent's.
    */
   answeredByPerson?: true;
+  /**
+   * Set only by the secret request form's channels (`secretRequest.submit`
+   * and `.decline`), after the values are stored. A RequestSecrets question
+   * refuses every other answer or dismissal, whatever entry point sends it.
+   */
+  secretRequestSettlement?: true;
 }
 
 interface ScopeActivityLease {
@@ -10382,6 +10393,9 @@ export class ChatStateService implements ChatStateCommandPort {
         chatIds: [entry.tab.id],
       },
     );
+    // An archived chat's agent secrets go with it, as on the command path
+    // (core-chat-archive-effects.ts).
+    await revokeClosedChatSecrets({ ...scope, chatId: entry.tab.id });
     return commit.state.archivesFile;
   }
 
@@ -10969,7 +10983,11 @@ export class ChatStateService implements ChatStateCommandPort {
   }
 
   private isScopeDeletionBlocking(lifecycleKey: string): boolean {
-    if (!this.deletingScopeIds.has(lifecycleKey)) {
+    const reviewPrefix = `${CODE_REVIEW_CHAT_PROJECT_ID}\u0000`;
+    const retiringReview =
+      lifecycleKey.startsWith(reviewPrefix) &&
+      isCodeReviewTargetRetiringSync(lifecycleKey.slice(reviewPrefix.length));
+    if (!this.deletingScopeIds.has(lifecycleKey) && !retiringReview) {
       return false;
     }
     return !(this.scopeActivityLeases.getStore() ?? []).some(
@@ -11114,6 +11132,8 @@ export class ChatStateService implements ChatStateCommandPort {
         ?.forEach((id) => removedTabIds.add(id));
       this.scopesAwaitingProjectionReadmission.set(key, removedTabIds);
     });
+    // The scope's chats are gone, so are the secrets people gave them.
+    await revokeScopeChatSecrets(scope);
   }
 
   private async createTab(
@@ -14478,6 +14498,22 @@ export class ChatStateService implements ChatStateCommandPort {
     let noOpOutcome: 'not_found' | 'already_applied' | 'rejected' | undefined;
     try {
       const state = await this.repository.getState(scope);
+      // By request id or the tool-use id alias, as settlement matches below.
+      const secretRequest = state.tabsFile.pendingQuestions?.find(
+        (candidate) =>
+          candidate.chatId === command.chatId &&
+          (candidate.requestId === command.questionId ||
+            candidate.toolUseId === command.questionId) &&
+          candidate.questions.some(
+            (question) => question.secretRequest !== undefined,
+          ),
+      );
+      if (secretRequest && options.secretRequestSettlement !== true)
+        return commandResult(
+          envelope,
+          await this.repository.getRevision(scope),
+          'rejected',
+        );
       if (!dismiss && command.type === 'chat.answer_question') {
         const pending = state.tabsFile.pendingQuestions?.find(
           (candidate) =>

@@ -7,7 +7,10 @@ import {
   launchPrCommentTriageChat,
 } from '../lib/builtin-gh-chat';
 import { assertWritableScope } from '../lib/read-only-scope';
-import { readAllSidebarItems } from '../lib/sidebar-items';
+import {
+  readAllSidebarItems,
+  resolveWorktreeEffectiveFor,
+} from '../lib/sidebar-items';
 import { sendToAllWindows } from '../lib/window-send';
 import { readWorkspaceWorktrees } from '../lib/workspace-persistence';
 import { setWorktreeHooksPaused } from '../lib/workspace-script-hook-settings';
@@ -43,6 +46,12 @@ export function mainAdvisorWorktreeActionHost(options: {
   };
   return {
     readItems: async () => (await readAllSidebarItems()).items,
+    readWorktreeEffective: async (projectId, worktreeId) =>
+      (
+        await resolveWorktreeEffectiveFor(projectId, 'worktree.effective', [
+          worktreeId,
+        ])
+      )[worktreeId],
     updateWorktree: async (request) => {
       const { worktree } = await updateWorktree(request);
       announce(request.workspaceId);

@@ -486,6 +486,13 @@ export interface ChatTab extends Omit<
   /** Starter for a confirmed new worktree, awaiting initial canonical creation. */
   pendingInitialCreation?: boolean;
   /**
+   * The starter shows a cached approval mode while the fresh default lookup
+   * runs (CAN-6957). Display-only: canonical creation and sends wait for that
+   * lookup (or a user's pick) before reading the mode. Renderer-only, never
+   * persisted or sent.
+   */
+  approvalModeProvisional?: true;
+  /**
    * Foreground-first delivery: main left this chat's message bodies out of
    * this window's pushes (`messages.omitted`), so the cached rows may be old.
    * Renderer-only, never persisted; only a successful catch-up read clears it.

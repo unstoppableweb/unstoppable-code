@@ -3,6 +3,12 @@ import { logMainProcessWarn } from '../../lib/main-process-logging';
 import { isOpenCodeHarnessEnabled } from '../../opencode/feature-flag';
 import { parseAgentRouteModelId } from '@canopy/protocol/agents';
 import { delegationRuntimeUnavailableReason } from './runtime-support';
+import {
+  ANTIGRAVITY_DELEGATE_MODEL_REQUIRED,
+  antigravityChildAdmission,
+  antigravityDelegateRawModel,
+} from '../../antigravity/delegation-admission';
+import { isAntigravityConnectionEnabled } from '../../antigravity/connection';
 import { isCopilotHarnessEnabled } from '../../copilot/feature-flag';
 import { peekCursorAccount } from '../../cursor/connection';
 import { readPreferencesFile } from '../../lib/preferences-store';
@@ -160,15 +166,17 @@ export async function discoverManagedDelegationModels(
           ...choice,
           harnessId: harness,
           runtimeKind:
-            harness === 'opencode'
-              ? 'opencode-acp'
-              : harness === 'copilot'
-                ? 'copilot-sdk'
-                : harness === 'cursor'
-                  ? 'cursor-acp'
-                  : harness === 'claude'
-                    ? 'claude-sdk'
-                    : 'codex-app-server',
+            harness === 'antigravity'
+              ? 'antigravity-acp'
+              : harness === 'opencode'
+                ? 'opencode-acp'
+                : harness === 'copilot'
+                  ? 'copilot-sdk'
+                  : harness === 'cursor'
+                    ? 'cursor-acp'
+                    : harness === 'claude'
+                      ? 'claude-sdk'
+                      : 'codex-app-server',
           capabilities,
           supportedThinkingLevels:
             configuredModel.supportedThinkingLevels.filter(
@@ -189,15 +197,17 @@ export async function discoverManagedDelegationModels(
           ...choice,
           harnessId: harness,
           runtimeKind:
-            harness === 'opencode'
-              ? 'opencode-acp'
-              : harness === 'copilot'
-                ? 'copilot-sdk'
-                : harness === 'cursor'
-                  ? 'cursor-acp'
-                  : harness === 'claude'
-                    ? 'claude-sdk'
-                    : 'codex-app-server',
+            harness === 'antigravity'
+              ? 'antigravity-acp'
+              : harness === 'opencode'
+                ? 'opencode-acp'
+                : harness === 'copilot'
+                  ? 'copilot-sdk'
+                  : harness === 'cursor'
+                    ? 'cursor-acp'
+                    : harness === 'claude'
+                      ? 'claude-sdk'
+                      : 'codex-app-server',
           capabilities,
           supportedThinkingLevels:
             model?.supportedThinkingLevels.filter(
@@ -225,6 +235,19 @@ export async function discoverManagedDelegationModels(
         const runtimeUnavailable =
           await delegationRuntimeUnavailableReason(harness);
         if (runtimeUnavailable) return disabled(runtimeUnavailable);
+        // Before any plugin work: the runner accepts only Google
+        // subscription (gemini-) models.
+        if (
+          harness === 'antigravity' &&
+          !antigravityDelegateRawModel(runtime.runtimeModel)
+        )
+          return disabled(ANTIGRAVITY_DELEGATE_MODEL_REQUIRED);
+        // Fail-closed until native discovery isolation is qualified; a pure
+        // check, so it also runs before any plugin work.
+        if (harness === 'antigravity') {
+          const admission = antigravityChildAdmission();
+          if (!admission.admitted) return disabled(admission.reason);
+        }
         if (runtime.pluginSelections) {
           const discoverySignal = signal ?? new AbortController().signal;
           await materializeDelegationAgentPlugins(
@@ -232,6 +255,17 @@ export async function discoverManagedDelegationModels(
             (directory) => openDelegationFiles(directory, discoverySignal),
             harness,
           );
+        }
+        if (harness === 'antigravity') {
+          if (!(await isAntigravityConnectionEnabled()))
+            return disabled('Connect Google in Settings.');
+          return {
+            ...choice,
+            availability: 'unknown',
+            authState: 'unknown',
+            disabledReason:
+              'Google account access will be validated at launch.',
+          };
         }
         if (harness === 'opencode') {
           if (

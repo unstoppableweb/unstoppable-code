@@ -4,9 +4,16 @@ import * as path from 'node:path';
 /** How many damaged copies of one store file are kept. */
 export const DAMAGED_COPY_LIMIT = 5;
 
-/** The name a damaged copy of `filePath` taken at `now` gets. */
+/** The next unused damaged-copy name at or after `now` (epoch milliseconds). */
 export function damagedCopyPath(filePath: string, now = Date.now()): string {
-  return `${filePath}.damaged-${now}`;
+  let stamp = now;
+  let candidate = `${filePath}.damaged-${stamp}`;
+  // Serialized store writers can recover twice within one clock tick.
+  while (fs.existsSync(candidate)) {
+    stamp += 1;
+    candidate = `${filePath}.damaged-${stamp}`;
+  }
+  return candidate;
 }
 
 /**

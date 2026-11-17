@@ -215,6 +215,7 @@ function mcpItem(
   configName: string | undefined,
   ref: { serverId: string; configId: string },
   enabledKeys: ReadonlySet<string>,
+  unsupportedReason?: string,
 ): DeferredCatalogItem {
   const identityRef = encodeMcpRef(ref.serverId, ref.configId);
   const deferredRef = encodeDeferredCatalogRef(identityRef);
@@ -231,8 +232,16 @@ function mcpItem(
     name,
     description: entry.description,
     sourceLabel: serverName,
-    status: selected ? 'already_enabled' : 'available',
-    ...(selected ? { reason: 'Already enabled in this chat.' } : {}),
+    status: unsupportedReason
+      ? 'unsupported'
+      : selected
+        ? 'already_enabled'
+        : 'available',
+    ...(unsupportedReason
+      ? { reason: unsupportedReason }
+      : selected
+        ? { reason: 'Already enabled in this chat.' }
+        : {}),
     selection: { ref: deferredRef, kind: 'mcp', name, sourceLabel: serverName },
   };
 }
@@ -305,6 +314,10 @@ export async function buildDeferredToolsCatalog(
           content.configName,
           content.selectionRef,
           enabledMcpKeys,
+          // Antigravity admits only proxied HTTP and brokered stdio servers.
+          options.provider === 'antigravity' && content.transport === 'sse'
+            ? 'Antigravity does not support SSE MCP servers.'
+            : undefined,
         ),
       );
     }

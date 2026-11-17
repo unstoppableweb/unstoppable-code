@@ -17,6 +17,7 @@ export interface MigrationUseReceipt {
   readonly id: string;
   readonly pin: VaultSecretPin;
   readonly successorKeys: readonly string[];
+  readonly provenance?: string;
 }
 export interface MigrationDeletion {
   readonly id: string;
@@ -112,13 +113,21 @@ export function migrationIdentity(value: unknown): MigrationIdentity {
   };
 }
 export function migrationUse(value: unknown): MigrationUseReceipt {
-  const row = object(value, ['id', 'pin', 'successorKeys']);
+  const hasProvenance =
+    typeof value === 'object' && value !== null && 'provenance' in value;
+  const row = object(
+    value,
+    hasProvenance
+      ? ['id', 'pin', 'successorKeys', 'provenance']
+      : ['id', 'pin', 'successorKeys'],
+  );
   const pin = VaultSecretPinSchema.safeParse(row.pin);
   if (!pin.success) return invalidMigration();
   return {
     id: text(row.id),
     pin: pin.data,
     successorKeys: array(row.successorKeys).map(text),
+    ...(hasProvenance ? { provenance: text(row.provenance) } : {}),
   };
 }
 function attempt(value: unknown, vaultId: string): MigrationAttempt {

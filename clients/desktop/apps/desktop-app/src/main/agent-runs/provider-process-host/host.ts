@@ -1,3 +1,4 @@
+import { hostPlatformOperatingSystem } from '@canopy/core-platform';
 import type {
   ConnectedExecutionHostChannel,
   ExecutionHostChannel,
@@ -42,6 +43,7 @@ export interface ProviderProcessHostHandle {
 }
 
 interface HostedChild {
+  readonly requestId: string;
   readonly child: ProviderProcess;
   readonly owner: ProviderProcessOwner;
   /** Set once the child exited: its pid may be reused, its group may not. */
@@ -53,6 +55,10 @@ interface HostedChild {
   stdoutTruncated: boolean;
   stderrBytes: number;
   stderrTruncated: boolean;
+  /** CAN-6726: its stop traces and reaps descendants in their own groups. */
+  readonly reapsDescendants: boolean;
+  /** The first stop, settled once its cleanup outcome was posted (CAN-6738). */
+  stop?: Promise<void>;
 }
 
 type SpawnRequest = Extract<ProviderProcessHostRequest, { type: 'spawn' }>;
@@ -63,6 +69,20 @@ export function startProviderProcessHost(
   spawner: ProviderProcessSpawner = spawnProviderProcessDirect,
 ): ProviderProcessHostHandle {
   const tracked = new Map<string, HostedChild>();
+  /**
+   * Stops still running, which may outlive their child's close while
+   * reaping. Each settles only after its cleanup outcome was posted, so a
+   * shutdown that waits for it reports the outcome before exiting.
+   */
+  const stopsInFlight = new Set<Promise<void>>();
+  /**
+   * Reaping children that closed before their stop finished: one not yet
+   * stopped is reaped when its stop arrives, as the direct spawner does, or
+   * at shutdown; one already stopping is kept until its outcome is posted,
+   * so a stop arriving meanwhile waits for that outcome (CAN-6738). Owners
+   * always stop a reaping child, so each entry is released.
+   */
+  const closedReapers = new Map<string, HostedChild>();
   let shuttingDown = false;
   let shutdownPromise: Promise<void> | undefined;
 
@@ -98,8 +118,10 @@ export function startProviderProcessHost(
       owner: request.owner,
       windowsVerbatimArguments: request.windowsVerbatimArguments,
       ...(request.stdin ? { stdin: request.stdin } : {}),
+      ...(request.reapDescendantGroups ? { reapDescendantGroups: true } : {}),
     });
     const hosted: HostedChild = {
+      requestId,
       child,
       owner: request.owner,
       exited: false,
@@ -108,6 +130,10 @@ export function startProviderProcessHost(
       stdoutTruncated: false,
       stderrBytes: 0,
       stderrTruncated: false,
+      // As the spawner: Windows' forced tree kill already covers descendants.
+      reapsDescendants:
+        request.reapDescendantGroups === true &&
+        hostPlatformOperatingSystem() !== 'win32',
     };
     tracked.set(requestId, hosted);
     // An exited child's stdin is closed; its close reports the end.
@@ -161,6 +187,7 @@ export function startProviderProcessHost(
     });
     child.once('close', (code, signal) => {
       tracked.delete(requestId);
+      if (hosted.reapsDescendants) closedReapers.set(requestId, hosted);
       post({ type: 'close', requestId, code, signal });
     });
     const pid = child.pid;
@@ -172,26 +199,61 @@ export function startProviderProcessHost(
   const stopChild = (hosted: HostedChild, graceMs: number): Promise<void> => {
     hosted.draining = true;
     hosted.child.stdout.resume();
-    return hosted.child.stop({ graceMs });
+    // A child stops once; a later call (a shutdown mid-stop) waits for it.
+    if (hosted.stop) return hosted.stop;
+    const stopping = hosted.child.stop({ graceMs });
+    const settled = hosted.reapsDescendants
+      ? stopping
+          .then(() => hosted.child.stopCleanup?.())
+          .catch(() => 'unverified' as const)
+          .then((cleanup) => {
+            if (cleanup)
+              post({ type: 'stopped', requestId: hosted.requestId, cleanup });
+          })
+      : stopping.catch(() => undefined);
+    hosted.stop = settled;
+    stopsInFlight.add(settled);
+    void settled.finally(() => {
+      stopsInFlight.delete(settled);
+      closedReapers.delete(hosted.requestId);
+    });
+    return settled;
   };
 
   const shutdown = (): Promise<void> => {
     shutdownPromise ??= (async (): Promise<void> => {
       shuttingDown = true;
       // A child already stopping keeps its own grace; shutdown does not wait
-      // for it, so every tracked group is killed now.
+      // for it, so every tracked group is killed now. A child that reaps its
+      // descendants is stopped below instead (CAN-6726, CAN-6738). One not
+      // yet stopping gets a forced stop: its group is killed at once and its
+      // recorded descendants get one SIGKILL round and a check, about 4 s,
+      // inside the 5 s bound. One already stopping keeps its own grace: with
+      // the default grace its reap can run past the bound, so a descendant
+      // group that ignores SIGTERM may survive a shutdown arriving mid-stop,
+      // and the launcher reports that cleanup unverified when this host
+      // exits. Every stop below settles only after posting its outcome. Any
+      // root group still open when this host exits is killed by the
+      // launcher's exit handling.
       for (const hosted of tracked.values()) {
         const pid = hosted.child.pid;
         if (pid === undefined) continue;
+        if (hosted.reapsDescendants && !hosted.exited) continue;
         if (hosted.exited) signalExitedProcessGroup(pid, 'SIGKILL');
         else void killProcessGroupByPid(pid, 'SIGKILL').catch(() => undefined);
       }
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
         await Promise.race([
-          Promise.all(
-            Array.from(tracked.values(), (hosted) => stopChild(hosted, 0)),
-          ),
+          Promise.all([
+            ...Array.from(
+              [...tracked.values(), ...closedReapers.values()],
+              (hosted) => stopChild(hosted, 0),
+            ),
+            // Includes stops whose child already closed but whose reap of
+            // descendant groups is still running.
+            ...Array.from(stopsInFlight, (stop) => stop.catch(() => undefined)),
+          ]),
           new Promise<void>((resolve) => {
             timer = setTimeout(resolve, SHUTDOWN_STOP_TIMEOUT_MS);
           }),
@@ -214,8 +276,28 @@ export function startProviderProcessHost(
       start(request);
       return;
     }
+    if (request.type === 'stop') {
+      const closed = closedReapers.get(request.requestId);
+      if (closed) {
+        // Starts its stop, or joins the one in flight, whose outcome is
+        // posted once.
+        void stopChild(closed, request.graceMs);
+        return;
+      }
+    }
     const hosted = tracked.get(request.requestId);
-    if (!hosted) return;
+    if (!hosted) {
+      // A stop for a child this host no longer holds: one that never reaped,
+      // or whose stop already settled and posted its outcome. Answer, so a
+      // launcher waiting for a cleanup is never left waiting (CAN-6738).
+      if (request.type === 'stop')
+        post({
+          type: 'stopped',
+          requestId: request.requestId,
+          cleanup: 'unverified',
+        });
+      return;
+    }
     const { child } = hosted;
     switch (request.type) {
       case 'stdin':
@@ -237,6 +319,9 @@ export function startProviderProcessHost(
         return;
       case 'stop':
         void stopChild(hosted, request.graceMs);
+        return;
+      case 'record-descendants':
+        child.recordDescendants?.();
         return;
     }
   };

@@ -1,7 +1,14 @@
 import type * as ChildProcessModule from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
+import type {
+  PlatformProcessGroup,
+  PlatformProcessIdentity,
+  PlatformSupervisionServices,
+} from '@canopy/core-runtime';
+import { reapDescendantGroups } from '../descendant-groups';
 import {
   spawnProviderProcessDirect,
   type ProviderProcess,
@@ -9,6 +16,23 @@ import {
   type ProviderProcessOwner,
   type ProviderProcessRequest,
 } from '../spawn';
+
+/** Supervision services with only the reads a reap uses; the rest refuse. */
+function fakeSupervision(
+  overrides: Partial<PlatformSupervisionServices>,
+): PlatformSupervisionServices {
+  const refuse = (): never => {
+    throw new Error('not used');
+  };
+  return {
+    childProcessOptions: refuse,
+    childEnvironment: refuse,
+    killProcessTree: refuse,
+    inspectProcess: refuse,
+    readProcessTable: refuse,
+    ...overrides,
+  };
+}
 
 /** Lets a malformed owner through the type system, as an untyped caller would. */
 function untypedOwner(value: object): value is ProviderProcessOwner {
@@ -335,5 +359,221 @@ describe('spawnProviderProcessDirect', () => {
     expect(second).toBe(first);
     await first;
     expect(observed.closes).toHaveLength(1);
+  });
+});
+
+/**
+ * CAN-6726: a provider that starts a command in its own session (as
+ * Antigravity does for approved commands) and opts in to reaping leaves
+ * nothing behind; a process outside its tree is never signalled.
+ */
+describe('spawnProviderProcessDirect reapDescendantGroups', () => {
+  /** Starts a command in its own session that ignores SIGTERM, prints its pid. */
+  const STARTS_OWN_GROUP_COMMAND = [
+    '-e',
+    `const { spawn } = require('node:child_process');
+     const command = spawn('/bin/sh', ['-c', 'trap "" TERM; while :; do sleep 1; done'],
+       { detached: true, stdio: 'ignore' });
+     command.unref();
+     process.stdout.write(command.pid + '\\n');
+     setInterval(() => undefined, 1 << 30);`,
+  ];
+
+  afterEach(() => {
+    for (const pid of Array.from(strays)) {
+      try {
+        process.kill(-pid, 'SIGKILL');
+      } catch {
+        // Already gone.
+      }
+    }
+  });
+
+  itPosix(
+    'stops a descendant in its own group and spares an unrelated one',
+    async () => {
+      const unrelated = spawn('/bin/sh', ['-c', 'trap "" TERM; sleep 60'], {
+        detached: true,
+        stdio: 'ignore',
+      });
+      unrelated.unref();
+      const unrelatedPid = unrelated.pid;
+      if (unrelatedPid === undefined) throw new Error('no unrelated pid');
+      strays.add(unrelatedPid);
+      const child = spawnProviderProcessDirect(
+        request(STARTS_OWN_GROUP_COMMAND, { reapDescendantGroups: true }),
+      );
+      const command = Number(await firstLine(child));
+      strays.add(command);
+      child.recordDescendants?.();
+      // Lets the record start: a stop before it does drops it, and the
+      // outcome is then unverified. One in flight is awaited at the stop.
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      await child.stop({ graceMs: 200 });
+      await until(() => !present(command), 10_000);
+      // CAN-6738: a SIGTERM-ignoring recorded group gets SIGKILL after the
+      // grace, and only its proven absence reports `reaped`.
+      expect(await child.stopCleanup?.()).toBe('reaped');
+      expect(present(unrelatedPid)).toBe(true);
+    },
+    30_000,
+  );
+});
+
+/**
+ * CAN-6726: the reap only signals a recorded group while a member with a
+ * recorded start identity is still in it, so a group id reused by unrelated
+ * processes is never signalled.
+ */
+describe('reapDescendantGroups membership proof', () => {
+  it('never signals a group whose recorded PID now belongs to another process', async () => {
+    const kill = jest.spyOn(process, 'kill').mockImplementation(() => true);
+    const reused: PlatformProcessGroup = {
+      state: 'listed',
+      members: [
+        {
+          pid: 900,
+          startIdentity: 'darwin:v1:900:2',
+          startedAtMs: 2_000,
+          command: 'sh',
+        },
+      ],
+    };
+    const services: Partial<PlatformSupervisionServices> = {
+      identifyProcess: (): Promise<PlatformProcessIdentity> =>
+        Promise.resolve({
+          state: 'running',
+          startIdentity: 'darwin:v1:900:2',
+          processGroupId: 900,
+          executablePath: '/bin/sh',
+        }),
+      listProcessGroup: (): Promise<PlatformProcessGroup> =>
+        Promise.resolve(reused),
+    };
+    await reapDescendantGroups(
+      new Map([[900, new Map([['darwin:v1:900:1', 900]])]]),
+      10,
+      10,
+      fakeSupervision(services),
+    );
+    expect(kill).not.toHaveBeenCalled();
+  });
+
+  it.each(['listed', 'stale-listed', 'unverifiable', 'rejected'] as const)(
+    'never signals a group reused while its %s listing is pending',
+    async (listingState) => {
+      const kill = jest.spyOn(process, 'kill').mockImplementation(() => true);
+      const entered = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      let identity = 'darwin:v1:900:1';
+      const services: Partial<PlatformSupervisionServices> = {
+        identifyProcess: (): Promise<PlatformProcessIdentity> =>
+          Promise.resolve({
+            state: 'running',
+            startIdentity: identity,
+            processGroupId: 900,
+            executablePath: '/bin/sh',
+          }),
+        listProcessGroup: async (): Promise<PlatformProcessGroup> => {
+          const earlyIdentity = identity;
+          entered.resolve();
+          await release.promise;
+          if (listingState === 'rejected') throw new Error('listing failed');
+          if (listingState === 'unverifiable')
+            return {
+              state: 'unverifiable',
+              reason: 'fixture listing unavailable',
+            };
+          return {
+            state: 'listed',
+            members: [
+              {
+                pid: 900,
+                startIdentity:
+                  listingState === 'stale-listed' ? earlyIdentity : identity,
+                startedAtMs: 2_000,
+                command: 'sh',
+              },
+            ],
+          };
+        },
+      };
+      const cleanup = reapDescendantGroups(
+        new Map([[900, new Map([['darwin:v1:900:1', 900]])]]),
+        10,
+        10,
+        fakeSupervision(services),
+      );
+      await entered.promise;
+      expect(kill).not.toHaveBeenCalled();
+      identity = 'darwin:v1:900:2';
+      release.resolve();
+      await cleanup;
+      expect(kill).not.toHaveBeenCalled();
+    },
+  );
+
+  it('never signals a recorded group id that now holds only new processes', async () => {
+    const kill = jest.spyOn(process, 'kill').mockImplementation(() => true);
+    const listed: PlatformProcessGroup = {
+      state: 'listed',
+      members: [
+        {
+          pid: 900,
+          startIdentity: 'darwin:v1:900:2',
+          startedAtMs: 2_000,
+          command: 'sh',
+        },
+      ],
+    };
+    const services: Partial<PlatformSupervisionServices> = {
+      listProcessGroup: (): Promise<PlatformProcessGroup> =>
+        Promise.resolve(listed),
+    };
+    await reapDescendantGroups(
+      new Map([[900, new Map([['darwin:v1:900:1', 900]])]]),
+      10,
+      10,
+      fakeSupervision(services),
+    );
+    expect(kill).not.toHaveBeenCalled();
+  });
+
+  it('proves a killed group gone after a read that was inconclusive while it was torn down', async () => {
+    // CAN-7026: a killed member can be unreadable for a moment while it is
+    // torn down; the check that killed groups are gone reads it again.
+    let killed = false;
+    const kill = jest.spyOn(process, 'kill').mockImplementation(() => {
+      killed = true;
+      return true;
+    });
+    let afterKill = 0;
+    const services: Partial<PlatformSupervisionServices> = {
+      identifyProcess: (): Promise<PlatformProcessIdentity> => {
+        if (!killed)
+          return Promise.resolve({
+            state: 'running',
+            startIdentity: 'darwin:v1:900:1',
+            processGroupId: 900,
+            executablePath: '/bin/sh',
+          });
+        afterKill += 1;
+        return Promise.resolve(
+          afterKill === 1
+            ? { state: 'unverifiable', reason: 'process query failed (ENOENT)' }
+            : { state: 'absent' },
+        );
+      },
+    };
+    await expect(
+      reapDescendantGroups(
+        new Map([[900, new Map([['darwin:v1:900:1', 900]])]]),
+        10,
+        0,
+        fakeSupervision(services),
+      ),
+    ).resolves.toBe('reaped');
+    expect(kill).toHaveBeenCalled();
+    expect(afterKill).toBe(2);
   });
 });

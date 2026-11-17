@@ -1,4 +1,3 @@
-import { isAntigravityConnectionEnabled } from '../antigravity/connection';
 import { AgentModelSelectionError } from '@canopy/execution-engine/lib/agent-model-selection';
 import {
   getAgentModelSelectionId,
@@ -22,11 +21,10 @@ import {
   type ResolvedAgentModelRuntime,
 } from '../agents/agent-model-runtime';
 import { resolveAiCreditsScopeOwner } from '../agents/work-owner';
-import { isModelBlockedByStoredPolicy } from '../lib/model-policy-state';
-import { checkModelGatewayRoute } from '../lib/model-gateway-state';
-import { isCursorRuntimeAvailable } from '../cursor/runtime-availability';
-import { isCopilotRuntimeAvailable } from '../copilot/runtime-availability';
-import { isOpenCodeRuntimeAvailable } from '../opencode/runtime-availability';
+import {
+  checkChatModelAdmission,
+  checkChatModelConnection,
+} from '../agents/chat-model-eligibility';
 
 /** A model selection checked against its creation target. */
 export interface CreationModelSelection {
@@ -145,21 +143,15 @@ async function assertRunnableForTargetOwner(
   { providerType, executionHarness, runtimeModel }: ResolvedAgentModelRuntime,
   target: { projectId: string; taskId: string },
 ): Promise<void> {
-  for (const [runtimeId, label, isAvailable] of [
-    ['antigravity', 'Antigravity', isAntigravityConnectionEnabled],
-    ['cursor', 'Cursor', isCursorRuntimeAvailable],
-    ['copilot', 'Copilot', isCopilotRuntimeAvailable],
-    ['opencode', 'OpenCode', isOpenCodeRuntimeAvailable],
-  ] as const) {
-    if (
-      (providerType === runtimeId || executionHarness === runtimeId) &&
-      !(await isAvailable())
-    )
-      throw new AgentChatSendError(
-        'target_not_ready',
-        `${label} is not connected in the desktop app.`,
-      );
-  }
+  const connection = await checkChatModelConnection({
+    providerType,
+    executionHarness,
+  });
+  if (!connection.ok)
+    throw new AgentChatSendError(
+      'target_not_ready',
+      `${connection.label} is not connected in the desktop app.`,
+    );
   const workOwner = await resolveAiCreditsScopeOwner({
     kind: 'work',
     projectId: target.projectId,
@@ -171,14 +163,13 @@ async function assertRunnableForTargetOwner(
       'target_not_ready',
       'The owner of the target project could not be read. Nothing was created; retry later.',
     );
-  if (await isModelBlockedByStoredPolicy(runtimeModel, workOwner))
-    throw new AgentChatSendError(
-      'validation_failed',
-      'This model is blocked by your organization policy.',
-    );
-  const gateway = await checkModelGatewayRoute(model, workOwner);
-  if (!gateway.ok)
-    throw new AgentChatSendError('validation_failed', gateway.message);
+  const admission = await checkChatModelAdmission({
+    model,
+    policyModel: runtimeModel,
+    workOwner,
+  });
+  if (!admission.ok)
+    throw new AgentChatSendError('validation_failed', admission.message);
 }
 
 /**

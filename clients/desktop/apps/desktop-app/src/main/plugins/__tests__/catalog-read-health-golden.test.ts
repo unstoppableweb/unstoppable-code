@@ -1,6 +1,28 @@
 import * as fs from 'node:fs';
+import * as fsPromises from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import * as atomicFile from '@canopy/execution-engine/node/lib/atomic-file';
+import {
+  StorageOutcomeUnknownError,
+  assertAdmittedWriter,
+  STORAGE_OWNERSHIP,
+} from '@canopy/core-runtime/storage';
+import * as storageAuthority from '@canopy/core-runtime/storage';
+import { settleDetachedWork } from '@canopy/desktop-shared/node/lib/detached-work';
+import {
+  CatalogPublicationError,
+  observePluginCatalog,
+  publishPluginCatalog,
+  publishPluginCachePair,
+  notePluginCatalogEffects,
+  withPluginCatalogScan,
+} from '../plugin-catalog-store';
+import {
+  runSerializedPluginMutation,
+  enqueueDetachedPluginMutation,
+} from '../plugin-mutation-queue';
+import { refreshInvocableInventoryAfterMutation } from '../invocable-inventory-service';
 import {
   readPluginCatalog,
   readPluginCacheIndex,
@@ -8,15 +30,23 @@ import {
 import * as scanner from '../plugin-scanner';
 import * as readHealth from '@canopy/execution-engine/node/plugins/catalog-read-health';
 import type * as ConfigPaths from '../../pipelines/config-paths';
+import * as configPaths from '../../pipelines/config-paths';
+import {
+  scanCuratedMarketplace,
+  invalidateCuratedMarketplaceScanCache,
+  type CuratedMarketplaceScanDeps,
+} from '../curated-plugin-marketplace';
 import { DEFAULT_PREFERENCES } from '@canopy/desktop-shared/node/preferences/defaults';
 import { resolvePlugins } from '@canopy/execution-engine/node/plugins/plugin-resolver';
 import type {
   PluginsCache,
   PluginsCacheV1,
 } from '@canopy/execution-engine/types/plugins';
+import { CURATED_PLUGIN_MARKETPLACE_ID } from '@canopy/execution-engine/types/plugins';
 import {
   addMarketplace,
   installPlugin,
+  installBuiltInPlugin,
   loadMarketplaces,
   loadMarketplacesCacheOnly,
   loadMarketplacesForPresentation,
@@ -25,6 +55,7 @@ import {
   readPluginIndexHealth,
   refreshMarketplaces,
   resetBuiltInMarketplaceScanCacheForTests,
+  scanManagedMarketplacesFresh,
   refreshInstalledPluginCatalog,
   recordBuiltInPluginInstallError,
   syncCuratedPluginsForRefresh,
@@ -33,7 +64,11 @@ import {
   setCodexCompatDisabled,
   setClaudeInstalledItemEnabled,
   uninstallClaudeInstalledItem,
+  updateMarketplace,
+  flushMarketplaceSelectionPruneForTests,
 } from '../plugin-service';
+import * as curatedSync from '../curated-plugin-sync';
+import { runCuratedMcpRefresh } from '../../mcp/refresh-scheduler';
 import {
   readPreferencesFile,
   updatePreferencesFile,
@@ -46,6 +81,7 @@ import {
   listCodexPlugins,
   removeCodexMarketplace,
   resolveCodexPluginInstallRoots,
+  refreshCuratedCodexPlugins,
 } from '../codex-marketplace-service';
 import { materializeCodexPluginsOffMain } from '../codex-plugin-materialization-runner';
 import { readInstalledItemPolicy } from '../../installed-items/installed-item-policy';
@@ -59,8 +95,13 @@ jest.mock('node:fs', () => ({
   default: jest.requireActual<typeof fs>('node:fs'),
   ...jest.requireActual<typeof fs>('node:fs'),
 }));
+jest.mock('node:fs/promises', () => ({
+  __esModule: true,
+  ...jest.requireActual<typeof fsPromises>('node:fs/promises'),
+}));
 jest.mock('../../lib/e2e-gate', () => ({ isE2eBuild: (): boolean => true }));
 jest.mock('../../pipelines/config-paths', () => ({
+  __esModule: true,
   ...jest.requireActual<typeof ConfigPaths>('../../pipelines/config-paths'),
   getBundledClaudeBinaryPath: (): string => '/test/claude',
   getEnhancedEnv: (): NodeJS.ProcessEnv => ({}),
@@ -69,6 +110,9 @@ jest.mock('../../lib/git', () => ({
   cloneRepo: jest.fn(),
   getHeadCommitSha: jest.fn(),
   getRemoteHeadCommitSha: jest.fn(),
+}));
+jest.mock('../invocable-inventory-service', () => ({
+  refreshInvocableInventoryAfterMutation: jest.fn(),
 }));
 jest.mock('../../agents/claude-process-host-runner', () => ({
   runClaudeCliProcessOffMain: jest.fn(),
@@ -84,6 +128,7 @@ jest.mock('../codex-marketplace-service', () => ({
   upgradeCodexMarketplace: jest.fn(),
   installCodexPlugin: jest.fn(),
   listCodexPlugins: jest.fn(),
+  refreshCuratedCodexPlugins: jest.fn(),
 }));
 jest.mock('../../lib/preferences-store', () => ({
   readPreferencesFile: jest.fn(),
@@ -264,7 +309,9 @@ beforeEach(() => {
     .mocked(readPreferencesFile)
     .mockResolvedValue({ ...DEFAULT_PREFERENCES });
 });
-afterEach(() => {
+afterEach(async () => {
+  await flushMarketplaceSelectionPruneForTests();
+  await settleDetachedWork();
   jest.restoreAllMocks();
   if (previousDataDir === undefined) delete process.env.CANOPY_DATA_DIR;
   else process.env.CANOPY_DATA_DIR = previousDataDir;
@@ -2108,13 +2155,15 @@ test('installed empty manifest paths publish default components readable by both
 });
 
 test('healthy reinstall publishes readable documents and retires only the prior payload', async () => {
+  const previousPayload = path.join(root, 'plugin-cache', 'previous-install');
+  fs.mkdirSync(previousPayload, { recursive: true });
   write(healthy());
   write(
     {
       version: 1,
       entries: {
         'm/p': {
-          cachePath: pluginPath,
+          cachePath: previousPayload,
           sourceUrl: 'https://github.com/o/p',
           cachedAt: '',
         },
@@ -2122,7 +2171,10 @@ test('healthy reinstall publishes readable documents and retires only the prior 
     },
     indexPath,
   );
-  fs.writeFileSync(path.join(pluginPath, 'old-payload'), 'previous install');
+  fs.writeFileSync(
+    path.join(previousPayload, 'old-payload'),
+    'previous install',
+  );
   jest.mocked(cloneRepo).mockImplementation((_url, dir) => {
     fs.mkdirSync(path.join(dir, '.claude-plugin'), { recursive: true });
     write(
@@ -2142,5 +2194,969 @@ test('healthy reinstall publishes readable documents and retires only the prior 
   if (index.state !== 'valid') throw new Error('index did not decode');
   expect(index.data.entries['m/p'].cachePath).toBe(result.data?.cachePath);
   expect(fs.existsSync(index.data.entries['m/p'].cachePath)).toBe(true);
-  expect(fs.existsSync(pluginPath)).toBe(false);
+  expect(fs.existsSync(previousPayload)).toBe(false);
+  expect(fs.existsSync(pluginPath)).toBe(true);
+});
+
+function publicationGate(): { promise: Promise<void>; resolve: () => void } {
+  let resolve = (): void => undefined;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+describe('admitted catalog publication and operation lifetimes (CAN-4481)', () => {
+  function seedExternalMarketplace(): void {
+    write(healthy());
+    fs.mkdirSync(path.join(root, 'plugins'), { recursive: true });
+    write(
+      {
+        m: {
+          source: { source: 'github', repo: 'owner/m' },
+          installLocation: root,
+          lastUpdated: '',
+        },
+      },
+      path.join(root, 'plugins', 'known_marketplaces.json'),
+    );
+    fs.mkdirSync(path.join(root, '.claude-plugin'));
+    write(
+      { name: 'm', plugins: [{ name: 'p', source: './plugin' }] },
+      path.join(root, '.claude-plugin', 'marketplace.json'),
+    );
+    jest.spyOn(curatedSync, 'syncCuratedPlugins').mockResolvedValue({
+      status: 'skipped',
+      added: [],
+      changed: [],
+      removed: [],
+      errors: [],
+    });
+    jest.mocked(listCodexPlugins).mockResolvedValue({
+      marketplaces: [],
+      marketplaceLoadErrors: [],
+      featuredPluginIds: [],
+    });
+    jest
+      .mocked(addCodexMarketplace)
+      .mockResolvedValue({ accepted: false, error: 'not supported' });
+    jest.mocked(removeCodexMarketplace).mockResolvedValue({ accepted: true });
+    jest
+      .mocked(resolveCodexPluginInstallRoots)
+      .mockResolvedValue({ locations: [], unresolved: [] });
+    jest
+      .mocked(runClaudeCliProcessOffMain)
+      .mockResolvedValue({ stdout: '', stderr: '' });
+  }
+
+  function seedCuratedPlugin(): void {
+    const curatedRoot = path.join(root, 'curated-plugins', 'marketplace');
+    fs.mkdirSync(path.join(curatedRoot, '.claude-plugin'), { recursive: true });
+    fs.mkdirSync(path.join(curatedRoot, 'p', '.claude-plugin'), {
+      recursive: true,
+    });
+    write(
+      { name: 'curated', plugins: [{ name: 'p', source: './p' }] },
+      path.join(curatedRoot, '.claude-plugin', 'marketplace.json'),
+    );
+    write(
+      { name: 'p', description: 'curated plugin' },
+      path.join(curatedRoot, 'p', '.claude-plugin', 'plugin.json'),
+    );
+    jest.mocked(listCodexPlugins).mockResolvedValue({
+      marketplaces: [],
+      marketplaceLoadErrors: [],
+      featuredPluginIds: [],
+    });
+    invalidateCuratedMarketplaceScanCache();
+  }
+
+  test('scheduler noop can publish refreshed Codex copies and bootstrap an empty refresh stamp', async () => {
+    seedCuratedPlugin();
+    jest.spyOn(curatedSync, 'syncCuratedPlugins').mockResolvedValue({
+      status: 'noop',
+      added: [],
+      changed: [],
+      removed: [],
+      errors: [],
+    });
+    jest.mocked(refreshCuratedCodexPlugins).mockResolvedValue(true);
+    const compatibilityNotification = jest.fn();
+    await runCuratedMcpRefresh({
+      refreshCatalog: () => Promise.resolve(),
+      refreshTools: () => Promise.resolve(),
+      syncCuratedPlugins: () => syncCuratedPluginsForRefresh(),
+      refreshInvocableInventory: compatibilityNotification,
+    });
+    expect(compatibilityNotification).not.toHaveBeenCalled();
+    expect(readPluginCatalogHealth()).toMatchObject({
+      state: 'valid',
+      data: { lastRefreshed: '', marketplaces: [{ curated: true }] },
+    });
+    await settleDetachedWork();
+    expect(refreshInvocableInventoryAfterMutation).toHaveBeenCalledWith(
+      'plugin-catalog:settled-change',
+    );
+  });
+
+  test('a managed install that publishes then returns failure still invalidates consumers', async () => {
+    seedCuratedPlugin();
+    write(healthy());
+    jest
+      .mocked(runClaudeCliProcessOffMain)
+      .mockRejectedValue(new Error('provider refused installation'));
+    const sink = jest.spyOn(atomicFile, 'writeFileAtomically');
+    const result = await installBuiltInPlugin({
+      marketplaceId: CURATED_PLUGIN_MARKETPLACE_ID,
+      pluginName: 'p',
+      providers: ['claude'],
+    });
+    expect(result.success).toBe(false);
+    expect(sink).toHaveBeenCalledWith(
+      catalogPath,
+      expect.any(String),
+      expect.objectContaining({
+        durable: true,
+        admittedWriter: {
+          namespace: 'plugins_cache',
+          writer: 'electron_main',
+          module: 'main/plugins/plugin-catalog-store',
+        },
+      }),
+    );
+    expect(readPluginCatalogHealth()).toMatchObject({
+      state: 'valid',
+      data: { lastProviderRefreshAt: 'stamp' },
+    });
+    await settleDetachedWork();
+    expect(refreshInvocableInventoryAfterMutation).toHaveBeenCalledWith(
+      'plugin-catalog:settled-change',
+    );
+  });
+
+  test.each(['open', 'write', 'sync', 'directory_flush'] as const)(
+    'the production sink reports real %s faults without claiming durable publication',
+    async (stage) => {
+      write(healthy());
+      const before = fs.readFileSync(catalogPath, 'utf8');
+      const realOpen = fsPromises.open;
+      jest.spyOn(fsPromises, 'open').mockImplementation(async (...args) => {
+        const temporary =
+          typeof args[0] === 'string' && args[0].endsWith('.tmp');
+        if (temporary && stage === 'open')
+          throw new Error('injected open failure');
+        const handle = await realOpen(...args);
+        if (temporary && stage === 'write')
+          jest
+            .spyOn(handle, 'writeFile')
+            .mockRejectedValue(new Error('injected write failure'));
+        if (temporary && stage === 'sync')
+          jest
+            .spyOn(handle, 'sync')
+            .mockRejectedValue(new Error('injected sync failure'));
+        if (
+          stage === 'directory_flush' &&
+          args[0] === root &&
+          fs.readFileSync(catalogPath, 'utf8') !== before
+        )
+          jest
+            .spyOn(handle, 'sync')
+            .mockRejectedValue(new Error('injected directory flush failure'));
+        return handle;
+      });
+      let failure: unknown;
+      try {
+        await publishPluginCatalog({ ...healthy(), lastRefreshed: 'new' });
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toBeInstanceOf(CatalogPublicationError);
+      if (!(failure instanceof CatalogPublicationError))
+        throw new Error('expected publication failure');
+      expect(failure.outcomes).toMatchObject([
+        {
+          document: 'plugins_cache',
+          state:
+            stage === 'directory_flush'
+              ? 'installed_uncertain'
+              : 'not_installed',
+        },
+      ]);
+      expect(fs.readFileSync(catalogPath, 'utf8') === before).toBe(
+        stage !== 'directory_flush',
+      );
+      expect(
+        fs.readdirSync(root).filter((name) => name.endsWith('.tmp')),
+      ).toEqual([]);
+      await settleDetachedWork();
+      expect(
+        jest.mocked(refreshInvocableInventoryAfterMutation).mock.calls.length >
+          0,
+      ).toBe(stage === 'directory_flush');
+    },
+  );
+
+  test('a rename retry rechecks observations rather than installing an obsolete temporary file', async () => {
+    write(healthy());
+    const before = fs.readFileSync(catalogPath, 'utf8');
+    const attempted = publicationGate();
+    const rename = jest
+      .spyOn(fsPromises, 'rename')
+      .mockImplementationOnce(() => {
+        notePluginCatalogEffects();
+        attempted.resolve();
+        return Promise.reject(
+          Object.assign(new Error('sharing violation'), { code: 'EBUSY' }),
+        );
+      });
+    jest.useFakeTimers();
+    try {
+      const result = publishPluginCatalog({
+        ...healthy(),
+        lastRefreshed: 'stale',
+      }).catch((error: unknown) => error);
+      await attempted.promise;
+      await jest.advanceTimersByTimeAsync(50);
+      expect(await result).toBeInstanceOf(CatalogPublicationError);
+      expect(rename).toHaveBeenCalledTimes(1);
+      expect(fs.readFileSync(catalogPath, 'utf8')).toBe(before);
+      expect(
+        fs.readdirSync(root).filter((name) => name.endsWith('.tmp')),
+      ).toEqual([]);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('a retired inherited continuation must requeue even without explicit detached enqueue', async () => {
+    const launch = publicationGate();
+    const release = publicationGate();
+    const started = publicationGate();
+    const order: string[] = [];
+    let child = Promise.resolve();
+    await runSerializedPluginMutation(() => {
+      child = launch.promise.then(() =>
+        runSerializedPluginMutation(() => {
+          order.push('child');
+          return Promise.resolve();
+        }),
+      );
+      return Promise.resolve();
+    });
+    const blocker = runSerializedPluginMutation(async () => {
+      started.resolve();
+      await release.promise;
+      order.push('released');
+    });
+    await started.promise;
+    launch.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(order).toEqual([]);
+    release.resolve();
+    await Promise.all([child, blocker]);
+    expect(order).toEqual(['released', 'child']);
+  });
+
+  test('a detached launch while its parent is active cannot borrow the live slot', async () => {
+    const started = publicationGate();
+    const release = publicationGate();
+    const order: string[] = [];
+    let child = Promise.resolve();
+    const parent = runSerializedPluginMutation(async () => {
+      child = enqueueDetachedPluginMutation(() => {
+        order.push('child');
+        return Promise.resolve();
+      });
+      started.resolve();
+      await release.promise;
+      order.push('parent settled');
+    });
+    await started.promise;
+    expect(order).toEqual([]);
+    release.resolve();
+    await parent;
+    await child;
+    expect(order).toEqual(['parent settled', 'child']);
+  });
+
+  test.each([
+    ['refresh', false],
+    ['refresh', true],
+    ['update', false],
+    ['update', true],
+  ] as const)(
+    '%s and remove are ordered before input reads (remove first=%s)',
+    async (operation, removeFirst) => {
+      seedExternalMarketplace();
+      const knownPath = path.join(root, 'plugins', 'known_marketplaces.json');
+      const started = publicationGate();
+      const release = publicationGate();
+      const effects: string[] = [];
+      jest
+        .mocked(runClaudeCliProcessOffMain)
+        .mockImplementation(async ({ args }) => {
+          const verb = args[2];
+          effects.push(verb);
+          if (effects.length === 1) {
+            started.resolve();
+            await release.promise;
+          }
+          if (verb === 'remove') write({}, knownPath);
+          return { stdout: '', stderr: '' };
+        });
+      const mutate = ():
+        | ReturnType<typeof refreshMarketplaces>
+        | ReturnType<typeof updateMarketplace> =>
+        operation === 'refresh'
+          ? refreshMarketplaces(undefined, { providerUpdates: 'always' })
+          : updateMarketplace('m');
+      const remove = (): ReturnType<typeof removeMarketplace> =>
+        removeMarketplace('m');
+      const sink = jest.spyOn(atomicFile, 'writeFileAtomically');
+      const first = removeFirst ? remove() : mutate();
+      await started.promise;
+      const second = removeFirst ? mutate() : remove();
+      await Promise.resolve();
+      expect(effects).toHaveLength(1);
+      release.resolve();
+      const results = await Promise.all([first, second]);
+      expect(results[0].success).toBe(true);
+      // Refresh after removal discovers no source. Update after removal refuses,
+      // rather than applying an observation of the previous same-ID row.
+      expect(results[1].success).toBe(!(removeFirst && operation === 'update'));
+      const catalog = readPluginCatalogHealth();
+      if (catalog.state !== 'valid')
+        throw new Error('expected healthy catalog');
+      expect(
+        catalog.data.marketplaces.find((marketplace) => marketplace.id === 'm'),
+      ).toBeUndefined();
+      const catalogWrites = sink.mock.calls.filter(
+        ([target]) => target === catalogPath,
+      );
+      expect(catalogWrites.length).toBeGreaterThan(0);
+      for (const [, , options] of catalogWrites)
+        expect(options).toMatchObject({
+          durable: true,
+          admittedWriter: {
+            namespace: 'plugins_cache',
+            writer: 'electron_main',
+            module: 'main/plugins/plugin-catalog-store',
+          },
+        });
+    },
+  );
+
+  test.each([
+    -60_000,
+    24 * 60 * 60_000 - 1,
+    24 * 60 * 60_000,
+    24 * 60 * 60_000 + 1,
+  ])(
+    'provider refresh TTL retains its strict boundary and future stamp policy (age=%s)',
+    async (age) => {
+      seedExternalMarketplace();
+      const now = Date.now();
+      jest.spyOn(Date, 'now').mockReturnValue(now);
+      const stamp = new Date(now - age).toISOString();
+      write({ ...healthy(), lastProviderRefreshAt: stamp });
+      const result = await refreshMarketplaces(undefined, {
+        providerUpdates: 'if-stale',
+      });
+      expect(result.success).toBe(true);
+      const shouldUpdate = age > 24 * 60 * 60_000;
+      const providerUpdated = jest
+        .mocked(runClaudeCliProcessOffMain)
+        .mock.calls.some(([request]) => request.args[2] === 'update');
+      expect(providerUpdated).toBe(shouldUpdate);
+      if (!shouldUpdate) expect(result.data?.lastProviderRefreshAt).toBe(stamp);
+      const persisted = readPluginCatalogHealth();
+      if (persisted.state !== 'valid')
+        throw new Error('expected valid catalog');
+      expect(persisted.data.lastProviderRefreshAt).toBe(
+        result.data?.lastProviderRefreshAt,
+      );
+    },
+  );
+
+  test('an in-flight built-in scan cannot insert its pre-invalidation result', async () => {
+    write(healthy());
+    const bundle = path.join(root, 'bundle');
+    const manifest = path.join(
+      bundle,
+      '.agents',
+      'plugins',
+      'marketplace.json',
+    );
+    const pluginManifest = path.join(
+      bundle,
+      'plugin',
+      '.codex-plugin',
+      'plugin.json',
+    );
+    fs.mkdirSync(path.dirname(manifest), { recursive: true });
+    fs.mkdirSync(path.dirname(pluginManifest), { recursive: true });
+    write(
+      {
+        name: 'builtin',
+        plugins: [{ name: 'p', source: { source: 'local', path: './plugin' } }],
+      },
+      manifest,
+    );
+    write({ name: 'p', description: 'old' }, pluginManifest);
+    jest.spyOn(configPaths, 'getBundledPluginsDir').mockReturnValue(bundle);
+    jest
+      .spyOn(configPaths, 'getBundledClaudePluginMarketplaceManifestPath')
+      .mockReturnValue(path.join(bundle, 'absent.json'));
+    jest
+      .spyOn(configPaths, 'getBundledCodexPluginMarketplaceManifestPath')
+      .mockReturnValue(manifest);
+    const started = publicationGate();
+    const release = publicationGate();
+    const empty = {
+      marketplaces: [],
+      marketplaceLoadErrors: [],
+      featuredPluginIds: [],
+    };
+    jest
+      .mocked(listCodexPlugins)
+      .mockResolvedValue(empty)
+      .mockImplementationOnce(async () => {
+        started.resolve();
+        await release.promise;
+        return empty;
+      });
+    const scan = scanManagedMarketplacesFresh();
+    await started.promise;
+    write({ name: 'p', description: 'new' }, pluginManifest);
+    resetBuiltInMarketplaceScanCacheForTests();
+    release.resolve();
+    const rows = await scan;
+    expect(rows.find((entry) => entry.builtIn)?.plugins[0].description).toBe(
+      'new',
+    );
+    expect(
+      jest.mocked(listCodexPlugins).mock.calls.length,
+    ).toBeGreaterThanOrEqual(2);
+  });
+
+  test('an in-flight curated scan retries after invalidation rather than resurrecting its memo', async () => {
+    const manifest = path.join(
+      root,
+      'curated-plugins',
+      'marketplace',
+      '.claude-plugin',
+      'marketplace.json',
+    );
+    fs.mkdirSync(path.dirname(manifest), { recursive: true });
+    write(
+      { name: 'curated', plugins: [{ name: 'p', source: './p' }] },
+      manifest,
+    );
+    const fixture = healthy().marketplaces[0];
+    const started = publicationGate();
+    const release = publicationGate();
+    let scans = 0;
+    const deps: CuratedMarketplaceScanDeps = {
+      readClaudeFacets: () => [],
+      readCodexFacets: () => [],
+      mergeProviderPluginFacets: () => fixture.plugins,
+      providerStatus: (provider) => fixture.providerStatus[provider],
+      readInstallStatuses: async ({ plugins }) => {
+        scans += 1;
+        const description = scans === 1 ? 'old' : 'new';
+        if (scans === 1) {
+          started.resolve();
+          await release.promise;
+        }
+        return plugins.map((plugin) => ({ ...plugin, description }));
+      },
+    };
+    invalidateCuratedMarketplaceScanCache();
+    const scan = scanCuratedMarketplace(deps);
+    await started.promise;
+    invalidateCuratedMarketplaceScanCache();
+    release.resolve();
+    expect((await scan)?.plugins[0].description).toBe('new');
+    expect((await scanCuratedMarketplace(deps))?.plugins[0].description).toBe(
+      'new',
+    );
+    expect(scans).toBe(2);
+  });
+
+  test('normalizes the exact committed bytes and preserves the latest provider stamp and extensions', async () => {
+    write({
+      ...healthy(),
+      extension: { retained: true },
+      lastProviderRefreshAt: 'latest',
+    });
+    const candidate = { ...healthy(), lastProviderRefreshAt: 'obsolete' };
+    const committed = await publishPluginCatalog(candidate);
+    expect(committed.lastProviderRefreshAt).toBe('latest');
+    expect(JSON.parse(fs.readFileSync(catalogPath, 'utf8'))).toEqual(committed);
+    expect(JSON.parse(fs.readFileSync(catalogPath, 'utf8'))).toMatchObject({
+      extension: { retained: true },
+    });
+    const advanced = await publishPluginCatalog(candidate, {
+      advanceProviderStamp: true,
+    });
+    expect(advanced.lastProviderRefreshAt).toBe('obsolete');
+  });
+
+  test('a scan can retain its intentional provider rejection without replaying the effect', async () => {
+    write(healthy());
+    let effects = 0;
+    const scanned = await withPluginCatalogScan(() => {
+      // scanCodexMarketplace may deregister a structurally invalid provider.
+      effects += 1;
+      notePluginCatalogEffects();
+      return Promise.resolve({
+        ...healthy(),
+        lastRefreshed: 'scanned after rejection',
+      });
+    });
+    const committed = await publishPluginCatalog(scanned.value, {
+      observation: scanned.observation,
+    });
+    expect(committed.lastRefreshed).toBe('scanned after rejection');
+    expect(effects).toBe(1);
+  });
+
+  test('an owned scan effect cannot revive an observation invalidated by another context', async () => {
+    write(healthy());
+    const started = publicationGate();
+    const release = publicationGate();
+    const scanning = withPluginCatalogScan(async () => {
+      started.resolve();
+      await release.promise;
+      notePluginCatalogEffects();
+      return healthy();
+    });
+    await started.promise;
+    notePluginCatalogEffects();
+    release.resolve();
+    const scanned = await scanning;
+    await expect(
+      publishPluginCatalog(scanned.value, { observation: scanned.observation }),
+    ).rejects.toThrow(/fresh scan/);
+  });
+
+  test('rejects a candidate observed before remove/re-add, including reused marketplace IDs', async () => {
+    write(healthy());
+    const observation = observePluginCatalog();
+    await publishPluginCatalog({ ...healthy(), marketplaces: [] });
+    const replacement = healthy();
+    replacement.marketplaces[0].name = 'replacement';
+    await publishPluginCatalog(replacement);
+    await expect(
+      publishPluginCatalog(healthy(), { observation }),
+    ).rejects.toThrow(/fresh scan/);
+    expect(readPluginCatalogHealth()).toMatchObject({
+      state: 'valid',
+      data: replacement,
+    });
+  });
+
+  test('rechecks the original observation at installation after the temp has been written', async () => {
+    write(healthy());
+    const before = fs.readFileSync(catalogPath, 'utf8');
+    const realWrite = atomicFile.writeFileAtomically;
+    jest
+      .spyOn(atomicFile, 'writeFileAtomically')
+      .mockImplementation((target, data, options) =>
+        realWrite(target, data, {
+          ...options,
+          beforeInstall: async () => {
+            notePluginCatalogEffects();
+            await options?.beforeInstall?.();
+          },
+        }),
+      );
+    await expect(
+      publishPluginCatalog({ ...healthy(), lastRefreshed: 'new' }),
+    ).rejects.toThrow(/fresh scan/);
+    expect(fs.readFileSync(catalogPath, 'utf8')).toBe(before);
+    expect(
+      fs.readdirSync(root).filter((name) => name.endsWith('.tmp')),
+    ).toEqual([]);
+  });
+
+  test.each([
+    ['plugin_cache_index', 'not_installed'],
+    ['plugin_cache_index', 'installed_uncertain'],
+    ['plugins_cache', 'not_installed'],
+    ['plugins_cache', 'installed_uncertain'],
+  ] as const)(
+    'retains exact pair outcomes when %s is %s',
+    async (failedDocument, failure) => {
+      write(healthy());
+      write({ version: 1, entries: {} }, indexPath);
+      const oldCatalog = fs.readFileSync(catalogPath, 'utf8');
+      const oldIndex = fs.readFileSync(indexPath, 'utf8');
+      const realWrite = atomicFile.writeFileAtomically;
+      jest
+        .spyOn(atomicFile, 'writeFileAtomically')
+        .mockImplementation(async (target, data, options) => {
+          const document =
+            target === indexPath ? 'plugin_cache_index' : 'plugins_cache';
+          if (document !== failedDocument)
+            return realWrite(target, data, options);
+          if (failure === 'not_installed') throw new Error('before install');
+          await realWrite(target, data, options);
+          throw new StorageOutcomeUnknownError(
+            'directory_flush',
+            new Error('flush'),
+            document,
+          );
+        });
+      const expected = [
+        ...(failedDocument === 'plugins_cache'
+          ? [{ document: 'plugin_cache_index', state: 'durable' }]
+          : []),
+        { document: failedDocument, state: failure },
+      ];
+      const nextIndex = {
+        version: 1 as const,
+        entries: {
+          'm/p': { cachePath: pluginPath, sourceUrl: 'repo', cachedAt: 'new' },
+        },
+      };
+      let failureResult: unknown;
+      try {
+        await publishPluginCachePair(nextIndex, {
+          ...healthy(),
+          lastRefreshed: 'new',
+        });
+      } catch (error) {
+        failureResult = error;
+      }
+      expect(failureResult).toBeInstanceOf(CatalogPublicationError);
+      if (!(failureResult instanceof CatalogPublicationError))
+        throw new Error('expected publication error');
+      expect(
+        failureResult.outcomes.map(({ document, state }) => ({
+          document,
+          state,
+        })),
+      ).toEqual(expected);
+      for (const outcome of failureResult.outcomes) {
+        if (outcome.state === 'durable')
+          expect(outcome.committed).toEqual(
+            JSON.parse(
+              fs.readFileSync(
+                outcome.document === 'plugins_cache' ? catalogPath : indexPath,
+                'utf8',
+              ),
+            ),
+          );
+        else expect(outcome.committed).toBeUndefined();
+        if (outcome.state === 'installed_uncertain')
+          expect(outcome.installedCandidate).toEqual(
+            JSON.parse(
+              fs.readFileSync(
+                outcome.document === 'plugins_cache' ? catalogPath : indexPath,
+                'utf8',
+              ),
+            ),
+          );
+      }
+      expect(fs.readFileSync(catalogPath, 'utf8') === oldCatalog).toBe(
+        failedDocument === 'plugin_cache_index' || failure === 'not_installed',
+      );
+      expect(fs.readFileSync(indexPath, 'utf8') === oldIndex).toBe(
+        failedDocument === 'plugin_cache_index' && failure === 'not_installed',
+      );
+      await settleDetachedWork();
+      if (
+        failedDocument === 'plugins_cache' ||
+        failure === 'installed_uncertain'
+      )
+        expect(refreshInvocableInventoryAfterMutation).toHaveBeenCalled();
+      else
+        expect(refreshInvocableInventoryAfterMutation).not.toHaveBeenCalled();
+    },
+  );
+
+  test('a successful pair reports two durable normalized documents', async () => {
+    write(healthy());
+    const committed = await publishPluginCachePair(
+      { version: 1, entries: {} },
+      healthy(),
+    );
+    expect(
+      committed.outcomes.map(({ document, state }) => ({ document, state })),
+    ).toEqual([
+      { document: 'plugin_cache_index', state: 'durable' },
+      { document: 'plugins_cache', state: 'durable' },
+    ]);
+    expect(JSON.parse(fs.readFileSync(catalogPath, 'utf8'))).toEqual(
+      committed.catalog,
+    );
+    expect(JSON.parse(fs.readFileSync(indexPath, 'utf8'))).toEqual(
+      committed.index,
+    );
+  });
+
+  test('the second document cannot forget a foreign invalidation during the first publication', async () => {
+    write(healthy());
+    const before = fs.readFileSync(catalogPath, 'utf8');
+    const realWrite = atomicFile.writeFileAtomically;
+    jest
+      .spyOn(atomicFile, 'writeFileAtomically')
+      .mockImplementation(async (target, data, options) => {
+        await realWrite(target, data, options);
+        if (target === indexPath) notePluginCatalogEffects();
+      });
+    await expect(
+      publishPluginCachePair(
+        { version: 1, entries: {} },
+        { ...healthy(), lastRefreshed: 'obsolete' },
+      ),
+    ).rejects.toMatchObject({
+      outcomes: [
+        { document: 'plugin_cache_index', state: 'durable' },
+        { document: 'plugins_cache', state: 'not_installed' },
+      ],
+    });
+    expect(fs.readFileSync(catalogPath, 'utf8')).toBe(before);
+  });
+
+  test('outgoing validation refuses both documents before installing either', async () => {
+    write(healthy());
+    const writeSpy = jest.spyOn(atomicFile, 'writeFileAtomically');
+    await expect(
+      publishPluginCachePair({ version: 1, entries: {} }, {
+        ...healthy(),
+        version: 7,
+      } as unknown as PluginsCache),
+    ).rejects.toThrow(/supported format/);
+    expect(writeSpy).not.toHaveBeenCalled();
+  });
+
+  test.each(['renderer', 'desktop_cli', 'utility_process', 'daemon'] as const)(
+    'refuses a self-declared %s persistence principal',
+    (writer) => {
+      for (const namespace of [
+        'plugins_cache',
+        'plugin_cache_index',
+        'plugin_cache',
+      ] as const)
+        expect(() =>
+          assertAdmittedWriter(
+            namespace,
+            writer,
+            'main/plugins/plugin-catalog-store',
+            STORAGE_OWNERSHIP,
+          ),
+        ).toThrow(/unlisted_writer/);
+    },
+  );
+
+  test('refuses unsupported physical module declarations before temp creation', async () => {
+    write(healthy());
+    const before = fs.readFileSync(catalogPath, 'utf8');
+    await expect(
+      atomicFile.writeFileAtomically(catalogPath, '{}', {
+        admittedWriter: {
+          namespace: 'plugins_cache',
+          writer: 'electron_main',
+          module: 'main/plugins/plugin-service',
+        },
+      }),
+    ).rejects.toThrow(/unadmitted_writer/);
+    expect(fs.readFileSync(catalogPath, 'utf8')).toBe(before);
+  });
+
+  test('production payload admission refuses before mkdir and clone effects', async () => {
+    write(healthy());
+    const assertWriter = storageAuthority.assertAdmittedWriter;
+    jest
+      .spyOn(storageAuthority, 'assertAdmittedWriter')
+      .mockImplementation((namespace, writer, module, rows) => {
+        if (namespace === 'plugin_cache')
+          throw new storageAuthority.StorageWriteRefusedError(
+            namespace,
+            writer,
+            'unadmitted_writer',
+          );
+        assertWriter(namespace, writer, module, rows);
+      });
+    expect(
+      (
+        await installPlugin('m', 'p', 'https://github.com/o/p', {
+          skipRefresh: true,
+        })
+      ).success,
+    ).toBe(false);
+    expect(cloneRepo).not.toHaveBeenCalled();
+    expect(fs.existsSync(path.join(root, 'plugin-cache'))).toBe(false);
+    expect(fs.existsSync(indexPath)).toBe(false);
+  });
+
+  test.each([false, true])(
+    'parent payload removal cannot claim the compatibility tree (aliased=%s)',
+    async (aliased) => {
+      write(healthy());
+      const cacheRoot = path.join(root, 'plugin-cache');
+      const compatibilityRoot = path.join(cacheRoot, 'codex-compatibility');
+      const actualRoot = aliased
+        ? path.join(cacheRoot, 'compatibility-actual')
+        : compatibilityRoot;
+      const payload = path.join(actualRoot, 'p');
+      fs.mkdirSync(payload, { recursive: true });
+      if (aliased) fs.symlinkSync(actualRoot, compatibilityRoot, 'junction');
+      fs.writeFileSync(path.join(payload, 'keep'), 'separately owned');
+      write(
+        {
+          version: 1,
+          entries: {
+            'm/p': { cachePath: payload, sourceUrl: 'repo', cachedAt: '' },
+          },
+        },
+        indexPath,
+      );
+      const before = fs.readFileSync(indexPath, 'utf8');
+      await expect(removeInstalledPluginCache('m', 'p')).rejects.toThrow(
+        /separate owner/,
+      );
+      expect(fs.readFileSync(path.join(payload, 'keep'), 'utf8')).toBe(
+        'separately owned',
+      );
+      expect(fs.readFileSync(indexPath, 'utf8')).toBe(before);
+    },
+  );
+
+  test.each(['parent', 'external', 'outside-alias', 'compatibility-ancestor'])(
+    'reinstall cannot retire an unowned %s payload path',
+    async (kind) => {
+      write(healthy());
+      const cacheRoot = path.join(root, 'plugin-cache');
+      const compatibilityRoot = path.join(cacheRoot, 'codex-compatibility');
+      fs.mkdirSync(cacheRoot, { recursive: true });
+      let previousPayload: string;
+      if (kind === 'parent') previousPayload = cacheRoot;
+      else if (kind === 'external') previousPayload = pluginPath;
+      else if (kind === 'outside-alias') {
+        previousPayload = path.join(cacheRoot, 'outside-alias');
+        fs.symlinkSync(pluginPath, previousPayload, 'junction');
+      } else {
+        previousPayload = path.join(cacheRoot, 'compatibility-parent');
+        fs.mkdirSync(path.join(previousPayload, 'compatibility'), {
+          recursive: true,
+        });
+        fs.symlinkSync(
+          path.join(previousPayload, 'compatibility'),
+          compatibilityRoot,
+          'junction',
+        );
+      }
+      const marker = path.join(previousPayload, 'keep');
+      fs.writeFileSync(marker, 'unowned payload');
+      write(
+        {
+          version: 1,
+          entries: {
+            'm/p': {
+              cachePath: previousPayload,
+              sourceUrl: 'repo',
+              cachedAt: '',
+            },
+          },
+        },
+        indexPath,
+      );
+      jest.mocked(cloneRepo).mockImplementation((_url, destination) => {
+        fs.mkdirSync(destination, { recursive: true });
+        return Promise.resolve();
+      });
+      const result = await installPlugin('m', 'p', 'https://github.com/o/p', {
+        skipRefresh: true,
+      });
+      expect(result.success).toBe(false);
+      expect(result.error).toMatch(
+        /separate owner|outside its managed directory/,
+      );
+      expect(fs.readFileSync(marker, 'utf8')).toBe('unowned payload');
+      const index = readPluginIndexHealth();
+      if (index.state !== 'valid')
+        throw new Error('expected valid installed index');
+      expect(index.data.entries['m/p'].cachePath).not.toBe(previousPayload);
+      expect(fs.existsSync(index.data.entries['m/p'].cachePath)).toBe(true);
+    },
+  );
+
+  test.each([false, true])(
+    'detached work takes a fresh slot when launched after parent settlement = %s',
+    async (afterSettlement) => {
+      const launch = publicationGate();
+      const release = publicationGate();
+      const started = publicationGate();
+      const order: string[] = [];
+      let child: Promise<void> = Promise.resolve();
+      await runSerializedPluginMutation(() => {
+        child = (async (): Promise<void> => {
+          if (afterSettlement) await launch.promise;
+          await enqueueDetachedPluginMutation(() => {
+            order.push('child');
+            return Promise.resolve();
+          });
+        })();
+        order.push('parent');
+        return Promise.resolve();
+      });
+      if (afterSettlement) {
+        const blocker = runSerializedPluginMutation(async () => {
+          started.resolve();
+          await release.promise;
+          order.push('released');
+        });
+        await started.promise;
+        launch.resolve();
+        await Promise.resolve();
+        expect(order).toEqual(['parent']);
+        release.resolve();
+        await blocker;
+        await child;
+        expect(order).toEqual(['parent', 'released', 'child']);
+      } else {
+        await child;
+        expect(order).toEqual(['parent', 'child']);
+      }
+    },
+  );
+
+  test('external installation invalidates after a partial publication, without retiring the previous payload', async () => {
+    write(healthy());
+    write(
+      {
+        version: 1,
+        entries: {
+          'm/p': { cachePath: pluginPath, sourceUrl: 'repo', cachedAt: '' },
+        },
+      },
+      indexPath,
+    );
+    fs.writeFileSync(path.join(pluginPath, 'keep'), 'old');
+    jest.mocked(cloneRepo).mockImplementation((_url, dir) => {
+      fs.mkdirSync(dir, { recursive: true });
+      return Promise.resolve();
+    });
+    const realWrite = atomicFile.writeFileAtomically;
+    jest
+      .spyOn(atomicFile, 'writeFileAtomically')
+      .mockImplementation((target, data, options) => {
+        if (target === catalogPath)
+          return Promise.reject(new Error('catalog install failed'));
+        return realWrite(target, data, options);
+      });
+    const result = await installPlugin('m', 'p', 'https://github.com/o/p', {
+      skipRefresh: true,
+    });
+    expect(result.success).toBe(false);
+    expect(fs.readFileSync(path.join(pluginPath, 'keep'), 'utf8')).toBe('old');
+    await settleDetachedWork();
+    expect(refreshInvocableInventoryAfterMutation).toHaveBeenCalledWith(
+      'plugin-catalog:settled-change',
+    );
+  });
 });

@@ -97,7 +97,7 @@ import {
 // only function declarations are read across it (never at module-eval time).
 import { peekProviderNativeAuthAvailability } from '../auth/provider-auth-state';
 import { isModelBlockedByStoredPolicy } from '../lib/model-policy-state';
-import { checkModelGatewayRoute } from '../lib/model-gateway-state';
+import { assertTurnModelGatewayRoute } from '../lib/model-gateway-turn';
 import { accountProxySettingsSignature } from '../account-proxy/service';
 import { previewAccountProxySessionRoute } from '../account-proxy/routing';
 import {
@@ -1213,10 +1213,16 @@ async function getOrCreateSessionImpl(
     });
     throw new Error('This model is blocked by your organization policy.');
   }
-  if (providerType !== 'claude' && providerType !== 'codex') {
-    const gatewayCheck = await checkModelGatewayRoute(selectedModel, workOwner);
-    if (!gatewayCheck.ok) throw new Error(gatewayCheck.message);
-  }
+  // The final, per-turn recheck. The send funnels refuse the same route
+  // before saving; this one runs after the message is saved, so its refusal
+  // carries the `session` stage, which no send boundary or queue treats as a
+  // pre-save refusal: it never hands the draft back or replays the message.
+  await assertTurnModelGatewayRoute(
+    selectedModel,
+    providerType,
+    workOwner,
+    'session',
+  );
 
   // Decide against the key's entry as it is now: during the awaits above
   // another teardown may have detached the one read at entry, and a successor

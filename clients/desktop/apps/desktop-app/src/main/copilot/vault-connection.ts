@@ -1,3 +1,4 @@
+import { COPILOT_VAULT_IMPORT_PATHS } from '@canopy/protocol/copilot-handoff';
 import type { CopilotRecipientHandle } from '@canopy/desktop-shared/node/copilot/recipient-handle';
 import type {
   CopilotGrantResult,
@@ -42,6 +43,9 @@ type PendingEntry =
   | 'startup'
   | 'open';
 type PendingPath = 'resume' | 'cancel' | 'read' | 'unavailable';
+/** P7's authenticated import dimension composes with, never impersonates, P6 setup state. */
+export const COPILOT_VAULT_PENDING_IMPORT_PATHS = COPILOT_VAULT_IMPORT_PATHS;
+export const COPILOT_VAULT_IMPORT_CANCEL_PATHS = COPILOT_VAULT_IMPORT_PATHS;
 export const COPILOT_VAULT_PENDING_PATHS = {
   create: {
     connect: 'resume',

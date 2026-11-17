@@ -234,6 +234,28 @@ interface LiveRun extends LiveInitiatedWorkRun {
   cancelRequest: OperationCancelRequest | null;
 }
 
+/**
+ * Whose interrupted runs a source resumes after a restart: every run of an
+ * origin kind, or only the runs of one source of a kind, so that other
+ * sources sharing it (such as other `system` sources) keep ending as
+ * interrupted.
+ */
+export type InitiatedWorkRecoverableOrigin =
+  | OperationOriginKind
+  | { readonly kind: OperationOriginKind; readonly sourceId: string };
+
+type RecoveryKey = string;
+
+function recoveryKeyOf(origin: InitiatedWorkRecoverableOrigin): RecoveryKey {
+  return typeof origin === 'string'
+    ? origin
+    : `${origin.kind}\0${origin.sourceId}`;
+}
+
+function describeRecoveryKey(key: RecoveryKey): string {
+  return key.replace('\0', ' source ');
+}
+
 const RUN_FAILED: CanopyErrorPayload = {
   kind: 'internal',
   code: 'core.initiatedWork.run.failed',
@@ -290,33 +312,30 @@ export class InitiatedWorkEngine {
   private readonly operations: OperationService;
   private readonly clock: () => number;
   private readonly onError: (error: unknown, context: string) => void;
-  private readonly recoverable: ReadonlySet<OperationOriginKind>;
+  private readonly recoverable: ReadonlySet<RecoveryKey>;
   private readonly live = new Set<LiveRun>();
   private readonly targetTails = new Map<string, Promise<void>>();
-  private readonly resumers = new Map<
-    OperationOriginKind,
-    InitiatedWorkResumer
-  >();
+  private readonly resumers = new Map<RecoveryKey, InitiatedWorkResumer>();
   private readonly pendingRecoveries = new Map<
-    OperationOriginKind,
+    RecoveryKey,
     PendingRecovery[]
   >();
   private stopping = false;
   /** Runs accepted with their occurrence and not yet started by their source. */
   private readonly accepted = new Map<string, AcceptedRun>();
   private readonly resumerWaits = new Map<
-    OperationOriginKind,
+    RecoveryKey,
     { promise: Promise<void>; resolve: () => void }
   >();
 
   constructor(options: {
     operations: OperationService;
     /**
-     * Origin kinds whose interrupted runs a source resumes after a restart.
-     * Their recovery waits until the source registers its resumer; runs of
-     * any other origin end as interrupted.
+     * Origin kinds, or single sources of a kind, whose interrupted runs a
+     * source resumes after a restart. Their recovery waits until the source
+     * registers its resumer; runs of any other origin end as interrupted.
      */
-    recoverableOrigins?: readonly OperationOriginKind[];
+    recoverableOrigins?: readonly InitiatedWorkRecoverableOrigin[];
     /** Failures to record a run that already ended; its result still returns. */
     onError?: (error: unknown, context: string) => void;
     clock?: () => number;
@@ -324,7 +343,9 @@ export class InitiatedWorkEngine {
     this.operations = options.operations;
     this.clock = options.clock ?? Date.now;
     this.onError = options.onError ?? ((): void => undefined);
-    this.recoverable = new Set(options.recoverableOrigins ?? []);
+    this.recoverable = new Set(
+      (options.recoverableOrigins ?? []).map(recoveryKeyOf),
+    );
     this.operations.registerDomain({
       domain: INITIATED_WORK_DOMAIN,
       kinds: [CORE_INITIATED_WORK_RUN_KIND],
@@ -335,23 +356,41 @@ export class InitiatedWorkEngine {
   }
 
   /**
-   * Register the restart recovery of one origin kind. Runs a restart
-   * interrupted are recovered in the order they were accepted, once the
-   * ledger opens; a host that wants recovery at startup opens it.
+   * Register the restart recovery of one origin kind, or with `sourceId` of
+   * one source of that kind. Runs a restart interrupted are recovered in the
+   * order they were accepted, once the ledger opens; a host that wants
+   * recovery at startup opens it.
    */
   registerResumer(
     kind: OperationOriginKind,
     resumer: InitiatedWorkResumer,
+    options: { sourceId?: string } = {},
   ): void {
-    if (!this.recoverable.has(kind))
-      throw new Error(`Initiated work of kind ${kind} is not recoverable.`);
-    if (this.resumers.has(kind))
-      throw new Error(`Initiated work of kind ${kind} already has a resumer.`);
-    this.resumers.set(kind, resumer);
-    const pending = this.pendingRecoveries.get(kind) ?? [];
-    this.pendingRecoveries.delete(kind);
+    const key = recoveryKeyOf(
+      options.sourceId === undefined
+        ? kind
+        : { kind, sourceId: options.sourceId },
+    );
+    const named = describeRecoveryKey(key);
+    if (!this.recoverable.has(key))
+      throw new Error(`Initiated work of kind ${named} is not recoverable.`);
+    if (this.resumers.has(key))
+      throw new Error(`Initiated work of kind ${named} already has a resumer.`);
+    this.resumers.set(key, resumer);
+    const pending = this.pendingRecoveries.get(key) ?? [];
+    this.pendingRecoveries.delete(key);
     for (const recovery of pending) this.resumeRecovered(resumer, recovery);
-    this.resumerWaits.get(kind)?.resolve();
+    this.resumerWaits.get(key)?.resolve();
+  }
+
+  /** The recovery an interrupted run of this origin belongs to, if any. */
+  private recoveryKeyFor(origin: OperationOrigin): RecoveryKey | null {
+    const sourced = recoveryKeyOf({
+      kind: origin.kind,
+      sourceId: origin.sourceId,
+    });
+    if (this.recoverable.has(sourced)) return sourced;
+    return this.recoverable.has(origin.kind) ? origin.kind : null;
   }
 
   /**
@@ -559,8 +598,8 @@ export class InitiatedWorkEngine {
       .ready()
       .then(() =>
         Promise.all(
-          Array.from(this.pendingRecoveries.keys(), (kind) =>
-            this.resumerRegistered(kind),
+          Array.from(this.pendingRecoveries.keys(), (key) =>
+            this.resumerRegistered(key),
           ),
         ),
       )
@@ -570,15 +609,15 @@ export class InitiatedWorkEngine {
       );
   }
 
-  private resumerRegistered(kind: OperationOriginKind): Promise<void> {
-    let waiting = this.resumerWaits.get(kind);
+  private resumerRegistered(key: RecoveryKey): Promise<void> {
+    let waiting = this.resumerWaits.get(key);
     if (!waiting) {
       let resolve = (): void => undefined;
       const promise = new Promise<void>((done) => {
         resolve = done;
       });
       waiting = { promise, resolve };
-      this.resumerWaits.set(kind, waiting);
+      this.resumerWaits.set(key, waiting);
     }
     return waiting.promise;
   }
@@ -1063,8 +1102,9 @@ export class InitiatedWorkEngine {
     );
     if (!run) {
       // A recovered run still waiting for its source to register ends here.
-      const kind = operation.origin.kind;
-      const pending = this.pendingRecoveries.get(kind);
+      const key = this.recoveryKeyFor(operation.origin);
+      const pending =
+        key === null ? undefined : this.pendingRecoveries.get(key);
       const index =
         pending?.findIndex(
           (recovery) =>
@@ -1072,7 +1112,8 @@ export class InitiatedWorkEngine {
         ) ?? -1;
       if (pending && index >= 0) {
         const [recovery] = pending.splice(index, 1);
-        if (pending.length === 0) this.pendingRecoveries.delete(kind);
+        if (pending.length === 0 && key !== null)
+          this.pendingRecoveries.delete(key);
         recovery.resolve({ status: 'cancelled' });
       }
       return Promise.resolve('cancelled');
@@ -1084,18 +1125,18 @@ export class InitiatedWorkEngine {
 
   /** The operation service's restart recovery for one interrupted run. */
   private recover(operation: OperationRecord): Promise<OperationRecovery> {
-    const kind = operation.origin.kind;
-    if (!this.recoverable.has(kind)) return Promise.resolve({ status: 'lost' });
+    const key = this.recoveryKeyFor(operation.origin);
+    if (key === null) return Promise.resolve({ status: 'lost' });
     return new Promise<OperationRecovery>((resolve) => {
       const recovery: PendingRecovery = { operation, resolve };
-      const resumer = this.resumers.get(kind);
+      const resumer = this.resumers.get(key);
       if (resumer) {
         this.resumeRecovered(resumer, recovery);
         return;
       }
-      const pending = this.pendingRecoveries.get(kind) ?? [];
+      const pending = this.pendingRecoveries.get(key) ?? [];
       pending.push(recovery);
-      this.pendingRecoveries.set(kind, pending);
+      this.pendingRecoveries.set(key, pending);
     });
   }
 

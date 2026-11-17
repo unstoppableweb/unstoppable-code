@@ -975,8 +975,9 @@ export async function handlePortalStandaloneChatSend(
                   }
                 : result,
             ),
-          fail: (_mappedCommand, code, message, retryable): void =>
-            context.fail(command, code, message, retryable),
+          // Details carry a stable refusal reason (CAN-6701) to the original command.
+          fail: (_mappedCommand, code, message, retryable, details): void =>
+            context.fail(command, code, message, retryable, details),
         },
       );
     } catch (error) {

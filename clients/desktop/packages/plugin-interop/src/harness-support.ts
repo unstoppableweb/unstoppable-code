@@ -23,6 +23,7 @@ export const PLUGIN_HARNESSES = [
   'cursor',
   'copilot',
   'opencode',
+  'antigravity',
 ] as const satisfies readonly AgentExecutionHarness[];
 
 export type PluginHarnessId = (typeof PLUGIN_HARNESSES)[number];
@@ -46,6 +47,12 @@ export interface PluginHarnessGates {
   cursor: boolean;
   copilot: boolean;
   opencode: boolean;
+  /**
+   * Antigravity is a Labs harness: hosts offer it only where this person can
+   * run it (its gate is on and Google models were discovered), so the table
+   * never advertises it to everyone while it is unqualified.
+   */
+  antigravity: boolean;
 }
 
 /**
@@ -79,8 +86,17 @@ export function pluginHarnessLabel(id: PluginHarnessId): string {
       return 'Copilot';
     case 'opencode':
       return 'OpenCode';
+    case 'antigravity':
+      return 'Antigravity';
   }
 }
+
+/**
+ * Why a supported row is not a qualified one. Antigravity runs the projected
+ * skills, commands and MCP servers, but stays in Labs and never loads plugin
+ * hooks or agents, so the table says so instead of a plain Installed.
+ */
+export const ANTIGRAVITY_PLUGIN_HARNESS_NOTE = 'Labs: no hooks or agents';
 
 export type PluginHarnessInstallation =
   | 'Installed'
@@ -91,10 +107,7 @@ export interface PluginHarnessRow {
   id: PluginHarnessId;
   name: string;
   installation: PluginHarnessInstallation;
-  /**
-   * What one Add for every harness recorded for this harness (CAN-6816):
-   * what it left out, why it was skipped, or why installing failed.
-   */
+  /** Experimental qualification or the recorded per-harness install outcome. */
   note?: string;
 }
 
@@ -210,6 +223,7 @@ function withRecordedInstall(
   row: PluginHarnessRow,
   record: ItemHarnessInstalls | undefined,
 ): PluginHarnessRow {
+  if (row.id === 'antigravity') return row;
   const state = record?.harnesses[row.id];
   if (state === undefined) return row;
   const standIn = record?.standIns?.[row.id];
@@ -250,11 +264,12 @@ function isInstalledFor(
  *
  * - Claude runs a plugin with a Claude facet; Codex runs a native or
  *   compatibility facet unless the Claude plugin's Codex compatibility is off.
- * - Cursor, Copilot, and OpenCode sessions read the facet a Cursor session
- *   reads (`cursorPluginFacetSupport`; the desktop resolver runs the same
- *   projection for Copilot and OpenCode sessions), so they are supported when
+ * - Cursor, Copilot, OpenCode and Antigravity sessions read the facet a
+ *   Cursor session reads (`cursorPluginFacetSupport`; the desktop resolver
+ *   runs the same projection for the others), so they are supported when
  *   that facet carries something they load, and installed when the plugin is
- *   installed for that facet's provider.
+ *   installed for that facet's provider. A supported Antigravity row carries
+ *   {@link ANTIGRAVITY_PLUGIN_HARNESS_NOTE}: supported, but unqualified.
  * - `codexCompatDisabled` changes only the Codex row. It does not strip the
  *   Codex facet: compatibility is a Claude-plugin setting, so a Codex-only
  *   plugin never carries it.
@@ -298,6 +313,16 @@ export function pluginHarnessRows(
       case 'cursor':
       case 'copilot':
         return row(id, facetSupport.supported, facetSupport.provider);
+      case 'antigravity': {
+        const projected = row(
+          id,
+          facetSupport.supported,
+          facetSupport.provider,
+        );
+        return projected.installation === 'Not supported'
+          ? projected
+          : { ...projected, note: ANTIGRAVITY_PLUGIN_HARNESS_NOTE };
+      }
       case 'opencode':
         return row(
           id,

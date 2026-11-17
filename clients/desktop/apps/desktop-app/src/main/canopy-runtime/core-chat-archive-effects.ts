@@ -8,6 +8,7 @@ import {
 } from '@canopy/protocol/canopy-core';
 import type { ChatArchiveTarget } from '../lib/chat-archive-bookkeeping';
 import { logMainProcessError } from '../lib/main-process-logging';
+import { revokeClosedChatSecrets } from '../agent-secrets/lifecycle';
 import type { createCoreChatCommandAdapter } from './core-chat-command-adapter';
 
 /** Bookkeeping after a committed core archive or restore (CAN-4113 D4). */
@@ -98,6 +99,8 @@ export function withChatArchiveEffects(
         return;
       const { action } = parsed;
       const archived: { chatId: string; keepSession: boolean }[] = [];
+      // Discarded chats leave no archive entry but still close.
+      const discarded: string[] = [];
       let restoreId: string | undefined;
       switch (action.type) {
         case 'chat.archive_tab':
@@ -109,22 +112,37 @@ export function withChatArchiveEffects(
         case 'chat.close_tab':
           if (action.mode !== 'discard')
             archived.push({ chatId: action.tabId, keepSession: false });
+          else discarded.push(action.tabId);
           break;
         case 'chat.close_tabs':
           for (const target of action.targets) {
             if (target.mode !== 'discard')
               archived.push({ chatId: target.tabId, keepSession: false });
+            else discarded.push(target.tabId);
           }
           break;
         case 'chat.restore_archive':
           restoreId = action.targetTabId ?? action.archiveEntryId;
           break;
       }
-      if (archived.length === 0 && restoreId === undefined) return;
+      if (
+        archived.length === 0 &&
+        discarded.length === 0 &&
+        restoreId === undefined
+      )
+        return;
       const port = getPort();
       if (!port) return;
       const { projectId, worktreeId } = parsed;
       const snapshot = await port.getState({ projectId, worktreeId });
+      const isOpen = (chatId: string): boolean =>
+        snapshot.tabsFile.tabs.some((candidate) => candidate.id === chatId);
+      // A discarded or archived chat's agent secrets go with it, whatever the
+      // archive keeps (CONTRACTS.md §8). Like the bookkeeping below, a chat
+      // open again (restored after a replayed command) keeps its secrets.
+      for (const chatId of discarded)
+        if (!isOpen(chatId))
+          await revokeClosedChatSecrets({ projectId, worktreeId, chatId });
       for (const { chatId, keepSession } of archived) {
         const entry = snapshot.archives.find(
           (archive) => archive.chatId === chatId,
@@ -142,6 +160,7 @@ export function withChatArchiveEffects(
           entry.archivedAt !== result.archivedAt
         )
           continue;
+        await revokeClosedChatSecrets({ projectId, worktreeId, chatId });
         // A replay may follow a restore and a newer archive with other
         // settings, so it reruns only the keyed handback and the index.
         await effects.archived(

@@ -24,6 +24,7 @@ import {
   MAX_AGENT_ARTIFACT_METADATA_BYTES,
 } from '@canopy/protocol/agent-artifacts';
 import { readCodexAccountModelAccessFailure } from '@canopy/protocol/auth-recovery';
+import { readSessionResumeFailure } from '@canopy/protocol/session-recovery';
 import { getBrandEnv } from '@canopy/execution-engine/brand/env';
 import { portalSnapshotWorkBudget } from './portal-snapshot-work-budget';
 import { portalFileReferences } from './portal-file-references';
@@ -943,19 +944,24 @@ function compactPortalChatPart(
     isRecord(part) &&
     part.kind === 'text' &&
     isRecord(part.data) &&
-    part.data.modelAccessFailure !== undefined &&
+    (part.data.modelAccessFailure !== undefined ||
+      part.data.sessionResumeFailure !== undefined) &&
     isRecord(compactedPart) &&
     isRecord(compactedPart.data)
   ) {
-    // The Codex account model notice's carrier (CAN-4716) sits past the
-    // depth limit; keep it validated and structured so the Portal renders
-    // the notice instead of the raw provider error.
+    // Recovery carriers sit past the generic depth limit. Keep them validated
+    // and structured so live events and cached history retain their notices.
     const data = { ...compactedPart.data };
     const modelAccessFailure = readCodexAccountModelAccessFailure(
       part.data.modelAccessFailure,
     );
     if (modelAccessFailure) data.modelAccessFailure = modelAccessFailure;
     else delete data.modelAccessFailure;
+    const sessionResumeFailure = readSessionResumeFailure(
+      part.data.sessionResumeFailure,
+    );
+    if (sessionResumeFailure) data.sessionResumeFailure = sessionResumeFailure;
+    else delete data.sessionResumeFailure;
     return { ...compactedPart, data };
   }
   if (

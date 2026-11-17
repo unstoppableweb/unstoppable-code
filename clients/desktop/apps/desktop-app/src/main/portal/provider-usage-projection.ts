@@ -1,4 +1,7 @@
-import { openCodeAccountSnapshotSchema } from '@canopy/protocol/portal';
+import {
+  antigravityAccountSnapshotSchema,
+  openCodeAccountSnapshotSchema,
+} from '@canopy/protocol/portal';
 /**
  * Remote Control projection of the desktop's provider plan usage (CAN-3635).
  * The observability service stays the only usage authority; this module maps
@@ -231,6 +234,7 @@ export function projectPortalProviderUsage(
           ),
         }
       : {}),
+    ...antigravityAccountField(overview),
     providers: PORTAL_PROVIDER_USAGE_PROVIDERS.filter(
       (provider) =>
         provider !== 'copilot' ||
@@ -244,6 +248,17 @@ export function projectPortalProviderUsage(
       return accounts === undefined ? entry : { ...entry, accounts };
     }),
   };
+}
+
+/** Plan metadata only; an invalid snapshot is withheld, never the quotas. */
+function antigravityAccountField(
+  overview: AgentUsageOverview,
+): Pick<PortalProviderUsageProjection, 'antigravityAccount'> {
+  if (!overview.antigravityAccount) return {};
+  const parsed = antigravityAccountSnapshotSchema.safeParse(
+    overview.antigravityAccount,
+  );
+  return parsed.success ? { antigravityAccount: parsed.data } : {};
 }
 
 export function portalProviderUsageEntityEnvelope(
@@ -323,6 +338,9 @@ export function subscribePortalProviderUsage(
     const providers = JSON.stringify({
       providers: projection.providers,
       openCodeAccounts: projection.openCodeAccounts,
+      // The snapshot keeps its time while what the card shows is unchanged,
+      // so this adds no publishes beyond real Antigravity changes.
+      antigravityAccount: projection.antigravityAccount,
     });
     if (providers === lastProviders) {
       return;

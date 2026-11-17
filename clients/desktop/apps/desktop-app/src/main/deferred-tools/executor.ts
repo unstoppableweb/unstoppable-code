@@ -77,6 +77,7 @@ function deferredProvider(
   if (providerType === 'codex') return 'codex';
   if (providerType === 'ollama') return 'ollama';
   if (providerType === 'opencode') return 'opencode';
+  if (providerType === 'antigravity') return 'antigravity';
   return 'claude';
 }
 

@@ -1,11 +1,14 @@
 import type {
+  MultiRepoSidebarItem,
   ScriptRunResponse,
   SidebarItem,
+  SingleRepoSidebarItem,
 } from '@canopy/desktop-shared/types';
 import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import {
   buildScriptEntries,
   findLaunchEntry,
+  launchScriptsProject,
   type ScriptEntry,
 } from '@/components/activity/script-utils';
 import type { AppliedProjectWorktreeScripts } from '@/lib/projectWorktreeScripts';
@@ -14,6 +17,85 @@ import {
   useScriptsStore,
   type ScriptRunState,
 } from '@/stores/scriptsStore';
+import { useProjectsStore } from '@/stores/projectsStore';
+import { useGitHubStore } from '@/stores/githubStore';
+
+// UX: surface-specific refusals for Launch; never fall back to the project.
+const NO_LAUNCH_COMMAND = 'This worktree has no launch command';
+const LAUNCH_UNREADABLE = "Couldn't read this worktree's launch command";
+
+type CodeProject = SingleRepoSidebarItem | MultiRepoSidebarItem;
+
+/**
+ * CAN-6933: the project as this worktree's own checkout resolves it, read
+ * now. Its scripts are the worktree's alone, even when that map is empty, so
+ * Launch never runs the project's command for a branch that changed or
+ * removed its own. A failed read refuses rather than falling back.
+ */
+export async function readFreshLaunchProject(
+  projectId: string,
+  worktreeId: string,
+): Promise<CodeProject | null> {
+  const read = await useProjectsStore
+    .getState()
+    .ensureWorktreeEffective(projectId, [worktreeId]);
+  const project = useProjectsStore
+    .getState()
+    .projects.find((candidate) => candidate.id === projectId);
+  const own =
+    project && project.type !== 'cowork'
+      ? project.worktreeEffective?.[worktreeId]
+      : undefined;
+  if (!read || !project || project.type === 'cowork' || !own) {
+    useGitHubStore.getState().addToast(LAUNCH_UNREADABLE, 'warning');
+    return null;
+  }
+  return launchScriptsProject(project, worktreeId);
+}
+
+const pendingLaunches = new Set<string>();
+
+/**
+ * Runs `launch` at most once at a time per worktree, so a second click while
+ * the worktree's scripts are being read starts nothing.
+ */
+export async function guardWorktreeLaunch(
+  projectId: string,
+  worktreeId: string,
+  launch: () => Promise<void>,
+): Promise<void> {
+  const key = `${projectId}/${worktreeId}`;
+  if (pendingLaunches.has(key)) return;
+  pendingLaunches.add(key);
+  try {
+    await launch();
+  } finally {
+    pendingLaunches.delete(key);
+  }
+}
+
+/** Launch from a row menu: the worktree's own command, read now, or nothing. */
+export function launchWorktreeFresh(
+  projectId: string,
+  worktreeId: string,
+): Promise<void> {
+  return guardWorktreeLaunch(projectId, worktreeId, async () => {
+    const project = await readFreshLaunchProject(projectId, worktreeId);
+    if (!project) return;
+    const entry = resolveWorktreeLaunchEntry(
+      project,
+      worktreeId,
+      useProjectsStore.getState().appliedProjectWorktreeScripts,
+    );
+    if (!entry) {
+      useGitHubStore.getState().addToast(NO_LAUNCH_COMMAND, 'warning');
+      return;
+    }
+    const runs = useScriptsStore.getState().runs[`${projectId}/${worktreeId}`];
+    if (isWorktreeLaunchActive(entry, runs)) return;
+    runWorktreeLaunch(projectId, worktreeId, entry);
+  });
+}
 
 /**
  * A worktree's Launch script, shared by both sidebar rails' Launch menu item:
@@ -25,7 +107,13 @@ export function resolveWorktreeLaunchEntry(
   appliedProjectWorktreeScripts: AppliedProjectWorktreeScripts,
 ): ScriptEntry | undefined {
   return findLaunchEntry(
-    buildScriptEntries(project, worktreeId, appliedProjectWorktreeScripts),
+    buildScriptEntries(
+      project.type === 'cowork'
+        ? project
+        : launchScriptsProject(project, worktreeId),
+      worktreeId,
+      appliedProjectWorktreeScripts,
+    ),
   );
 }
 

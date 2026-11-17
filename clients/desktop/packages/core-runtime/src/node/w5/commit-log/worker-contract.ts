@@ -48,6 +48,12 @@ export interface W5CommitLogWorkerData {
    */
   captureRoot?: string;
   healCleanConflictOperations?: readonly string[];
+  /**
+   * The longest a read waits in the worker for writes to settle before it
+   * refuses as `overloaded` (CAN-5589); under the host's request bound, so
+   * the host never retires a worker over a waiting read. Default 10 s.
+   */
+  readWaitMs?: number;
 }
 
 /**
@@ -143,9 +149,14 @@ export type W5CommitLogWorkerError =
       details: Record<string, unknown>;
     }
   | { kind: 'malformed'; message: string }
-  | { kind: 'failed'; message: string };
+  | { kind: 'failed'; message: string }
+  /** A read that waited past its bound for writes to settle; it changed nothing. */
+  | { kind: 'overloaded'; message: string };
 
-/** Host to worker. The host sends one request at a time, in FIFO order. */
+/**
+ * Host to worker. Writes go one at a time, in FIFO order; reads (`capture`,
+ * `revision`, `recoveryReport`) can be sent beside them (CAN-5589).
+ */
 export interface W5CommitLogRequest {
   id: number;
   method: W5CommitLogMethod;
@@ -205,6 +216,7 @@ function isWorkerError(value: unknown): value is W5CommitLogWorkerError {
       return typeof value.reason === 'string' && isRecord(value.details);
     case 'malformed':
     case 'failed':
+    case 'overloaded':
       return true;
     default:
       return false;
@@ -222,6 +234,10 @@ export function isW5CommitLogWorkerData(
     value.root.length > 0 &&
     isOptionalPath(value.dataRoot) &&
     isOptionalPath(value.captureRoot) &&
+    (value.readWaitMs === undefined ||
+      (typeof value.readWaitMs === 'number' &&
+        Number.isFinite(value.readWaitMs) &&
+        value.readWaitMs > 0)) &&
     (value.healCleanConflictOperations === undefined ||
       (Array.isArray(value.healCleanConflictOperations) &&
         value.healCleanConflictOperations.every(

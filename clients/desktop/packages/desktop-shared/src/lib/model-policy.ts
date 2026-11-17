@@ -26,7 +26,12 @@ export interface ModelPolicyIndex {
   union: ReadonlySet<string>;
 }
 
-function normalizeGovernedModelId(modelId: string): string | undefined {
+/**
+ * The id a model is governed (and routed) by: the Cursor policy identity,
+ * then its alias, then an Agent's base model, then its gateway id. `undefined`
+ * for Ollama and for an Agent that inherits the default.
+ */
+export function normalizeGovernedModelId(modelId: string): string | undefined {
   const aliased = resolveModelAlias(getCursorModelPolicyIdentity(modelId));
   // An Agent that inherits the default has no model until a chat pins it;
   // the pinned route is judged then.
@@ -233,12 +238,22 @@ export function isModelBlockedTriState(
   return true;
 }
 
-/** Whether the model registries place this id on a non-gateway harness. */
+/**
+ * Whether the model registries place this id on a non-gateway harness, so a
+ * cold route catalog cannot change its governed id. Copilot, OpenCode and
+ * Antigravity ids are recognized by their own id format and no gateway route
+ * is keyed on them. Cursor is left out: `getCursorModelPolicyIdentity` maps a
+ * Cursor id onto a hosted gateway entry once the catalog hydrates, so its
+ * governed id can still change.
+ */
 function isNativelySourcedModel(modelId: string): boolean {
   const source = getModelSource(modelId);
   return (
     source === 'claude-managed' ||
     source === 'codex-managed' ||
-    source === 'ollama'
+    source === 'ollama' ||
+    source === 'copilot-managed' ||
+    source === 'opencode-managed' ||
+    source === 'antigravity-managed'
   );
 }

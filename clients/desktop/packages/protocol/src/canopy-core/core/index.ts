@@ -38,6 +38,7 @@ export * from './chat/visual';
 export * from './chat/commands-messaging';
 export * from './chat/send-receipt';
 export * from './chat/question';
+export * from './chat/secrets';
 export * from './chat/locate';
 export * from './chat/transfer';
 export * from './ledger';
@@ -47,6 +48,7 @@ export * from './summary';
 export * from './search';
 export * from './pipeline';
 export * from './plan';
+export * from './review';
 export * from './publication';
 export * from './cloudEnvironment/environments';
 export * from './vault';
@@ -82,6 +84,7 @@ export * from './integration/operations';
 export * from './integration/mcp-host-requests';
 export * from './integration/credential';
 export * from './integration/mcp-account';
+export * from './integration/cloud-account';
 
 export * from './pullRequest/merge-queue';
 

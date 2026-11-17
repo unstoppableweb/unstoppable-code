@@ -267,7 +267,13 @@ const _pickerNativeCatalog: {
 // non-selectable and policy-filtered entries: never an account-only model.
 const _configuredCodexCatalogIds = new Set<string>();
 
-function normalizeCursorIdentity(id: string): string {
+/**
+ * The vendor-neutral spelling of a native Claude or Codex model id: drops an
+ * `anthropic/` or `openai/` prefix and turns `.` into `-`, so a gateway slug
+ * (`anthropic/claude-opus-4.7`) and a package id (`claude-opus-4-7`) compare
+ * equal. Other vendor prefixes are kept.
+ */
+export function normalizeCursorIdentity(id: string): string {
   return id.replace(/^(anthropic|openai)\//, '').replace(/\./g, '-');
 }
 

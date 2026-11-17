@@ -216,6 +216,7 @@ export const CopilotRecipientCommandSchema = z.discriminatedUnion('kind', [
       reply: CopilotCallbackReplySchema,
     })
     .strict(),
+  z.object({ ...envelope, kind: z.literal('renew') }).strict(),
   z.object({ ...envelope, kind: z.literal('cancel') }).strict(),
   z.object({ ...envelope, kind: z.literal('close') }).strict(),
 ]);

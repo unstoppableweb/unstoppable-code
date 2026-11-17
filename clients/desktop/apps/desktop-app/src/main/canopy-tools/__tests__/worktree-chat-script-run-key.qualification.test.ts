@@ -286,14 +286,30 @@ beforeEach(() => {
   startRuntime();
 });
 afterEach(async () => {
+  // Read once: a hook that outlived its timeout must not touch the next case.
+  const current = runtime;
+  const root = mockRoot;
   try {
-    await runtime.shutdown();
+    try {
+      await stopServe(current);
+    } finally {
+      await current.shutdown();
+    }
   } finally {
     invalidateUserEnvironmentInjectionCache();
     jest.restoreAllMocks();
-    rmSync(mockRoot, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
   }
-});
+}, 30_000);
+
+/** Stops the long-running `serve` fixture, so no run outlives its test. */
+async function stopServe(current: typeof runtime): Promise<void> {
+  await current.scriptRuns.cancelInFlight({
+    workspaceId: 'workspace',
+    worktreeId: 'worktree',
+    scriptKey: 'serve',
+  });
+}
 
 /**
  * A worktree chat's run_script through the family that serves it, with the
@@ -392,6 +408,7 @@ describe('worktree chat script runs keyed by the tool call (CAN-5830)', () => {
   });
 
   it('answers a repeat while its run is still going, and starts nothing', async () => {
+    const current = runtime;
     const first = await runScript('serve', 'tool-1', { waitSeconds: 0 });
     expect(first).toMatchObject({
       ok: true,
@@ -417,13 +434,9 @@ describe('worktree chat script runs keyed by the tool call (CAN-5830)', () => {
       expect(dispatched).toHaveLength(1);
       expect(sendToWindow).not.toHaveBeenCalled();
     } finally {
-      await runtime.scriptRuns.cancelInFlight({
-        workspaceId: 'workspace',
-        worktreeId: 'worktree',
-        scriptKey: 'serve',
-      });
+      await stopServe(current);
     }
-  });
+  }, 30_000);
 
   it('refuses through core a reused tool call for another script that raced past the lookup', async () => {
     // Both calls are approved only once both have looked the key up.
@@ -468,7 +481,7 @@ describe('worktree chat script runs keyed by the tool call (CAN-5830)', () => {
           ([, channel]) => channel === IPC_CHANNELS.scriptStarted,
         ),
     ).toHaveLength(2);
-  });
+  }, 30_000);
 
   it('refuses a repeated tool call that asks for another script, and starts nothing', async () => {
     await runScript('build', 'tool-1');

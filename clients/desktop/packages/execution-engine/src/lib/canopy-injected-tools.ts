@@ -1467,6 +1467,12 @@ function getBrandedAppToolKey(toolName: string): CanopyInjectedToolKey | null {
  *   the session gates advertisement.
  * - `opencode-acp-standalone` — the OpenCode Cowork route adds deferred loading
  *   and same-workspace independent forks to the Cursor standalone set.
+ * - `antigravity-acp` — the Antigravity worktree HTTP MCP route. Adds Code
+ *   Graph and deferred loading to the Cursor worktree set. Each turn owns one
+ *   native process, so a Load restarts the turn through the shared reload
+ *   host. The session gates Feed, graph and deferred advertisement.
+ * - `antigravity-acp-standalone` — the Antigravity Cowork route adds deferred
+ *   loading to the Cursor standalone set.
  * - `copilot-sdk` — the Copilot worktree HTTP MCP route. Adds Code Graph to
  *   the Cursor worktree set and allows deferred loading when the host permits
  *   it, plus host-managed independent forks. Copilot Cowork uses its own
@@ -1693,7 +1699,10 @@ export const CANOPY_INJECTED_TOOL_SURFACE_ALLOWLISTS: Readonly<
     'search_ledger_entries',
     'update_ledger_entry',
   ],
-  'native-sdk-ui': ['ask_user_question'],
+  // RequestSecrets waits on the person like AskUserQuestion. A route lists it
+  // only when its session offers secret requests (`secretRequests`), so other
+  // providers' UI servers, delegates and pipelines never see it.
+  'native-sdk-ui': ['ask_user_question', 'request_secrets'],
   'claude-code-terminal': [
     'watch_command',
     'schedule_wakeup',
@@ -1745,11 +1754,18 @@ export const CANOPY_INJECTED_TOOL_SURFACE_ALLOWLISTS: Readonly<
     'update_ledger_entry',
   ],
   'cursor-acp': ACP_WORKTREE_INJECTED_TOOL_KEYS,
-  // Feed and graph need their own qualified host bindings before exposure.
-  'antigravity-acp': ACP_WORKTREE_INJECTED_TOOL_KEYS.filter(
-    (key) => !isLedgerInjectedToolKey(key),
-  ),
-  'antigravity-acp-standalone': ACP_STANDALONE_INJECTED_TOOL_KEYS,
+  // The session gates Feed, graph and deferred advertisement per route.
+  'antigravity-acp': [
+    ...ACP_WORKTREE_INJECTED_TOOL_KEYS,
+    ...CODE_GRAPH_INJECTED_TOOL_KEYS,
+    'search_deferred_tools',
+    'load_deferred_tools',
+  ],
+  'antigravity-acp-standalone': [
+    ...ACP_STANDALONE_INJECTED_TOOL_KEYS,
+    'search_deferred_tools',
+    'load_deferred_tools',
+  ],
   'opencode-acp': [
     ...ACP_WORKTREE_INJECTED_TOOL_KEYS,
     ...CODE_GRAPH_INJECTED_TOOL_KEYS,

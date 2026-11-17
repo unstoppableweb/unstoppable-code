@@ -1,3 +1,4 @@
+import { SESSION_RESUME_NOTICE_COPY } from '@canopy/ui-shared/components';
 import type { ReactNode } from 'react';
 import type {
   NoticeActionsPlacement,
@@ -258,6 +259,31 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
     title: 'Composer',
     note: 'Stacked above the chat input in one column that collapses when nothing is up. Every one is a short title for the state, then the choice or next step on the same line.',
     entries: [
+      {
+        id: 'session-resume-failed',
+        title: 'Saved session: resume failed',
+        note: 'Explicitly creates a fresh chat with an unsent text draft. The original session stays intact.',
+        intent: 'attention',
+        heading: SESSION_RESUME_NOTICE_COPY.title,
+        message: SESSION_RESUME_NOTICE_COPY.message,
+        actions: [
+          { label: SESSION_RESUME_NOTICE_COPY.action, variant: 'primary' },
+        ],
+      },
+      {
+        id: 'session-resume-failed-disabled',
+        title: 'Saved session: recovery unavailable while busy or disconnected',
+        intent: 'attention',
+        heading: SESSION_RESUME_NOTICE_COPY.title,
+        message: SESSION_RESUME_NOTICE_COPY.message,
+        actions: [
+          {
+            label: SESSION_RESUME_NOTICE_COPY.action,
+            variant: 'primary',
+            disabled: true,
+          },
+        ],
+      },
       {
         id: 'plan-mode-suggestion',
         title: 'Multi-step draft: plan mode suggestion',

@@ -16,7 +16,10 @@ import type {
   ChildPipelineAuthorization,
   ResolvedChildPipeline,
 } from './child-pipeline-resolver';
-import { requireHeadlessHarness } from '@canopy/execution-engine/model-harnesses';
+import {
+  isNativeOnlyHarness,
+  requireHeadlessHarness,
+} from '@canopy/execution-engine/model-harnesses';
 import type { ModelHarnessInvocation } from '@canopy/execution-engine/types/model-harnesses';
 import {
   isShutdownSignal,
@@ -111,6 +114,22 @@ import {
   type ExpressionJobState,
 } from './execution-context';
 import {
+  buildCondenserModelRequest,
+  buildRouterModelRequest,
+  condenserUsesModel,
+  DEFAULT_CONDENSER_SCHEMA_TEXT,
+  HOST_HELPER_BATCH_ACTIONS,
+  HOST_HELPER_MODEL_ACTIONS,
+  HOST_HELPER_MODEL_RESULT_ENV,
+  HOST_HELPER_PREPARE_ENV,
+  HOST_HELPER_RESULTS_ENV,
+  parseHostHelperBatchRequests,
+  parseHostHelperPreparedTargets,
+  parseCondenseMaxChars,
+  parseCondenseStrategy,
+  parseRouterRoutes,
+} from '@canopy/execution-engine/builtin-actions/_lib/host-helper-model';
+import {
   evaluateCondition,
   interpolateExpression,
 } from './expression-evaluator';
@@ -147,6 +166,8 @@ import { AGENT_MODEL_PREFIX } from '@canopy/execution-engine/types/agent-models'
 import type {
   AgentPromptWorkerPermission,
   ClaudeModAdmissionContext,
+  CodexPromptRunner,
+  CodexPromptRunnerRequest,
   CodexPromptRunnerResult,
   ExecutionEvent,
   ExecutionState,
@@ -803,6 +824,10 @@ const CLAUDE_ONLY_AGENT_ACTIONS = new Set([
   'builtin/quality-gate',
   'builtin/router',
 ]);
+
+/** Codex cannot disable native tools, so an authored `none` is refused. */
+const CODEX_NONE_PRESET_REFUSAL =
+  'permission_preset "none" is not supported on the Codex harness because that runtime cannot disable native tools. Assign the model to the Claude harness or choose a different permission preset.';
 
 const MODEL_AWARE_AGENT_ACTIONS = new Set([
   'builtin/agent-prompt',
@@ -4182,20 +4207,7 @@ async function maybeRunCodexPrompt(options: {
   /** The step's open Ledger attempt; the host serves it on the thread. */
   ledgerAttempt?: PipelineLedgerAttempt | null;
 }): Promise<StepResult | null> {
-  const {
-    runStepOptions,
-    inputValues,
-    pluginCollectionRuntime,
-    effectiveCwd,
-    tempDir,
-    logFile,
-    startedAt,
-    stepId,
-    attempt,
-    iteration,
-    logMetadata,
-    ledgerAttempt,
-  } = options;
+  const { runStepOptions, inputValues, ledgerAttempt } = options;
   const isResume = runStepOptions.step.uses === 'builtin/agent-resume';
   if (runStepOptions.step.uses !== 'builtin/agent-prompt' && !isResume) {
     return null;
@@ -4249,9 +4261,7 @@ async function maybeRunCodexPrompt(options: {
     parsedPermissionPreset === 'none' &&
     authoredPermissionPreset === 'none'
   ) {
-    throw new Error(
-      'permission_preset "none" is not supported on the Codex harness because that runtime cannot disable native tools. Assign the model to the Claude harness or choose a different permission preset.',
-    );
+    throw new Error(CODEX_NONE_PRESET_REFUSAL);
   }
   // A DEFAULTED `none` must not silently become the most permissive sandbox:
   // `codexSandboxForPermission` maps 'none' -> workspace-write (more permissive
@@ -4270,12 +4280,92 @@ async function maybeRunCodexPrompt(options: {
     }),
     permissionPreset,
   );
+  return runCodexTurn({
+    ...options,
+    runner,
+    resolvedModel,
+    prompt,
+    schema,
+    permissionPreset,
+    fastMode,
+    resumeSessionId,
+    systemPrompt: inputValues.system_prompt,
+    thinkingLevel: parseThinkingEffort(inputValues.thinking_effort),
+    ledgerAttempt,
+  });
+}
+
+/**
+ * One Codex turn through the host runner, shared by `agent-prompt` /
+ * `agent-resume` and helper model turns: the same harness invocation,
+ * AI Credits routing, transcript redaction and log, and failure mapping.
+ */
+async function runCodexTurn(options: {
+  runStepOptions: RunStepOptions;
+  pluginCollectionRuntime: {
+    selections?: ChatTabPluginSelections;
+  };
+  effectiveCwd: string;
+  tempDir: string;
+  logFile: string;
+  startedAt: string;
+  stepId: string;
+  attempt: number;
+  iteration: number;
+  logMetadata: StepLogMetadata;
+  runner: CodexPromptRunner;
+  resolvedModel: NonNullable<CodexPromptRunnerRequest['model']>;
+  prompt: string;
+  schema: CodexPromptRunnerRequest['schema'];
+  permissionPreset: CodexPromptRunnerRequest['permissionPreset'];
+  fastMode: boolean;
+  resumeSessionId: string | undefined;
+  systemPrompt: string | undefined;
+  thinkingLevel: CodexPromptRunnerRequest['thinkingLevel'];
+  ledgerAttempt?: PipelineLedgerAttempt | null;
+  /** A later turn of the same step appends to the step log. */
+  appendTranscript?: boolean;
+  /** The runner's timeout; defaults to the step's whole timeout. */
+  timeoutMs?: number;
+  /** Sees the runner's own result before the step result is built. */
+  onRunnerResult?: (
+    result: CodexPromptRunnerResult,
+    invocation: {
+      accountProxyRouted: boolean;
+      accountProxyConnectionId: string | undefined;
+      /** The transcript's redaction set, including the harness overrides. */
+      secretValues: readonly string[];
+    },
+  ) => void;
+}): Promise<StepResult> {
+  const {
+    runStepOptions,
+    pluginCollectionRuntime,
+    effectiveCwd,
+    tempDir,
+    logFile,
+    startedAt,
+    stepId,
+    attempt,
+    iteration,
+    logMetadata,
+    runner,
+    resolvedModel,
+    prompt,
+    schema,
+    permissionPreset,
+    fastMode,
+    resumeSessionId,
+    ledgerAttempt,
+  } = options;
+  const harness = 'codex';
   const transcriptLog = await openHostRunnerTranscriptLog({
     runStepOptions,
     logFile,
     stepId,
     attempt,
     iteration,
+    append: options.appendTranscript === true,
   });
   const routingContext = buildStepAiCreditsRoutingContext(runStepOptions);
   let streamedTranscriptLength = 0;
@@ -4316,14 +4406,15 @@ async function maybeRunCodexPrompt(options: {
         ...runStepOptions.env,
         ...runStepOptions.secretEnv,
       }),
-      systemPrompt: inputValues.system_prompt,
+      systemPrompt: options.systemPrompt,
       schema,
       resumeSessionId,
       model: resolvedModel,
       ...(harnessInvocation ? { harnessInvocation } : {}),
-      thinkingLevel: parseThinkingEffort(inputValues.thinking_effort),
+      thinkingLevel: options.thinkingLevel,
       fastMode,
-      totalTimeoutMs: runStepOptions.step.timeout_minutes * 60_000,
+      totalTimeoutMs:
+        options.timeoutMs ?? runStepOptions.step.timeout_minutes * 60_000,
       permissionPreset,
       pluginSelections: pluginCollectionRuntime.selections,
       packageOverlay: runStepOptions.pipelinePackageOverlay,
@@ -4389,6 +4480,11 @@ async function maybeRunCodexPrompt(options: {
     }
   }
 
+  options.onRunnerResult?.(result, {
+    accountProxyRouted: harnessInvocation?.accountProxyRouted === true,
+    accountProxyConnectionId: harnessInvocation?.accountProxyConnectionId,
+    secretValues: transcriptSecretValues,
+  });
   return finishHostRunnerStep({
     runStepOptions,
     result,
@@ -4445,6 +4541,8 @@ async function openHostRunnerTranscriptLog(options: {
   stepId: string;
   attempt: number;
   iteration: number;
+  /** Keep the log's earlier turns; a later turn of the same step appends. */
+  append?: boolean;
 }): Promise<HostRunnerTranscriptLog> {
   const { runStepOptions, logFile, stepId, attempt, iteration } = options;
   const recovery = runStepOptions.recovery ?? 0;
@@ -4456,7 +4554,9 @@ async function openHostRunnerTranscriptLog(options: {
   };
   let positions: StepLogPositionCursor | undefined;
   try {
-    positions = await resetStepLogForPositionedWriter(logFile);
+    positions = options.append
+      ? await openAppendingStepLogCursor(logFile)
+      : await resetStepLogForPositionedWriter(logFile);
   } catch (error) {
     recordLogWriteError(error);
   }
@@ -4805,20 +4905,7 @@ async function maybeRunAccountProviderPrompt(options: {
   /** The step's Ledger attempt; only the OpenCode host serves its tools. */
   ledgerAttempt?: PipelineLedgerAttempt | null;
 }): Promise<StepResult | null> {
-  const {
-    runStepOptions,
-    inputValues,
-    pluginCollectionRuntime,
-    effectiveCwd,
-    tempDir,
-    logFile,
-    startedAt,
-    stepId,
-    attempt,
-    iteration,
-    logMetadata,
-    ledgerAttempt,
-  } = options;
+  const { runStepOptions, inputValues } = options;
   const isResume = runStepOptions.step.uses === 'builtin/agent-resume';
   if (runStepOptions.step.uses !== 'builtin/agent-prompt' && !isResume) {
     return null;
@@ -4829,12 +4916,7 @@ async function maybeRunAccountProviderPrompt(options: {
     // Recovery replays the step's own `with` block, so a Cursor checkpoint
     // has no model only when the step's model expression now evaluates empty.
     // Declining here would hand a Cursor session to the generic Claude runner.
-    if (
-      checkpointHarness === 'cursor' ||
-      checkpointHarness === 'copilot' ||
-      checkpointHarness === 'opencode' ||
-      checkpointHarness === 'antigravity'
-    )
+    if (isNativeOnlyHarness(checkpointHarness))
       throw new Error(
         checkpointHarness === 'cursor'
           ? CURSOR_RECOVERY_MODEL_MISSING
@@ -4855,6 +4937,109 @@ async function maybeRunAccountProviderPrompt(options: {
     harness !== 'antigravity'
   )
     return null;
+  const rawSessionId = isResume ? inputValues.session_id?.trim() : undefined;
+  const resumeSessionId = rawSessionId || undefined;
+  if (isResume && !resumeSessionId) {
+    throw new Error('session_id is required for builtin/agent-resume');
+  }
+  const schema = parseStructuredSchema(inputValues.structured_output_schema);
+  // Unlike Codex, Cursor's hook can deny every tool, so an authored `none` is
+  // honored rather than rejected or coerced to `read_only`.
+  const permissionPreset = parsePermissionPreset(inputValues.permission_preset);
+  validateStructuredOutputInputs(permissionPreset, schema);
+  const prompt = applyPlanPromptRequirement(
+    await resolvePrompt({
+      prompt: inputValues.prompt,
+      promptFile: inputValues.prompt_file,
+    }),
+    permissionPreset,
+  );
+  return runAccountProviderTurn({
+    ...options,
+    harness,
+    resolvedModel,
+    prompt,
+    schema,
+    resumeSessionId,
+    permissionPreset,
+    ...(harness === 'antigravity' ||
+    harness === 'opencode' ||
+    harness === 'copilot'
+      ? { thinkingLevel: parseThinkingEffort(inputValues.thinking_effort) }
+      : {}),
+  });
+}
+
+/** A commit or pull request helper's apply run needs at least this long. */
+const HOST_HELPER_APPLY_MIN_MS = 30_000;
+
+type AccountProviderHarness = 'cursor' | 'copilot' | 'opencode' | 'antigravity';
+
+function isAccountProviderHarness(
+  harness: string | undefined,
+): harness is AccountProviderHarness {
+  return (
+    harness === 'cursor' ||
+    harness === 'copilot' ||
+    harness === 'opencode' ||
+    harness === 'antigravity'
+  );
+}
+
+/**
+ * One prompt turn on an account-provider host runner (Cursor, Copilot,
+ * OpenCode, Google): the shared approvals, transcript redaction and log, and
+ * result mapping that `agent-prompt` and host-run helper turns both use.
+ */
+async function runAccountProviderTurn(options: {
+  runStepOptions: RunStepOptions;
+  harness: AccountProviderHarness;
+  resolvedModel: string;
+  prompt: string;
+  schema: ReturnType<typeof parseStructuredSchema>;
+  resumeSessionId?: string;
+  permissionPreset: ReturnType<typeof parsePermissionPreset>;
+  thinkingLevel?: ReturnType<typeof parseThinkingEffort>;
+  /** A later turn of the same step appends to the step log. */
+  appendTranscript?: boolean;
+  /** The runner's timeout; defaults to the step's whole timeout. */
+  timeoutMs?: number;
+  /** Receives the runner's own result before redaction and mapping. */
+  onRunnerResult?: (result: CodexPromptRunnerResult) => void;
+  inputValues: Record<string, string>;
+  pluginCollectionRuntime: {
+    selections?: ChatTabPluginSelections;
+  };
+  effectiveCwd: string;
+  tempDir: string;
+  logFile: string;
+  startedAt: string;
+  stepId: string;
+  attempt: number;
+  iteration: number;
+  logMetadata: StepLogMetadata;
+  ledgerAttempt?: PipelineLedgerAttempt | null;
+}): Promise<StepResult> {
+  const {
+    runStepOptions,
+    harness,
+    resolvedModel,
+    prompt,
+    schema,
+    resumeSessionId,
+    permissionPreset,
+    inputValues,
+    pluginCollectionRuntime,
+    effectiveCwd,
+    tempDir,
+    logFile,
+    startedAt,
+    stepId,
+    attempt,
+    iteration,
+    logMetadata,
+    ledgerAttempt,
+  } = options;
   const runPrompt =
     harness === 'antigravity'
       ? runStepOptions.runtime.antigravityPromptRunner?.runAntigravityPrompt.bind(
@@ -4876,23 +5061,6 @@ async function maybeRunAccountProviderPrompt(options: {
       `${harness === 'antigravity' ? 'Google' : harness === 'opencode' ? 'OpenCode' : harness === 'copilot' ? 'Copilot' : 'Cursor'} pipeline actions require a host ${harness === 'antigravity' ? 'Google' : harness === 'opencode' ? 'OpenCode' : harness === 'copilot' ? 'Copilot' : 'Cursor'} runtime; no runner was configured.`,
     );
   }
-  const rawSessionId = isResume ? inputValues.session_id?.trim() : undefined;
-  const resumeSessionId = rawSessionId || undefined;
-  if (isResume && !resumeSessionId) {
-    throw new Error('session_id is required for builtin/agent-resume');
-  }
-  const schema = parseStructuredSchema(inputValues.structured_output_schema);
-  // Unlike Codex, Cursor's hook can deny every tool, so an authored `none` is
-  // honored rather than rejected or coerced to `read_only`.
-  const permissionPreset = parsePermissionPreset(inputValues.permission_preset);
-  validateStructuredOutputInputs(permissionPreset, schema);
-  const prompt = applyPlanPromptRequirement(
-    await resolvePrompt({
-      prompt: inputValues.prompt,
-      promptFile: inputValues.prompt_file,
-    }),
-    permissionPreset,
-  );
   const transcriptSecretValues = getSecretValues(runStepOptions.secretEnv);
   let streamedTranscriptLength = 0;
   /** A required transcript transformation/persistence failure, recorded
@@ -4904,6 +5072,7 @@ async function maybeRunAccountProviderPrompt(options: {
     stepId,
     attempt,
     iteration,
+    append: options.appendTranscript === true,
   });
   const executionCheckoutRoot = getExecutionCheckoutRoot(runStepOptions);
   const result = await runPrompt({
@@ -4921,12 +5090,14 @@ async function maybeRunAccountProviderPrompt(options: {
     schema,
     resumeSessionId,
     model: resolvedModel,
-    ...(harness === 'antigravity' ||
-    harness === 'opencode' ||
-    harness === 'copilot'
-      ? { thinkingLevel: parseThinkingEffort(inputValues.thinking_effort) }
+    ...((harness === 'antigravity' ||
+      harness === 'opencode' ||
+      harness === 'copilot') &&
+    options.thinkingLevel !== undefined
+      ? { thinkingLevel: options.thinkingLevel }
       : {}),
-    totalTimeoutMs: runStepOptions.step.timeout_minutes * 60_000,
+    totalTimeoutMs:
+      options.timeoutMs ?? runStepOptions.step.timeout_minutes * 60_000,
     permissionPreset,
     pluginSelections: pluginCollectionRuntime.selections,
     packageOverlay: runStepOptions.pipelinePackageOverlay,
@@ -4979,6 +5150,7 @@ async function maybeRunAccountProviderPrompt(options: {
       }
     },
   });
+  options.onRunnerResult?.(result);
   return finishHostRunnerStep({
     runStepOptions,
     result,
@@ -5000,6 +5172,506 @@ async function maybeRunAccountProviderPrompt(options: {
     // to redact on this path.
     secretValues: transcriptSecretValues,
   });
+}
+
+/**
+ * A bundled helper action whose single model turn runs on the step's own
+ * Codex or account-provider harness (CAN-6702). The turn uses the same host
+ * runner, approvals, transcript log and failure mapping as `agent-prompt`
+ * (without an agent recovery checkpoint, which only agent steps get, and
+ * without the proxy-quota pause); on success the redacted result is written
+ * for the action, which then runs as usual and applies its own output mapping
+ * without calling Claude. Models on the Claude harness, including native
+ * Ollama, keep their existing paths.
+ */
+async function maybeRunHostHelperModelTurn(options: {
+  runStepOptions: RunStepOptions;
+  inputValues: Record<string, string>;
+  pluginCollectionRuntime: {
+    selections?: ChatTabPluginSelections;
+  };
+  effectiveCwd: string;
+  tempDir: string;
+  logFile: string;
+  startedAt: string;
+  stepId: string;
+  attempt: number;
+  iteration: number;
+  logMetadata: StepLogMetadata;
+  ledgerAttempt?: PipelineLedgerAttempt | null;
+}): Promise<
+  | { kind: 'done'; result: StepResult }
+  | {
+      kind: 'ready';
+      resultFile: string;
+      deadlineAt: number;
+      aiCredits: Awaited<ReturnType<typeof resolveActionAiCreditsEnv>>;
+    }
+  | null
+> {
+  const { runStepOptions, inputValues, tempDir, effectiveCwd } = options;
+  const uses = runStepOptions.step.uses;
+  if (!uses || !HOST_HELPER_MODEL_ACTIONS.has(uses)) return null;
+  const resolvedModel = resolveExplicitAgentModel(inputValues.model);
+  if (!resolvedModel) return null;
+  const harness = getExecutionHarnessForModel(resolvedModel);
+  if (!isAccountProviderHarness(harness) && harness !== 'codex') return null;
+  const strategy =
+    uses === 'builtin/condenser'
+      ? parseCondenseStrategy(inputValues.strategy)
+      : undefined;
+  // The line-filter strategies run locally in the action; no model turn.
+  if (strategy !== undefined && !condenserUsesModel(strategy)) return null;
+  // Rejected here as in the action, so invalid input costs no model turn.
+  parseMaxTurns(inputValues.max_turns);
+  // Resolved like the action, which runs with the step's working directory.
+  const textFile = inputValues.text_file;
+  const text =
+    textFile && textFile.trim().length > 0
+      ? await fsp.readFile(path.resolve(effectiveCwd, textFile), 'utf8')
+      : (inputValues.text ?? '');
+  const actionName = uses === 'builtin/router' ? 'router' : 'condenser';
+  if (!text.trim())
+    throw new Error(`${actionName} requires a non-empty text or text_file`);
+  let request: { prompt: string; schema?: Record<string, unknown> };
+  if (strategy === undefined) {
+    request = buildRouterModelRequest({
+      text,
+      routes: parseRouterRoutes(inputValues.routes),
+      criteria: inputValues.criteria,
+    });
+  } else {
+    const structured = strategy === 'structured-summary';
+    request = buildCondenserModelRequest({
+      text,
+      maxChars: parseCondenseMaxChars(inputValues.max_chars),
+      structured,
+      ...(structured
+        ? {
+            schema: parseStructuredSchema(
+              inputValues.structured_output_schema ??
+                DEFAULT_CONDENSER_SCHEMA_TEXT,
+            ),
+          }
+        : {}),
+    });
+  }
+  const schema = request.schema
+    ? parseStructuredSchema(JSON.stringify(request.schema))
+    : undefined;
+  // These helpers need no write tools, so their host turn never runs with
+  // more than read access. `none` stays as authored, except on Codex, which
+  // cannot disable native tools: there an authored `none` is refused and a
+  // defaulted one runs `read_only` (a composite that forwards a defaulted
+  // `none` into `with` is refused, as for agent-prompt). `plan` (which only
+  // means read-only for a helper) and every other preset run as `read_only`.
+  // `max_turns` does not apply to host runners.
+  const parsedPreset = parsePermissionPreset(inputValues.permission_preset);
+  if (harness === 'codex' && parsedPreset === 'none') {
+    // As for agent-prompt: Codex cannot disable native tools, so only an
+    // authored `none` is refused; a defaulted one runs read_only.
+    const authored = runStepOptions.step.with?.permission_preset;
+    if (
+      authored !== undefined &&
+      authored !== null &&
+      String(authored).trim() === 'none'
+    )
+      throw new Error(CODEX_NONE_PRESET_REFUSAL);
+  }
+  const permissionPreset =
+    parsedPreset === 'none' && harness !== 'codex' ? 'none' : 'read_only';
+  // The turn and the action share the step's single timeout.
+  const deadlineAt = Date.now() + runStepOptions.step.timeout_minutes * 60_000;
+  let runnerResult: CodexPromptRunnerResult | undefined;
+  // Set by a Codex turn only; account-provider runners route nothing.
+  let codexRouting:
+    | {
+        aiCreditsRouted: boolean;
+        modelGatewayRouted: boolean;
+        accountProxyRouted: boolean;
+        accountProxyConnectionId: string | undefined;
+        secretValues: readonly string[];
+      }
+    | undefined;
+  let result: StepResult;
+  if (harness === 'codex') {
+    const runner = runStepOptions.runtime.codexPromptRunner;
+    if (!runner)
+      throw new Error(
+        'Codex pipeline actions require a host Codex runtime; no runner was configured.',
+      );
+    result = await runCodexTurn({
+      ...options,
+      runner,
+      resolvedModel,
+      prompt: request.prompt,
+      schema,
+      permissionPreset,
+      fastMode: resolveCodexStepFastMode(
+        inputValues.fast_mode,
+        runStepOptions.modelConfig,
+      ),
+      resumeSessionId: undefined,
+      systemPrompt: inputValues.system_prompt,
+      // Neither helper declares a thinking effort input.
+      thinkingLevel: undefined,
+      // Helper turns never carry the step's Feed tools.
+      ledgerAttempt: null,
+      onRunnerResult: (value, invocation) => {
+        runnerResult = value;
+        codexRouting = {
+          aiCreditsRouted: value.aiCreditsRouted === true,
+          modelGatewayRouted: value.modelGatewayRouted === true,
+          ...invocation,
+        };
+      },
+    });
+  } else {
+    result = await runAccountProviderTurn({
+      ...options,
+      harness,
+      resolvedModel,
+      prompt: request.prompt,
+      schema,
+      permissionPreset,
+      onRunnerResult: (value) => {
+        runnerResult = value;
+      },
+    });
+  }
+  if (result.status !== 'success') return { kind: 'done', result };
+  if (runnerResult?.status !== 'success')
+    throw new Error(`${actionName} did not receive a model result.`);
+  // One normalized redaction pass over the runner's own values, as the
+  // action applies to a Claude result, so the action's later pass finds
+  // nothing new (a second pass over masked text can miss overlapping values).
+  // The same set the transcript was redacted with.
+  const secretValues =
+    codexRouting?.secretValues ?? getSecretValues(runStepOptions.secretEnv);
+  const resultFile = path.join(tempDir, 'host-helper-model-result.json');
+  await fsp.writeFile(
+    resultFile,
+    `${JSON.stringify({
+      version: 1,
+      rawText: redactWorkerSecretValues(runnerResult.rawText, secretValues),
+      ...(runnerResult.structured !== undefined
+        ? {
+            structured: redactWorkerStructuredValue(
+              runnerResult.structured,
+              secretValues,
+            ),
+          }
+        : {}),
+    })}\n`,
+    { encoding: 'utf8', mode: 0o600, flag: 'wx' },
+  );
+  return {
+    kind: 'ready',
+    resultFile,
+    deadlineAt,
+    // The action calls no model; the turn's own routing is what it reports.
+    aiCredits: codexRouting
+      ? {
+          ...hostHelperNoAiCredits(),
+          routed: codexRouting.aiCreditsRouted,
+          modelGatewayRouted: codexRouting.modelGatewayRouted,
+          accountProxyRouted: codexRouting.accountProxyRouted,
+          ...(codexRouting.accountProxyConnectionId !== undefined
+            ? {
+                accountProxyConnectionId: codexRouting.accountProxyConnectionId,
+              }
+            : {}),
+        }
+      : hostHelperNoAiCredits(),
+  };
+}
+
+/**
+ * The model and harness a commit or pull request helper's turns run on when
+ * that harness has a host runner, or null when the action calls its own
+ * model (CAN-6702 stage 1b). The probe for the action's model input mirrors
+ * the action's own input, preference and default chain.
+ */
+function resolveHostHelperBatch(
+  uses: string | undefined,
+  policyProbes: readonly ModelPolicyProbe[],
+): { model: string; harness: AccountProviderHarness | 'codex' } | null {
+  const modelInput = uses ? HOST_HELPER_BATCH_ACTIONS.get(uses) : undefined;
+  if (!modelInput) return null;
+  const probe = policyProbes.find(
+    (candidate) => candidate.input === modelInput,
+  );
+  if (!probe) return null;
+  // Resolved like every other host-run path, so a global alias runs as its
+  // target.
+  const model = resolveModelAlias(probe.probeModel);
+  const harness = getExecutionHarnessForModel(model);
+  if (harness !== 'codex' && !isAccountProviderHarness(harness)) return null;
+  return { model, harness };
+}
+
+/**
+ * Runs a commit or pull request helper's model turns on the host runner
+ * (CAN-6702 stage 1b):
+ *
+ * 1. The action runs once with an executor-owned prepare file. It writes one
+ *    request per repository that needs a model turn and makes no commit,
+ *    push, pull request or model call.
+ * 2. Each request runs as one read-only turn on the step's harness. The
+ *    executor checks the step's deadline and a cancel before each turn and
+ *    gives the runner only the time left; the runner enforces that timeout
+ *    and the cancel signal during the turn. A failed, cancelled or timed-out
+ *    turn ends the step here, and a result that arrives after a cancel is
+ *    discarded, so the apply run never starts and nothing is committed,
+ *    pushed or created.
+ * 3. The redacted results are written to a private file; the caller hands it
+ *    to the apply run, which refuses any repository whose request changed.
+ */
+async function runHostHelperBatch(options: {
+  runStepOptions: RunStepOptions;
+  inputValues: Record<string, string>;
+  pluginCollectionRuntime: {
+    selections?: ChatTabPluginSelections;
+  };
+  effectiveCwd: string;
+  tempDir: string;
+  logFile: string;
+  startedAt: string;
+  stepId: string;
+  attempt: number;
+  iteration: number;
+  logMetadata: StepLogMetadata;
+  batch: { model: string; harness: AccountProviderHarness | 'codex' };
+  processSpec: ProcessSpec;
+  runtimeEnv: Record<string, string>;
+  secretValues: readonly string[];
+  deadlineAt: number;
+}): Promise<
+  | { kind: 'done'; result: StepResult }
+  | {
+      kind: 'ready';
+      resultsFile: string;
+      aiCredits: Awaited<ReturnType<typeof resolveActionAiCreditsEnv>>;
+    }
+> {
+  const { runStepOptions, tempDir, batch, deadlineAt } = options;
+  // The request carries its own system prompt; a step value must not add one.
+  const turnInputValues = Object.fromEntries(
+    Object.entries(options.inputValues).filter(
+      ([key]) => key !== 'system_prompt',
+    ),
+  );
+  const stepTimeoutMs = runStepOptions.step.timeout_minutes * 60_000;
+  const remainingMs = (): number => deadlineAt - Date.now();
+  const prepareFile = path.join(tempDir, 'host-helper-requests.json');
+  const prepareEnv = { ...options.runtimeEnv };
+  setBrandEnv(prepareEnv, HOST_HELPER_PREPARE_ENV, prepareFile);
+  if (remainingMs() <= 0) throw new Error(stepTimedOutMessage(stepTimeoutMs));
+  const prepareTimeoutMs = remainingMs();
+  const prepareLog = path.join(tempDir, 'host-helper-prepare.log');
+  const prepared = await runSpawnedProcess(options.processSpec, {
+    cwd: options.effectiveCwd,
+    env: prepareEnv,
+    runtime: runStepOptions.runtime,
+    signal: runStepOptions.signal,
+    timeout_minutes: prepareTimeoutMs / 60_000,
+    logFile: prepareLog,
+    outputFile: path.join(tempDir, 'host-helper-prepare-output'),
+    envFile: path.join(tempDir, 'host-helper-prepare-env'),
+    secretValues: [...options.secretValues],
+    resource: {
+      executionId: runStepOptions.executionId,
+      pipelineId: runStepOptions.pipelineId,
+      pipelineName: runStepOptions.pipelineName,
+      jobId: runStepOptions.jobId,
+      stepId: options.stepId,
+      attempt: options.attempt,
+      iteration: options.iteration,
+      childId: runStepOptions.childId,
+      label: `${runStepOptions.jobId} / ${options.stepId} (prepare)`,
+    },
+  });
+  if (runStepOptions.signal.aborted) throw new Error('The step was cancelled.');
+  if (prepared.status !== 'success') {
+    // The prepare run's output belongs in the step log when it fails.
+    await fsp
+      .readFile(prepareLog, 'utf8')
+      .then((text) => fsp.appendFile(options.logFile, text, 'utf8'))
+      .catch(() => undefined);
+    // Its own timeout is the rest of the step's budget; report the step's.
+    if (prepared.error === stepTimedOutMessage(prepareTimeoutMs))
+      throw new Error(stepTimedOutMessage(stepTimeoutMs));
+    throw new Error(
+      `The helper could not prepare its model requests: ${prepared.error ?? 'the action failed.'}`,
+    );
+  }
+  const prepareText = await fsp.readFile(prepareFile, 'utf8');
+  const requests = parseHostHelperBatchRequests(prepareText);
+  // Repositories that need no model turn still recorded where they would
+  // push; apply refuses to push them anywhere else.
+  const targets = parseHostHelperPreparedTargets(prepareText);
+  const results: Array<{
+    digest: string;
+    rawText: string;
+    structured?: unknown;
+  }> = [];
+  const routing = {
+    aiCreditsRouted: false,
+    modelGatewayRouted: false,
+    accountProxyRouted: false,
+  };
+  let accountProxyConnectionId: string | undefined;
+  // Earlier turns' routing still happened when the batch ends early; the
+  // step reports it with the failure.
+  const routingOutputs = (): Record<string, string> => ({
+    ...(routing.aiCreditsRouted
+      ? { [AI_CREDITS_ROUTED_OUTPUT_KEY]: 'true' }
+      : {}),
+    ...(routing.modelGatewayRouted
+      ? { [MODEL_GATEWAY_ROUTED_OUTPUT_KEY]: 'true' }
+      : {}),
+    ...(routing.accountProxyRouted
+      ? accountProxyRouteOutputs(
+          buildStepAiCreditsRoutingContext(runStepOptions).routeSessionId,
+        )
+      : {}),
+  });
+  const resultsFile = path.join(tempDir, 'host-helper-results.json');
+  try {
+    for (const [index, request] of requests.entries()) {
+      if (runStepOptions.signal.aborted)
+        throw new Error('The step was cancelled.');
+      if (remainingMs() <= 0)
+        throw new Error(stepTimedOutMessage(stepTimeoutMs));
+      const schema = parseStructuredSchema(JSON.stringify(request.schema));
+      let runnerResult: CodexPromptRunnerResult | undefined;
+      let turnSecretValues: readonly string[] | undefined;
+      let result: StepResult;
+      if (batch.harness === 'codex') {
+        const runner = runStepOptions.runtime.codexPromptRunner;
+        if (!runner)
+          throw new Error(
+            'Codex pipeline actions require a host Codex runtime; no runner was configured.',
+          );
+        result = await runCodexTurn({
+          ...options,
+          runner,
+          resolvedModel: batch.model,
+          prompt: request.userMessage,
+          systemPrompt: request.systemPrompt,
+          schema,
+          // These turns only read the request; Codex cannot disable its native
+          // tools, so the closest it gets is read_only.
+          permissionPreset: 'read_only',
+          fastMode: resolveCodexStepFastMode(
+            undefined,
+            runStepOptions.modelConfig,
+          ),
+          resumeSessionId: undefined,
+          thinkingLevel: undefined,
+          ledgerAttempt: null,
+          appendTranscript: index > 0,
+          timeoutMs: remainingMs(),
+          onRunnerResult: (value, invocation) => {
+            runnerResult = value;
+            turnSecretValues = invocation.secretValues;
+            routing.aiCreditsRouted ||= value.aiCreditsRouted === true;
+            routing.modelGatewayRouted ||= value.modelGatewayRouted === true;
+            routing.accountProxyRouted ||= invocation.accountProxyRouted;
+            accountProxyConnectionId ??= invocation.accountProxyConnectionId;
+          },
+        });
+      } else {
+        result = await runAccountProviderTurn({
+          ...options,
+          inputValues: turnInputValues,
+          harness: batch.harness,
+          resolvedModel: batch.model,
+          // Account-provider runners take one prompt; the system prompt leads.
+          prompt: `${request.systemPrompt}\n\n${request.userMessage}`,
+          schema,
+          permissionPreset: 'read_only',
+          appendTranscript: index > 0,
+          timeoutMs: remainingMs(),
+          ledgerAttempt: null,
+          onRunnerResult: (value) => {
+            runnerResult = value;
+          },
+        });
+      }
+      if (result.status !== 'success')
+        return {
+          kind: 'done',
+          result: {
+            ...result,
+            outputs: { ...result.outputs, ...routingOutputs() },
+          },
+        };
+      if (runnerResult?.status !== 'success')
+        throw new Error('The helper did not receive a model result.');
+      // One normalized redaction pass, with the set the transcript used.
+      const secretValues =
+        turnSecretValues ?? getSecretValues(runStepOptions.secretEnv);
+      results.push({
+        digest: request.digest,
+        rawText: redactWorkerSecretValues(runnerResult.rawText, secretValues),
+        ...(runnerResult.structured !== undefined
+          ? {
+              structured: redactWorkerStructuredValue(
+                runnerResult.structured,
+                secretValues,
+              ),
+            }
+          : {}),
+      });
+    }
+    if (runStepOptions.signal.aborted)
+      throw new Error('The step was cancelled.');
+    if (remainingMs() <= 0) throw new Error(stepTimedOutMessage(stepTimeoutMs));
+    // Apply commits, pushes and creates pull requests; it is not started with
+    // too little time to finish one repository.
+    if (remainingMs() < HOST_HELPER_APPLY_MIN_MS)
+      throw new Error(
+        `Less than ${String(HOST_HELPER_APPLY_MIN_MS / 1000)} seconds of the step's timeout were left after the model turns, so nothing was committed, pushed or created. Raise the step's timeout_minutes, then run it again.`,
+      );
+    await fsp.writeFile(
+      resultsFile,
+      `${JSON.stringify({ version: 1, results, targets })}\n`,
+      { encoding: 'utf8', mode: 0o600, flag: 'wx' },
+    );
+  } catch (error) {
+    const routed = routingOutputs();
+    if (Object.keys(routed).length === 0) throw error;
+    const cancelled = runStepOptions.signal.aborted;
+    return {
+      kind: 'done',
+      result: createStepResult({
+        status: cancelled ? 'cancelled' : 'failure',
+        conclusion: cancelled ? 'cancelled' : 'failure',
+        outcome: cancelled ? 'cancelled' : 'failure',
+        ...options.logMetadata,
+        started_at: options.startedAt,
+        completed_at: new Date().toISOString(),
+        error: String(error),
+        log_file: options.logFile,
+        outputs: routed,
+      }),
+    };
+  }
+  return {
+    kind: 'ready',
+    resultsFile,
+    // The action calls no model; the turns' own routing is what it reports.
+    aiCredits: {
+      ...hostHelperNoAiCredits(),
+      routed: routing.aiCreditsRouted,
+      modelGatewayRouted: routing.modelGatewayRouted,
+      accountProxyRouted: routing.accountProxyRouted,
+      ...(accountProxyConnectionId !== undefined
+        ? { accountProxyConnectionId }
+        : {}),
+    },
+  };
 }
 
 async function maybeRunAgentPromptWorker(options: {
@@ -5454,13 +6126,9 @@ function resolveStepLogMetadata(
       // Cursor is headless-capable through its own host runner
       // (`maybeRunAccountProviderPrompt`), unlike the chat-only harness
       // `requireHeadlessHarness` otherwise rejects.
-      metadata.agent_harness =
-        executionHarness === 'cursor' ||
-        executionHarness === 'copilot' ||
-        executionHarness === 'opencode' ||
-        executionHarness === 'antigravity'
-          ? executionHarness
-          : requireHeadlessHarness(executionHarness);
+      metadata.agent_harness = isNativeOnlyHarness(executionHarness)
+        ? executionHarness
+        : requireHeadlessHarness(executionHarness);
       if (selectedModelOverride && modelAliasName) {
         metadata.model_alias = selectedModelOverride;
         metadata.model_alias_name = modelAliasName;
@@ -5479,8 +6147,33 @@ function resolveStepLogMetadata(
   }
 
   if (CLAUDE_ONLY_AGENT_ACTIONS.has(step.uses)) {
-    metadata.agent_provider = 'claude';
-    metadata.agent_harness = 'claude';
+    // A helper whose turn runs on its own host runner reports that provider.
+    const helperModel = HOST_HELPER_MODEL_ACTIONS.has(step.uses)
+      ? resolveExplicitAgentModel(inputValues.model)
+      : undefined;
+    const helperHarness = helperModel
+      ? getExecutionHarnessForModel(helperModel)
+      : undefined;
+    if (
+      helperModel &&
+      (isAccountProviderHarness(helperHarness) || helperHarness === 'codex')
+    ) {
+      metadata.agent_model = helperModel;
+      metadata.agent_provider = getProviderForModel(helperModel);
+      metadata.agent_harness = helperHarness;
+      if (helperHarness === 'codex' && inputValues.fast_mode?.trim()) {
+        metadata.agent_model_config = {
+          fastMode: parseBooleanInput(
+            inputValues.fast_mode,
+            'fast_mode',
+            false,
+          ),
+        };
+      }
+    } else {
+      metadata.agent_provider = 'claude';
+      metadata.agent_harness = 'claude';
+    }
   }
 
   return metadata;
@@ -5603,6 +6296,19 @@ function buildStepAiCreditsRoutingContext(
   };
 }
 
+/** A host-run helper's action calls no model, so it routes nothing. */
+function hostHelperNoAiCredits(): Awaited<
+  ReturnType<typeof resolveActionAiCreditsEnv>
+> {
+  return {
+    env: {},
+    secretValues: [],
+    routed: false,
+    modelGatewayRouted: false,
+    accountProxyRouted: false,
+  };
+}
+
 /**
  * Resolve gateway routing for every bundled provider-backed action step.
  * Returns empty when routing does not apply (native path), the runtime has no
@@ -5668,11 +6374,7 @@ export async function resolveActionAiCreditsEnv(
   // intercepts first — so nothing was guarding them.
   if (
     directClaude &&
-    (modelHarness === 'codex' ||
-      modelHarness === 'cursor' ||
-      modelHarness === 'copilot' ||
-      modelHarness === 'opencode' ||
-      modelHarness === 'antigravity')
+    (modelHarness === 'codex' || isNativeOnlyHarness(modelHarness))
   ) {
     const harnessLabel =
       modelHarness === 'codex'
@@ -5712,12 +6414,7 @@ export async function resolveActionAiCreditsEnv(
   // can still resolve to 'cursor' via `modelHarness`/`routingProbe` here, and
   // `requireHeadlessHarness` throws for 'cursor' — treat it as "no routing"
   // instead, matching those call sites' cursor handling.
-  if (
-    provider === 'cursor' ||
-    provider === 'copilot' ||
-    provider === 'antigravity' ||
-    provider === 'opencode'
-  ) {
+  if (isNativeOnlyHarness(provider)) {
     return empty;
   }
   const override = await runtime.resolveAiCreditsRouting(
@@ -6473,6 +7170,44 @@ async function runStepBody(
             : `Step "${options.step.id}" does not specify a model, and your organization has not approved the default model "${DEFAULT_CLAUDE_MODEL}". Set an explicit "${probe.input}" input for this step.`,
       );
     }
+    // Native-only harnesses, and an Ollama model on the Codex harness (the
+    // default Ollama harness), never pass through AI Credits or gateway
+    // routing, so the owner's gateway requirement is checked here, before the
+    // Ledger attempt and any dispatch, as the chat session does (CAN-6701).
+    // Other Claude and Codex steps keep their routed checks. A gateway
+    // refusal is not an organization model-policy decision, so it is not
+    // recorded with `recordModelPolicyRefusal`; the chat session does not
+    // record one either. Like the organization policy, a send step is checked
+    // against the run's owner; the destination chat checks its own.
+    if (options.runtime.checkNativeModelGatewayRoute) {
+      for (const probe of policyProbes) {
+        const harness =
+          probe.input === 'model' && recoveryCheckpoint?.harness
+            ? recoveryCheckpoint.harness
+            : getExecutionHarnessForModel(probe.probeModel);
+        // The host checks a Codex-harness Ollama invocation again when it
+        // resolves it; that covers the daemon owner request and does not
+        // replace this check, which runs before the Ledger attempt. Every
+        // probed input counts, so an Ollama `commit_model` or `pr_model` on
+        // its default Codex harness is refused too.
+        const unrouted =
+          isNativeOnlyHarness(harness) ||
+          (harness === 'codex' &&
+            getModelSource(probe.probeModel) === 'ollama');
+        if (!unrouted) continue;
+        const route = await options.runtime.checkNativeModelGatewayRoute(
+          probe.probeModel,
+          {
+            ...(options.projectId ? { projectId: options.projectId } : {}),
+            ...(options.worktreeId ? { worktreeId: options.worktreeId } : {}),
+            ...(options.executionContext
+              ? { executionContext: options.executionContext }
+              : {}),
+          },
+        );
+        if (!route.ok) throw new Error(route.message);
+      }
+    }
     const pinnedModelInputs: Record<string, string> = {};
     for (const probe of policyProbes) {
       if (probe.pin) {
@@ -6507,13 +7242,11 @@ async function runStepBody(
       };
     }
     if (recoveryCheckpoint?.harness && logMetadata.agent_model) {
-      logMetadata.agent_harness =
-        recoveryCheckpoint.harness === 'cursor' ||
-        recoveryCheckpoint.harness === 'copilot' ||
-        recoveryCheckpoint.harness === 'opencode' ||
-        recoveryCheckpoint.harness === 'antigravity'
-          ? recoveryCheckpoint.harness
-          : requireHeadlessHarness(recoveryCheckpoint.harness);
+      logMetadata.agent_harness = isNativeOnlyHarness(
+        recoveryCheckpoint.harness,
+      )
+        ? recoveryCheckpoint.harness
+        : requireHeadlessHarness(recoveryCheckpoint.harness);
     }
 
     if (options.onLogMetadataResolved && Object.keys(logMetadata).length > 0) {
@@ -6735,30 +7468,55 @@ async function runStepBody(
     if (cursorResult) {
       return cursorResult;
     }
+    const hostHelperTurn = await maybeRunHostHelperModelTurn({
+      runStepOptions: { ...options, recoveryCheckpoint },
+      ledgerAttempt: ledger.attempt,
+      inputValues: resolvedAgentInputs.inputValues,
+      pluginCollectionRuntime,
+      effectiveCwd,
+      tempDir,
+      logFile,
+      startedAt,
+      stepId,
+      attempt,
+      iteration,
+      logMetadata,
+    });
+    if (hostHelperTurn?.kind === 'done') {
+      return hostHelperTurn.result;
+    }
+    // A commit or pull request helper on a host-run harness prepares its
+    // requests, runs its turns and applies the results below (CAN-6702).
+    const hostHelperBatch = hostHelperTurn
+      ? null
+      : resolveHostHelperBatch(options.step.uses, policyProbes);
     const aiCreditsRoutingContext = buildStepAiCreditsRoutingContext(options);
     let aiCredits: Awaited<ReturnType<typeof resolveActionAiCreditsEnv>>;
     try {
-      aiCredits = await resolveActionAiCreditsEnv(
-        options.step,
-        action,
-        options.runtime,
-        resolvedAgentInputs.inputValues,
-        aiCreditsRoutingContext,
-        // maybeRunAccountProviderPrompt already had first refusal on this step and
-        // refuses a Cursor checkpoint it cannot resume, so a Cursor
-        // checkpoint only reaches here on an action it does not handle. The
-        // generic runner has no AI-credits concept for Cursor (it bills only
-        // through the Cursor account), so treat it as "no captured harness"
-        // instead of letting requireHeadlessHarness reject it outright, as
-        // the other cursor-aware call sites do.
-        recoveryCheckpoint?.harness === 'cursor' ||
-          recoveryCheckpoint?.harness === 'copilot' ||
-          recoveryCheckpoint?.harness === 'antigravity' ||
-          recoveryCheckpoint?.harness === 'opencode'
-          ? undefined
-          : requireHeadlessHarness(recoveryCheckpoint?.harness),
-        policyProbes[0],
-      );
+      // A helper whose model turn already ran on its own host runner calls
+      // no model in the action, so it needs no Claude route or refusal.
+      aiCredits = hostHelperTurn
+        ? hostHelperTurn.aiCredits
+        : hostHelperBatch
+          ? hostHelperNoAiCredits()
+          : await resolveActionAiCreditsEnv(
+              options.step,
+              action,
+              options.runtime,
+              resolvedAgentInputs.inputValues,
+              aiCreditsRoutingContext,
+              // maybeRunAccountProviderPrompt already had first refusal on this step and
+              // refuses a Cursor checkpoint it cannot resume, so a Cursor
+              // checkpoint only reaches here on an action it does not handle. The
+              // generic runner has no AI-credits concept for Cursor (it bills only
+              // through the Cursor account), so treat it as "no captured harness"
+              // instead of letting requireHeadlessHarness reject it outright, as
+              // the other cursor-aware call sites do.
+              isNativeOnlyHarness(recoveryCheckpoint?.harness)
+                ? undefined
+                : requireHeadlessHarness(recoveryCheckpoint?.harness),
+              policyProbes[0],
+            );
     } catch (error) {
       if (aiCreditsRoutingContext.routeSessionId) {
         await options.runtime.releaseAiCreditsRouting?.(
@@ -6767,7 +7525,12 @@ async function runStepBody(
       }
       throw error;
     }
-    const ownsRoute = aiCredits.routed || aiCredits.accountProxyRouted;
+    // A host helper turn released its own route when it ended; the step
+    // only reports it.
+    const ownsRoute =
+      !hostHelperTurn &&
+      !hostHelperBatch &&
+      (aiCredits.routed || aiCredits.accountProxyRouted);
     const workerRouteSessionId = ownsRoute
       ? aiCreditsRoutingContext.routeSessionId
       : undefined;
@@ -6928,6 +7691,22 @@ async function runStepBody(
         ...buildExecutionMetadataEnv(options),
         ...getRtkManagedEnv(),
       };
+      // Only the host hands an action its host-run model result (CAN-6702);
+      // a value a pipeline set itself never reaches the action.
+      for (const name of [
+        ...brandEnvCandidates(HOST_HELPER_MODEL_RESULT_ENV),
+        ...brandEnvCandidates(HOST_HELPER_PREPARE_ENV),
+        ...brandEnvCandidates(HOST_HELPER_RESULTS_ENV),
+      ]) {
+        delete runtimeEnv[name];
+      }
+      if (hostHelperTurn?.kind === 'ready') {
+        setBrandEnv(
+          runtimeEnv,
+          HOST_HELPER_MODEL_RESULT_ENV,
+          hostHelperTurn.resultFile,
+        );
+      }
       // Only the host hands an action a Ledger route; a value a pipeline set
       // itself never reaches the action.
       if (!ledgerSubprocess) {
@@ -6978,37 +7757,102 @@ async function runStepBody(
         };
       }
 
-      if (onOutput) {
-        spawnedLogPositions = await openAppendingStepLogCursor(logFile);
-      }
-      options.onProcessStart?.();
-      const result = await runSpawnedProcess(processSpec, {
-        cwd: effectiveCwd,
-        env: runtimeEnv,
-        runtime: options.runtime,
-        signal: options.signal,
-        timeout_minutes: options.step.timeout_minutes,
-        agentTerminalResultGraceMs:
-          logMetadata.log_format_hint === 'agent'
-            ? getAgentTerminalResultGraceMs()
-            : undefined,
-        logFile,
-        outputFile,
-        envFile,
-        secretValues: stepSecretValues,
-        onOutput,
-        resource: {
-          executionId: options.executionId,
-          pipelineId: options.pipelineId,
-          pipelineName: options.pipelineName,
-          jobId: options.jobId,
+      let helperDeadlineAt =
+        hostHelperTurn?.kind === 'ready'
+          ? hostHelperTurn.deadlineAt
+          : undefined;
+      if (hostHelperBatch) {
+        helperDeadlineAt = Date.now() + options.step.timeout_minutes * 60_000;
+        const batch = await runHostHelperBatch({
+          runStepOptions: { ...options, recoveryCheckpoint },
+          inputValues: resolvedAgentInputs.inputValues,
+          pluginCollectionRuntime,
+          effectiveCwd,
+          tempDir,
+          logFile,
+          startedAt,
           stepId,
           attempt,
           iteration,
-          childId: options.childId,
-          label: `${options.jobId} / ${stepId}`,
-        },
-      });
+          logMetadata,
+          batch: hostHelperBatch,
+          processSpec,
+          runtimeEnv,
+          secretValues: stepSecretValues,
+          deadlineAt: helperDeadlineAt,
+        });
+        if (batch.kind === 'done') return batch.result;
+        aiCredits = batch.aiCredits;
+        setBrandEnv(runtimeEnv, HOST_HELPER_RESULTS_ENV, batch.resultsFile);
+      }
+
+      if (onOutput) {
+        spawnedLogPositions = await openAppendingStepLogCursor(logFile);
+      }
+      // After a host helper turn the action gets only what is left of the
+      // step's timeout, so the whole step stays within `timeout_minutes`.
+      // Every other step passes its own timeout through unchanged.
+      const stepTimeoutMs = options.step.timeout_minutes * 60_000;
+      const helperRemainingMs =
+        helperDeadlineAt !== undefined
+          ? Math.min(stepTimeoutMs, helperDeadlineAt - Date.now())
+          : undefined;
+      const actionTimeoutMinutes =
+        helperRemainingMs === undefined
+          ? options.step.timeout_minutes
+          : helperRemainingMs / 60_000;
+      let result: CompletedProcessResult;
+      if (helperRemainingMs !== undefined && helperRemainingMs <= 0) {
+        // The turn used the whole budget. A cancel that arrived at the same
+        // boundary is still a cancel, as the spawn path would report it.
+        const cancelled = options.signal.aborted;
+        result = {
+          status: cancelled ? 'cancelled' : 'failure',
+          conclusion: cancelled ? 'cancelled' : 'failure',
+          outcome: cancelled ? 'cancelled' : 'failure',
+          ...(cancelled ? {} : { error: stepTimedOutMessage(stepTimeoutMs) }),
+          outputs: {},
+          dynamic_env: {},
+          log_file: logFile,
+        };
+      } else {
+        options.onProcessStart?.();
+        const spawned = await runSpawnedProcess(processSpec, {
+          cwd: effectiveCwd,
+          env: runtimeEnv,
+          runtime: options.runtime,
+          signal: options.signal,
+          timeout_minutes: actionTimeoutMinutes,
+          agentTerminalResultGraceMs:
+            logMetadata.log_format_hint === 'agent'
+              ? getAgentTerminalResultGraceMs()
+              : undefined,
+          logFile,
+          outputFile,
+          envFile,
+          secretValues: stepSecretValues,
+          onOutput,
+          resource: {
+            executionId: options.executionId,
+            pipelineId: options.pipelineId,
+            pipelineName: options.pipelineName,
+            jobId: options.jobId,
+            stepId,
+            attempt,
+            iteration,
+            childId: options.childId,
+            label: `${options.jobId} / ${stepId}`,
+          },
+        });
+        // The action's own timeout is the rest of the step's budget; report
+        // it as the step's timeout. This matches the exact message both spawn
+        // hosts build from `timeout_minutes`; any other error passes through.
+        result =
+          helperRemainingMs !== undefined &&
+          spawned.error === stepTimedOutMessage(actionTimeoutMinutes * 60_000)
+            ? { ...spawned, error: stepTimedOutMessage(stepTimeoutMs) }
+            : spawned;
+      }
 
       const postProcessedResult = await postProcessSpawnedResult(
         result,

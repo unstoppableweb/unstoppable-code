@@ -1,3 +1,4 @@
+import type { CopilotHandoffPhase } from '@canopy/protocol/copilot-handoff';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import {
@@ -56,7 +57,13 @@ class CopilotConsumerUnavailableError extends Error {
 const failed = (): CopilotConsumerUnavailableError =>
   new CopilotConsumerUnavailableError();
 
+export type CopilotVaultRenewalCase =
+  | 'slow-open'
+  | 'callback-crossing-expiry'
+  | 'completion-race';
 export interface CopilotVaultFieldCoverage {
+  renewalCases?: readonly CopilotVaultRenewalCase[];
+  importAdmission?: 'published';
   disposition:
     | 'parity'
     | 'bounded'
@@ -68,39 +75,56 @@ export interface CopilotVaultFieldCoverage {
 
 /** Adding a legacy field requires a disposition and paired golden evidence. */
 export const COPILOT_VAULT_TURN_FIELDS = {
-  workingDirectory: { disposition: 'parity' },
-  configDirectory: { disposition: 'parity' },
-  model: { disposition: 'bounded' },
-  reasoningEffort: { disposition: 'bounded' },
-  signal: { disposition: 'parity' },
-  authorize: { disposition: 'bounded' },
-  requestManagedPermission: { disposition: 'unavailable' },
-  systemPrompt: { disposition: 'parity' },
-  tools: { disposition: 'bounded' },
-  mcpServers: { disposition: 'parity' },
-  skillDirectories: { disposition: 'parity' },
-  onUserInputRequest: { disposition: 'bounded' },
-  onEvent: { disposition: 'tool-observations' },
-  turnId: { disposition: 'bounded' },
-  sessionId: { disposition: 'bounded' },
-  prompt: { disposition: 'bounded' },
-  preparePrompt: { disposition: 'bounded' },
-  onPromptAccepted: { disposition: 'parity' },
-  timeoutMs: { disposition: 'parity' },
-  secretValues: { disposition: 'bounded' },
-  emit: { disposition: 'buffered-revisions' },
-  onSession: { disposition: 'parity' },
-  onToolsReady: { disposition: 'bounded' },
-  onMcpToolsReady: { disposition: 'unavailable' },
-  onSessionUnavailable: { disposition: 'parity' },
-  beforePrompt: { disposition: 'parity' },
+  workingDirectory: { importAdmission: 'published', disposition: 'parity' },
+  configDirectory: { importAdmission: 'published', disposition: 'parity' },
+  model: { importAdmission: 'published', disposition: 'bounded' },
+  reasoningEffort: { importAdmission: 'published', disposition: 'bounded' },
+  signal: { importAdmission: 'published', disposition: 'parity' },
+  authorize: {
+    importAdmission: 'published',
+    disposition: 'bounded',
+    renewalCases: ['callback-crossing-expiry'],
+  },
+  requestManagedPermission: {
+    importAdmission: 'published',
+    disposition: 'unavailable',
+  },
+  systemPrompt: { importAdmission: 'published', disposition: 'parity' },
+  tools: { importAdmission: 'published', disposition: 'bounded' },
+  mcpServers: { importAdmission: 'published', disposition: 'parity' },
+  skillDirectories: { importAdmission: 'published', disposition: 'parity' },
+  onUserInputRequest: { importAdmission: 'published', disposition: 'bounded' },
+  onEvent: { importAdmission: 'published', disposition: 'tool-observations' },
+  turnId: { importAdmission: 'published', disposition: 'bounded' },
+  sessionId: { importAdmission: 'published', disposition: 'bounded' },
+  prompt: { importAdmission: 'published', disposition: 'bounded' },
+  preparePrompt: { importAdmission: 'published', disposition: 'bounded' },
+  onPromptAccepted: { importAdmission: 'published', disposition: 'parity' },
+  timeoutMs: {
+    importAdmission: 'published',
+    disposition: 'parity',
+    renewalCases: ['completion-race'],
+  },
+  secretValues: { importAdmission: 'published', disposition: 'bounded' },
+  emit: { importAdmission: 'published', disposition: 'buffered-revisions' },
+  onSession: { importAdmission: 'published', disposition: 'parity' },
+  onToolsReady: { importAdmission: 'published', disposition: 'bounded' },
+  onMcpToolsReady: { importAdmission: 'published', disposition: 'unavailable' },
+  onSessionUnavailable: { importAdmission: 'published', disposition: 'parity' },
+  beforePrompt: { importAdmission: 'published', disposition: 'parity' },
 } satisfies Record<keyof CopilotTurnRequest, CopilotVaultFieldCoverage>;
 
 export function copilotVaultFieldsCovered(
   input: object,
   fields: Readonly<Record<string, CopilotVaultFieldCoverage>>,
+  importPhase: CopilotHandoffPhase = 'published',
 ): boolean {
   if (typeof input !== 'object' || input === null) return false;
+  if (
+    importPhase !== 'published' &&
+    Object.values(fields).some((row) => row.importAdmission)
+  )
+    return false;
   const prototype: unknown = Object.getPrototypeOf(input);
   if (prototype !== null && prototype !== Object.prototype) return false;
   return Reflect.ownKeys(input).every((key) => {
@@ -113,6 +137,8 @@ export function copilotVaultFieldsCovered(
     // Validate before callers spread: accessors and hidden/inherited fields can be lost or change.
     if (!descriptor?.enumerable || !('value' in descriptor)) return false;
     const row = fields[key];
+    if (row?.importAdmission && row.importAdmission !== importPhase)
+      return false;
     const value: unknown = descriptor.value;
     return (
       value === undefined ||
@@ -179,9 +205,19 @@ export function createCopilotConsumerHandle(options: {
     let policyKey: string | undefined;
     let channel: CopilotConsumerChannel | undefined;
     let envelope: Omit<CopilotRecipientCommand, 'kind'> | undefined;
-    let outcome: CopilotRecipientOutcome | undefined;
     let sequence = 0;
-    let requestId = 1;
+    let requestId = 0;
+    const pending = new Map<
+      number,
+      {
+        kind: 'run' | 'reply' | 'renew';
+        resolve(outcome: CopilotRecipientOutcome): void;
+      }
+    >();
+    const issued = new Set<number>();
+    let completionReceived = false;
+    let runResponseReceived = false;
+    let renewalTimer: ReturnType<typeof setTimeout> | undefined;
     let sessionId = request?.sessionId;
     let recovered = false;
     let open = true;
@@ -193,6 +229,7 @@ export function createCopilotConsumerHandle(options: {
     let cancelAcquisition: () => void = () => undefined;
     const cancel = (): void => {
       open = false;
+      clearTimeout(renewalTimer);
       cancelAcquisition();
       channel?.disconnect();
     };
@@ -201,6 +238,83 @@ export function createCopilotConsumerHandle(options: {
       signal.throwIfAborted();
       if (!open) throw failed();
     };
+    async function send(
+      command: Extract<
+        CopilotRecipientCommand,
+        { kind: 'run' | 'reply' | 'renew' }
+      >,
+    ): Promise<CopilotRecipientOutcome> {
+      check();
+      if (!channel || requestId >= 4096) {
+        cancel();
+        throw failed();
+      }
+      const id = ++requestId;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const boundAcknowledgement = (): void => {
+        timer = setTimeout(() => {
+          // Only a known ancillary reply may lose to a received completion.
+          if (command.kind === 'run' || !completionReceived) cancel();
+        }, COPILOT_RECIPIENT_LIMITS.callbackMs);
+        timer.unref();
+      };
+      const response = new Promise<CopilotRecipientOutcome>((resolve) => {
+        pending.set(id, {
+          kind: command.kind,
+          resolve(outcome): void {
+            // The completion frame is not yet an acknowledged delivery.
+            if (command.kind === 'run') boundAcknowledgement();
+            resolve(outcome);
+          },
+        });
+      });
+      issued.add(id);
+      if (command.kind !== 'run') boundAcknowledgement();
+      try {
+        const [, outcome] = await Promise.race([
+          Promise.all([
+            channel
+              .receive(JSON.stringify({ requestId: id, command }))
+              .then(() => {
+                if (pending.has(id)) throw failed();
+              }),
+            response,
+          ]),
+          cancelled,
+        ]);
+        return outcome;
+      } catch (error) {
+        if (completionReceived && command.kind !== 'run')
+          return { kind: 'accepted' };
+        throw error;
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    async function renew(): Promise<void> {
+      if (runResponseReceived || !open) return;
+      check();
+      if (!envelope) throw failed();
+      const sent = performance.now();
+      await send({ ...envelope, kind: 'renew' });
+      if (runResponseReceived || !open) return;
+      check();
+      // Schedule from local send, never compare monotonic clocks across hosts.
+      renewalTimer = setTimeout(
+        () => {
+          void renew().catch(cancel);
+        },
+        Math.max(
+          0,
+          COPILOT_RECIPIENT_LIMITS.lifetimeMs / 2 - (performance.now() - sent),
+        ),
+      );
+      renewalTimer.unref();
+    }
+    const cancelled = new Promise<never>((_resolve, reject) => {
+      cancelAcquisition = (): void => reject(failed());
+    });
+    void cancelled.catch(() => undefined);
     async function callback(
       ask: CopilotCallbackRequest,
     ): Promise<CopilotCallbackReply> {
@@ -331,11 +445,6 @@ export function createCopilotConsumerHandle(options: {
       if (request || options.launch)
         policyKey = await options.port.projectPolicy(request, options.launch);
       check();
-      const cancelled = new Promise<never>((_resolve, reject) => {
-        cancelAcquisition = (): void => reject(failed());
-      });
-      // An open port may throw synchronously after triggering cancellation.
-      void cancelled.catch(() => undefined);
       acquisitionSignal.addEventListener('abort', cancel, { once: true });
       if (acquisitionSignal.aborted) cancel();
       check();
@@ -344,57 +453,83 @@ export function createCopilotConsumerHandle(options: {
         audience,
         policyKey,
         async (encoded) => {
-          check();
-          if (
-            Buffer.byteLength(encoded, 'utf8') >
-            COPILOT_RECIPIENT_LIMITS.frameBytes
-          )
-            throw failed();
-          const frame = CopilotLocalFrameSchema.parse(JSON.parse(encoded));
-          if (frame.kind === 'response') {
-            if (frame.requestId === 1) {
-              if (outcome) throw failed();
-              outcome = frame.outcome;
-            } else if (
-              frame.requestId > requestId ||
-              frame.outcome.kind !== 'accepted'
+          try {
+            if (
+              Buffer.byteLength(encoded, 'utf8') >
+              COPILOT_RECIPIENT_LIMITS.frameBytes
             )
               throw failed();
-            return;
-          }
-          if (frame.kind !== 'message' || !envelope) throw failed();
-          const message = frame.message;
-          if (
-            message.handle !== envelope.handle ||
-            message.generation !== envelope.generation ||
-            message.sequence !== ++sequence
-          )
-            throw failed();
-          if (message.kind === 'event') {
-            if (!request || message.event.kind !== 'patch') throw failed();
-            await request.emit(message.event.patch);
+            const frame = CopilotLocalFrameSchema.parse(JSON.parse(encoded));
+            if (completionReceived) {
+              if (frame.kind === 'response' && issued.has(frame.requestId)) {
+                if (!open) return;
+                check();
+                const waiting = pending.get(frame.requestId);
+                // Completion can outrun a pending acknowledgement, not admit a replay.
+                if (
+                  !waiting ||
+                  waiting.kind === 'run' ||
+                  (frame.outcome.kind !== 'accepted' &&
+                    frame.outcome.kind !== 'refused')
+                )
+                  throw failed();
+                pending.delete(frame.requestId);
+                waiting.resolve(frame.outcome);
+                return;
+              }
+              throw failed();
+            }
             check();
-            return;
-          }
-          // The writer must acknowledge before a reply's own acknowledged write can run.
-          void Promise.resolve()
-            .then(async () => {
-              const reply = await callback(message.request);
+            if (frame.kind === 'response') {
+              const waiting = pending.get(frame.requestId);
+              if (!waiting) throw failed();
+              if (waiting.kind === 'run') {
+                if (frame.outcome.kind === 'completed') {
+                  if (frame.outcome.result.kind !== purpose) throw failed();
+                  completionReceived = true;
+                } else if (frame.outcome.kind !== 'refused') throw failed();
+                runResponseReceived = true;
+                clearTimeout(renewalTimer);
+              } else if (frame.outcome.kind !== 'accepted') throw failed();
+              pending.delete(frame.requestId);
+              waiting.resolve(frame.outcome);
+              return;
+            }
+            if (frame.kind !== 'message' || !envelope) throw failed();
+            const message = frame.message;
+            if (
+              message.handle !== envelope.handle ||
+              message.generation !== envelope.generation ||
+              message.sequence !== ++sequence
+            )
+              throw failed();
+            if (message.kind === 'event') {
+              if (!request || message.event.kind !== 'patch') throw failed();
+              await request.emit(message.event.patch);
               check();
-              if (!channel || !envelope) throw failed();
-              await channel.receive(
-                JSON.stringify({
-                  requestId: ++requestId,
-                  command: {
-                    ...envelope,
-                    kind: 'reply',
-                    correlationId: message.correlationId,
-                    reply,
-                  },
-                }),
-              );
-            })
-            .catch(cancel);
+              return;
+            }
+            // The writer must acknowledge before a reply's own acknowledged write can run.
+            void Promise.resolve()
+              .then(async () => {
+                const reply = await callback(message.request);
+                if (completionReceived) return;
+                check();
+                if (!channel || !envelope) throw failed();
+                await send({
+                  ...envelope,
+                  kind: 'reply',
+                  correlationId: message.correlationId,
+                  reply,
+                });
+              })
+              .catch(() => {
+                if (!completionReceived) cancel();
+              });
+          } catch (error) {
+            cancel();
+            throw error;
+          }
         },
         acquisitionSignal,
       );
@@ -417,39 +552,27 @@ export function createCopilotConsumerHandle(options: {
         purpose,
       };
       check();
-      await channel.receive(
-        JSON.stringify({
-          requestId: 1,
-          command: {
-            ...envelope,
-            kind: 'run',
-            ...(request
-              ? {
-                  turn: {
-                    prompt: request.prompt,
-                    model: request.model,
-                    reasoningEffort: request.reasoningEffort,
-                    recoverMissingSession: !!request.onSessionUnavailable,
-                    observeTools: !!request.onEvent,
-                  },
-                }
-              : {}),
-          },
-        }),
-      );
+      await renew();
       check();
-      const completed = CopilotLocalFrameSchema.parse({
-        kind: 'response',
-        requestId: 1,
-        outcome,
+      const outcome = await send({
+        ...envelope,
+        kind: 'run',
+        ...(request
+          ? {
+              turn: {
+                prompt: request.prompt,
+                model: request.model,
+                reasoningEffort: request.reasoningEffort,
+                recoverMissingSession: !!request.onSessionUnavailable,
+                observeTools: !!request.onEvent,
+              },
+            }
+          : {}),
       });
-      if (
-        completed.kind !== 'response' ||
-        completed.outcome.kind !== 'completed' ||
-        completed.outcome.result.kind !== purpose
-      )
+      check();
+      if (outcome.kind !== 'completed' || outcome.result.kind !== purpose)
         throw failed();
-      return completed.outcome.result;
+      return outcome.result;
     } catch {
       // Missing resume is notified to its owner, then retried only under a fresh create audience.
       if (
@@ -468,6 +591,9 @@ export function createCopilotConsumerHandle(options: {
       throw failed();
     } finally {
       open = false;
+      clearTimeout(renewalTimer);
+      pending.clear();
+      cancelAcquisition();
       acquisitionSignal.removeEventListener('abort', cancel);
       channel?.disconnect();
       if (channel) channels.delete(channel);

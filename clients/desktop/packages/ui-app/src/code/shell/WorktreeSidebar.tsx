@@ -6,6 +6,10 @@ import { Surface, Button } from '@canopy/ui-shared/components';
 import { WorkspacesSidebarSections } from './WorkspacesSidebarSections';
 import { SidebarChrome } from './sidebar';
 import { partitionWorkspaces } from './workspace-sections-model';
+import type {
+  WorktreeCreateOptions,
+  WorktreeCreateResult,
+} from '@canopy/app-core';
 
 /**
  * The write-once worktree sidebar for the Code tab — unifies the desktop
@@ -24,8 +28,15 @@ export interface WorktreeSidebarProps {
     workspaceLocalId: string,
     worktreeLocalId: string,
   ) => void;
-  /** Host-owned worktree creation dispatch. */
-  readonly onAddWorktree?: (workspaceLocalId: string) => void;
+  /**
+   * Host-owned worktree creation dispatch. `options.worktreeId` is the
+   * surface's claimed id, sent only for a workspace that publishes
+   * `worktreeIdClaimPrefix`; the host's own id stays authoritative.
+   */
+  readonly onAddWorktree?: (
+    workspaceLocalId: string,
+    options?: WorktreeCreateOptions,
+  ) => Promise<WorktreeCreateResult> | void;
   /** Host-owned navigation rows rendered after the worktree sections. */
   readonly navigationExtension?: ReactNode;
   /** Workspace-level entry points owned by the host. */
@@ -131,10 +142,17 @@ export function WorktreeSidebar({
           selected={selectedTarget}
           onSelectWorktree={onSelectWorktree}
           creationEnabled={onAddWorktree !== undefined}
-          onCreateWorktree={(workspaceLocalId) => {
-            onAddWorktree?.(workspaceLocalId);
-            return Promise.resolve({ status: 'pending' });
-          }}
+          onCreateWorktree={async (
+            workspaceLocalId,
+            _groupId,
+            options,
+          ): Promise<WorktreeCreateResult> =>
+            // A host that names the created id passes it through, so the
+            // pending row follows the host's id, not snapshot-diff adoption.
+            (await onAddWorktree?.(workspaceLocalId, options)) ?? {
+              status: 'pending',
+            }
+          }
           touchTargets={touchTargets}
           testIds={{ workspace: 'worktree-sidebar-workspace' }}
         />

@@ -9,6 +9,8 @@ import {
 } from '@canopy/ui-app';
 import { SHOW_VISUAL_TOOL_ALIASES } from '@/lib/canopy-tool-aliases';
 import {
+  isRequestSecretsToolName,
+  RequestSecretsRowLabel,
   getToolRowInput,
   ToolCallCard,
   ToolCallResultSection,
@@ -135,7 +137,14 @@ export const ToolCallBlock = memo(function ToolCallBlock({
             : input,
           toolDisplayScope,
         );
-  const displayLabel = label ?? derivedLabel;
+  // A settled RequestSecrets row reads its result: "Provided 3 of 4".
+  const displayLabel =
+    label ??
+    (result && !result.isError && isRequestSecretsToolName(toolName) ? (
+      <RequestSecretsRowLabel input={input} resultText={result.output} />
+    ) : (
+      derivedLabel
+    ));
   const family = getToolFamilyFromName(toolName, toolDisplayScope, input);
   // Code-graph tools keep their dedicated GraphIcon (from `getToolDisplayInfo`)
   // rather than folding into the neutral branded app logo like other

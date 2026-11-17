@@ -137,6 +137,9 @@ jest.mock('../../cursor/account-usage', () => ({
 jest.mock('../../copilot/feature-flag', () => ({
   isCopilotHarnessEnabled: (): boolean => false,
 }));
+jest.mock('../../antigravity/feature-flag', () => ({
+  isAntigravityHarnessEnabled: (): boolean => false,
+}));
 jest.mock('../../copilot/account-usage', () => ({
   readCopilotUsageSummary: (): Promise<null> => Promise.resolve(null),
 }));

@@ -23,6 +23,7 @@ import type {
   CanopyCapabilities,
   CanopyClient,
   SessionViewModel,
+  WorktreeCreateOptions,
   WorktreeCreateResult,
 } from '@canopy/app-core';
 import {
@@ -127,7 +128,7 @@ import {
   indexActiveScriptRuns,
   isWorktreeLaunchActiveInIndex,
   resolveWorktreeLaunchEntry,
-  runWorktreeLaunch,
+  launchWorktreeFresh,
   stopWorktreeScripts,
   worktreesWithStoppableScripts,
 } from '@/components/worktree/worktree-launch';
@@ -1814,23 +1815,69 @@ export function DesktopSharedSidebarHost({
       ),
     [snapshot?.worktrees, model.sortedProjects],
   );
-  const createLocalWorktree = async (
+  const reportSidebarError = (
+    error: unknown,
+    fallback = 'Group changes could not be saved. Try again.',
+  ): void => {
+    const navigation = useNavigationStore.getState();
+    const archive = useArchivedContainersStore.getState();
+    const shared = useSharedContainerReplicasStore.getState();
+    // WorktreeErrorNotice sits over every page in the main frame; only
+    // the overlays that cover that frame can hide it, and a covered
+    // notice cannot own the visible failure.
+    const archiveCoversNotice = [archive.viewer, archive.overview].some(
+      (entry) =>
+        entry !== null &&
+        !isBotProjectId(entry.workspaceId) &&
+        !isCoworkChatTarget(entry.workspaceId),
+    );
+    if (
+      error instanceof WorktreeCreationNoticeError &&
+      inlineFailureText(useProjectsStore.getState().worktreeError) ===
+        error.message &&
+      !navigation.settingsOpen &&
+      !useSidebarPageHandoffStore.getState().coversMainShell &&
+      !archiveCoversNotice &&
+      shared.viewer === null &&
+      !shared.pastSharesOpen
+    )
+      return;
+    useGitHubStore
+      .getState()
+      .addToast(error instanceof Error ? error.message : fallback, 'error');
+  };
+  // A create that failed after its row registered: a background outcome.
+  const reportLateCreateError = (error: unknown): void =>
+    reportSidebarError(error, 'Worktree could not be created. Try again.');
+  const runLocalWorktreeCreate = async (
     workspaceId: string,
     groupId: string | undefined,
-  ): Promise<WorktreeCreateResult> => {
+    options: WorktreeCreateOptions | undefined,
+    onRegistered: (worktree: { readonly id: string }) => void,
+  ): Promise<WorktreeCreateResult | undefined> => {
+    // The claim is a hint; `created.id` is what main actually used.
+    const claim =
+      options?.worktreeId === undefined
+        ? {}
+        : { worktreeId: options.worktreeId };
     const created = groupId
       ? await useProjectsStore.getState().createWorktree(workspaceId, {
+          ...claim,
           sidebarItemGroupId: groupId,
-          onRegistered: (worktree): void =>
-            model.onSelectWorktree(workspaceId, worktree.id),
+          onRegistered: (worktree): void => {
+            model.onSelectWorktree(workspaceId, worktree.id);
+            onRegistered(worktree);
+          },
         })
-      : await model.onCreateWorktree(workspaceId);
+      : await model.onCreateWorktree(workspaceId, { ...claim, onRegistered });
     if (
       !created &&
       useProjectsStore.getState().pendingWorkspaceRepair?.workspaceId ===
         workspaceId
     )
-      return { status: 'pending' };
+      // The repair dialog owns what happens next; no create is running, so
+      // no pending row is kept.
+      return undefined;
     if (!created) {
       const error = inlineFailureText(
         useProjectsStore.getState().worktreeError,
@@ -1840,6 +1887,38 @@ export function DesktopSharedSidebarHost({
       throw new Error('Worktree could not be created. Try again.');
     }
     return { status: 'completed', worktreeId: created.id };
+  };
+  // Reports main's id as soon as the row is registered (inserted and
+  // selected), not after persistence and the post-create refreshes, so the
+  // pending row hands over to the real one at once. A failure after that
+  // still reaches the user, as the sidebar's own create errors do.
+  const createLocalWorktree = async (
+    workspaceId: string,
+    groupId: string | undefined,
+    options: WorktreeCreateOptions | undefined,
+  ): Promise<WorktreeCreateResult | undefined> => {
+    let registered = false;
+    let reportRegistered: (result: WorktreeCreateResult) => void = () => {};
+    const atRegistration = new Promise<WorktreeCreateResult>((resolve) => {
+      reportRegistered = resolve;
+    });
+    const run = runLocalWorktreeCreate(
+      workspaceId,
+      groupId,
+      options,
+      (worktree) => {
+        if (registered) return;
+        registered = true;
+        reportRegistered({ status: 'completed', worktreeId: worktree.id });
+      },
+    );
+    // A failure before registration rejects here; one after it is reported.
+    // `+` unlocks at registration, so a second create can begin while this
+    // one still saves. If this one then fails, its attempt is no longer
+    // current and the notice falls back to this toast; the worktree exists.
+    const outcome = await Promise.race([atRegistration, run]);
+    if (registered) void run.catch(reportLateCreateError);
+    return outcome;
   };
   const handleSelect = useCallback(
     (next: SidebarSelection): void => {
@@ -2165,9 +2244,14 @@ export function DesktopSharedSidebarHost({
           isLaunchRunning(workspaceId, worktreeId)
         }
         onLaunchWorktree={(workspaceId, worktreeId) => {
-          const launchEntry = launchEntryFor(workspaceId, worktreeId);
-          if (!launchEntry || isLaunchRunning(workspaceId, worktreeId)) return;
-          runWorktreeLaunch(workspaceId, worktreeId, launchEntry);
+          if (isLaunchRunning(workspaceId, worktreeId)) return;
+          // CAN-6933: what runs is the worktree's own command, read now.
+          void launchWorktreeFresh(workspaceId, worktreeId);
+        }}
+        onWorktreeMenuOpened={(workspaceId, worktreeId) => {
+          void useProjectsStore
+            .getState()
+            .ensureWorktreeEffective(workspaceId, [worktreeId]);
         }}
         hasRunningScripts={(worktreeId, workspaceId) =>
           stoppableScriptWorktrees.has(worktreeKey(workspaceId, worktreeId))
@@ -2344,45 +2428,14 @@ export function DesktopSharedSidebarHost({
             },
           };
         }}
-        onGroupError={(_workspaceId, error): void => {
-          const navigation = useNavigationStore.getState();
-          const archive = useArchivedContainersStore.getState();
-          const shared = useSharedContainerReplicasStore.getState();
-          // WorktreeErrorNotice sits over every page in the main frame; only
-          // the overlays that cover that frame can hide it, and a covered
-          // notice cannot own the visible failure.
-          const archiveCoversNotice = [archive.viewer, archive.overview].some(
-            (entry) =>
-              entry !== null &&
-              !isBotProjectId(entry.workspaceId) &&
-              !isCoworkChatTarget(entry.workspaceId),
-          );
-          if (
-            error instanceof WorktreeCreationNoticeError &&
-            inlineFailureText(useProjectsStore.getState().worktreeError) ===
-              error.message &&
-            !navigation.settingsOpen &&
-            !useSidebarPageHandoffStore.getState().coversMainShell &&
-            !archiveCoversNotice &&
-            shared.viewer === null &&
-            !shared.pastSharesOpen
-          )
-            return;
-          useGitHubStore
-            .getState()
-            .addToast(
-              error instanceof Error
-                ? error.message
-                : 'Group changes could not be saved. Try again.',
-              'error',
-            );
-        }}
-        onCreateWorktree={(workspaceId, groupId) => {
+        onGroupError={(_workspaceId, error): void => reportSidebarError(error)}
+        onCreateWorktree={(workspaceId, groupId, options) => {
+          // Cloud scopes publish no claim prefix, so no claim reaches them.
           if (isWebCoreScope(workspaceId))
             return cloudSidebar.status === 'online'
               ? cloudSidebar.createTask(workspaceId)
               : Promise.reject(new Error('Cloud chats are offline.'));
-          return createLocalWorktree(workspaceId, groupId);
+          return createLocalWorktree(workspaceId, groupId, options);
         }}
         onCreateBranchWorktree={model.onCreateBranchWorktree}
         onArchiveWorktree={(workspaceId, worktreeId) => {

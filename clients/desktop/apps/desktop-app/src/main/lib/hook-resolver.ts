@@ -20,7 +20,7 @@ import {
   type HookSourceMap,
 } from '@canopy/core-runtime/node/initiated-work/hook-sources';
 import { settleAll } from '@canopy/desktop-shared/node/lib/detached-work';
-import { readCanopyJson } from './canopy-json';
+import { readCachedCanopyJson } from './project-config-file-cache';
 import {
   resolveWorkspaceRepoScripts,
   toScriptOverrides,
@@ -58,7 +58,7 @@ export async function readProjectHookLayers(
   project: ProjectHookSource,
   repoPathOverride?: string,
 ): Promise<HookLayerRead> {
-  const repoManifest = await readCanopyJson(
+  const repoManifest = await readCachedCanopyJson(
     repoPathOverride ?? project.repoPath,
   );
   return {

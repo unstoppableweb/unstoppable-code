@@ -150,6 +150,7 @@ import {
   detectGitExecutableShared,
   setCachedGitExecutablePath,
 } from '../git-executable';
+import { ANIMAL_NAMES, getWorktreeIdClaimPrefix } from '../animals';
 import {
   createWorktreeFromSelection,
   projectWorktreeCreationRecord,
@@ -1417,6 +1418,119 @@ describe('worktree creation boundary round trips (real git and fs)', () => {
   );
 
   describe('single-repository', () => {
+    describe('client-claimed worktree id', () => {
+      const claim = (name: string): string =>
+        `${getWorktreeIdClaimPrefix()}${name}`;
+
+      it(
+        'honors a free claim and falls back when it is taken or misshapen',
+        async () => {
+          const claimed = claim(ANIMAL_NAMES[0]);
+          const honored = await createWorktreeFromSelection({
+            workspaceId: SINGLE,
+            workspaceKind: 'single-repo',
+            branch: { kind: 'default' },
+            base: { kind: 'repository-default' },
+            claimedWorktreeId: claimed,
+          });
+          expect(honored.record.worktreeId).toBe(claimed);
+          await expectRecordPersisted(SINGLE, honored.record);
+
+          const taken = await createWorktreeFromSelection({
+            workspaceId: SINGLE,
+            workspaceKind: 'single-repo',
+            branch: { kind: 'default' },
+            base: { kind: 'repository-default' },
+            claimedWorktreeId: claimed,
+          });
+          expect(taken.record.worktreeId).not.toBe(claimed);
+          await expectRecordPersisted(SINGLE, taken.record);
+
+          // Well-formed but not the generator's shape for this host's mode.
+          for (const misshapen of [
+            'not-an-animal',
+            `other-${ANIMAL_NAMES[1]}`,
+            claim(`${ANIMAL_NAMES[1]}-1`),
+          ]) {
+            const fallback = await createWorktreeFromSelection({
+              workspaceId: SINGLE,
+              workspaceKind: 'single-repo',
+              branch: { kind: 'default' },
+              base: { kind: 'repository-default' },
+              claimedWorktreeId: misshapen,
+            });
+            expect(fallback.record.worktreeId).not.toBe(misshapen);
+          }
+        },
+        TEST_TIMEOUT_MS,
+      );
+
+      it(
+        'refuses a malformed claim before reserving anything',
+        async () => {
+          const before = await readWorkspaceWorktrees(SINGLE);
+          for (const malformed of ['../escape', 'Upper', 'a/b', '']) {
+            await expect(
+              createWorktreeFromSelection({
+                workspaceId: SINGLE,
+                workspaceKind: 'single-repo',
+                branch: { kind: 'default' },
+                base: { kind: 'repository-default' },
+                claimedWorktreeId: malformed,
+              }),
+            ).rejects.toThrow();
+          }
+          expect(await readWorkspaceWorktrees(SINGLE)).toEqual(before);
+        },
+        TEST_TIMEOUT_MS,
+      );
+
+      it(
+        'replays the id a keyed call got, including a fallback, and fingerprints the claim',
+        async () => {
+          const claimed = claim(ANIMAL_NAMES[2]);
+          await createWorktreeFromSelection({
+            workspaceId: SINGLE,
+            workspaceKind: 'single-repo',
+            branch: { kind: 'default' },
+            base: { kind: 'repository-default' },
+            claimedWorktreeId: claimed,
+          });
+          const first = await createWorktreeFromSelection({
+            workspaceId: SINGLE,
+            workspaceKind: 'single-repo',
+            branch: { kind: 'default' },
+            base: { kind: 'repository-default' },
+            claimedWorktreeId: claimed,
+            idempotencyKey: 'claim-replay',
+          });
+          expect(first.record.worktreeId).not.toBe(claimed);
+          const replay = await createWorktreeFromSelection({
+            workspaceId: SINGLE,
+            workspaceKind: 'single-repo',
+            branch: { kind: 'default' },
+            base: { kind: 'repository-default' },
+            claimedWorktreeId: claimed,
+            idempotencyKey: 'claim-replay',
+          });
+          expect(replay.record.worktreeId).toBe(first.record.worktreeId);
+          const listed = (await readWorkspaceWorktrees(SINGLE)).length;
+          await expect(
+            createWorktreeFromSelection({
+              workspaceId: SINGLE,
+              workspaceKind: 'single-repo',
+              branch: { kind: 'default' },
+              base: { kind: 'repository-default' },
+              claimedWorktreeId: claim(ANIMAL_NAMES[3]),
+              idempotencyKey: 'claim-replay',
+            }),
+          ).rejects.toThrow();
+          expect(await readWorkspaceWorktrees(SINGLE)).toHaveLength(listed);
+        },
+        TEST_TIMEOUT_MS,
+      );
+    });
+
     it(
       'creates the default branch from the repository default',
       async () => {

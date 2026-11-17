@@ -21,6 +21,8 @@ import { closeWebCoreChatBackend } from '../web-core';
 import {
   clearWebCoreModelCatalog,
   loadWebCoreModelCatalog,
+  reloadLockedWebCoreModelCatalogs,
+  reloadWebCoreModelCatalog,
   retryWebCoreModelCatalog,
   useWebCoreModelCatalogStore,
   webCoreModelLabel,
@@ -165,6 +167,40 @@ function heldCatalog(id: string): {
           value: { revision: 1, entries: [modelEntry(id)], generatedAt: AT },
         })),
       openStream: () => Promise.reject(new Error('unused')),
+    },
+  };
+}
+
+/**
+ * The hosted catalog the web core answers at revision 2, with one model the
+ * owner's library keeps locked until it's bought (CAN-6937).
+ */
+function hostedCatalog(bought: boolean): Record<string, unknown> {
+  const model = (
+    id: string,
+    libraryEligibility: 'available' | 'locked',
+  ): Record<string, unknown> => ({
+    id,
+    label: id,
+    provider: 'anthropic',
+    family: 'family-a',
+    familyLabel: 'Family A',
+    harness: 'claude',
+    libraryEligibility,
+  });
+  return {
+    revision: 1,
+    entries: [],
+    generatedAt: AT,
+    cloudModels: {
+      models: [
+        model('open-model', 'available'),
+        model('bought-model', bought ? 'available' : 'locked'),
+      ],
+      modelHarnesses: { 'open-model': 'claude', 'bought-model': 'claude' },
+      defaultModelId: 'open-model',
+      defaultModelBlocked: false,
+      modelLibrary: bought ? 'unlocked' : 'needs_purchase',
     },
   };
 }
@@ -353,6 +389,58 @@ describe('the web core model catalog (CAN-6175 R5)', () => {
       ...(useWebCoreModelCatalogStore.getState().byProject[PROJECT]?.keys() ??
         []),
     ]).toEqual(['new-model']);
+  });
+
+  it('reads a catalog again after its first read when an unlock is confirmed while that read is in flight (CAN-6937)', async () => {
+    let released = (): void => undefined;
+    const held = new Promise<void>((resolve) => {
+      released = resolve;
+    });
+    let purchased = false;
+    let reads = 0;
+    const invoker: CoreCoworkInvoker = {
+      request: () => {
+        reads += 1;
+        // The first read is answered before the purchase, and arrives late.
+        const answer = hostedCatalog(purchased);
+        return (reads === 1 ? held : Promise.resolve()).then(() => ({
+          ok: true,
+          value: answer,
+        }));
+      },
+      openStream: () => Promise.reject(new Error('unused')),
+    };
+    const first = loadWebCoreModelCatalog(PROJECT, () => invoker);
+    // The purchase is confirmed while the first read is in flight.
+    purchased = true;
+    const reloaded = reloadLockedWebCoreModelCatalogs(() => invoker);
+    released();
+    await first;
+    await reloaded;
+    expect(reads).toBe(2);
+    const state = useWebCoreModelCatalogStore.getState();
+    expect(state.lockedByProject[PROJECT]).toBeUndefined();
+    expect([...(state.byProject[PROJECT]?.keys() ?? [])]).toContain(
+      'bought-model',
+    );
+  });
+
+  it('keeps the newest re-read when re-reads after an unlock answer out of order (CAN-6937)', async () => {
+    const first = heldCatalog('first-model');
+    first.answer();
+    await loadWebCoreModelCatalog(PROJECT, () => first.invoker);
+    const older = heldCatalog('older-model');
+    const olderRead = reloadWebCoreModelCatalog(PROJECT, () => older.invoker);
+    const newer = heldCatalog('newer-model');
+    const newerRead = reloadWebCoreModelCatalog(PROJECT, () => newer.invoker);
+    newer.answer();
+    await newerRead;
+    older.answer();
+    await olderRead;
+    expect([
+      ...(useWebCoreModelCatalogStore.getState().byProject[PROJECT]?.keys() ??
+        []),
+    ]).toEqual(['newer-model']);
   });
 });
 

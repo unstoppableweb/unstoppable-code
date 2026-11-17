@@ -7,16 +7,15 @@ import { ClaudeLogo } from '../icons/ClaudeLogo';
 import { CodexLogo } from '../icons/CodexLogo';
 import { CursorLogo } from '../icons/CursorLogo';
 import { OpenCodeLogo } from '../icons/OpenCodeLogo';
+import { AntigravityLogo } from '../icons/AntigravityLogo';
 import { DataTable } from './DataTable';
 import { Tooltip } from './Tooltip';
+import { useItemStateMarks } from './ItemStateMark';
 
-/**
- * Plugin harness names and marks, in display order. Antigravity is chat-only
- * and rejects plugins, so it has no plugin connection entry.
- */
+/** Plugin harness names and marks, in display order. */
 const HARNESSES: Readonly<
   Record<
-    Exclude<AgentExecutionHarness, 'antigravity'>,
+    AgentExecutionHarness,
     { name: string; Logo: ComponentType<SVGProps<SVGSVGElement>> }
   >
 > = {
@@ -26,6 +25,7 @@ const HARNESSES: Readonly<
   // Copilot has no brand mark here; match ModelProviderIcon's GitHub mark.
   copilot: { name: 'Copilot', Logo: GitHubIcon },
   opencode: { name: 'OpenCode', Logo: OpenCodeLogo },
+  antigravity: { name: 'Antigravity', Logo: AntigravityLogo },
 };
 
 function harnessLogo(
@@ -87,6 +87,8 @@ interface PluginHarnessConnectionsProps {
 export function PluginHarnessConnections({
   rows,
 }: PluginHarnessConnectionsProps): JSX.Element | null {
+  // New Customize: the check carries the color; "Installed" stays plain.
+  const neutralText = useItemStateMarks();
   if (rows.length === 0) return null;
   return (
     <DataTable
@@ -125,7 +127,13 @@ export function PluginHarnessConnections({
           header: 'Installation',
           align: 'right',
           tone: (row) =>
-            row.installation === 'Installed' ? 'success' : 'secondary',
+            neutralText
+              ? row.installation === 'Installed'
+                ? 'primary'
+                : 'secondary'
+              : row.installation === 'Installed'
+                ? 'success'
+                : 'secondary',
           render: (row) => (
             <span className="inline-flex items-center justify-end gap-3">
               {row.note && <span className="fg-tertiary">{row.note}</span>}
@@ -160,7 +168,7 @@ export function PluginHarnessConnections({
                 {row.installation === 'Installed' && (
                   <CheckIcon
                     size={16}
-                    className="shrink-0"
+                    className={`shrink-0${neutralText ? ' fg-success' : ''}`}
                     aria-hidden="true"
                   />
                 )}

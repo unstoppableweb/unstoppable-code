@@ -1,3 +1,4 @@
+import { assertCodeReviewStorageWriter } from './code-review-storage-admission';
 import {
   cp,
   lstat,
@@ -188,6 +189,12 @@ async function migrateLegacyAppWorkspace(workspaceId: string): Promise<void> {
 }
 
 async function migrateLegacyCodeReviewChats(): Promise<void> {
+  for (const namespace of [
+    'code_review_chats_legacy',
+    'code_review_chats_dir',
+    'code_review_registry',
+  ] as const)
+    assertCodeReviewStorageWriter(namespace, 'main/lib/app-managed-workspaces');
   const source = getLegacyCodeReviewChatsDir();
   const destination = getCodeReviewChatsDir();
   if (!(await pathExists(source))) {

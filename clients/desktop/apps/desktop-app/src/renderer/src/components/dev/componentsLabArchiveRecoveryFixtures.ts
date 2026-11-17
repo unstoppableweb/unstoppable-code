@@ -75,6 +75,8 @@ export function archiveRecovery(
 export const archiveListCases = [
   'one',
   'several',
+  'cleanup only',
+  'cleanup unavailable',
   'long name',
   'empty',
   'checking',
@@ -119,9 +121,11 @@ export function recoveryProjects(state: ArchiveListCase): RecoveryProject[] {
       check: state === 'error' ? 'journal-evidence-unreadable' : 'ok',
       entries: hasHold
         ? []
-        : state === 'several'
-          ? recoveryActions.map(archiveRecovery)
-          : [archiveRecovery()],
+        : state === 'cleanup only' || state === 'cleanup unavailable'
+          ? [cleanupRecovery(state === 'cleanup only')]
+          : state === 'several'
+            ? recoveryActions.map(archiveRecovery)
+            : [archiveRecovery()],
       resolutions: hasHold
         ? [
             recoveryHold(
@@ -134,4 +138,28 @@ export function recoveryProjects(state: ArchiveListCase): RecoveryProject[] {
         : [],
     },
   ];
+}
+
+export function cleanupRecovery(eligible = true): WorktreeRecoveryDescription {
+  const recovery = archiveRecovery('finish');
+  recovery.check = 'completed-turn-diff-cleanup';
+  recovery.stoppingPoint = { phase: 'turn-diff-cleanup', state: 'failed' };
+  recovery.actions.finishArchive = { eligible: false, reason: 'not-admitted' };
+  if (recovery.diagnosis) {
+    recovery.diagnosis.rawState = 'completed';
+    recovery.diagnosis.verdict = eligible ? 'cleanup-debt' : 'refused';
+    recovery.diagnosis.check = eligible
+      ? 'completed-turn-diff-cleanup'
+      : 'cleanup-repositories-unavailable';
+  }
+  for (const key of [
+    'checkout',
+    'stagedCopy',
+    'gitSnapshot',
+    'committedArchive',
+    'chats',
+  ] as const) {
+    recovery.retained[key] = { presence: 'absent', verification: 'unknown' };
+  }
+  return recovery;
 }

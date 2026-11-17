@@ -17,7 +17,8 @@ import {
 export type StoredSecretFamily =
   | 'environment'
   | 'mcp.server'
-  | 'shared_container.run_env';
+  | 'shared_container.run_env'
+  | 'agent.chat';
 
 const REF_PREFIX = 'ssr1_';
 const DOMAIN = 'canopy.stored-secret.v1';

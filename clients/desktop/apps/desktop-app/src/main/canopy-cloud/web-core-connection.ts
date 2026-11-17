@@ -62,7 +62,20 @@ export interface WebCoreBindingOptions {
   ) => () => void;
   /** Defaults to the global fetch; tests inject a stub web core. */
   readonly fetch?: typeof fetch;
+  /**
+   * Whether this connection's requests say the window can answer an agent's
+   * secret requests (`canopy-shared-agent-secret-requests`), read per
+   * request: the web core then lets a send announce `secret_requests` to
+   * Agentic Core. Only the renderer's connection, which a person drives,
+   * sets it; main's own sends never answer secret requests.
+   */
+  readonly announcesSecretRequests?: () => boolean;
 }
+
+/** The header Agentic Core and the web core read client capabilities from. */
+export const AGENT_CONVERSATION_CAPABILITIES_HEADER =
+  'x-agent-conversation-capabilities';
+export const SECRET_REQUESTS_CAPABILITY = 'secret_requests';
 
 const NEVER: CanopyRetryDirective = { kind: 'never' };
 
@@ -254,6 +267,12 @@ async function openWebCore(
     headers.delete(CLOUD_SESSION_WAKE_HEADER);
     if (wakeProof && !isOpen && method === 'POST' && isWakingList(init.body))
       headers.set(CLOUD_SESSION_WAKE_HEADER, CLOUD_SESSION_WAKE_HEADER_VALUE);
+    headers.delete(AGENT_CONVERSATION_CAPABILITIES_HEADER);
+    if (method === 'POST' && options.announcesSecretRequests?.() === true)
+      headers.set(
+        AGENT_CONVERSATION_CAPABILITIES_HEADER,
+        SECRET_REQUESTS_CAPABILITY,
+      );
     const response = await send(new URL(path, origin), {
       ...init,
       method,

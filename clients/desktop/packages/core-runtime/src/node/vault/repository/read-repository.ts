@@ -1,3 +1,11 @@
+import { CopilotAuthorityJournalError } from '../copilot-grant-contracts';
+import { MIGRATION_IMPORT_PREFIX } from './migration-codec';
+import {
+  createCopilotPilotComposition,
+  type CopilotPilotInitialization,
+  type CopilotPilotState,
+  type CopilotPilotComposition,
+} from './copilot-pilot-state';
 import {
   toVaultEntryMetadata,
   type VaultEntryState,
@@ -69,6 +77,8 @@ export interface VaultReadRepository {
   reconcile(): Promise<void>;
   /** Trusted composition only: mints a family's put and delete capability. */
   writer(family: string): VaultFamilyWriter;
+  /** Qualification-only lazy composition. Never called by ordinary vault open. */
+  openCopilotPilotState(mode: CopilotPilotInitialization): CopilotPilotState;
   /** Drops the key and aborts a probe in flight. Idempotent. */
   dispose(): void;
 }
@@ -274,6 +284,7 @@ function createReadRepository(
     },
   };
 
+  let pilot: CopilotPilotComposition | undefined;
   const writes = createVaultWritePath({
     view,
     holder,
@@ -282,7 +293,17 @@ function createReadRepository(
     isCorrupt: (entry, keys) =>
       entry.record !== null && !verified(entry, entry.record, keys),
     holdPut: options.holdPut,
-    migrationIntent: options.migrationIntent,
+    migrationIntent: (draft) =>
+      pilot?.bindIntent(draft) ?? options.migrationIntent?.(draft),
+    migrationAdmission: (family, key) => {
+      if (
+        !pilot &&
+        family === 'copilot-account' &&
+        key.startsWith(MIGRATION_IMPORT_PREFIX)
+      )
+        throw new CopilotAuthorityJournalError('unavailable');
+      pilot?.admitKey(family, key);
+    },
     onPutRefused: options.onPutRefused,
     holdDelete: options.holdDelete,
     onDeleteRefused: options.onDeleteRefused,
@@ -291,6 +312,15 @@ function createReadRepository(
   return {
     vaultId,
     repository,
+    openCopilotPilotState: (mode) => {
+      pilot ??= createCopilotPilotComposition({
+        store,
+        keys: () => holder.keys(),
+        writer: () => writes.writer('copilot-account'),
+        reconcile: () => writes.reconcile(),
+      });
+      return pilot.open(mode);
+    },
     refresh: () => refreshed(holder.refresh()),
     probeKeyIfDue: () => refreshed(holder.probeIfDue()),
     reconcile(): Promise<void> {

@@ -25,13 +25,16 @@ import {
   DETAIL_FACT_VALUE_OFFSET_CLASS,
   DetailFact,
   DetailFactList,
+  StatusToneText,
   Tooltip,
   useContributeDetailMoreItems,
+  useItemStateMarks,
   type DetailMoreMenuItem,
 } from '@canopy/ui-shared/components';
 import { TrashIcon } from '@canopy/ui-shared/icons/AppIcons';
 import {
   mcpAuthStatusBadgeClass,
+  mcpAuthStatusBadgeTone,
   mcpAuthStatusLabel,
   mcpDeleteScopeDescription,
   mcpPlacementLabel,
@@ -199,6 +202,8 @@ function McpServerHealthSectionForTarget({
   label = 'Health',
 }: McpServerHealthSectionProps): JSX.Element {
   const reasonId = useId();
+  // New Customize: auth states as a colored icon and plain text.
+  const neutralStatusText = useItemStateMarks();
   const badge = resolveMcpConnectionBadge(status, accountConnectionStatus);
   const lastCheckedAt = validTimestamp(status?.lastCheckedAt);
   const testable = configs.filter(
@@ -318,14 +323,25 @@ function McpServerHealthSectionForTarget({
             className="flex items-center gap-2 text-xs fg-secondary"
           >
             <span className="min-w-0 truncate">{config.name}</span>
-            <span
-              className={mcpAuthStatusBadgeClass(
-                config.authStatus,
-                config.canRefresh,
-              )}
-            >
-              {mcpAuthStatusLabel(config.authStatus, config.canRefresh)}
-            </span>
+            {neutralStatusText ? (
+              <StatusToneText
+                tone={mcpAuthStatusBadgeTone(
+                  config.authStatus,
+                  config.canRefresh,
+                )}
+              >
+                {mcpAuthStatusLabel(config.authStatus, config.canRefresh)}
+              </StatusToneText>
+            ) : (
+              <span
+                className={mcpAuthStatusBadgeClass(
+                  config.authStatus,
+                  config.canRefresh,
+                )}
+              >
+                {mcpAuthStatusLabel(config.authStatus, config.canRefresh)}
+              </span>
+            )}
           </li>
         ))}
       </Stack>

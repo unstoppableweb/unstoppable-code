@@ -669,6 +669,8 @@ export function createCommandFailedPayload(
   details?: {
     refusal?: PortalWorktreeCreateRefusal;
     coworkFolderMissing?: CoworkFolderMissing;
+    /** A stable refusal reason beside the top-level code (CAN-6701). */
+    response?: { code: string; message: string };
   },
 ): PortalCommandFailedPayload {
   return {
@@ -682,11 +684,13 @@ export function createCommandFailedPayload(
         : {}),
     },
     ...(details?.refusal === undefined ? {} : { refusal: details.refusal }),
-    ...(command.type.startsWith('portal.script_actions.') ||
-    command.type === 'portal.collections.save' ||
-    command.type === 'portal.task_refs.list'
-      ? { response: { code, message } }
-      : {}),
+    ...(details?.response
+      ? { response: details.response }
+      : command.type.startsWith('portal.script_actions.') ||
+          command.type === 'portal.collections.save' ||
+          command.type === 'portal.task_refs.list'
+        ? { response: { code, message } }
+        : {}),
     retryable,
     generatedAt: new Date().toISOString(),
   };

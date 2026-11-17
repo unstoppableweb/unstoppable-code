@@ -1,3 +1,4 @@
+import { useGitHubStore } from '@/stores/githubStore';
 import { Badge } from '@canopy/ui-shared/components';
 import {
   useCallback,
@@ -1505,10 +1506,9 @@ export function WorktreeBranchInfoDialog({
                                 undefined,
                                 presence,
                               );
-                            await refreshWorktreeActivity(
-                              projectId,
-                              worktree.id,
-                            );
+                            await useGitHubStore
+                              .getState()
+                              .requestFastRefresh(projectId, worktree.id);
                           })();
                         }}
                       />
@@ -1766,10 +1766,9 @@ export function WorktreeBranchInfoDialog({
                                 rb.repoId,
                                 presence,
                               );
-                            await refreshWorktreeActivity(
-                              projectId,
-                              worktree.id,
-                            );
+                            await useGitHubStore
+                              .getState()
+                              .requestFastRefresh(projectId, worktree.id);
                           })();
                         }}
                         onClosePicker={() => setBranchPickerOpen(null)}

@@ -19,7 +19,7 @@ import { useScriptsStore } from '@/stores/scriptsStore';
 import {
   isWorktreeLaunchActive,
   resolveWorktreeLaunchEntry,
-  runWorktreeLaunch,
+  launchWorktreeFresh,
 } from './worktree-launch';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { resolvePipelineStatus } from './resolvePipelineStatus';
@@ -251,11 +251,18 @@ export function WorktreeItemAdapter({
     (): boolean => isWorktreeLaunchActive(launchEntry, worktreeScriptRuns),
     [launchEntry, worktreeScriptRuns],
   );
+  // CAN-6933: a local load carries no per-worktree scripts; opening the menu
+  // reads this worktree's, so a branch-only launch command shows up.
+  const handleActionsMenuOpen = useCallback((): void => {
+    void useProjectsStore
+      .getState()
+      .ensureWorktreeEffective(project.id, [worktree.id]);
+  }, [project.id, worktree.id]);
   const handleLaunchWorktree = useCallback((): void => {
     if (!launchEntry || hasActiveLaunchRun) {
       return;
     }
-    runWorktreeLaunch(project.id, worktree.id, launchEntry);
+    void launchWorktreeFresh(project.id, worktree.id);
   }, [hasActiveLaunchRun, launchEntry, project.id, worktree.id]);
   const pipelineStatus = resolvePipelineStatus({
     worktreeKey,
@@ -337,6 +344,7 @@ export function WorktreeItemAdapter({
           : undefined
       }
       onLaunch={launchEntry ? handleLaunchWorktree : undefined}
+      onActionsMenuOpen={handleActionsMenuOpen}
       isLaunchActive={hasActiveLaunchRun}
       onAddRepoToWorktreeAdhoc={
         onAddRepoToWorktreeAdhoc

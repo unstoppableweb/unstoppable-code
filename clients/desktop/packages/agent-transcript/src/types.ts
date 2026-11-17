@@ -1,3 +1,4 @@
+import type { SessionResumeFailure } from '@canopy/protocol/session-recovery';
 import type {
   AutoResumeMetadata,
   ToolInterruption,
@@ -505,6 +506,8 @@ export type PersistedChatBlock =
       errorCode?: ClaudeAiCreditsFallbackErrorCode;
       /** Redacted ACP explanation, available through Copy details only. */
       providerErrorDetails?: string;
+      /** Trusted provider resume failure; offers an explicit fresh-chat draft. */
+      sessionResumeFailure?: SessionResumeFailure;
       /**
        * The provider refused this turn because the signed-in account cannot
        * use its model (CAN-4716). Stamped from the trusted terminal event;

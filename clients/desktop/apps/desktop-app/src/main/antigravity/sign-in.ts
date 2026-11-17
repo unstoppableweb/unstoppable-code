@@ -29,7 +29,7 @@ export class AntigravitySignIn {
       try {
         emitter.output({
           sessionId,
-          data: 'Sign in with your personal Google account in the browser.\r\n',
+          data: 'Sign in with your personal Google account in the browser. Antigravity on this computer will use the same account.\r\n',
         });
         const cwd = join(antigravityProfileDirectory(), 'sign-in');
         await mkdir(cwd, { recursive: true, mode: 0o700 });

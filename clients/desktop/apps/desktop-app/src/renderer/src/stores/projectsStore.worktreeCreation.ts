@@ -87,6 +87,9 @@ export function createWorktreeCreationActions({
           const created = await window.api.createWorkspaceWorktree({
             workspaceId: projectId,
             existingWorktreeIds: item.worktrees.map((wt) => wt.id),
+            ...(options?.worktreeId === undefined
+              ? {}
+              : { worktreeId: options.worktreeId }),
             sidebarItemGroupId: options?.sidebarItemGroupId,
             baseWorktreeId: options?.baseWorktreeId,
             baseBranch: options?.baseBranch,
@@ -153,6 +156,9 @@ export function createWorktreeCreationActions({
           projectId,
           repoPath: item.repoPath,
           existingWorktreeIds: item.worktrees.map((wt) => wt.id),
+          ...(options?.worktreeId === undefined
+            ? {}
+            : { worktreeId: options.worktreeId }),
           sidebarItemGroupId: options?.sidebarItemGroupId,
           baseWorktreeId: options?.baseWorktreeId,
           baseBranch: options?.baseBranch,

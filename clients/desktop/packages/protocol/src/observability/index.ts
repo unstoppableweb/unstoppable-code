@@ -2,7 +2,10 @@
 // They describe what the observability ingest stores and serves, so any host
 // (desktop main today, the core daemon later) shares one definition. The
 // desktop-shared `types/observability` module re-exports them.
-import type { OpenCodeAccountSnapshot } from '../portal';
+import type {
+  AntigravityAccountSnapshot,
+  OpenCodeAccountSnapshot,
+} from '../portal';
 import type { AgentExecutionHarness } from '../models';
 import type { ModelRoutingAttributionV1 } from '../model-routing';
 
@@ -871,6 +874,8 @@ export interface RetainedAccountUsageSnapshot {
 export interface AgentUsageOverview {
   /** Memory-only native account metadata; no plan or quota inference. */
   openCodeAccounts?: OpenCodeAccountSnapshot;
+  /** Plan label the Antigravity runtime reported; no quota or identity. */
+  antigravityAccount?: AntigravityAccountSnapshot;
   updatedAt: string;
   providers: ProviderUsageSummary[];
   /**

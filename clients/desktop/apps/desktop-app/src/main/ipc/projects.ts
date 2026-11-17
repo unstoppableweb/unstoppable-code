@@ -33,8 +33,11 @@ import { sendToWindow } from '../lib/window-send';
 import { reconcileGitPendingWorktrees } from '../lib/worktree-boot-recovery';
 import {
   readAllSidebarItems,
+  resolveWorktreeEffectiveFor,
   validateSidebarItems,
 } from '../lib/sidebar-items';
+import { resolveRemoteBridgeSender } from '../remote-control/host/bridge-window';
+import { recordMetadataWork } from '@canopy/desktop-shared/node/work-counters';
 import { saveSidebarItems } from '../lib/sidebar-save-adapter';
 import {
   projectedWorkspaceGuardedCommands,
@@ -342,6 +345,37 @@ function observeFirstProjectsLoadMain(
   }
 }
 
+/**
+ * CAN-6933: local sidebar reads no longer resolve each worktree's own scripts
+ * and hooks. A remote-control session still receives them in today's shape,
+ * because a paired mobile build falls back to the project's scripts when a
+ * worktree has no entry (CAN-6962 moves it to the per-worktree read).
+ */
+function withRemoteWorktreeEffective(
+  load: (event: IpcMainInvokeEvent) => Promise<SidebarItemsFile>,
+): (event: IpcMainInvokeEvent) => Promise<SidebarItemsFile> {
+  return async (event) => {
+    const result = await load(event);
+    if (!event?.sender || resolveRemoteBridgeSender(event.sender) === null)
+      return result;
+    recordMetadataWork('projectsLoad.remote');
+    const items = await settleAll(
+      result.items.map(async (item) =>
+        item.type === 'cowork'
+          ? item
+          : {
+              ...item,
+              worktreeEffective: await resolveWorktreeEffectiveFor(
+                item.id,
+                'remote.projects-load',
+              ).catch(() => undefined),
+            },
+      ),
+    );
+    return { ...result, items };
+  };
+}
+
 export function registerProjectHandlers(
   getWindow: () => BrowserWindow | null,
   dispatcher: DesktopCanopyDispatcher,
@@ -393,173 +427,203 @@ export function registerProjectHandlers(
     );
   };
 
-  registerIpcHandler(IPC_CHANNELS.projectsLoad, async (event) => {
-    const generation = event?.sender
-      ? (projectsLoadGenerations.get(event.sender) ?? 0) + 1
-      : 0;
-    if (event?.sender) projectsLoadGenerations.set(event.sender, generation);
-    const recoverySequence = getElectronDaemonHealth().getRecoverySequence();
-    if (recoverySequence !== startupRecoverySequence) {
-      startupRecoverySequence = recoverySequence;
-      didReconcileGitPendingWorktrees = false;
-      didScheduleChatBadgeBackfill = false;
-    }
-    const observer = __CANOPY_E2E__
-      ? getFirstProjectsLoadMainObserver()
-      : undefined;
-    const requestOrdinal = observer ? ++projectsLoadRequestOrdinal : undefined;
-    if (__CANOPY_E2E__)
-      observeFirstProjectsLoadMain(
-        observer,
-        event,
-        'projects-load-main-entered',
-        () => ({
-          requestOrdinal,
-          reconciliationAlreadyAttempted: didReconcileGitPendingWorktrees,
-        }),
-      );
-    try {
-      const initial = (
-        await withW5ProjectionOnlyRead(W5_PROJECTION_ONLY_READ, () =>
-          dispatcher.queryWorkspaceListForLegacyIpc(
-            {},
-            { caller: resolveCaller(event) },
-          ),
-        )
-      ).legacyResult;
-      // A stale projection may only be delivered, never reconciled or remembered.
-      if (initial.stale) {
-        markNeedsReload(event, generation);
-        return {
-          ...initial,
-          items: initial.items.filter(isVisibleSidebarItem),
-        };
+  registerIpcHandler(
+    IPC_CHANNELS.projectsLoad,
+    withRemoteWorktreeEffective(async (event: IpcMainInvokeEvent) => {
+      const generation = event?.sender
+        ? (projectsLoadGenerations.get(event.sender) ?? 0) + 1
+        : 0;
+      if (event?.sender) projectsLoadGenerations.set(event.sender, generation);
+      const recoverySequence = getElectronDaemonHealth().getRecoverySequence();
+      if (recoverySequence !== startupRecoverySequence) {
+        startupRecoverySequence = recoverySequence;
+        didReconcileGitPendingWorktrees = false;
+        didScheduleChatBadgeBackfill = false;
       }
-      const initialItems = initial.items.filter(isVisibleSidebarItem);
-      const initialFailedWorkspaceIds = getFailedWorkspaceIds(initial);
-      syncTrackedGitHubWorktrees(initialItems, initialFailedWorkspaceIds);
-      syncTrackedWorkspaces(initialItems, initialFailedWorkspaceIds);
-      syncCodeGraphBaseRepositories(initialItems, initialFailedWorkspaceIds);
-      await settleAll(
-        initialItems.map(async (item) => {
-          if (item.type !== 'multi-repo' || !item.sourceRepoPath) {
-            return;
-          }
-
-          await repairExistingWorkspaceRootWorktrees(item.id).catch(() => {});
-        }),
-      );
-      const refreshed = (
-        await withW5ProjectionOnlyRead(W5_PROJECTION_ONLY_READ, () =>
-          dispatcher.queryWorktreeListForLegacyIpc(
-            {},
-            { caller: resolveCaller(event) },
-          ),
-        )
-      ).legacyResult;
-      if (Array.isArray(refreshed))
-        throw new Error('Unscoped worktree projection was not captured.');
-      if (refreshed.stale) {
-        markNeedsReload(event, generation);
-        return {
-          ...refreshed,
-          items: refreshed.items.filter(isVisibleSidebarItem),
-        };
-      }
-      if (!didReconcileGitPendingWorktrees) {
-        didReconcileGitPendingWorktrees = true;
-        // Recovery may copy an interrupted archive for minutes. It owns its
-        // existing lifecycle locks and publishes changes when it finishes;
-        // loading the project inventory must not wait for that maintenance.
-        const previous = startupRecoveryWork;
-        trackDetachedWork(() => {
-          // A recovery reload must not overlap an archive still being copied.
-          startupRecoveryWork = previous
-            .then(() => reconcileGitPendingWorktrees(getWindow))
-            .catch((error: unknown): void => {
-              const message =
-                error instanceof Error ? error.message : String(error);
-              process.stderr.write(
-                `[worktree-boot-recovery] Startup recovery failed: ${message}\n`,
-              );
-            });
-          return startupRecoveryWork;
-        });
-      }
-      const refreshedItems = refreshed.items.filter(isVisibleSidebarItem);
-      const refreshedFailedWorkspaceIds = getFailedWorkspaceIds(refreshed);
-      syncTrackedGitHubWorktrees(refreshedItems, refreshedFailedWorkspaceIds);
-      syncTrackedWorkspaces(refreshedItems, refreshedFailedWorkspaceIds);
-      syncCodeGraphBaseRepositories(
-        refreshedItems,
-        refreshedFailedWorkspaceIds,
-      );
-      // Main's branch observer reads membership itself; the first load
-      // starts its enrollment and later loads reread it.
-      publishWorktreeLifecycleChange('projects-loaded');
-      syncWorktreesFileWatchers(
-        refreshedItems,
-        getWindow,
-        refreshedFailedWorkspaceIds,
-        reconcileExternalSnapshot,
-      );
-      if (!didScheduleChatBadgeBackfill) {
-        didScheduleChatBadgeBackfill = true;
-        // Background trickle deriving chatBadges for legacy worktrees so the
-        // renderer can skip eager transcript hydration for them next launch.
-        const previous = startupBadgeWork;
-        const backfill = (): Promise<void> =>
-          backfillMissingWorktreeChatBadges(refreshedItems);
-        trackDetachedWork(() => {
-          startupBadgeWork = previous.then(backfill, backfill);
-          return startupBadgeWork;
-        });
-      }
-      const response = {
-        ...refreshed,
-        items: refreshedItems,
-      };
+      const observer = __CANOPY_E2E__
+        ? getFirstProjectsLoadMainObserver()
+        : undefined;
+      const requestOrdinal = observer
+        ? ++projectsLoadRequestOrdinal
+        : undefined;
       if (__CANOPY_E2E__)
         observeFirstProjectsLoadMain(
           observer,
           event,
-          'projects-load-main-resolved',
+          'projects-load-main-entered',
           () => ({
             requestOrdinal,
-            ...projectFirstProjectsLoadItems(
-              refreshedItems,
-              refreshed.warnings,
+            reconciliationAlreadyAttempted: didReconcileGitPendingWorktrees,
+          }),
+        );
+      try {
+        const initial = (
+          await withW5ProjectionOnlyRead(W5_PROJECTION_ONLY_READ, () =>
+            dispatcher.queryWorkspaceListForLegacyIpc(
+              {},
+              { caller: resolveCaller(event) },
             ),
+          )
+        ).legacyResult;
+        // A stale projection may only be delivered, never reconciled or remembered.
+        if (initial.stale) {
+          markNeedsReload(event, generation);
+          return {
+            ...initial,
+            items: initial.items.filter(isVisibleSidebarItem),
+          };
+        }
+        const initialItems = initial.items.filter(isVisibleSidebarItem);
+        const initialFailedWorkspaceIds = getFailedWorkspaceIds(initial);
+        syncTrackedGitHubWorktrees(initialItems, initialFailedWorkspaceIds);
+        syncTrackedWorkspaces(initialItems, initialFailedWorkspaceIds);
+        syncCodeGraphBaseRepositories(initialItems, initialFailedWorkspaceIds);
+        await settleAll(
+          initialItems.map(async (item) => {
+            if (item.type !== 'multi-repo' || !item.sourceRepoPath) {
+              return;
+            }
+
+            await repairExistingWorkspaceRootWorktrees(item.id).catch(() => {});
           }),
         );
-      // The renderer discards superseded loads; their edit baselines must too.
-      if (
-        event?.sender &&
-        projectsLoadGenerations.get(event.sender) === generation
-      ) {
-        deliveredSidebarItems.set(event.sender, response.items);
-        needsReload.delete(event.sender);
+        const refreshed = (
+          await withW5ProjectionOnlyRead(W5_PROJECTION_ONLY_READ, () =>
+            dispatcher.queryWorktreeListForLegacyIpc(
+              {},
+              { caller: resolveCaller(event) },
+            ),
+          )
+        ).legacyResult;
+        if (Array.isArray(refreshed))
+          throw new Error('Unscoped worktree projection was not captured.');
+        if (refreshed.stale) {
+          markNeedsReload(event, generation);
+          return {
+            ...refreshed,
+            items: refreshed.items.filter(isVisibleSidebarItem),
+          };
+        }
+        if (!didReconcileGitPendingWorktrees) {
+          didReconcileGitPendingWorktrees = true;
+          // Recovery may copy an interrupted archive for minutes. It owns its
+          // existing lifecycle locks and publishes changes when it finishes;
+          // loading the project inventory must not wait for that maintenance.
+          const previous = startupRecoveryWork;
+          trackDetachedWork(() => {
+            // A recovery reload must not overlap an archive still being copied.
+            startupRecoveryWork = previous
+              .then(() => reconcileGitPendingWorktrees(getWindow))
+              .catch((error: unknown): void => {
+                const message =
+                  error instanceof Error ? error.message : String(error);
+                process.stderr.write(
+                  `[worktree-boot-recovery] Startup recovery failed: ${message}\n`,
+                );
+              });
+            return startupRecoveryWork;
+          });
+        }
+        const refreshedItems = refreshed.items.filter(isVisibleSidebarItem);
+        const refreshedFailedWorkspaceIds = getFailedWorkspaceIds(refreshed);
+        syncTrackedGitHubWorktrees(refreshedItems, refreshedFailedWorkspaceIds);
+        syncTrackedWorkspaces(refreshedItems, refreshedFailedWorkspaceIds);
+        syncCodeGraphBaseRepositories(
+          refreshedItems,
+          refreshedFailedWorkspaceIds,
+        );
+        // Main's branch observer reads membership itself; the first load
+        // starts its enrollment and later loads reread it.
+        publishWorktreeLifecycleChange('projects-loaded');
+        syncWorktreesFileWatchers(
+          refreshedItems,
+          getWindow,
+          refreshedFailedWorkspaceIds,
+          reconcileExternalSnapshot,
+        );
+        if (!didScheduleChatBadgeBackfill) {
+          didScheduleChatBadgeBackfill = true;
+          // Background trickle deriving chatBadges for legacy worktrees so the
+          // renderer can skip eager transcript hydration for them next launch.
+          const previous = startupBadgeWork;
+          const backfill = (): Promise<void> =>
+            backfillMissingWorktreeChatBadges(refreshedItems);
+          trackDetachedWork(() => {
+            startupBadgeWork = previous.then(backfill, backfill);
+            return startupBadgeWork;
+          });
+        }
+        const response = {
+          ...refreshed,
+          items: refreshedItems,
+        };
+        if (__CANOPY_E2E__)
+          observeFirstProjectsLoadMain(
+            observer,
+            event,
+            'projects-load-main-resolved',
+            () => ({
+              requestOrdinal,
+              ...projectFirstProjectsLoadItems(
+                refreshedItems,
+                refreshed.warnings,
+              ),
+            }),
+          );
+        // The renderer discards superseded loads; their edit baselines must too.
+        if (
+          event?.sender &&
+          projectsLoadGenerations.get(event.sender) === generation
+        ) {
+          deliveredSidebarItems.set(event.sender, response.items);
+          needsReload.delete(event.sender);
+        }
+        return response;
+      } catch (error) {
+        const legacyError =
+          error instanceof CanopyOperationError &&
+          error.runtimeCause instanceof Error
+            ? error.runtimeCause
+            : error;
+        if (__CANOPY_E2E__)
+          observeFirstProjectsLoadMain(
+            observer,
+            event,
+            'projects-load-main-rejected',
+            () => ({
+              requestOrdinal,
+              ...classifyFirstProjectsLoadError(legacyError),
+            }),
+          );
+        throw legacyError;
       }
-      return response;
-    } catch (error) {
-      const legacyError =
-        error instanceof CanopyOperationError &&
-        error.runtimeCause instanceof Error
-          ? error.runtimeCause
-          : error;
-      if (__CANOPY_E2E__)
-        observeFirstProjectsLoadMain(
-          observer,
-          event,
-          'projects-load-main-rejected',
-          () => ({
-            requestOrdinal,
-            ...classifyFirstProjectsLoadError(legacyError),
-          }),
-        );
-      throw legacyError;
-    }
-  });
+    }),
+  );
+
+  registerIpcHandler(
+    IPC_CHANNELS.worktreeEffectiveGet,
+    async (
+      _event: IpcMainInvokeEvent,
+      request: { projectId?: unknown; worktreeIds?: unknown },
+    ) => {
+      const projectId = request?.projectId;
+      validateId(projectId, 'projectId');
+      const requested = request?.worktreeIds;
+      let worktreeIds: string[] | undefined;
+      if (Array.isArray(requested)) {
+        worktreeIds = [];
+        for (const id of requested) {
+          validateId(id, 'worktreeId');
+          worktreeIds.push(id);
+        }
+      }
+      return resolveWorktreeEffectiveFor(
+        projectId,
+        'worktree.effective',
+        worktreeIds,
+      );
+    },
+  );
 
   const metadataCommands = (
     event: IpcMainInvokeEvent,

@@ -268,7 +268,14 @@ const QUERIES = {
     { text: 'policy' },
   ],
 };
-const PROVIDERS = ['claude', 'codex', 'copilot', 'opencode', 'ollama'] as const;
+const PROVIDERS = [
+  'claude',
+  'codex',
+  'copilot',
+  'opencode',
+  'ollama',
+  'antigravity',
+] as const;
 const CHAT = { projectId: 'p', worktreeId: 'w', chatId: 'c' };
 const OTHER_CHAT = { projectId: 'other', worktreeId: 'w2', chatId: 'c2' };
 const ref = (identity: string): string => encodeDeferredCatalogRef(identity);

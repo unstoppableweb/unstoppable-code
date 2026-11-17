@@ -13,7 +13,9 @@ export interface W5RecoveryNoticeProps {
   /** Live archive review does not grant access to cold workspace recovery. */
   readonly archiveRecovery?: {
     readonly unavailable: boolean;
+    readonly cleanupOnly?: boolean;
     readonly onReview: () => void;
+    readonly onDismiss?: () => void;
   };
   /** Host capability, independent from the target desktop's status. Default-deny. */
   readonly canRecover?: boolean;
@@ -37,7 +39,9 @@ export function W5RecoveryNotice({
       intent={complete && !archiveRecovery ? 'positive' : 'attention'}
       title={
         !cold
-          ? 'Archive recovery needs attention'
+          ? archiveRecovery?.cleanupOnly
+            ? 'Archive cleanup available'
+            : 'Archive recovery needs attention'
           : restart
             ? 'Workspace recovery needs a restart'
             : complete
@@ -47,6 +51,8 @@ export function W5RecoveryNotice({
                 : 'Some workspace changes are blocked'
       }
       className="pointer-events-auto"
+      onDismiss={archiveRecovery?.onDismiss}
+      dismissLabel="Dismiss archive recovery notice"
       data-testid="w5-recovery-notice"
       actions={
         archiveRecovery || (canRecover && cold?.canRecover && onRecover) ? (
@@ -56,7 +62,9 @@ export function W5RecoveryNotice({
                 onClick={archiveRecovery.onReview}
                 data-testid="worktree-live-recovery-notice"
               >
-                Review archive recovery
+                {archiveRecovery.cleanupOnly
+                  ? 'Open archive cleanup'
+                  : 'Review archive recovery'}
               </NoticeButton>
             ) : null}
             {canRecover && cold?.canRecover && onRecover ? (
@@ -77,7 +85,9 @@ export function W5RecoveryNotice({
         <p>
           {archiveRecovery.unavailable
             ? "Some archive recovery records couldn't be checked."
-            : 'Some archives need review or have saved recovery material.'}
+            : archiveRecovery.cleanupOnly
+              ? 'The archives finished. Leftover saved change data still needs cleanup.'
+              : 'Some archives need recovery or cleanup. Choose how to continue or get details to share with support.'}
         </p>
       ) : null}
       {cold ? (

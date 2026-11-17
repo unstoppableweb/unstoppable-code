@@ -1,17 +1,26 @@
 'use client';
 
-import type { JSX, ReactNode } from 'react';
-import type {
-  ProviderChoiceModel,
-  ProviderChoiceRow,
-  ProviderSourceId,
+import { useId, type JSX, type ReactNode } from 'react';
+import {
+  PROVIDER_CHOICE_GROUP_ORDER,
+  type ProviderChoiceModel,
+  type ProviderChoiceRow,
+  type ProviderSourceId,
 } from '@canopy/app-state/provider-choice';
 import {
   AI_CREDITS_REOPEN_BILLING_LABEL,
   Button,
+  Heading,
   PROVIDER_CHOICE_ACTION_LABELS,
+  PROVIDER_CHOICE_GROUP_HEADINGS,
+  PROVIDER_CHOICE_RECONNECT_LABEL,
   PROVIDER_CHOICE_ROW_COPY,
+  PROVIDER_CHOICE_SETUP_SUFFIXES,
   SettingsRowsGroup,
+  staysOn,
+  switchesTo,
+  type ProviderChoiceOutcomeWords,
+  type ProviderChoiceSetupStep,
   type ProviderStatusDotTone,
 } from '@canopy/ui-shared/components';
 import { ProviderSourceRow } from './ProviderSourceRow';
@@ -32,18 +41,41 @@ export type ProviderChoicePresentations = Readonly<
   Partial<Record<ProviderSourceId, ProviderChoicePresentation>>
 >;
 
+/** What a row's control needs to know about the list around it. */
+export interface ProviderChoiceActionContext {
+  /** The one row the list emphasizes: its button is the only primary. */
+  readonly recommended: boolean;
+}
+
+/** The last row action's failure, shown on that row. */
+export interface ProviderChoiceRowError {
+  readonly source: ProviderSourceId;
+  readonly message: string;
+}
+
 export interface ProviderChoiceListProps<TModel extends ProviderChoiceModel> {
   readonly rows: readonly ProviderChoiceRow<TModel>[];
+  /** `choices.recommended`: the row whose button is primary, if any. */
+  readonly recommended: ProviderSourceId | null;
   readonly presentation: ProviderChoicePresentations;
   /**
    * The row's trailing control. Hosts own sign-in and purchase mechanics;
    * return {@link ProviderChoiceActionButton} where the action is a plain
-   * button, or `null` for none.
+   * button (passing `recommended` through), or `null` for none.
    */
-  readonly renderAction: (row: ProviderChoiceRow<TModel>) => ReactNode;
+  readonly renderAction: (
+    row: ProviderChoiceRow<TModel>,
+    context: ProviderChoiceActionContext,
+  ) => ReactNode;
   /** Formats a reset time for "Limit reached, resets at …". */
   readonly formatResetsAt?: (resetsAt: number) => string;
-  /** Under the rows, outside the group. */
+  /** The clock that decides whether a reset time has passed. */
+  readonly now?: () => number;
+  /** The chat's model, for "Stays on {model}" when a row doesn't name it. */
+  readonly targetModelLabel?: string;
+  /** The last action's failure, on the row that failed. */
+  readonly rowError?: ProviderChoiceRowError | null;
+  /** Under the groups. */
   readonly footer?: ReactNode;
   readonly ariaLabel?: string;
   readonly dataTestId?: string;
@@ -66,147 +98,257 @@ function statusTone(
   }
 }
 
-type RowDetail = {
-  readonly kind: 'ready' | 'plain';
-  readonly text: string;
-};
-
-function plainDetail(text: string): RowDetail {
-  return { kind: 'plain', text };
+/**
+ * A row's one outcome line, as words: what choosing it does (`lead`, then
+ * the `model` a row sets apart, then the step it needs first), or a plain
+ * reason in `lead` alone.
+ */
+export interface ProviderChoiceRowOutcome extends ProviderChoiceOutcomeWords {
+  readonly suffix?: string;
 }
 
-/** The line for a row whose source can't take the chat now. */
-function unavailableDetail<TModel extends ProviderChoiceModel>(
-  row: ProviderChoiceRow<TModel>,
-  outcome: Extract<
-    ProviderChoiceRow<TModel>['outcome'],
-    { kind: 'unavailable' }
-  >,
-  limited: (resetsAt: number | null | undefined) => string,
-): RowDetail | undefined {
-  switch (outcome.reason) {
-    case 'desktop-only':
-      return plainDetail(PROVIDER_CHOICE_ROW_COPY.desktopOnly);
-    case 'cross-harness':
-      return plainDetail(PROVIDER_CHOICE_ROW_COPY.crossHarness);
-    case 'policy':
-      return plainDetail(PROVIDER_CHOICE_ROW_COPY.policy);
-    case 'limited':
-      return plainDetail(limited(outcome.resetsAt));
-    case 'blocked':
-      return outcome.detail !== undefined
-        ? plainDetail(outcome.detail)
-        : undefined;
-    case 'no-runnable-model': {
-      // Not set up yet: its models are unknown until it is, so the row's
-      // Set up or Connect says what to do instead.
-      const settingUp = row.action === 'set-up' || row.action === 'connect';
-      return settingUp
-        ? undefined
-        : plainDetail(PROVIDER_CHOICE_ROW_COPY.noRunnableModel);
-    }
-    case 'model-not-offered':
+function plainOutcome(lead: string): ProviderChoiceRowOutcome {
+  return { lead };
+}
+
+export interface ProviderChoiceRowOutcomeOptions {
+  /** The chat's model, when the row's own outcome doesn't name it. */
+  readonly modelLabel?: string;
+  readonly formatResetsAt?: (resetsAt: number) => string;
+  /** The clock that decides whether a reset time has passed. */
+  readonly now?: () => number;
+  /** The model a `run-model` list is for, for "Doesn't offer {model}". */
+  readonly modelNotOfferedLabel?: string;
+}
+
+/** The step a row's action needs before its outcome applies. */
+function setupStep(
+  row: ProviderChoiceRow<ProviderChoiceModel>,
+): ProviderChoiceSetupStep | undefined {
+  switch (row.action) {
+    case 'connect':
+    case 'set-up':
+      return row.isCurrent ? 'reconnect' : 'connect';
+    case 'buy':
+    case 'sign-in-to-buy':
+      return 'add-credits';
+    case 'check-again':
+      return 'credits-arrive';
+    case 'use':
+    case 'ask-admin':
+    case 'none':
       return undefined;
   }
 }
 
-/** The row's one line under its description, from its outcome and action. */
-export function providerChoiceRowDetail<TModel extends ProviderChoiceModel>(
-  row: ProviderChoiceRow<TModel>,
-  formatResetsAt?: (resetsAt: number) => string,
-): RowDetail | undefined {
-  const limited = (resetsAt: number | null | undefined): string =>
-    PROVIDER_CHOICE_ROW_COPY.limited(
-      resetsAt != null && formatResetsAt !== undefined
-        ? formatResetsAt(resetsAt)
-        : undefined,
-    );
-  if (row.isCurrent && row.connection.kind === 'limited') {
-    return plainDetail(limited(row.connection.resetsAt));
-  }
-  if (row.action === 'ask-admin') {
-    return plainDetail(PROVIDER_CHOICE_ROW_COPY.askAdmin);
-  }
-  const { outcome } = row;
-  switch (outcome.kind) {
-    case 'switch-model':
-      return plainDetail(
-        PROVIDER_CHOICE_ROW_COPY.continuesOn(outcome.target.label),
+/** The line for a row whose source can't take the chat now, if it has one. */
+function unavailableLine<TModel extends ProviderChoiceModel>(
+  outcome: Extract<
+    ProviderChoiceRow<TModel>['outcome'],
+    { kind: 'unavailable' }
+  >,
+  {
+    formatResetsAt,
+    now = Date.now,
+    modelNotOfferedLabel,
+    modelLabel,
+  }: ProviderChoiceRowOutcomeOptions,
+): string | undefined {
+  switch (outcome.reason) {
+    case 'desktop-only':
+      return PROVIDER_CHOICE_ROW_COPY.desktopOnly;
+    case 'cross-harness':
+      return PROVIDER_CHOICE_ROW_COPY.crossHarness;
+    case 'policy':
+      return PROVIDER_CHOICE_ROW_COPY.policy;
+    case 'limited':
+      return PROVIDER_CHOICE_ROW_COPY.limited(
+        // A reset time that has passed is dropped, as in the dialog subtitle.
+        outcome.resetsAt != null &&
+          outcome.resetsAt > now() &&
+          formatResetsAt !== undefined
+          ? formatResetsAt(outcome.resetsAt)
+          : undefined,
       );
-    case 'same-model':
-      // The current row says so with its badge, not a line.
-      if (row.isCurrent) return undefined;
-      if (row.connection.kind === 'checking') {
-        return plainDetail(PROVIDER_CHOICE_ROW_COPY.checking);
-      }
-      return row.action === 'use'
-        ? { kind: 'ready', text: PROVIDER_CHOICE_ROW_COPY.ready }
+    case 'blocked':
+      return outcome.detail;
+    case 'no-runnable-model':
+      return PROVIDER_CHOICE_ROW_COPY.noRunnableModel;
+    case 'model-not-offered': {
+      const label = modelNotOfferedLabel ?? modelLabel;
+      return label !== undefined
+        ? PROVIDER_CHOICE_ROW_COPY.modelNotOffered(label)
         : undefined;
-    case 'unavailable':
-      return unavailableDetail(row, outcome, limited);
+    }
   }
 }
 
 /**
- * The provider-choice rows, from `resolveProviderChoices`. The same list on
- * every host: the recovery dialog, locked-model picks and (through
- * {@link ProviderSourceRow}) first run. Nothing here branches on the host;
- * unsupported rows come from the facts the host passed the resolver.
+ * Every row's one outcome line, in precedence order (first match wins):
+ * checking, the admin line, a gateway to set up whose models are unknown,
+ * an unavailable reason, then what choosing it does ("Stays on" or
+ * "Switches to") with the step it needs first (reconnect, connect, add
+ * credits, credits arriving), and a fallback so no row is ever blank.
+ */
+export function providerChoiceRowOutcome<TModel extends ProviderChoiceModel>(
+  row: ProviderChoiceRow<TModel>,
+  options: ProviderChoiceRowOutcomeOptions = {},
+): ProviderChoiceRowOutcome {
+  if (row.connection.kind === 'checking') {
+    return plainOutcome(PROVIDER_CHOICE_ROW_COPY.checking);
+  }
+  if (row.action === 'ask-admin') {
+    return plainOutcome(PROVIDER_CHOICE_ROW_COPY.askAdmin);
+  }
+  const { outcome } = row;
+  if (outcome.kind === 'unavailable') {
+    // Not set up yet: its models are unknown until it is.
+    if (
+      outcome.reason === 'no-runnable-model' &&
+      (row.action === 'set-up' || row.action === 'connect')
+    ) {
+      return plainOutcome(PROVIDER_CHOICE_ROW_COPY.pickModelOnceConnected);
+    }
+    const line = unavailableLine(outcome, options);
+    return plainOutcome(line ?? PROVIDER_CHOICE_ROW_COPY.notAvailableNow);
+  }
+  const words =
+    outcome.kind === 'same-model'
+      ? staysOn(outcome.model?.label ?? options.modelLabel)
+      : switchesTo(outcome.target.label);
+  const step = setupStep(row);
+  if (step !== undefined) {
+    return { ...words, suffix: PROVIDER_CHOICE_SETUP_SUFFIXES[step] };
+  }
+  // A current source that still runs a locked model offers no button, and
+  // stays on it.
+  const usableCurrent =
+    row.isCurrent &&
+    row.connection.kind === 'ready' &&
+    outcome.kind === 'same-model';
+  if (row.action === 'use' || usableCurrent) return words;
+  return plainOutcome(PROVIDER_CHOICE_ROW_COPY.notAvailableNow);
+}
+
+/** The outcome as the row's text, with the model set apart. */
+function outcomeText(outcome: ProviderChoiceRowOutcome): ReactNode {
+  return (
+    <>
+      {outcome.lead}
+      {outcome.model !== undefined && (
+        <>
+          {' '}
+          <span className="font-medium fg-primary">{outcome.model}</span>
+        </>
+      )}
+      {outcome.suffix !== undefined && <> {outcome.suffix}</>}
+    </>
+  );
+}
+
+/**
+ * The provider-choice rows, from `resolveProviderChoices`, under one heading
+ * per non-empty group (Ready now, Needs setup, Not available). The same list
+ * on every host: the recovery dialog and locked-model picks. Nothing here
+ * branches on the host; unsupported rows come from the facts the host passed
+ * the resolver.
+ *
+ * Each group is its own parent, so a row that changes group (a connect that
+ * finishes, credits that arrive) remounts: no modal or in-flight state lives
+ * in a row; hosts keep it above the list.
  */
 export function ProviderChoiceList<TModel extends ProviderChoiceModel>({
   rows,
+  recommended,
   presentation,
   renderAction,
   formatResetsAt,
+  now,
+  targetModelLabel,
+  rowError = null,
   footer,
   ariaLabel,
   dataTestId,
   modelNotOfferedLabel,
 }: ProviderChoiceListProps<TModel>): JSX.Element {
+  const idPrefix = useId();
+  const outcomeOptions: ProviderChoiceRowOutcomeOptions = {
+    ...(targetModelLabel !== undefined ? { modelLabel: targetModelLabel } : {}),
+    ...(formatResetsAt !== undefined ? { formatResetsAt } : {}),
+    ...(now !== undefined ? { now } : {}),
+    ...(modelNotOfferedLabel !== undefined ? { modelNotOfferedLabel } : {}),
+  };
+  const groups = PROVIDER_CHOICE_GROUP_ORDER.map((group) => ({
+    group,
+    rows: rows.filter((row) => row.group === group),
+  })).filter((entry) => entry.rows.length > 0);
   return (
     <div className="flex flex-col gap-3">
-      <SettingsRowsGroup
-        surface="plain"
-        {...(ariaLabel !== undefined ? { ariaLabel } : {})}
-        {...(dataTestId !== undefined ? { dataTestId } : {})}
+      <div
+        className="flex flex-col gap-4"
+        {...(ariaLabel !== undefined
+          ? { role: 'group', 'aria-label': ariaLabel }
+          : {})}
+        {...(dataTestId !== undefined ? { 'data-testid': dataTestId } : {})}
       >
-        {rows.map((row) => {
-          const shown = presentation[row.source];
-          const detail =
-            row.outcome.kind === 'unavailable' &&
-            row.outcome.reason === 'model-not-offered' &&
-            modelNotOfferedLabel !== undefined
-              ? {
-                  kind: 'plain' as const,
-                  text: PROVIDER_CHOICE_ROW_COPY.modelNotOffered(
-                    modelNotOfferedLabel,
-                  ),
-                }
-              : providerChoiceRowDetail(row, formatResetsAt);
+        {groups.map(({ group, rows: groupRows }) => {
+          const headingId = `${idPrefix}-${group}`;
           return (
-            <ProviderSourceRow
-              key={row.source}
-              icon={shown?.icon}
-              name={shown?.name ?? row.source}
-              status={statusTone(row)}
-              {...(row.isCurrent
-                ? { badge: PROVIDER_CHOICE_ROW_COPY.current }
-                : {})}
-              description={shown?.description}
-              {...(detail !== undefined
-                ? {
-                    detail: {
-                      ...detail,
-                      testId: `provider-choice-detail-${row.source}`,
-                    },
-                  }
-                : {})}
-              control={renderAction(row)}
-              dataTestId={`provider-choice-row-${row.source}`}
-            />
+            <div
+              key={group}
+              role="group"
+              aria-labelledby={headingId}
+              className="flex flex-col gap-1"
+              data-testid={`provider-choice-group-${group}`}
+            >
+              <Heading level={3} variant="label" id={headingId}>
+                {PROVIDER_CHOICE_GROUP_HEADINGS[group]}
+              </Heading>
+              <SettingsRowsGroup surface="plain">
+                {groupRows.map((row) => {
+                  const shown = presentation[row.source];
+                  const outcome = providerChoiceRowOutcome(row, outcomeOptions);
+                  const error =
+                    rowError !== null && rowError.source === row.source
+                      ? rowError.message
+                      : undefined;
+                  return (
+                    <ProviderSourceRow
+                      key={row.source}
+                      icon={shown?.icon}
+                      name={shown?.name ?? row.source}
+                      status={statusTone(row)}
+                      // A row still checking keeps its pending dot.
+                      unavailable={
+                        row.group === 'unavailable' &&
+                        row.connection.kind !== 'checking'
+                      }
+                      {...(row.isCurrent
+                        ? { badge: PROVIDER_CHOICE_ROW_COPY.current }
+                        : {})}
+                      description={shown?.description}
+                      outcome={{
+                        text: outcomeText(outcome),
+                        testId: `provider-choice-detail-${row.source}`,
+                      }}
+                      {...(error !== undefined
+                        ? {
+                            error,
+                            errorTestId: `switch-provider-dialog-error-${row.source}`,
+                          }
+                        : {})}
+                      control={renderAction(row, {
+                        recommended: row.source === recommended,
+                      })}
+                      dataTestId={`provider-choice-row-${row.source}`}
+                    />
+                  );
+                })}
+              </SettingsRowsGroup>
+            </div>
           );
         })}
-      </SettingsRowsGroup>
+      </div>
       {footer}
     </div>
   );
@@ -268,11 +410,17 @@ export interface ProviderChoiceActionButtonProps {
   readonly onClick: () => void;
   readonly busy?: boolean;
   readonly disabled?: boolean;
+  /** The list's one emphasized row: the only primary button. */
+  readonly recommended?: boolean;
+  /** The chat's current source: its Connect or Set up reads Reconnect. */
+  readonly isCurrent?: boolean;
 }
 
 /**
- * A row action that is a plain button, labelled from its action. Renders
- * nothing for `none` and `ask-admin` (the admin line is the row's detail).
+ * A row action that is a plain button, labelled from its action. Primary
+ * only on the recommended row, so a list has at most one; every other
+ * button is secondary. Renders nothing for `none` and `ask-admin` (the
+ * admin line is the row's outcome).
  */
 export function ProviderChoiceActionButton({
   source,
@@ -280,18 +428,24 @@ export function ProviderChoiceActionButton({
   onClick,
   busy = false,
   disabled = false,
+  recommended = false,
+  isCurrent = false,
 }: ProviderChoiceActionButtonProps): JSX.Element | null {
   if (action === 'none' || action === 'ask-admin') return null;
+  const reconnect = isCurrent && (action === 'connect' || action === 'set-up');
   return (
     <Button
-      variant={action === 'use' ? 'primary' : 'secondary'}
+      variant={recommended ? 'primary' : 'secondary'}
       size="sm"
       onClick={onClick}
       aria-busy={busy || undefined}
       disabled={disabled || busy}
       data-testid={`provider-choice-action-${source}`}
+      {...(recommended ? { 'data-recommended': 'true' } : {})}
     >
-      {PROVIDER_CHOICE_ACTION_LABELS[action]}
+      {reconnect
+        ? PROVIDER_CHOICE_RECONNECT_LABEL
+        : PROVIDER_CHOICE_ACTION_LABELS[action]}
     </Button>
   );
 }

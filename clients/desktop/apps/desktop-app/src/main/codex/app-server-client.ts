@@ -1,5 +1,6 @@
 import {
   ASK_USER_HTTP_TIMEOUT_MS,
+  CANOPY_INJECTED_TOOL_REGISTRY,
   CANOPY_MCP_TOOL_TIMEOUT_MS,
   isCanopyAskUserToolName,
 } from '@canopy/execution-engine/lib/canopy-injected-tools';
@@ -6240,6 +6241,27 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
       return;
     }
 
+    const requestsSecrets =
+      parsed.tool ===
+      CANOPY_INJECTED_TOOL_REGISTRY.request_secrets.codexToolName;
+    // Native subagent threads don't get secret requests in v1.
+    if (requestsSecrets && parsed.threadId !== this.threadId) {
+      if (!this.connection.completePendingServerRequest(requestId)) return;
+      this.connection.send({
+        id: requestId,
+        result: {
+          contentItems: [
+            {
+              type: 'inputText',
+              text: 'RequestSecrets is not available to subagents. Ask from the main conversation instead.',
+            },
+          ],
+          success: false,
+        } satisfies DynamicToolCallResponse,
+      });
+      return;
+    }
+
     const controller = new AbortController();
     const recoveryAbortController = new AbortController();
     const signal = AbortSignal.any([
@@ -6279,6 +6301,7 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
         });
       },
       isCanopyAskUserToolName(parsed.tool) ||
+        requestsSecrets ||
         getCanonicalAppAdvisorToolKey(parsed.tool) === 'ask_user_question'
         ? ASK_USER_HTTP_TIMEOUT_MS
         : CANOPY_MCP_TOOL_TIMEOUT_MS,

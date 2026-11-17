@@ -133,6 +133,7 @@ import { RETIRED_PLAN_CHAT_MESSAGE } from '@canopy/desktop-shared/lib/retired-ch
 import {
   applyResolvedApprovalModeForNewTab,
   approvalDefaultCacheKey,
+  pendingProvisionalApprovalMode,
 } from '../approval-defaults';
 import type { StateCreator } from 'zustand';
 import type { ChatState, ChatMessagingSlice } from '../state';
@@ -448,7 +449,20 @@ function waitForPendingApprovalModeTransitions(
   worktreeId: string,
   chatId: string,
 ): Promise<void> | undefined {
-  return pendingApprovalModeTransitions(projectId, worktreeId, chatId);
+  // A new worktree's starter can show a provisional (cached) mode while its
+  // fresh default lookup runs (CAN-6957). Every send waits here before it
+  // re-reads the tab's mode, so that value never reaches a turn.
+  const provisional = pendingProvisionalApprovalMode(
+    { projectId, worktreeId },
+    chatId,
+  );
+  if (!provisional) {
+    return pendingApprovalModeTransitions(projectId, worktreeId, chatId);
+  }
+  return provisional.then(() =>
+    // A pick can start during the lookup; wait for it too.
+    pendingApprovalModeTransitions(projectId, worktreeId, chatId),
+  );
 }
 
 /**
@@ -2440,6 +2454,26 @@ export const createMessagingSlice: StateCreator<
               );
             return;
           }
+          // CAN-6701. Refused before anything was saved: the follow-up never
+          // entered the queue, so its draft goes back to the composer. A
+          // composer that moved on can't take it back; then the follow-up
+          // stays shown where it was, so its text is never lost.
+          const refusedSend = sendResult?.refusedSend;
+          if (refusedSend) {
+            const restored = options?.onPreDispatchRejected?.() === true;
+            if (restored) clearPendingQueuePresentation();
+            restoreReservedSystemInstructions();
+            options?.onDispatchRejected?.();
+            set((state) =>
+              updateChatTab(state, key, chatId, (entry) => ({
+                ...entry,
+                sendRefusal: refusedSend.message,
+              })),
+            );
+            if (options?.throwOnDispatchFailure === true)
+              authDependencyRefusalError = new Error(refusedSend.message);
+            return;
+          }
           if (sendResult?.modelRoutingNotice) {
             useGitHubStore
               .getState()
@@ -2891,6 +2925,7 @@ export const createMessagingSlice: StateCreator<
     };
     let refusedAuthDependencies: ChatSendAuthRefusal | undefined;
     let watcherDeliveryHeld = false;
+    let sendRefused = false;
     const preparationKey = nativeSendKey({ ...sel, chatId });
     const preparations =
       pendingNativeSends.get(preparationKey) ??
@@ -3243,6 +3278,34 @@ export const createMessagingSlice: StateCreator<
         // acceptance. A refused send dispatched nothing, so none of it applies.
         return;
       }
+      // CAN-6701. The host refused this send before saving anything, for a
+      // stable reason (an enforced organization gateway). Hand the draft and
+      // its attachments back and say why, as a refused cloud send does. A
+      // composer that moved on can't take it back; then the send fails like
+      // any other, so the message is never lost.
+      const refusedSend = sendResult?.refusedSend;
+      if (refusedSend) {
+        const restored = options?.onPreDispatchRejected?.() === true;
+        if (!restored) throw new Error(refusedSend.message);
+        sendRefused = true;
+        options?.onDispatchRejected?.();
+        clearPendingUserPresentation(true);
+        await reconcileRejectedPlanExit();
+        set((state) =>
+          updateChatTab(state, key, chatId, (entry) => ({
+            ...entry,
+            ...(sendingLease ? {} : { status: tab.status, error: tab.error }),
+            messages: entry.messages.filter(
+              (message) =>
+                message.id !== userMsg.id && message.id !== timerMsg.id,
+            ),
+            sendRefusal: refusedSend.message,
+          })),
+        );
+        if (options?.throwOnDispatchFailure === true)
+          throw new Error(refusedSend.message);
+        return;
+      }
       if (sendResult?.modelRoutingNotice) {
         useGitHubStore
           .getState()
@@ -3323,7 +3386,8 @@ export const createMessagingSlice: StateCreator<
       if (
         adoptedFirstSend &&
         !refusedAuthDependencies &&
-        !watcherDeliveryHeld
+        !watcherDeliveryHeld &&
+        !sendRefused
       ) {
         const current = get().worktreeChats[key]?.tabs.find(
           (entry) => entry.id === chatId,
@@ -3369,7 +3433,8 @@ export const createMessagingSlice: StateCreator<
       if (
         isWebCoreScope(sel.projectId) &&
         isWebCoreSendRefusal(err) &&
-        !cancelledSendNotified
+        !cancelledSendNotified &&
+        !sendRefused
       ) {
         cancelledSendNotified = true;
         // Pressed under another account: its text goes back to no composer.
@@ -3402,7 +3467,7 @@ export const createMessagingSlice: StateCreator<
       // threw to satisfy `throwOnDispatchFailure`. Rethrow untouched: turning
       // it into a second `system` text message would bury the card under a
       // duplicate of its own sentence.
-      if (refusedAuthDependencies || watcherDeliveryHeld) {
+      if (refusedAuthDependencies || watcherDeliveryHeld || sendRefused) {
         throw err;
       }
       if (

@@ -27,6 +27,68 @@ export const STORAGE_OWNERSHIP = [
     ]
   },
   {
+    "id": "code_review_chats_dir",
+    "transitionOwner": "legacy",
+    "currentWriters": [
+      "electron_main"
+    ],
+    "schemaVersion": "none",
+    "backupPolicy": "none",
+    "admittedWriters": [
+      "main/lib/app-managed-workspaces",
+      "main/lib/code-review-registry",
+      "main/lib/code-review-cleanup"
+    ]
+  },
+  {
+    "id": "code_review_chats_legacy",
+    "transitionOwner": "legacy",
+    "currentWriters": [
+      "electron_main"
+    ],
+    "schemaVersion": "none",
+    "backupPolicy": "none",
+    "admittedWriters": [
+      "main/lib/app-managed-workspaces"
+    ]
+  },
+  {
+    "id": "code_review_registry",
+    "transitionOwner": "legacy",
+    "currentWriters": [
+      "electron_main"
+    ],
+    "schemaVersion": 1,
+    "backupPolicy": "none",
+    "admittedWriters": [
+      "main/lib/code-review-registry",
+      "main/lib/app-managed-workspaces"
+    ]
+  },
+  {
+    "id": "code_review_state",
+    "transitionOwner": "legacy",
+    "currentWriters": [
+      "electron_main"
+    ],
+    "schemaVersion": "none",
+    "backupPolicy": "none",
+    "admittedWriters": [
+      "packages/core-runtime/src/node/review/state-file.ts",
+      "main/lib/code-review-cleanup",
+      "main/lib/worktree-data-cleanup"
+    ]
+  },
+  {
+    "id": "copilot_qualification_authority",
+    "transitionOwner": "daemon",
+    "currentWriters": [
+      "daemon"
+    ],
+    "schemaVersion": 1,
+    "backupPolicy": "none"
+  },
+  {
     "id": "daemon_github_credential_fence",
     "transitionOwner": "daemon",
     "currentWriters": [
@@ -145,6 +207,42 @@ export const STORAGE_OWNERSHIP = [
     ]
   },
   {
+    "id": "plugin_cache",
+    "transitionOwner": "legacy",
+    "currentWriters": [
+      "electron_main"
+    ],
+    "schemaVersion": "none",
+    "backupPolicy": "none",
+    "admittedWriters": [
+      "main/plugins/plugin-service"
+    ]
+  },
+  {
+    "id": "plugin_cache_index",
+    "transitionOwner": "legacy",
+    "currentWriters": [
+      "electron_main"
+    ],
+    "schemaVersion": 1,
+    "backupPolicy": "none",
+    "admittedWriters": [
+      "main/plugins/plugin-catalog-store"
+    ]
+  },
+  {
+    "id": "plugins_cache",
+    "transitionOwner": "legacy",
+    "currentWriters": [
+      "electron_main"
+    ],
+    "schemaVersion": 2,
+    "backupPolicy": "none",
+    "admittedWriters": [
+      "main/plugins/plugin-catalog-store"
+    ]
+  },
+  {
     "id": "preferences",
     "transitionOwner": "legacy",
     "currentWriters": [
@@ -157,6 +255,16 @@ export const STORAGE_OWNERSHIP = [
     ]
   },
   {
+    "id": "script_runs",
+    "transitionOwner": "legacy",
+    "currentWriters": [
+      "daemon",
+      "electron_main"
+    ],
+    "schemaVersion": "none",
+    "backupPolicy": "none"
+  },
+  {
     "id": "startup_migrations",
     "transitionOwner": "legacy",
     "currentWriters": [
@@ -166,6 +274,30 @@ export const STORAGE_OWNERSHIP = [
     "backupPolicy": "none",
     "admittedWriters": [
       "main/lib/migrations"
+    ]
+  },
+  {
+    "id": "terminal_presentation",
+    "transitionOwner": "legacy",
+    "currentWriters": [
+      "electron_main"
+    ],
+    "schemaVersion": 1,
+    "backupPolicy": "none",
+    "admittedWriters": [
+      "main/terminal/persistence"
+    ]
+  },
+  {
+    "id": "terminal_state",
+    "transitionOwner": "legacy",
+    "currentWriters": [
+      "electron_main"
+    ],
+    "schemaVersion": 2,
+    "backupPolicy": "none",
+    "admittedWriters": [
+      "main/terminal/persistence"
     ]
   },
   {
@@ -203,6 +335,18 @@ export const STORAGE_OWNERSHIP = [
     "backupPolicy": "required_before_flip",
     "workPackage": "W5",
     "backupShape": "namespace_backup"
+  },
+  {
+    "id": "worktree_code_graph",
+    "transitionOwner": "legacy",
+    "currentWriters": [
+      "daemon",
+      "desktop_cli",
+      "electron_main",
+      "utility_process"
+    ],
+    "schemaVersion": "none",
+    "backupPolicy": "none"
   },
   {
     "id": "worktree_list",

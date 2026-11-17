@@ -132,6 +132,8 @@ import { offeredPluginHarnesses } from '@canopy/plugin-interop/harness-support';
 import { isCursorHarnessEnabled } from '../cursor/feature-flag';
 import { isCopilotHarnessEnabled } from '../copilot/feature-flag';
 import { isOpenCodeHarnessEnabled } from '../opencode/feature-flag';
+import { isAntigravityHarnessEnabled } from '../antigravity/feature-flag';
+import { getAntigravityModelEntries } from '@canopy/execution-engine/model-catalog';
 import {
   preserveOrganizationPublicLink,
   requirePortalShareAccountId,
@@ -903,6 +905,10 @@ export async function getPortalPluginDetail(
       cursor: isCursorHarnessEnabled(),
       copilot: isCopilotHarnessEnabled(),
       opencode: isOpenCodeHarnessEnabled(),
+      // Labs: offered only where Google models were discovered.
+      antigravity:
+        isAntigravityHarnessEnabled() &&
+        getAntigravityModelEntries().length > 0,
     }),
     // Per-provider install state and the Codex compatibility setting, read
     // the way the desktop plugin page reads them.

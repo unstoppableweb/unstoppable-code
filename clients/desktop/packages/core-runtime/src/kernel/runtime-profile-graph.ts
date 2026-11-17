@@ -27,6 +27,7 @@ import {
 } from './operation-registry';
 import { runtimeProfileInstalls } from './runtime-profile-manifest';
 import { scopeForwardedIdempotency } from './peer-scoped-idempotency';
+import { keyedInstructionReplay } from './keyed-instruction-fingerprint';
 import {
   createInProcessWorkerBinding,
   localWorkerTransportOf,
@@ -134,6 +135,27 @@ export interface CreateRuntimeProfileGraphOptions {
    * interface caller before they cross the worker binding (CAN-5629).
    */
   peerScopedIdempotency?: ReadonlySet<string>;
+  /**
+   * Keyed worker instructions whose repeated key replays the first
+   * request's settlement instead of running again (CAN-4733). Applies to the
+   * bundled worker and to a `worker` profile graph.
+   */
+  replayedKeyedInstructions?: ReadonlySet<string>;
+}
+
+function executorReceiptsFor(
+  instructions: CanopyInstructionDefinitionMap,
+  options: CreateRuntimeProfileGraphOptions,
+): WorkerExecutorReceipts {
+  const { replayedKeyedInstructions } = options;
+  if (replayedKeyedInstructions === undefined)
+    return createWorkerExecutorReceipts(instructions);
+  for (const name of replayedKeyedInstructions)
+    if (instructions[name]?.idempotency !== 'keyed')
+      throw new Error(`Replayed worker instruction ${name} must be keyed`);
+  return createWorkerExecutorReceipts(instructions, {
+    replay: keyedInstructionReplay(replayedKeyedInstructions),
+  });
 }
 
 /** A worker module served by a supervised worker process: its name and operations. */
@@ -243,7 +265,7 @@ function createWorkerRuntime(
   const operations = createOperationRegistry({ profile, definitions, owners });
   const container = createServiceContainer({ profile, services });
   const { shutdownTimeoutMs } = options;
-  const receipts = createWorkerExecutorReceipts(definitions.instructions);
+  const receipts = executorReceiptsFor(definitions.instructions, options);
   const dispatcher = createCanopyDispatcher({
     profile,
     definitions,
@@ -331,7 +353,7 @@ function bindBundledWorker(options: CreateRuntimeProfileGraphOptions): {
   if (options.workerBinding === undefined)
     throw new Error('Bundled worker modules require a workerBinding');
   // The executor half of shared idempotency (CAN-4132).
-  const receipts = createWorkerExecutorReceipts(definitions.instructions);
+  const receipts = executorReceiptsFor(definitions.instructions, options);
   const worker = createCanopyDispatcher({
     profile: 'worker',
     definitions,

@@ -29,6 +29,7 @@ import {
   type ExpressionCanopyContext,
   type ExpressionNeedsState,
 } from './execution-context';
+import { assertGoogleAvailableForRun } from './antigravity-preflight';
 import {
   evaluateCondition,
   evaluateTemplateValue,
@@ -2155,6 +2156,13 @@ function executeState(
       currentState.completed_at = undefined;
       endExecutionPause(currentState);
       await persistState('execution.started');
+      // Before any job: a run that still needs Google fails now, not hours
+      // later when its Google step is reached (CAN-6703).
+      await assertGoogleAvailableForRun(
+        currentState,
+        options.runtime,
+        abortController.signal,
+      );
 
       const logicalJobIds = Object.keys(normalizedPipeline.jobs);
       const dependenciesTerminal = (logicalJobId: string): boolean =>

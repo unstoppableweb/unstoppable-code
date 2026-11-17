@@ -10,6 +10,7 @@
   "exports": {
     "./app-errors/classification": "./src/app-errors/classification.ts",
     "./copilot-selection": "./src/copilot-selection.ts",
+    "./copilot-handoff": "./src/copilot-handoff.ts",
     "./feedback-report": "./src/feedback-report.ts",
     "./app-errors": "./src/app-errors/index.ts",
     "./app-errors/ipc-rejection": "./src/app-errors/ipc-rejection.ts",
@@ -32,6 +33,7 @@
     "./canopy-core/worker": "./src/canopy-core/worker/index.ts",
     "./file-path": "./src/file-path.ts",
     "./chat-targets": "./src/chat-targets.ts",
+    "./session-recovery": "./src/session-recovery.ts",
     "./plan-tool-input": "./src/plan-tool-input.ts",
     "./turn-files": "./src/turn-files.ts",
     "./safe-relative-path": "./src/safe-relative-path.ts",

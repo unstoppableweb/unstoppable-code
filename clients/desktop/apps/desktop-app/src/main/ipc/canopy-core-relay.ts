@@ -1,3 +1,4 @@
+import { isAgentSecretRequestsEnabled } from '../agent-secrets/feature-gate';
 import { app, ipcMain, webContents } from 'electron';
 import { CANOPY_DEFAULT_MAX_FRAME_BYTES } from '@canopy/core-transport';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
@@ -223,6 +224,8 @@ export function registerCanopyCoreRelayHandlers(
       createWebCoreBindingProvider({
         ...webCore,
         isEnabled: () => true,
+        // The window's sends can answer the agent's secret requests.
+        announcesSecretRequests: isAgentSecretRequestsEnabled,
       }),
       desktopCloudChatSendHookDeps(webCore, app.getVersion()),
     ),

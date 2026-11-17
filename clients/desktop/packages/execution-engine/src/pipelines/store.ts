@@ -28,7 +28,12 @@ import {
   damagedCopyPath,
   pruneDamagedCopiesSync,
 } from '@canopy/execution-engine/node/lib/damaged-copies';
-import { isStorageOutcomeUnknownError } from '@canopy/core-runtime/storage';
+import {
+  assertAdmittedWriter,
+  isStorageOutcomeUnknownError,
+  type StorageOwnershipRow,
+  type StorageWriterPrincipal,
+} from '@canopy/core-runtime/storage';
 import { flushDirectorySync } from '@canopy/core-platform/directory-flush';
 import { normalizePipeline } from '@canopy/execution-engine/pipelines/normalize-pipeline';
 import {
@@ -434,6 +439,51 @@ function storeWriterPrincipal(): 'electron_main' | 'desktop_cli' {
     : 'desktop_cli';
 }
 
+const STORE_MODULE = 'packages/execution-engine/src/pipelines/store.ts';
+
+/**
+ * The principal a host's writes claim and the rows that decide them
+ * (CAN-5092), for pipeline_definitions and its lock only. The rows the
+ * caller passes decide, so only trusted composition may pass them: tests
+ * now, the daemon at the flip. check:daemon-writer-boundary refuses any
+ * other production caller of `withStoredPipelineWriter`.
+ */
+export interface StoredPipelineWriterContext {
+  readonly writer: StorageWriterPrincipal;
+  readonly ownership: readonly StorageOwnershipRow[];
+}
+
+let writerContext: StoredPipelineWriterContext | undefined;
+
+/**
+ * Runs `run` with `context` as the store's writer. The context holds only
+ * while `run` executes synchronously, so `run` must finish its writes before
+ * it returns; work it leaves for later runs without the context.
+ */
+export function withStoredPipelineWriter<T>(
+  context: StoredPipelineWriterContext,
+  run: () => T,
+): T {
+  const previous = writerContext;
+  writerContext = context;
+  try {
+    return run();
+  } finally {
+    writerContext = previous;
+  }
+}
+
+/** Refuses a writer context the rows don't admit, before anything is touched. */
+function assertWriterContext(): void {
+  if (writerContext)
+    assertAdmittedWriter(
+      'pipeline_definitions',
+      writerContext.writer,
+      STORE_MODULE,
+      writerContext.ownership,
+    );
+}
+
 function installDurably(filePath: string, data: string): void {
   try {
     writeFileAtomicallySync(filePath, data, {
@@ -441,8 +491,9 @@ function installDurably(filePath: string, data: string): void {
       durable: true,
       admittedWriter: {
         namespace: 'pipeline_definitions',
-        writer: storeWriterPrincipal(),
-        module: 'packages/execution-engine/src/pipelines/store.ts',
+        writer: writerContext?.writer ?? storeWriterPrincipal(),
+        module: STORE_MODULE,
+        ...(writerContext && { ownership: writerContext.ownership }),
       },
     });
   } catch (error) {
@@ -474,6 +525,7 @@ function withDefinitionLock<T>(
   operation: () => StoredPipelineWriteResult<T>,
 ): StoredPipelineWriteResult<T> {
   try {
+    assertWriterContext();
     if (writerLockDepth > 0) return operation();
     const directory = pipelineDefinitionLockDir();
     ensurePrivateLockDirectorySync(directory);
@@ -1062,6 +1114,11 @@ export function writeStoredPipeline(
   input: PipelineSaveInput,
   options: StoredPipelineWriteOptions = {},
 ): StoredPipelineWriteResult<PipelineInfo> {
+  try {
+    assertWriterContext();
+  } catch (error) {
+    return refused('io', errorMessage(error));
+  }
   const userDir = getUserPipelinesDir();
   if (!ensureDir(userDir))
     return refused('io', `Failed to ensure pipeline directory: ${userDir}`);

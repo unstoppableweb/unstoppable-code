@@ -1,3 +1,4 @@
+import { readSessionResumeFailure } from '@canopy/protocol/session-recovery';
 import {
   CHILD_TOOLS_ENDED_EVENT_TYPE,
   indexCodexAgentCallBlocks,
@@ -3280,6 +3281,9 @@ function handleClaudeResultEvent(
             type: 'text',
             text: claudeResultErrorMessage(data),
             providerErrorDetails: data.canopy_provider_error_details,
+            sessionResumeFailure: readSessionResumeFailure(
+              data.canopy_session_recovery,
+            ),
           },
         ],
         timestamp: options.now,
@@ -3413,8 +3417,17 @@ function handleClaudeErrorEvent(
                     type: 'text',
                     text: error,
                     providerErrorDetails: data.canopy_provider_error_details,
+                    sessionResumeFailure: readSessionResumeFailure(
+                      data.canopy_session_recovery,
+                    ),
                   }
-                : { type: 'text', text: `Error: ${displayError}` },
+                : {
+                    type: 'text',
+                    text: `Error: ${displayError}`,
+                    sessionResumeFailure: readSessionResumeFailure(
+                      data.canopy_session_recovery,
+                    ),
+                  },
             ],
             timestamp: options.now,
           },

@@ -60,7 +60,6 @@ import {
 } from '@canopy/desktop-instrumentation/client';
 import { inlineFailure, type InlineFailure } from '@/lib/inline-app-error';
 import { create, type StoreApi } from 'zustand';
-import { requestLoadedChangedFilesRefresh } from './changedFilesRefreshRuntime';
 import {
   hasPendingGitHubConnectOffer,
   useGitHubConnectOfferStore,
@@ -4230,15 +4229,6 @@ export const useGitHubStore = create<GitHubState>((set, get) => ({
             .catch((error: unknown) => {
               reportClientAppError(error);
             });
-
-          for (const target of refreshTargets) {
-            void requestLoadedChangedFilesRefresh(
-              target.projectId,
-              target.worktreeId,
-            ).catch((error: unknown) => {
-              reportClientAppError(error);
-            });
-          }
         },
       ) ?? ((): void => undefined);
 

@@ -3,6 +3,7 @@ import {
   lifecycleTreeRemoval,
 } from './w5-destructive-recovery';
 import { rm } from 'node:fs/promises';
+import { assertCodeReviewStorageWriter } from './code-review-storage-admission';
 import { join } from 'node:path';
 import { removeEntryCost } from '../cost-index/lifecycle';
 import { getCodeGraphWorktreeService } from '@canopy/desktop-shared/node/code-graph/service';
@@ -352,6 +353,10 @@ function buildCleanupTasks(
     {
       label: 'worktree metadata',
       run: (): Promise<void> => {
+        assertCodeReviewStorageWriter(
+          'code_review_state',
+          'main/lib/worktree-data-cleanup',
+        );
         // Cancel a layout save still in its debounce window right before the
         // removal: its timer would otherwise recreate panel-layout.json under
         // the removed tree. Earlier cleanup tasks can run for seconds, so an

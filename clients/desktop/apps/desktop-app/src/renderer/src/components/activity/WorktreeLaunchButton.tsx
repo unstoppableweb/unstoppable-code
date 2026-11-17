@@ -37,6 +37,12 @@ import {
   findWorkspaceLaunchEntry,
   hasRunScripts,
 } from './script-utils';
+import { useWorktreeEffective } from '@/hooks/useWorktreeEffective';
+import { useGitHubStore } from '@/stores/githubStore';
+import {
+  guardWorktreeLaunch,
+  readFreshLaunchProject,
+} from '@/components/worktree/worktree-launch';
 
 export interface WorktreeLaunchButtonProps {
   projectId: string;
@@ -54,6 +60,7 @@ export function WorktreeLaunchButton({
   launchLabel = 'Launch',
   launchTestId = 'worktree-top-launch',
 }: WorktreeLaunchButtonProps): JSX.Element {
+  useWorktreeEffective(projectId, worktreeId);
   const worktreeKey = `${projectId}/${worktreeId}`;
   const projects = useProjectsStore((state) => state.projects);
   const selectedProject = projects.find((p) => p.id === projectId) ?? null;
@@ -140,33 +147,42 @@ export function WorktreeLaunchButton({
     [projectId, worktreeId],
   );
 
-  const handleRun = useCallback((): void => {
-    if (onLaunch !== undefined) {
-      onLaunch();
-      return;
-    }
+  const runLaunch = useCallback(async (): Promise<void> => {
     if (!selectedProject) return;
+    // CAN-6933: what runs is the worktree's own command, read now.
+    const freshProject = await readFreshLaunchProject(projectId, worktreeId);
+    if (!freshProject) return;
     const entries = buildScriptEntries(
-      selectedProject,
+      freshProject,
       worktreeId,
       appliedProjectWorktreeScripts,
     );
 
-    if (selectedProject.type === 'multi-repo') {
+    if (freshProject.type === 'multi-repo') {
       const currentRuns = useScriptsStore.getState().runs[worktreeKey];
       if (hasActiveWorkspaceLaunchRun(currentRuns)) {
         return;
       }
       const workspaceLaunch = findWorkspaceLaunchEntry(entries);
-      if (workspaceLaunch?.onRun) {
-        void workspaceLaunch.onRun().catch(() => undefined);
+      if (!workspaceLaunch?.onRun) {
+        useGitHubStore
+          .getState()
+          .addToast('This worktree has no launch command', 'warning');
+        return;
       }
+      void workspaceLaunch.onRun().catch(() => undefined);
       return;
     }
 
     const runEntries = entries.filter(
       (entry) => entry.script.lifecycle === 'launch',
     );
+    if (!runEntries.some((entry) => entry.request)) {
+      useGitHubStore
+        .getState()
+        .addToast('This worktree has no launch command', 'warning');
+      return;
+    }
     for (const entry of runEntries) {
       if (!entry.request) {
         continue;
@@ -194,13 +210,20 @@ export function WorktreeLaunchButton({
   }, [
     appliedProjectWorktreeScripts,
     completeRun,
-    onLaunch,
     projectId,
     selectedProject,
     startRun,
     worktreeId,
     worktreeKey,
   ]);
+
+  const handleRun = useCallback((): void => {
+    if (onLaunch !== undefined) {
+      onLaunch();
+      return;
+    }
+    void guardWorktreeLaunch(projectId, worktreeId, runLaunch);
+  }, [onLaunch, projectId, runLaunch, worktreeId]);
 
   const handleStop = useCallback((): void => {
     const scriptsState = useScriptsStore.getState();

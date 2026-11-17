@@ -15,6 +15,41 @@ import {
   type CliAntigravityRollout,
 } from './cli-rollout';
 
+/**
+ * Run-start check for a workflow that still needs Google: the saved
+ * connection and the live rollout, without opening the native runtime.
+ */
+export async function preflightCliAntigravity(
+  signal?: AbortSignal,
+): Promise<void> {
+  const preferences = await readHeadlessPreferences();
+  if (preferences.googleSubscriptionDisconnected === true)
+    throw new Error(
+      'This workflow has Google steps. Connect Google before running it.',
+    );
+  const lifetime = new AbortController();
+  const scope = signal
+    ? AbortSignal.any([signal, lifetime.signal])
+    : lifetime.signal;
+  const unavailable =
+    'This workflow has Google steps, but Google workflows are unavailable under the current rollout policy.';
+  let rollout: CliAntigravityRollout | undefined;
+  try {
+    rollout = await openCliAntigravityRollout(scope, () => lifetime.abort());
+  } catch (error) {
+    signal?.throwIfAborted();
+    // The rollout's own refusal, an unreadable rollout identity and network
+    // failures all mean availability could not be confirmed.
+    throw Object.assign(new Error(unavailable), { cause: error });
+  }
+  try {
+    if (!rollout.isEnabled()) throw new Error(unavailable);
+  } finally {
+    lifetime.abort();
+    await rollout.close();
+  }
+}
+
 /** Source and packaged CLI use native auth without a desktop process. */
 export function createCliAntigravityHost(
   request: AntigravityPromptRunnerRequest,

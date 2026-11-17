@@ -1,4 +1,15 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { readPluginCacheIndex } from '@canopy/execution-engine/node/plugins/catalog-read-health';
+import {
+  mkdtempSync,
+  rmSync,
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+} from 'node:fs';
+import * as atomicFile from '@canopy/execution-engine/node/lib/atomic-file';
+import * as preferencesStore from '../../lib/preferences-store';
+import { DEFAULT_PREFERENCES } from '@canopy/desktop-shared/node/preferences/defaults';
+import { settleDetachedWork } from '@canopy/desktop-shared/node/lib/detached-work';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -37,8 +48,10 @@ import {
   runSerializedPluginMutation,
 } from '../../plugins/plugin-mutation-queue';
 import { installBuiltInPlugin } from '../../plugins/plugin-service';
+import type * as PluginService from '../../plugins/plugin-service';
 import { publishPluginPackageToCloud } from '../../plugins/publish-plugin-to-cloud';
 import {
+  addPortalMarketplace,
   installPortalBuiltInPluginWithOutcomes,
   installPortalExternalPlugin,
 } from '../../services/plugin-catalog-service';
@@ -48,6 +61,9 @@ import {
 } from '../core-catalog-mutation-host';
 
 jest.mock('../../lib/git', () => ({ cloneRepo: jest.fn() }));
+jest.mock('../../plugins/invocable-inventory-service', () => ({
+  refreshInvocableInventoryAfterMutation: jest.fn(),
+}));
 jest.mock('../../plugins/publish-plugin-to-cloud', () => ({
   publishPluginPackageToCloud: jest.fn(() =>
     Promise.resolve({
@@ -318,6 +334,7 @@ function compose(deps: DesktopCatalogMutationDeps) {
 }
 
 beforeEach(() => {
+  jest.mocked(cloneRepo).mockReset();
   resetPluginMutationQueueForTests();
   listedSources = [gitSource, builtinSource, otherGitSource];
   root = mkdtempSync(join(tmpdir(), 'can-4123-'));
@@ -343,6 +360,79 @@ afterEach(() => {
 });
 
 describe('desktop catalog mutations (CAN-4123)', () => {
+  it('core.catalog.plugin.install reports a real service partial publication as failure (CAN-4481)', async () => {
+    const previousRoot = process.env.CANOPY_DATA_DIR;
+    process.env.CANOPY_DATA_DIR = root;
+    const file = join(root, 'plugins-cache.json');
+    const original = JSON.stringify({
+      version: 2,
+      lastRefreshed: '',
+      marketplaces: [],
+    });
+    writeFileSync(file, original);
+    const service = jest.requireActual<typeof PluginService>(
+      '../../plugins/plugin-service',
+    );
+    jest
+      .spyOn(preferencesStore, 'readPreferencesFile')
+      .mockResolvedValue(DEFAULT_PREFERENCES);
+    jest.mocked(cloneRepo).mockImplementation((_repo, destination) => {
+      mkdirSync(destination, { recursive: true });
+      return Promise.resolve();
+    });
+    const realWrite = atomicFile.writeFileAtomically;
+    const publication = jest
+      .spyOn(atomicFile, 'writeFileAtomically')
+      .mockImplementation((target, bytes, options) => {
+        if (target === file)
+          return Promise.reject(new Error('catalog publication refused'));
+        return realWrite(target, bytes, options);
+      });
+    const host = createDesktopCatalogMutationHost(baseHost(), {
+      runSerialized: runSerializedPluginMutation,
+      portal: {
+        addPortalMarketplace,
+        installPortalBuiltInPluginWithOutcomes,
+        installPortalExternalPlugin: async (marketplaceId, pluginName) => {
+          const result = await service.installPlugin(
+            marketplaceId,
+            pluginName,
+            'https://github.com/o/p',
+            { skipRefresh: true },
+          );
+          if (!result.success) throw new Error(result.error);
+          return row;
+        },
+      },
+    });
+    try {
+      await expect(
+        host.installPlugin(
+          {
+            entryId: 'plugin:marketplace:m/p',
+            marketplaceId: 'm',
+            pluginName: 'p',
+            install: 'external',
+          },
+          ['claude'],
+        ),
+      ).rejects.toMatchObject({ refusal: 'plugin-install-failed' });
+      expect(readFileSync(file, 'utf8')).toBe(original);
+      const index = readPluginCacheIndex(join(root, 'plugin-cache-index.json'));
+      expect(index.state).toBe('valid');
+      if (index.state !== 'valid') throw new Error('expected valid index');
+      expect(index.data.entries['m/p']).toMatchObject({
+        sourceUrl: 'https://github.com/o/p',
+      });
+    } finally {
+      await settleDetachedWork();
+      publication.mockRestore();
+      jest.restoreAllMocks();
+      if (previousRoot === undefined) delete process.env.CANOPY_DATA_DIR;
+      else process.env.CANOPY_DATA_DIR = previousRoot;
+    }
+  });
+
   it('runs catalog mutations one at a time through the plugin mutation queue', async () => {
     const deps = fakeDeps();
     deps.installGate = deferred();

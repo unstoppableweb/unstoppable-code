@@ -20,10 +20,15 @@ import { observeMcpStdio } from './mcp-stdio-observer';
 import {
   relayGovernedMcpStdio,
   type CodexStdioMcpToolCallGate,
+  type CodexStdioMcpToolListTransform,
 } from './mcp-stdio-gate';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 
-export type { CodexStdioMcpToolCallGate } from './mcp-stdio-gate';
+export type {
+  CodexStdioMcpToolCallGate,
+  CodexStdioMcpToolListTransform,
+  McpToolCallRefusal,
+} from './mcp-stdio-gate';
 
 export interface CodexStdioMcpLaunchRequest {
   ownerId: string;
@@ -47,6 +52,8 @@ export interface CodexStdioMcpLaunchRoute {
 export interface CodexStdioMcpRegistrationOptions {
   signal?: AbortSignal;
   toolCallGate?: CodexStdioMcpToolCallGate;
+  /** Applied only on gated routes; see `relayGovernedMcpStdio`. */
+  toolListTransform?: CodexStdioMcpToolListTransform;
   observeConnection?: () => McpAvailabilityObserver;
 }
 
@@ -56,6 +63,7 @@ interface RouteRecord extends CodexStdioMcpLaunchRequest {
   activeChildren: Map<number, ChildProcessWithoutNullStreams>;
   activeConnections: Set<AbortController>;
   toolCallGate?: CodexStdioMcpToolCallGate;
+  toolListTransform?: CodexStdioMcpToolListTransform;
   observeConnection?: () => McpAvailabilityObserver;
   revoked: boolean;
 }
@@ -237,6 +245,7 @@ export class CodexMcpSecretBroker {
       !existing.revoked &&
       existing.digest === digest &&
       existing.toolCallGate === options.toolCallGate &&
+      existing.toolListTransform === options.toolListTransform &&
       existing.observeConnection === options.observeConnection
     ) {
       return this.toLaunchRoute(existingId, existing.digest);
@@ -251,6 +260,7 @@ export class CodexMcpSecretBroker {
       activeChildren: new Map<number, ChildProcessWithoutNullStreams>(),
       activeConnections: new Set<AbortController>(),
       toolCallGate: options.toolCallGate,
+      toolListTransform: options.toolListTransform,
       observeConnection: options.observeConnection,
       revoked: false,
     };
@@ -527,6 +537,7 @@ export class CodexMcpSecretBroker {
         upstreamOutput: child.stdout,
         output: response,
         gate: route.toolCallGate,
+        toolListTransform: route.toolListTransform,
         observer: route.observeConnection?.(),
         signal: connection.signal,
       }).catch(() => {

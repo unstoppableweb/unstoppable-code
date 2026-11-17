@@ -76,6 +76,7 @@ import {
   isOrgModelPolicyActiveForStoredAccount,
 } from '../lib/model-policy-state';
 import { checkModelGatewayRoute } from '../lib/model-gateway-state';
+import { assertTurnModelGatewayRoute } from '../lib/model-gateway-turn';
 import { listCoworkWorkspacesAsChatProjects } from '../lib/cowork-workspace-crud';
 import type { SidebarItemsSnapshot } from '../lib/sidebar-items';
 import { resolveCoworkWorkspaceId } from '../lib/cowork-migration-map';
@@ -2530,6 +2531,18 @@ async function sendStandaloneChatMessageOnce(
               'This model is blocked by your organization policy.',
             );
           }
+        }
+        // After every policy verdict, so a model that is both gets the policy
+        // message; before anything is saved (CAN-6701).
+        for (const candidate of policy.models) {
+          await turnDispatchTiming.measure('auth_preflight', () =>
+            assertTurnModelGatewayRoute(
+              candidate,
+              getProviderForModel(candidate),
+              workOwner,
+              'before-save',
+            ),
+          );
         }
         if (
           existingTab?.providerType === 'cursor' ||

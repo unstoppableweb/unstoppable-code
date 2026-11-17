@@ -230,6 +230,9 @@ function boundedHarnesses(
     ollama: bound(harnesses.ollama),
     copilot: bound(harnesses.copilot),
     opencode: bound(harnesses.opencode),
+    ...(harnesses.antigravity
+      ? { antigravity: bound(harnesses.antigravity) }
+      : {}),
   };
 }
 

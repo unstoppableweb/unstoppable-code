@@ -1,3 +1,4 @@
+import { logMainProcessError } from './main-process-logging';
 import { withGitReadPath } from './worktree-read-availability';
 import {
   GIT_DEFAULT_BRANCH_HINT_TTL_MS,
@@ -44,7 +45,10 @@ export async function readDefaultBranchHint(
   observation: DefaultBranchObservation,
   signal?: AbortSignal,
 ): Promise<GitDefaultBranchHint | null> {
-  const identity = await resolveIdentity(repoPath, signal);
+  const identity =
+    observation.identity !== undefined
+      ? observation.identity
+      : await resolveIdentity(repoPath, signal);
   observation.identity = identity;
   const stored = identity
     ? await readGitDefaultBranchFreshness(identity).catch(() => null)
@@ -121,9 +125,18 @@ export function resolveFreshDefaultBranch(
 async function resolveAvailableDefaultBranch(
   repoPath: string,
   options: { allowRemoteLookup?: boolean } = {},
+  observation: DefaultBranchObservation = {},
 ): Promise<string | null> {
+  return (await selectAvailableDefaultBranch(repoPath, options, observation))
+    .defaultBranch;
+}
+
+async function selectAvailableDefaultBranch(
+  repoPath: string,
+  options: { allowRemoteLookup?: boolean },
+  observation: DefaultBranchObservation,
+): Promise<GitDefaultBranchSelection> {
   const now = Date.now();
-  const observation: DefaultBranchObservation = {};
   const selection = await selectGitDefaultBranch(
     createDesktopDefaultBranchFacts(repoPath, () =>
       readDefaultBranchHint(repoPath, observation),
@@ -131,10 +144,53 @@ async function resolveAvailableDefaultBranch(
     { now, allowRemoteLookup: options.allowRemoteLookup },
   );
   await applyDefaultBranchEffects(repoPath, selection, observation, now);
-  return selection.defaultBranch;
+  return selection;
 }
 
 const backgroundRevalidations = new Map<string, Promise<void>>();
+const repositoryRevalidations = new Map<string, Promise<boolean>>();
+
+async function revalidateRepositoryDefaultBranch(
+  repoPath: string,
+): Promise<void> {
+  const identity = await resolveIdentity(repoPath);
+  if (!identity) {
+    await resolveAvailableDefaultBranch(repoPath, {}, { identity });
+    return;
+  }
+  const key = JSON.stringify([identity.commonDir, identity.originUrl]);
+  for (
+    let running = repositoryRevalidations.get(key);
+    running;
+    running = repositoryRevalidations.get(key)
+  ) {
+    if (await running) return;
+  }
+
+  const revalidation = (async (): Promise<boolean> => {
+    const selection = await selectAvailableDefaultBranch(
+      repoPath,
+      {},
+      { identity },
+    );
+    // A fallback after remote failure is useful to its caller, but must not
+    // suppress a healthy sibling whose worktree-local credentials may succeed.
+    return (
+      (selection.source === 'remote' || selection.source === 'hint') &&
+      (await withGitReadPath(repoPath, false, () => Promise.resolve(true)))
+    );
+  })().catch((error: unknown) => {
+    logMainProcessError('Default branch revalidation failed', error);
+    return false;
+  });
+  repositoryRevalidations.set(key, revalidation);
+  try {
+    await revalidation;
+  } finally {
+    if (repositoryRevalidations.get(key) === revalidation)
+      repositoryRevalidations.delete(key);
+  }
+}
 
 /**
  * Revalidates stale default-branch knowledge against the remote without making
@@ -148,7 +204,7 @@ export function revalidateDefaultBranchInBackground(repoPath: string): void {
     return;
   }
   const revalidation = withGitReadPath(repoPath, null, () =>
-    resolveFreshDefaultBranch(repoPath),
+    revalidateRepositoryDefaultBranch(repoPath),
   )
     .then(
       () => undefined,

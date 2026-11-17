@@ -115,6 +115,13 @@ function shuffleArray<T>(items: readonly T[], random: () => number): T[] {
 }
 
 /**
+ * The first numeric suffix {@link pickUniqueAnimalName} appends, shared with
+ * {@link isUniqueAnimalNameShape} so a claim check can't drift from the
+ * generator.
+ */
+const FIRST_ANIMAL_NAME_SUFFIX = 2;
+
+/**
  * Picks a random animal name that is not in `existing`. Falls back to a
  * numeric suffix (`wolf-2`, `wolf-3`, ...) when every curated name is taken.
  * `existing` is compared against the prefixed candidate.
@@ -136,7 +143,7 @@ export function pickUniqueAnimalName(
   }
 
   for (const baseName of shuffled) {
-    let suffix = 2;
+    let suffix = FIRST_ANIMAL_NAME_SUFFIX;
     let candidate = withPrefix(`${baseName}-${suffix}`);
     while (existing.has(candidate)) {
       suffix += 1;
@@ -147,4 +154,30 @@ export function pickUniqueAnimalName(
   }
 
   throw new Error('Unable to generate a unique animal name');
+}
+
+const ANIMAL_NAME_SET: ReadonlySet<string> = new Set<string>(ANIMAL_NAMES);
+
+/**
+ * Whether `id` has the shape {@link pickUniqueAnimalName} produces for
+ * `prefix`: the prefix, a curated animal name, and optionally a numeric
+ * suffix from {@link FIRST_ANIMAL_NAME_SUFFIX} up. Hosts use this to vet a
+ * client-claimed worktree id; a claim with another host mode's prefix fails
+ * it.
+ */
+export function isUniqueAnimalNameShape(
+  id: string,
+  options: Pick<PickUniqueAnimalNameOptions, 'prefix'> = {},
+): boolean {
+  const prefix = options.prefix ?? '';
+  if (!id.startsWith(prefix)) return false;
+  const name = id.slice(prefix.length);
+  if (ANIMAL_NAME_SET.has(name)) return true;
+  const suffixed = /^(.+)-([1-9][0-9]*)$/.exec(name);
+  return (
+    suffixed !== null &&
+    ANIMAL_NAME_SET.has(suffixed[1]) &&
+    Number.isSafeInteger(Number(suffixed[2])) &&
+    Number(suffixed[2]) >= FIRST_ANIMAL_NAME_SUFFIX
+  );
 }

@@ -11,6 +11,7 @@ import {
   CopilotSignInExpiredError,
   CopilotCredentialUnreadableError,
   createCopilotCredentialBroker,
+  untilAborted,
   type CopilotCredentialBroker,
 } from './credential-broker';
 import {
@@ -20,6 +21,8 @@ import {
   isCopilotCredentialStorageAvailable,
   readCopilotCredential,
   replaceCopilotCredential,
+  withCopilotMigrationSource,
+  type CopilotMigrationSource,
   type CopilotCredential,
   type CopilotCredentialDelete,
   type CopilotCredentialRead,
@@ -29,7 +32,12 @@ import {
 
 // Reads carry no grant authority; they are re-exported so the store has one
 // importer.
-export { isCopilotCredentialStorageAvailable, readCopilotCredential };
+export { isCopilotCredentialStorageAvailable };
+function readCopilotCredentialForAuthority(): Promise<CopilotCredentialRead> {
+  assertLegacyDemand();
+  return trackLegacyDemand(readCopilotCredential());
+}
+export { readCopilotCredentialForAuthority as readCopilotCredential };
 export type { CopilotCredential, CopilotGrant };
 
 /** D24: the account and the store-minted entry; a new entry is a new epoch. */
@@ -86,6 +94,7 @@ class CopilotGrantAuthority {
   private epoch: CopilotAccountEpoch | undefined;
   private retired = false;
   private attemptId: string | undefined;
+  private rotationSource: object | undefined;
 
   constructor(
     readonly pin: CopilotAccount | undefined,
@@ -93,9 +102,14 @@ class CopilotGrantAuthority {
   ) {
     const broker = createCopilotCredentialBroker({
       pin,
+      migrationAdmitted: () => !migrationGate?.active,
       read: () => this.read(),
       save: async (from, grant): Promise<CopilotCredentialReplace> => {
-        if (this.retired) return { status: 'conflict' };
+        if (this.retired) {
+          if (this.rotationSource === settledSource)
+            unsavedRetiredSuccessor = true;
+          return { status: 'conflict' };
+        }
         const attemptId = this.attemptId;
         const result = await replaceCopilotCredential(from, grant);
         if (result.status === 'written')
@@ -123,13 +137,21 @@ class CopilotGrantAuthority {
         await writeCopilotRotationAttempt(attempt);
         this.attemptId = attempt.attemptId;
         if (this.retired) throw new CopilotSignInChangedError();
-        return deps.refresh(refreshToken, signal);
+        const source = settledSource;
+        this.rotationSource = source;
+        const grant = await deps.refresh(refreshToken, signal);
+        // Retirement may discard custody, but it cannot make a rotated predecessor importable.
+        if (this.retired && source === settledSource)
+          unsavedRetiredSuccessor = true;
+        return grant;
       },
     });
     this.auth = {
       ...broker,
       binding: async (): Promise<CopilotAccountEpoch> => {
-        const read = await this.read();
+        assertLegacyDemand();
+        const read = await trackLegacyDemand(this.read());
+        assertLegacyDemand();
         if (read.status !== 'present' || !this.epoch) {
           if (read.status === 'unreadable')
             throw new CopilotCredentialUnreadableError(
@@ -157,6 +179,9 @@ class CopilotGrantAuthority {
 
   retire(): void {
     this.retired = true;
+    const work = this.auth.quiesce(true);
+    retiredWork.add(work);
+    void work.finally(() => retiredWork.delete(work)).catch(() => undefined);
   }
 
   private async read(): Promise<CopilotCredentialRead> {
@@ -193,6 +218,7 @@ export function resetCopilotGrantFenceForTests(): void {
 }
 
 export function resumeCopilotGrant(): void {
+  assertLegacyDemand();
   current?.auth.resume();
 }
 
@@ -220,6 +246,7 @@ export function copilotGrantAuthority(
   pin: CopilotAccount | undefined,
   deps: CopilotGrantAuthorityDeps,
 ): CopilotGrantHandle {
+  assertLegacyDemand();
   if (current?.active && samePin(current.pin, pin)) return current.auth;
   // Each authority presents only entries matching its pin exactly, so the
   // one replaced for another pin never shares an entry with its successor.
@@ -243,9 +270,15 @@ function endEpoch(): void {
 export async function commitCopilotGrant(
   grant: CopilotGrant,
 ): Promise<CopilotCredential> {
-  const created = await createCopilotCredential(grant);
-  endEpoch();
-  return created;
+  assertLegacyDemand();
+  return trackLegacyMutation(
+    (async (): Promise<CopilotCredential> => {
+      const created = await createCopilotCredential(grant);
+      endEpoch();
+      sourceReplaced();
+      return created;
+    })(),
+  );
 }
 
 /** Setup rollback: deletes the entry only while it is still `expected`. */
@@ -253,30 +286,177 @@ export function deleteCopilotGrant(expected: {
   entryId: string;
   revision?: number;
 }): Promise<CopilotCredentialDelete> {
+  assertLegacyDemand();
   endEpoch();
-  return deleteCopilotCredential(expected);
+  return trackLegacyMutation(deleteCopilotCredential(expected));
 }
 
 /** Disconnect and Change account: deletes the latest revision. */
-export async function clearCopilotGrant(): Promise<void> {
+export function clearCopilotGrant(): Promise<void> {
+  assertLegacyDemand();
+  return trackLegacyMutation(
+    clearGrant().then((cleared) => {
+      if (cleared) sourceReplaced();
+    }),
+  );
+}
+async function clearGrant(): Promise<boolean> {
   let entryId = current?.entryId;
   endEpoch();
   for (let attempt = 0; attempt < 3; attempt++) {
     const read = await readCopilotCredential();
-    if (read.status === 'absent') return;
+    if (read.status === 'absent') return false;
     if (read.status === 'unreadable') {
       // Explicit removal keeps the base escape hatch for unreadable ciphertext.
       await clearCopilotCredential();
-      return;
+      return true;
     }
     entryId ??= read.credential.entryId;
-    if (read.credential.entryId !== entryId) return;
+    if (read.credential.entryId !== entryId) return false;
     // The store holds its writer queue across this same-entry CAS, so any
     // successor already saving is removed too, without racing a revision read.
     const result = await deleteCopilotCredential({ entryId });
-    if (result.status === 'deleted') return;
+    if (result.status === 'deleted') return true;
     if (result.status === 'unreadable')
       throw new Error("Couldn't read the Copilot sign-in on this device.");
   }
   throw new Error('Copilot sign-in changed. Try again.');
+}
+
+let settledSource: object = {};
+let unsavedRetiredSuccessor = false;
+let uncertainSourceWrite = false;
+function sourceReplaced(): void {
+  settledSource = {};
+  unsavedRetiredSuccessor = false;
+  uncertainSourceWrite = false;
+}
+function trackLegacyMutation<T>(operation: Promise<T>): Promise<T> {
+  return trackLegacyDemand(
+    operation.catch((error: unknown) => {
+      uncertainSourceWrite = true;
+      throw error;
+    }),
+  );
+}
+const ownedDemands = new Set<Promise<unknown>>();
+const retiredWork = new Set<Promise<void>>();
+let migrationGeneration = 0;
+let migrationGate:
+  | { readonly generation: number; active: boolean; detached: boolean }
+  | undefined;
+function assertLegacyDemand(): void {
+  if (migrationGate?.active) throw new CopilotSignInChangedError();
+}
+function trackLegacyDemand<T>(operation: Promise<T>): Promise<T> {
+  ownedDemands.add(operation);
+  void operation
+    .finally(() => ownedDemands.delete(operation))
+    .catch(() => undefined);
+  return operation;
+}
+export interface CopilotMigrationQuiescence {
+  readonly generation: number;
+  current(): boolean;
+  withSource<T>(
+    operation: (source: CopilotMigrationSource) => Promise<T>,
+  ): Promise<T>;
+}
+export interface CopilotMigrationBarrier {
+  quiesce(
+    signal: AbortSignal,
+  ): Promise<
+    | { readonly kind: 'quiescent'; readonly proof: CopilotMigrationQuiescence }
+    | { readonly kind: 'blocked' }
+  >;
+  /** Explicit pre-handoff abandonment only; durable handoff routing owns later retirement. */
+  release(): void;
+  /** Drop this volatile owner without reopening legacy after a durable handoff. */
+  detach(): void;
+}
+/** Qualification-only. Fences before the first await; never obtains an adopting binding(). */
+export function beginCopilotMigrationBarrier(): CopilotMigrationBarrier {
+  if (
+    (migrationGate?.active && !migrationGate.detached) ||
+    migrationGeneration === Number.MAX_SAFE_INTEGER
+  )
+    throw new CopilotSignInChangedError();
+  if (migrationGate) migrationGate.active = false;
+  const gate = {
+    generation: ++migrationGeneration,
+    active: true,
+    detached: false,
+  };
+  migrationGate = gate;
+  const authority = current;
+  let proven = false;
+  let sourceOwned = false;
+  const currentGate = (): boolean => gate.active && migrationGate === gate;
+  // Owned saves keep access to the store queue until the drain has settled.
+  const drained = (async (): Promise<boolean> => {
+    const saved = await (authority?.auth.quiesceForMigration() ??
+      Promise.resolve(true));
+    let settled = true;
+    // An owned setup/clear can retire its authority while settling: drain that work too.
+    while (ownedDemands.size || retiredWork.size) {
+      const outcomes = await Promise.allSettled([
+        ...ownedDemands,
+        ...retiredWork,
+      ]);
+      if (outcomes.some((outcome) => outcome.status === 'rejected'))
+        settled = false;
+    }
+    return (
+      saved && settled && !unsavedRetiredSuccessor && !uncertainSourceWrite
+    );
+  })();
+  return {
+    async quiesce(signal) {
+      try {
+        const saved = await untilAborted(drained, signal);
+        if (
+          !saved ||
+          signal.aborted ||
+          !currentGate() ||
+          ownedDemands.size ||
+          retiredWork.size
+        )
+          return { kind: 'blocked' };
+        proven = true;
+        const proof: CopilotMigrationQuiescence = {
+          generation: gate.generation,
+          current: () => proven && currentGate(),
+          withSource: (operation) => {
+            if (!proven || !currentGate() || sourceOwned)
+              return Promise.reject(new CopilotSignInChangedError());
+            sourceOwned = true;
+            return withCopilotMigrationSource(async (source) => {
+              if (!proven || !currentGate())
+                throw new CopilotSignInChangedError();
+              return operation(source);
+            }).finally(() => {
+              sourceOwned = false;
+            });
+          },
+        };
+        return { kind: 'quiescent', proof };
+      } catch {
+        return { kind: 'blocked' };
+      }
+    },
+    detach(): void {
+      if (sourceOwned) throw new CopilotSignInChangedError();
+      proven = false;
+      gate.detached = true;
+    },
+    release(): void {
+      if (sourceOwned) throw new CopilotSignInChangedError();
+      gate.active = false;
+      proven = false;
+      if (migrationGate === gate) {
+        migrationGate = undefined;
+        current?.auth.resume();
+      }
+    },
+  };
 }

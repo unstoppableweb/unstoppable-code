@@ -7,6 +7,7 @@ export {
   type InitiatedWorkExecution,
   type InitiatedWorkGateCheck,
   type InitiatedWorkGateVerdict,
+  type InitiatedWorkRecoverableOrigin,
   type InitiatedWorkRequest,
   type InitiatedWorkResumer,
   type InitiatedWorkResumption,

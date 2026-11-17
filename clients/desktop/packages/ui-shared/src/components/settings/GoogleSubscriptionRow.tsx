@@ -4,6 +4,12 @@ import { Button } from '../Button';
 import { ProviderRowLabel, ProviderStatusDot } from '../ProviderRowLabel';
 import { SettingsRowsRow } from './SettingsRows';
 
+// Google keeps one sign-in per computer, so a sign-in here (directly, or after
+// Reconnect finds no models) can change the account the user's own Antigravity
+// uses. Both states that lead to sign-in say so first.
+const SHARED_SIGN_IN =
+  'Signing in here can also change the account Antigravity uses on this computer.';
+
 /** Host-neutral connection row; the host owns authentication and discovery. */
 export function GoogleSubscriptionRow({
   connected,
@@ -39,11 +45,11 @@ export function GoogleSubscriptionRow({
       }
       description={
         disconnected
-          ? `Disconnected from ${appName}. Your Google sign-in is unchanged.`
+          ? `Disconnected from ${appName}. Your Google sign-in is unchanged. ${SHARED_SIGN_IN}`
           : connected
             ? // Discovery confirms account access, not a paid subscription tier.
               'Google account connected'
-            : 'Install Antigravity CLI 1.5.1, then sign in with your personal Google account'
+            : `Install Antigravity CLI 1.5.1, then sign in with your personal Google account. ${SHARED_SIGN_IN}`
       }
       dataTestId="google-subscription-connection"
       control={

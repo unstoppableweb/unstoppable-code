@@ -118,7 +118,11 @@ import {
   runWithGitRequestContext,
   type GitRequestContext,
 } from '@canopy/desktop-shared/node/git-request-context';
-import { generateUniqueAnimalName } from './animals';
+import { generateUniqueAnimalName, isClaimableWorktreeId } from './animals';
+import {
+  beginWorktreePostCreateSetup,
+  endWorktreePostCreateSetup,
+} from '../services/worktree-setup-runtime-projection';
 import {
   beginWorktreeGitSetup,
   endWorktreeGitSetup,
@@ -358,6 +362,14 @@ export interface CreateWorktreeServiceOptions extends WorktreeSelectionFields {
   sidebarItemGroupId?: string;
   workspaceId: string;
   existingWorktreeIds?: string[];
+  /**
+   * A client-claimed worktree id, honored when free. A claim without the
+   * generator's shape for this host's mode, or one already taken or rejected
+   * by the candidate check, falls back to a generated id; the response
+   * carries the id actually used. Callers validate it with `validateId`
+   * first: a malformed claim is an input error, not a fallback.
+   */
+  claimedWorktreeId?: string;
   /**
    * How a default branch (no requested branch) is named. `worktree-id` names
    * it after the generated worktree id, as pipeline-created worktrees always
@@ -1068,6 +1080,7 @@ function startProjectPostCreateSetupSafely(
   startSetup: ProjectWorktreePostCreateSetup | undefined,
   params: Parameters<ProjectWorktreePostCreateSetup>[0],
   onFailure: () => void,
+  onSettled: () => void,
 ): boolean {
   if (!startSetup) {
     return false;
@@ -1075,7 +1088,10 @@ function startProjectPostCreateSetupSafely(
 
   try {
     // Setup admits at its sinks instead of holding the create's admission.
-    detachedWorkCallback(() => startSetup(params).catch(onFailure))();
+    // `onSettled` runs for completed, failed, and skipped setups alike.
+    detachedWorkCallback(() =>
+      startSetup(params).catch(onFailure).finally(onSettled),
+    )();
     return true;
   } catch {
     // Post-create setup failure must never roll back git-ready completion.
@@ -1087,6 +1103,7 @@ function startWorkspacePostCreateSetupSafely(
   startSetup: WorkspaceWorktreePostCreateSetup | undefined,
   params: Parameters<WorkspaceWorktreePostCreateSetup>[0],
   onFailure: () => void,
+  onSettled: () => void,
 ): boolean {
   if (!startSetup) {
     return false;
@@ -1094,7 +1111,10 @@ function startWorkspacePostCreateSetupSafely(
 
   try {
     // Setup admits at its sinks instead of holding the create's admission.
-    detachedWorkCallback(() => startSetup(params).catch(onFailure))();
+    // `onSettled` runs for completed, failed, and skipped setups alike.
+    detachedWorkCallback(() =>
+      startSetup(params).catch(onFailure).finally(onSettled),
+    )();
     return true;
   } catch {
     // Post-create setup failure must never roll back git-ready completion.
@@ -1873,9 +1893,15 @@ async function removeReservedWorktreeRecordIfCurrent(
 async function reserveWorktreeMetadataDir(
   workspaceId: string,
   candidateIds: Set<string>,
+  claimedId?: string,
 ): Promise<ReservedWorktree> {
   for (let attempt = 0; attempt < MAX_RESERVATION_ATTEMPTS; attempt += 1) {
-    const id = generateUniqueAnimalName(candidateIds);
+    // The claim is tried on the first attempt only; on EEXIST it joins the
+    // candidate set and the generator names the worktree instead.
+    const id =
+      attempt === 0 && claimedId !== undefined && !candidateIds.has(claimedId)
+        ? claimedId
+        : generateUniqueAnimalName(candidateIds);
     const metadataDir = getWorktreeDataDir(workspaceId, id);
     await mkdir(dirname(metadataDir), { recursive: true });
     try {
@@ -1917,6 +1943,7 @@ async function reserveAndPersistWorktree(
   keyed?: CreateWorktreeServiceOptions['w5KeyedCreation'],
   boundaryCommit?: W5CommitOptions,
   boundaryAttempt?: W5KeyedAttempt,
+  claimedWorktreeId?: string,
 ): Promise<PersistedReservation> {
   const persistedWorktrees = existingWorktreeIds
     ? []
@@ -1932,6 +1959,15 @@ async function reserveAndPersistWorktree(
   for (const id of Array.from(await collectReservedWorktreeIds(workspaceId))) {
     candidateIds.add(id);
   }
+  // The claim becomes a directory name, so only a generator-shaped id for
+  // this host's mode is tried. Anything else, or a claim that is taken,
+  // falls back to a generated id. It never skips `isCandidateUsable`.
+  const claim =
+    claimedWorktreeId !== undefined &&
+    isClaimableWorktreeId(claimedWorktreeId) &&
+    !candidateIds.has(claimedWorktreeId)
+      ? claimedWorktreeId
+      : undefined;
 
   for (let attempt = 0; attempt < MAX_RESERVATION_ATTEMPTS; attempt += 1) {
     keyed?.attempt.beforeEffects();
@@ -1939,6 +1975,7 @@ async function reserveAndPersistWorktree(
     const reservation = await reserveWorktreeMetadataDir(
       workspaceId,
       candidateIds,
+      attempt === 0 ? claim : undefined,
     );
     if (isCandidateUsable) {
       let usable = false;
@@ -3247,6 +3284,7 @@ async function createAdmittedSingleRepoWorktree(
     options.w5KeyedCreation,
     options.w5BoundaryCommit,
     options.w5BoundaryAttempt,
+    options.claimedWorktreeId,
   );
 
   // Deferred desktop creation exposes the git-pending reservation to the
@@ -3334,6 +3372,7 @@ async function createAdmittedSingleRepoWorktree(
   const runPhaseB = async (): Promise<string | null> => {
     let createdBranchName: string | null = null;
     let releasePostCreateRefreshDeferral: (() => void) | undefined;
+    let endPostCreateSetupProjection: (() => void) | undefined;
     let postCreateSetupStarted = false;
     try {
       if (!(await shouldContinuePhaseB())) {
@@ -3470,6 +3509,14 @@ async function createAdmittedSingleRepoWorktree(
         return null;
       }
 
+      // Begin before the promotion write so no snapshot shows the row ready
+      // with no setup phase; it ends when the post-create setup settles.
+      if (options.startPostCreateSetup === true) {
+        endPostCreateSetupProjection = beginWorktreePostCreateSetup(
+          options.workspaceId,
+          reservation.id,
+        );
+      }
       const promotion: WorktreeCreationPromoteDecision = {
         kind: 'worktree.create.promote',
         workspaceKind: 'single-repo',
@@ -3563,6 +3610,7 @@ async function createAdmittedSingleRepoWorktree(
             getWindow,
           },
           releasePostCreateRefreshDeferral ?? ((): void => {}),
+          endPostCreateSetupProjection ?? ((): void => {}),
         );
       }
 
@@ -3627,6 +3675,7 @@ async function createAdmittedSingleRepoWorktree(
     } finally {
       if (!postCreateSetupStarted) {
         releasePostCreateRefreshDeferral?.();
+        endPostCreateSetupProjection?.();
       }
     }
   };
@@ -3991,6 +4040,7 @@ async function createAdmittedMultiRepoWorktree(
     options.w5KeyedCreation,
     options.w5BoundaryCommit,
     options.w5BoundaryAttempt,
+    options.claimedWorktreeId,
   );
 
   // Keep creation-time layout policy ahead of the deferred reservation
@@ -4205,6 +4255,7 @@ async function createAdmittedMultiRepoWorktree(
   }): Promise<string | null | typeof PHASE_B_NEEDS_REPAIR> => {
     const createdRepoBranches = new Map<string, string>();
     let releasePostCreateRefreshDeferral: (() => void) | undefined;
+    let endPostCreateSetupProjection: (() => void) | undefined;
     let postCreateSetupStarted = false;
     const cleanupCancelledSetup = async (): Promise<void> => {
       await cleanupCancelledMultiRepoSetup({
@@ -4426,6 +4477,13 @@ async function createAdmittedMultiRepoWorktree(
         return null;
       }
 
+      // See the single-repo path: begin before the promotion write.
+      if (options.startPostCreateSetup === true) {
+        endPostCreateSetupProjection = beginWorktreePostCreateSetup(
+          options.workspaceId,
+          reservation.id,
+        );
+      }
       const promotion: WorktreeCreationPromoteDecision = {
         kind: 'worktree.create.promote',
         workspaceKind: 'multi-repo',
@@ -4500,6 +4558,7 @@ async function createAdmittedMultiRepoWorktree(
             getWindow,
           },
           releasePostCreateRefreshDeferral ?? ((): void => {}),
+          endPostCreateSetupProjection ?? ((): void => {}),
         );
       }
 
@@ -4565,6 +4624,7 @@ async function createAdmittedMultiRepoWorktree(
     } finally {
       if (!postCreateSetupStarted) {
         releasePostCreateRefreshDeferral?.();
+        endPostCreateSetupProjection?.();
       }
     }
   };
@@ -5418,6 +5478,7 @@ async function finalizeArchiveCleanup(options: {
     }
     worktreeRecordRemoved = true;
     endWorktreeGitSetup(options.workspaceId, options.worktreeId);
+    endWorktreePostCreateSetup(options.workspaceId, options.worktreeId);
     if (!options.archiveContainer) {
       // The deletion has committed: the worktree record is gone.
       notifyLedgerOfWorktreeArchive(

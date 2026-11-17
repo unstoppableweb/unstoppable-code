@@ -17,6 +17,10 @@ export async function prepareAntigravityCapabilities(input: {
   instructions: string;
   fingerprint: string;
   notices: string[];
+  /** Skills whose text this turn delivered, by projection id. */
+  skillIds: string[];
+  /** Commands this turn can expand, by projection id. */
+  commandIds: string[];
   expandPrompt: (text: string) => string;
 }> {
   const prepared = await materializeSelectedCapabilityRoot(
@@ -37,6 +41,7 @@ export async function prepareAntigravityCapabilities(input: {
     warning.split('Cursor').join('Antigravity'),
   );
   const skillContent: string[] = [];
+  const deliveredSkillIds: string[] = [];
   let remaining = MAX_SKILL_PROMPT_BYTES;
   for (const skill of skills) {
     input.signal.throwIfAborted();
@@ -67,6 +72,7 @@ export async function prepareAntigravityCapabilities(input: {
       }
       remaining -= bytes;
       skillContent.push(entry);
+      deliveredSkillIds.push(skill.id);
     } catch (error) {
       input.signal.throwIfAborted();
       notices.push(
@@ -89,6 +95,8 @@ export async function prepareAntigravityCapabilities(input: {
       .update(instructions)
       .digest('hex'),
     notices,
+    skillIds: deliveredSkillIds,
+    commandIds: commands.map((command) => command.id),
     expandPrompt: (text) => expandLeadingCursorCommand(text, commands),
   };
 }

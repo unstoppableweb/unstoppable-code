@@ -154,6 +154,8 @@ export interface ProjectedWorkspaceLifecycleCommands {
       baseBranch?: string;
       baseWorktreeId?: string;
       sidebarItemGroupId?: string;
+      /** A client-claimed worktree id; the result's id is authoritative. */
+      worktreeId?: string;
     },
     run: () => Promise<T>,
   ): Promise<T>;
@@ -297,6 +299,7 @@ export function projectedWorkspaceLifecycleCommands(
         baseBranch,
         baseWorktreeId,
         sidebarItemGroupId,
+        worktreeId,
       } = request;
       const params = CoreWorktreeCreateParamsSchema.safeParse({
         workspaceId,
@@ -306,6 +309,7 @@ export function projectedWorkspaceLifecycleCommands(
         ...(baseBranch !== undefined && { baseBranch }),
         ...(baseWorktreeId !== undefined && { baseWorktreeId }),
         ...(sidebarItemGroupId !== undefined && { sidebarItemGroupId }),
+        ...(worktreeId !== undefined && { worktreeId }),
         _meta: { idempotencyKey },
       });
       if (!params.success) return run();

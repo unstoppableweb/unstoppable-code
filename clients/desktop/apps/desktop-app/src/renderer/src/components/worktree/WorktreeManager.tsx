@@ -903,7 +903,9 @@ export function WorktreeManager(): JSX.Element {
     }
 
     try {
-      await requestChangedFilesRefresh(wt.projectId, wt.worktreeId);
+      await requestChangedFilesRefresh(wt.projectId, wt.worktreeId, {
+        kind: 'automatic',
+      });
     } catch (error) {
       // A background refresh: the next one retries.
       reportClientAppError(error);

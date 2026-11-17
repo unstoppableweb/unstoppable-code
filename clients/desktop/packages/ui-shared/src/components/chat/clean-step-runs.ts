@@ -90,6 +90,8 @@ const RUN_PHRASES: Record<StepKind, (count: number) => string> = {
   agent: (count) => `ran ${count} ${count === 1 ? 'agent' : 'agents'}`,
   question: (count) =>
     `asked ${count === 1 ? 'a question' : `${count} questions`}`,
+  secrets: (count) =>
+    `requested secrets${count === 1 ? '' : ` ${count} times`}`,
   other: (count) => `used ${count} ${count === 1 ? 'tool' : 'tools'}`,
 };
 

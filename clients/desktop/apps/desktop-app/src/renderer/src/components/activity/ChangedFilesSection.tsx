@@ -46,7 +46,6 @@ import { openChangeDiagram } from '@/lib/panels/chat-panel-sync';
 import { getWorktreeCacheKey, useFileListStore } from '@/stores/fileListStore';
 import { useGitHubStore } from '@/stores/githubStore';
 import { useProjectsStore } from '@/stores/projectsStore';
-import { requestLoadedChangedFilesRefresh } from '@/stores/changedFilesRefreshRuntime';
 import { ActivitySection } from './ActivitySection';
 import {
   FileTreeActionMenu,
@@ -615,9 +614,6 @@ export function useChangedFilesSectionHostModel({
       .then(() => {
         setRevertTarget(null);
         void Promise.all([
-          requestLoadedChangedFilesRefresh(projectId, worktreeId).catch(
-            () => undefined,
-          ),
           useProjectsStore
             .getState()
             .refreshWorktreeDiffStats(projectId, worktreeId)

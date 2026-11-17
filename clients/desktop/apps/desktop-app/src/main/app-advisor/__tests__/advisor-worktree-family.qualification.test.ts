@@ -5,6 +5,7 @@ import type {
   AppAdvisorActionResponse,
   SidebarItem,
   WorktreeData,
+  WorktreeEffectiveOverrides,
 } from '@canopy/desktop-shared/types';
 import type * as AppAdvisorIpcModule from '../../ipc/app-advisor';
 import type { AdvisorWorktreeActionHost } from '../advisor-worktree-actions';
@@ -90,8 +91,11 @@ const ITEM = {
   repoPath: '/repo',
   color: 'blue',
   worktrees: [WORKTREE],
-  worktreeEffective: { wt: { scripts: [] } },
 } as unknown as SidebarItem;
+const WORKTREE_EFFECTIVE = { wt: { scripts: [] } } as unknown as Record<
+  string,
+  WorktreeEffectiveOverrides
+>;
 const COWORK = {
   id: 'cowork',
   type: 'cowork',
@@ -115,6 +119,10 @@ function recordingHost(): AdvisorWorktreeActionHost {
     };
   return {
     readItems: () => Promise.resolve([ITEM, COWORK]),
+    readWorktreeEffective: (projectId, worktreeId) =>
+      Promise.resolve(
+        projectId === 'proj' ? WORKTREE_EFFECTIVE[worktreeId] : undefined,
+      ),
     updateWorktree: record('updateWorktree', WORKTREE),
     setPausedHookKeys: record('setPausedHookKeys', WORKTREE),
     verifySourceStatus: (projectId, worktreeId) => {

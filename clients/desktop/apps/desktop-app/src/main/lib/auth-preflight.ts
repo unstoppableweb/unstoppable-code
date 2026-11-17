@@ -93,6 +93,11 @@ export interface TurnAuthPreflightInput {
    * establish provider sign-in or billing eligibility.
    */
   providerType?: AgentProviderType;
+  /**
+   * Whether global and project default selections join the turn. Defaults to
+   * the chat surface rule; a pipeline step runs only its own selections.
+   */
+  applyGlobalPluginDefaults?: boolean;
 }
 
 /**
@@ -381,7 +386,8 @@ export async function resolveTurnAuthBlockers(
   const context = await resolveEffectiveChatPluginContext(
     input.pluginSelections,
     input.target,
-    chatSurfaceUsesGlobalPluginDefaults(input.target.projectId),
+    input.applyGlobalPluginDefaults ??
+      chatSurfaceUsesGlobalPluginDefaults(input.target.projectId),
   );
   return resolveMcpBlockers(context.selections, context.preferences);
 }

@@ -305,6 +305,7 @@ export interface WireWorkEntryList {
 export interface WireChatSendResult {
   readonly disposition?: string;
   readonly refusedAuthDependencies?: unknown;
+  readonly refusedSend?: unknown;
 }
 
 /** `editor:resolve-invocable` (`EditorResolveInvocableResult`). */

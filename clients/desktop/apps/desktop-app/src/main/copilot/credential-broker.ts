@@ -52,6 +52,8 @@ export interface CopilotCredentialBrokerDeps {
   clear(from: CopilotCredentialRevision): Promise<CopilotCredentialDelete>;
   refresh(refreshToken: string, signal: AbortSignal): Promise<DeviceFlowGrant>;
   now?: () => number;
+  /** Qualification-only gate; absent in ordinary composition. */
+  migrationAdmitted?: () => boolean;
 }
 
 /** Matches the SDK's own preflight: refresh when an hour or less remains. */
@@ -124,6 +126,8 @@ export interface CopilotCredentialBroker extends CopilotRuntimeAuth {
   quiesce(permanent?: boolean): Promise<void>;
   /** A failed removal preference write leaves this same epoch usable. */
   resume(): void;
+  /** Affirmative drain, unlike the best-effort quit contract. */
+  quiesceForMigration(): Promise<boolean>;
 }
 
 export function createCopilotCredentialBroker(
@@ -289,7 +293,8 @@ export function createCopilotCredentialBroker(
     admit?: () => Promise<void>,
   ): Promise<CopilotCredential> => {
     signal.throwIfAborted();
-    if (!accepting) return Promise.reject(new CopilotSignInChangedError());
+    if (!accepting || deps.migrationAdmitted?.() === false)
+      return Promise.reject(new CopilotSignInChangedError());
     const operation = resolveCurrent(signal, admit);
     pending.add(operation);
     void operation
@@ -304,13 +309,15 @@ export function createCopilotCredentialBroker(
       admit?: () => Promise<void>,
     ): Promise<{ accessToken: string; expiresAt: number }> {
       const credential = await current(signal, admit);
+      if (deps.migrationAdmitted?.() === false)
+        throw new CopilotSignInChangedError();
       return {
         accessToken: credential.accessToken,
         expiresAt: Date.parse(credential.accessTokenExpiresAt),
       };
     },
     resume(): void {
-      if (permanentlyFenced) return;
+      if (permanentlyFenced || deps.migrationAdmitted?.() === false) return;
       accepting = true;
       quiescing = undefined;
     },
@@ -323,8 +330,15 @@ export function createCopilotCredentialBroker(
       })();
       await quiescing;
     },
+    async quiesceForMigration(): Promise<boolean> {
+      await this.quiesce();
+      return !lastRotation || lastRotation.saved;
+    },
     async token(signal: AbortSignal): Promise<string> {
-      return (await current(signal)).accessToken;
+      const credential = await current(signal);
+      if (deps.migrationAdmitted?.() === false)
+        throw new CopilotSignInChangedError();
+      return credential.accessToken;
     },
     // The SDK's own preflight asks for a refresh when its token nears expiry;
     // the threshold below answers that without forcing a second rotation when
@@ -333,6 +347,8 @@ export function createCopilotCredentialBroker(
       const credential = await current(
         AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
       );
+      if (deps.migrationAdmitted?.() === false)
+        throw new CopilotSignInChangedError();
       if (normalizeHost(host) !== normalizeHost(credential.host))
         throw new Error(
           'Copilot asked for a GitHub token for a different host than the connected account. Reconnect Copilot in Settings.',

@@ -1,4 +1,5 @@
 import type * as Runtime from '@canopy/core-runtime';
+import { createProcessIdentifier } from '../supervision/identify';
 import { createProcessInspector } from '../supervision/inspect';
 import { type SupervisionOperations } from '../supervision/shared';
 
@@ -274,4 +275,56 @@ it('preserves the largest Windows PID and never converts query failures to absen
     await expect(harness(W(fail(code), GONE))({ pid: PID })).resolves.toEqual(
       U,
     );
+});
+
+/**
+ * CAN-7026: a process that exits between the inspector's read and the detail
+ * reads is a zombie until its parent reaps it. Its `/proc/PID/exe` or `lsof`
+ * row is gone while kill(pid, 0) still finds it, so only a second inspection
+ * tells an exit from an unreadable live process.
+ */
+describe('identifying a process that exits while it is read', () => {
+  const PGID = 4300;
+  function identifier(
+    os: 'linux' | 'darwin',
+    exits: boolean,
+  ): Runtime.PlatformSupervisionServices['identifyProcess'] {
+    let inspections = 0;
+    const exitedAfterFirst = (): boolean => exits && inspections++ > 0;
+    const ops: SupervisionOperations = {
+      kill: (): void => undefined,
+      readText: (file) => {
+        if (file === BOOT_PATH) return settle(BOOT);
+        if (file !== STAT_PATH) return settle(fail('ENOENT'));
+        // The inspector's reads count; the group read sees the same row.
+        return settle(stat('sleep', exitedAfterFirst() ? 'Z' : 'S'));
+      },
+      readLink: () => settle(fail('ENOENT')),
+      run: (_file, args) =>
+        args.includes('pid=,stat=,lstart=')
+          ? settle(
+              exitedAfterFirst() ? `${PID} Z+ Thu Oct  8 06:23:26 2026` : PS,
+            )
+          : args.includes('pgid=')
+            ? settle(`${PGID}\n`)
+            : settle(''),
+      systemRoot: () => '/',
+      selfPid: 1000,
+    };
+    return createProcessIdentifier(os, ops, createProcessInspector(os, ops));
+  }
+
+  it.each(['linux', 'darwin'] as const)(
+    '%s: an exit between the reads is absent, not unverifiable',
+    async (os) => {
+      await expect(identifier(os, true)?.({ pid: PID })).resolves.toEqual(A);
+    },
+  );
+
+  it.each(['linux', 'darwin'] as const)(
+    '%s: a live process whose executable cannot be read stays unverifiable',
+    async (os) => {
+      await expect(identifier(os, false)?.({ pid: PID })).resolves.toEqual(U);
+    },
+  );
 });

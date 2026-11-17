@@ -2,7 +2,9 @@ import type { JSX } from 'react';
 import type { McpRowHealthModel } from '../lib/mcp-row-health';
 import { Dot } from './Badge';
 import { Tooltip } from './Tooltip';
-import { AlertTriangle } from '../icons/AppIcons';
+import { AlertTriangle, CheckIcon } from '../icons/AppIcons';
+import { LoadingSpinner } from './LoadingSpinner';
+import { useItemStateMarks } from './ItemStateMark';
 
 const DOT_TONE = {
   positive: 'success',
@@ -81,6 +83,8 @@ export function McpRowHealth({
   testId,
   checkedLabel,
 }: McpRowHealthProps): JSX.Element {
+  // New Customize: the dot carries the color; the text stays plain.
+  const neutralText = useItemStateMarks();
   if (model.tone === 'attention')
     return (
       <McpRowAttention
@@ -101,11 +105,41 @@ export function McpRowHealth({
       <span
         role="status"
         data-testid={testId}
-        className={`inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap text-xs ${TONE_CLASS[model.tone]}`}
+        className={`inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap text-xs ${neutralText ? 'fg-secondary' : TONE_CLASS[model.tone]}`}
       >
         <Dot tone={DOT_TONE[model.tone]} data-testid={`${testId}-dot`} />
         <span>{model.text}</span>
       </span>
     </Tooltip>
+  );
+}
+
+/**
+ * New Customize's feedback for a Test connection the person started
+ * (Sergii's QA): "Checking…" with a spinner while it runs, then a green
+ * "Connected" for a few seconds. A failure shows the row's usual error
+ * state instead; background checks show nothing.
+ */
+export function McpRowCheckFeedback({
+  kind,
+  testId,
+}: {
+  readonly kind: 'checking' | 'connected';
+  readonly testId: string;
+}): JSX.Element {
+  return (
+    <span
+      role="status"
+      data-testid={testId}
+      data-check-feedback={kind}
+      className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap text-xs fg-secondary"
+    >
+      {kind === 'checking' ? (
+        <LoadingSpinner sizePx={12} decorative />
+      ) : (
+        <CheckIcon size="xs" aria-hidden className="fg-success" />
+      )}
+      <span>{kind === 'checking' ? 'Checking…' : 'Connected'}</span>
+    </span>
   );
 }

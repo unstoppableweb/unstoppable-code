@@ -161,6 +161,8 @@ import {
   resolveWorktreeTargetIds,
 } from '../lib/resolve-worktree';
 import { describeTurnAuthRefusal } from '../lib/auth-preflight';
+import { isModelGatewayRefusal } from '../lib/model-gateway-refusal';
+import { assertTurnModelGatewayRoute } from '../lib/model-gateway-turn';
 import { clearUsageLimitedChat } from '../lib/usage-limited-chats-registry';
 import { getWorkspaceType, isCoworkWorkspace } from '../lib/workspace-registry';
 import { checkModelGatewayRoute } from '../lib/model-gateway-state';
@@ -2844,6 +2846,23 @@ export function registerChatHandlers(
     )}`;
 
     if (isCoworkChat) {
+      // An enforced organization gateway is judged before anything is
+      // durable, so the composer keeps the draft (CAN-6701). The tab's
+      // persisted model counts: a send with no explicit model still runs on
+      // it. The session gate re-checks after saving.
+      await assertTurnModelGatewayRoute(
+        model ?? persistedCoworkDispatch.model,
+        effectiveProviderType,
+        () =>
+          resolveAiCreditsScopeOwner({
+            kind: 'work',
+            projectId,
+            worktreeId,
+            chatId,
+          }),
+        'before-save',
+        { deferToPolicy: true },
+      );
       // Start owner-scoped memory retrieval before the resource guard, as the
       // worktree dispatch path does, so the fetch overlaps turn setup.
       const memoryStartedAt = Date.now();
@@ -3944,6 +3963,10 @@ export function registerChatHandlers(
     try {
       await dispatchLocalWorktreeChatMessage(req);
     } catch (error) {
+      if (isModelGatewayRefusal(error))
+        return {
+          refusedSend: { code: error.code, message: error.message },
+        };
       const refusedAuthDependencies = describeTurnAuthRefusal(error);
       if (!refusedAuthDependencies) throw error;
       return { refusedAuthDependencies };
@@ -4085,6 +4108,12 @@ export function registerChatHandlers(
               outcome: error.outcome,
               reason: error.reason,
             },
+          };
+        // Cowork, App Advisor and Pipeline Editor sends all refuse before
+        // saving (CAN-6701), so this answer hands the draft back for each.
+        if (isModelGatewayRefusal(error))
+          return {
+            refusedSend: { code: error.code, message: error.message },
           };
         throw error;
       }
@@ -4556,7 +4585,13 @@ export function registerChatHandlers(
       const outcome = await respondToLiveChatQuestion(req.requestId, {
         kind: 'dismiss',
       });
-      if (outcome.status !== 'applied' && outcome.status !== 'already_settled')
+      // `invalid` is a refusal, such as a secret request, which only its own
+      // form may settle: cancelling the wait would settle it anyway.
+      if (
+        outcome.status !== 'applied' &&
+        outcome.status !== 'already_settled' &&
+        outcome.status !== 'invalid'
+      )
         getDesktopChatWaits().cancel(req.requestId, { reason: 'cancelled' });
     },
   );

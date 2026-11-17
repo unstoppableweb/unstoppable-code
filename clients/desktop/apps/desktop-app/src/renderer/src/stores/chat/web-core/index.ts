@@ -2,11 +2,13 @@ import type {
   ChatBackend,
   ChatBackendApprovalsApi,
   ChatBackendChatApi,
+  ChatBackendSecretRequestApi,
 } from '../backend';
 import { createRelayCoreCoworkInvoker } from '@/cloud-chats/relay-invoker';
 import {
   createWebCoreChatBackendCore,
   webCoreUnavailable,
+  type CloudForkOutcome,
   type CloudSendReceiptOutcome,
   type CloudSendSupersedeOutcome,
   type CloudTabModel,
@@ -33,9 +35,13 @@ import { webCoreLocalId } from '@/lib/chat-authority';
 import { cloudChatAttachmentAdded } from '@/cloud-chats/cloud-chat-attachment-list';
 import type { CoreCoworkInvoker } from '@canopy/app-state/core-cowork';
 import type { BackgroundProcess } from '@canopy/desktop-shared/types';
+import { CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT } from '@canopy/desktop-shared/constants/canopy-cloud';
+import { readCanopyCloudAccountChangeReason } from '@/lib/canopyCloudAccountChange';
 import {
   clearWebCoreModelCatalog,
   loadWebCoreModelCatalog,
+  reloadLockedWebCoreModelCatalogs,
+  reloadWebCoreModelCatalog,
   retryWebCoreModelCatalog,
   useWebCoreModelCatalogStore,
   webCoreModelOption,
@@ -113,7 +119,19 @@ export function createWebCoreChatBackend(
     getResolvedDefault: refuse('Approvals'),
     setMode: refuse('Approval mode'),
   };
-  return { chat, approvals };
+  // A cloud chat's secret request answers go to the web core, never main.
+  const secretRequests: ChatBackendSecretRequestApi = {
+    submit: ({ chatId, requestId, values }) =>
+      core.answerSecretRequest({
+        chatId,
+        requestId,
+        action: 'provide',
+        values,
+      }),
+    decline: ({ chatId, requestId }) =>
+      core.answerSecretRequest({ chatId, requestId, action: 'decline' }),
+  };
+  return { chat, approvals, secretRequests };
 }
 
 const relayInvoker = (): CoreCoworkInvoker | null =>
@@ -348,6 +366,21 @@ export function supersedeWebCoreSend(
   return core?.supersedeSend(target, commandId) ?? Promise.resolve('unknown');
 }
 
+/**
+ * Forks a cloud chat into a new task under `claimId` (CAN-7007); `unknown`
+ * while the cloud can't say, so only a retry with the same claim follows.
+ */
+export function forkWebCoreChat(
+  target: { projectId: string; worktreeId: string; chatId: string },
+  claimId: string,
+): Promise<CloudForkOutcome> {
+  webCoreChatBackend();
+  return (
+    core?.forkChat(target, claimId) ??
+    Promise.resolve({ kind: 'refused', reason: 'unavailable' })
+  );
+}
+
 /** Ends every web core stream: the connection went offline or was turned off. */
 export function closeWebCoreChatBackend(): void {
   core?.closeAll();
@@ -400,9 +433,31 @@ export function pickWebCoreTabModel(
   core?.pickWebCoreTabModel(target, choice);
 }
 
+let followingAccountChanges = false;
+
+/**
+ * Reads the locked models' workspaces again when the account's data
+ * refreshes, as a confirmed unlock announces it, so a model the owner just
+ * unlocked is listed unlocked (CAN-6937).
+ */
+function followAccountChanges(): void {
+  if (followingAccountChanges) return;
+  followingAccountChanges = true;
+  window.addEventListener(CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT, (event) => {
+    if (readCanopyCloudAccountChangeReason(event) !== 'refresh-failed')
+      void reloadLockedWebCoreModelCatalogs(relayInvoker);
+  });
+}
+
 /** Reads a web core workspace's models for its chats' composers. */
 export function loadWebCoreModels(projectId: string): Promise<void> {
+  followAccountChanges();
   return loadWebCoreModelCatalog(projectId, relayInvoker);
+}
+
+/** Reads a web core workspace's models again: its library may have changed. */
+export function reloadWebCoreModels(projectId: string): Promise<void> {
+  return reloadWebCoreModelCatalog(projectId, relayInvoker);
 }
 
 /** Try again on a web core workspace whose models could not be read. */

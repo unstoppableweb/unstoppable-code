@@ -21,8 +21,10 @@ export type ProviderSourceId =
   | 'credits';
 
 /**
- * The tie-break order of rows after connected rows. Credits is last and is
- * never pinned or emphasized: it is one provider among peers.
+ * Tie-break only; no source is preferred. Rows sort by what they can do
+ * (group, then outcome) and fall back to this order between equals, so
+ * credits is never pinned, boosted or pushed down: it is one provider among
+ * peers.
  */
 export const PROVIDER_SOURCE_ORDER: readonly ProviderSourceId[] = [
   'claude',
@@ -36,7 +38,7 @@ export const PROVIDER_SOURCE_ORDER: readonly ProviderSourceId[] = [
 /** A subscription or gateway source: every source except credits. */
 export type ProviderAccountSourceId = Exclude<ProviderSourceId, 'credits'>;
 
-/** The minimum a model needs for a row to name it ("Continues on {label}"). */
+/** The minimum a model needs for a row to name it ("Stays on {label}"). */
 export interface ProviderChoiceModel {
   readonly id: string;
   readonly label: string;
@@ -72,6 +74,13 @@ interface ProviderSourceFactsBase<TModel extends ProviderChoiceModel> {
    * `continue-chat` mode, or the requested model in `run-model` mode.
    */
   readonly runsTargetModel: boolean;
+  /**
+   * The source's own route for the target's model (for example a gateway
+   * slug for a native model, or the same id), as the host's model matcher
+   * found it. `continue-chat` only; ignored for `run-model`. The row then
+   * stays on the chat's model and dispatches this route.
+   */
+  readonly equivalentModel?: TModel;
   /**
    * The source's own default model, offered when it cannot run the target's
    * model in `continue-chat` mode. Omit when the source has no runnable model.
@@ -122,8 +131,11 @@ export type AnyProviderSourceFacts<
 export type ProviderChoiceTarget<
   TModel extends ProviderChoiceModel = ProviderChoiceModel,
 > =
-  /** Recovery: keep this chat going, on its model where a source can run it. */
-  | { readonly kind: 'continue-chat' }
+  /**
+   * Recovery: keep this chat going, on its model where a source can run it.
+   * `model` is the chat's current model, when the host knows it.
+   */
+  | { readonly kind: 'continue-chat'; readonly model?: TModel }
   /** A locked-model pick: only sources that run exactly this model are usable. */
   | { readonly kind: 'run-model'; readonly model: TModel };
 
@@ -155,8 +167,18 @@ export type ProviderChoiceUnavailableReason =
 export type ProviderChoiceOutcome<
   TModel extends ProviderChoiceModel = ProviderChoiceModel,
 > =
-  | { readonly kind: 'same-model' }
-  /** Continues on the source's default model ("Continues on {label}"). */
+  /**
+   * Stays on the target's model ("Stays on {label}"). `model` is the
+   * target's model, for the label, when known. `route` is the source's own
+   * route to dispatch, set whenever the source matched one (its id may equal
+   * the target's); without it the host runs the target's model as is.
+   */
+  | {
+      readonly kind: 'same-model';
+      readonly model?: TModel;
+      readonly route?: TModel;
+    }
+  /** Moves to the source's default model ("Switches to {label}"). */
   | { readonly kind: 'switch-model'; readonly target: TModel }
   | {
       readonly kind: 'unavailable';
@@ -181,16 +203,41 @@ export type ProviderChoiceAction =
   | 'ask-admin'
   | 'none';
 
+/**
+ * How a list presents a row, by what it can do now:
+ *
+ * - `ready`: choosing it continues the chat now.
+ * - `needs-setup`: it needs a connect, set up or credits step first.
+ * - `unavailable`: it offers nothing now, is still being checked, or needs
+ *   an admin.
+ *
+ * `@canopy/ui-shared` mirrors this union for its headings; keep the two in
+ * step.
+ */
+export type ProviderChoiceGroup = 'ready' | 'needs-setup' | 'unavailable';
+
+/** The groups in the order a list shows them. */
+export const PROVIDER_CHOICE_GROUP_ORDER: readonly ProviderChoiceGroup[] = [
+  'ready',
+  'needs-setup',
+  'unavailable',
+];
+
 export interface ProviderChoiceRow<
   TModel extends ProviderChoiceModel = ProviderChoiceModel,
 > {
   readonly source: ProviderSourceId;
-  /** The chat bills this source now. Its action is always `none`. */
+  /**
+   * The chat bills this source now. It offers `none`, except Reconnect
+   * (`connect` or `set-up`) when it is signed out, and the credits purchase
+   * when its balance is empty.
+   */
   readonly isCurrent: boolean;
   /** Credits report `ready` while spendable and `not-connected` otherwise. */
   readonly connection: ProviderConnection;
   readonly outcome: ProviderChoiceOutcome<TModel>;
   readonly action: ProviderChoiceAction;
+  readonly group: ProviderChoiceGroup;
   /** The credits row's full prompt, for its completion controls (Reopen billing). */
   readonly creditsPrompt?: CreditsPrompt;
 }
@@ -207,6 +254,22 @@ export type ProviderChoicePrimary =
 export interface ProviderChoices<
   TModel extends ProviderChoiceModel = ProviderChoiceModel,
 > {
+  /**
+   * The rows a list shows, sorted by group, then outcome, then
+   * {@link PROVIDER_SOURCE_ORDER}. In `continue-chat` mode the current row
+   * is listed only when it offers an action (Reconnect, Buy, Ask admin).
+   */
   readonly rows: readonly ProviderChoiceRow<TModel>[];
+  /**
+   * The current source's row, listed or not, so a header can explain it.
+   * `null` when the chat has no current source or the host gave no facts for it.
+   */
+  readonly current: ProviderChoiceRow<TModel> | null;
+  /**
+   * The one row a list emphasizes: the first `ready` row with a `use`
+   * action, preferring one that keeps the chat's model. `null` when nothing
+   * is ready, so no button is primary.
+   */
+  readonly recommended: ProviderSourceId | null;
   readonly primary: ProviderChoicePrimary;
 }

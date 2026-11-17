@@ -437,6 +437,8 @@ interface WorktreeItemProps {
   onCreateBranchWorktree?: (worktreeId: string) => void;
   onDispatchPipeline?: (worktreeId: string) => void;
   onLaunch?: () => void;
+  /** The row's actions menu opened, so the host can refresh what it offers. */
+  onActionsMenuOpen?: () => void;
   isLaunchActive?: boolean;
   /**
    * Open the Add Repo modal that lets the user combine this worktree with
@@ -556,6 +558,7 @@ function WorktreeItemContent({
   onCreateBranchWorktree,
   onDispatchPipeline,
   onLaunch,
+  onActionsMenuOpen,
   isLaunchActive = false,
   onAddRepoToWorktreeAdhoc,
   onSplitWorkspace,
@@ -1879,6 +1882,10 @@ function WorktreeItemContent({
   const actionsMenuGap = pointerMenuBesideCursor
     ? CONTEXT_MENU_POINTER_OFFSET
     : FLOATING_MENU_GAP;
+  useEffect(() => {
+    if (actionsMenuOpen) onActionsMenuOpen?.();
+  }, [actionsMenuOpen, onActionsMenuOpen]);
+
   const handleActionsMenuOpenChange = useCallback((next: boolean): void => {
     setActionsMenuOpen(next);
     if (!next) setActionsMenuAnchorPoint(null);

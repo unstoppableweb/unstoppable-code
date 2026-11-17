@@ -6,7 +6,10 @@ import {
   type JSX,
   type ReactNode,
 } from 'react';
-import type { OpenCodeAccountSnapshot } from '@canopy/protocol/portal';
+import type {
+  AntigravityAccountSnapshot,
+  OpenCodeAccountSnapshot,
+} from '@canopy/protocol/portal';
 import {
   DropdownMenuSurface,
   Button,
@@ -14,6 +17,7 @@ import {
   ComposerDrawer,
   ComposerSuggestionMenu,
   MarkdownCodeBlock,
+  AntigravityAccountCard,
   ModelUnlockPendingNotice,
   OnboardingTip,
   OpenCodeAccountCard,
@@ -618,6 +622,56 @@ export function OpenCodeAccountSpecimen(): JSX.Element {
               />
             </div>
           </SpecimenCell>
+        </SpecimenGrid>
+      </SpecimenPanel>
+    </div>
+  );
+}
+
+const ANTIGRAVITY_UPDATED_AT = '2026-11-13T12:00:00.000Z';
+const ANTIGRAVITY_STATES: ReadonlyArray<{
+  readonly label: string;
+  readonly snapshot: AntigravityAccountSnapshot;
+}> = [
+  {
+    label: 'Ready: plan reported',
+    snapshot: {
+      status: 'ready',
+      updatedAt: ANTIGRAVITY_UPDATED_AT,
+      planLabel: 'Google AI Pro',
+    },
+  },
+  {
+    label: 'Ready: no plan reported',
+    snapshot: { status: 'ready', updatedAt: ANTIGRAVITY_UPDATED_AT },
+  },
+  {
+    label: 'Long plan label',
+    snapshot: {
+      status: 'ready',
+      updatedAt: ANTIGRAVITY_UPDATED_AT,
+      planLabel: 'Google AI Ultra for Business with an unusually long name',
+    },
+  },
+  {
+    label: "Error: couldn't check",
+    snapshot: { status: 'unavailable', updatedAt: ANTIGRAVITY_UPDATED_AT },
+  },
+];
+
+/** AntigravityAccountCard: plan, no plan, long plan and couldn't check. */
+export function AntigravityAccountSpecimen(): JSX.Element {
+  return (
+    <div className="flex flex-col gap-6">
+      <SpecimenPanel title="Antigravity plan">
+        <SpecimenGrid min={320}>
+          {ANTIGRAVITY_STATES.map(({ label, snapshot }) => (
+            <SpecimenCell key={label} label={label}>
+              <div className="w-full">
+                <AntigravityAccountCard snapshot={snapshot} />
+              </div>
+            </SpecimenCell>
+          ))}
         </SpecimenGrid>
       </SpecimenPanel>
     </div>

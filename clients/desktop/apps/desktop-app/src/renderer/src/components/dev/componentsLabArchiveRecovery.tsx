@@ -289,6 +289,10 @@ export function ArchiveRecoveryListSpecimen(): JSX.Element {
             setReviewOutcome(undefined);
           }}
           onDelete={setDeleting}
+          onFinishCleanup={() => {
+            setSelected('empty');
+            setMessage('Cleanup finished. The worktree was already removed.');
+          }}
           onCancelDelete={() => setDeleting(null)}
           onResolve={(_hold, action) => {
             setDeleting(null);

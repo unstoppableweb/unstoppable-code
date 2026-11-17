@@ -9,6 +9,7 @@ import {
 import { useProjectsStore } from './projectsStore';
 import {
   registerLoadedChangedFilesRefresh,
+  invalidateChangedFilesRefresh,
   registerWorktreeActivityCleanup,
 } from './changedFilesRefreshRuntime';
 import {
@@ -181,6 +182,7 @@ interface ActivityState {
     projectId: string,
     worktreeId: string,
     files: ActivityChangedFilesResponse,
+    canPublish: () => boolean,
   ) => void;
   /**
    * Replace one chat's background processes in its scope: a cloud chat's,
@@ -2391,7 +2393,8 @@ export const useActivityStore = create<ActivityState>((set, get) => ({
       };
     });
   },
-  setChangedFiles: (projectId, worktreeId, files): void => {
+  setChangedFiles: (projectId, worktreeId, files, canPublish): void => {
+    if (!canPublish()) return;
     const key = worktreeKey(projectId, worktreeId);
     const prev = get().changedFiles[key];
     if (changedFilesResponseEqual(prev, files)) {
@@ -3583,6 +3586,7 @@ export const useActivityStore = create<ActivityState>((set, get) => ({
   },
 
   cleanupWorktree: (projectId, worktreeId): void => {
+    invalidateChangedFilesRefresh(projectId, worktreeId);
     const key = worktreeKey(projectId, worktreeId);
     const processes = get().bgProcesses[key] ?? [];
 
@@ -3651,6 +3655,14 @@ registerWorktreeActivityCleanup((projectId, worktreeId) => {
 
 registerLoadedChangedFilesRefresh(async (projectId, worktreeId, options) => {
   const key = worktreeKey(projectId, worktreeId);
+  const initialProject = useProjectsStore
+    .getState()
+    .projects.find((project) => project.id === projectId);
+  const createdAt =
+    initialProject?.type === 'cowork'
+      ? undefined
+      : initialProject?.worktrees.find((row) => row.id === worktreeId)
+          ?.createdAt;
   const listed = (): boolean => {
     if (projectId === SHARED_CONTAINER_VIEWER_PROJECT_ID) return true;
     const state = useProjectsStore.getState();
@@ -3658,7 +3670,9 @@ registerLoadedChangedFilesRefresh(async (projectId, worktreeId, options) => {
     return (
       !!project &&
       project.type !== 'cowork' &&
-      project.worktrees.some((row) => row.id === worktreeId) &&
+      project.worktrees.some(
+        (row) => row.id === worktreeId && row.createdAt === createdAt,
+      ) &&
       !state.archivingWorktrees.has(key)
     );
   };
@@ -3670,21 +3684,16 @@ registerLoadedChangedFilesRefresh(async (projectId, worktreeId, options) => {
     return undefined;
   }
 
-  try {
-    const changedFiles = await window.api.activity.getChangedFiles({
-      projectId,
-      worktreeId,
-    });
-    if (!listed()) return undefined;
-    useActivityStore
-      .getState()
-      .setChangedFiles(projectId, worktreeId, changedFiles);
-    return changedFiles;
-  } catch {
-    // Best-effort: the next activity refresh can retry without blocking the
-    // branch/base mutation that already succeeded.
-    return undefined;
-  }
+  const changedFiles = await window.api.activity.getChangedFiles({
+    projectId,
+    worktreeId,
+  });
+  const canPublish = (): boolean => options.canPublish() && listed();
+  if (!canPublish()) return undefined;
+  useActivityStore
+    .getState()
+    .setChangedFiles(projectId, worktreeId, changedFiles, canPublish);
+  return changedFiles;
 });
 
 setLiveBackgroundTaskPushHandler((previous, next) => {

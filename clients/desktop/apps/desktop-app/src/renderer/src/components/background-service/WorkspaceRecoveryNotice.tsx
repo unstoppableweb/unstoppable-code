@@ -1,8 +1,10 @@
-import { useEffect, useState, type JSX } from 'react';
+import { useCallback, useEffect, useMemo, useState, type JSX } from 'react';
 import { WorktreeRecoveryPanel } from '@canopy/ui-app/worktree-discard';
 import type { W5RecoveryStatus } from '@canopy/protocol/portal';
 import { useCanopyClient, useCapabilities } from '@canopy/app-state';
 import { useRemoteControlStore } from '@/stores/remoteControlStore';
+import { useRecoveryShellSnapshotStore } from '@/stores/recoveryShellSnapshotStore';
+import { isDesktopSharedSidebarEnabled } from '../sidebar/desktop-shared-sidebar-flag';
 
 export function WorkspaceRecoveryNotice(): JSX.Element | null {
   const local = useRemoteControlStore(
@@ -10,6 +12,8 @@ export function WorkspaceRecoveryNotice(): JSX.Element | null {
   );
   const capabilities = useCapabilities();
   const client = useCanopyClient();
+  const sharedSidebar = useMemo(isDesktopSharedSidebarEnabled, []);
+  const snapshot = useRecoveryShellSnapshotStore((store) => store.snapshot);
   const [status, setStatus] = useState<W5RecoveryStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const paused =
@@ -41,37 +45,38 @@ export function WorkspaceRecoveryNotice(): JSX.Element | null {
       clearInterval(timer);
     };
   }, [local, paused]);
+  const recover = useCallback((): void => {
+    if (busy) return;
+    setBusy(true);
+    void window.api.w5Recovery
+      .prepare()
+      .then(async (next) => {
+        setStatus(next);
+        if (next.state === 'restart-required') await window.api.restartApp();
+      })
+      .catch(() => {
+        setStatus((previous) =>
+          previous
+            ? {
+                ...previous,
+                state: 'refused',
+                canRecover: false,
+                reason: 'request-unavailable',
+              }
+            : previous,
+        );
+      })
+      .finally(() => setBusy(false));
+  }, [busy]);
   if (!local) return null;
   return (
     <WorktreeRecoveryPanel
       client={client}
+      snapshot={sharedSidebar ? snapshot : undefined}
       status={status ?? undefined}
       canRecover={capabilities.workspaceRecovery === true}
       coldBusy={busy}
-      onRecover={(): void => {
-        if (busy) return;
-        setBusy(true);
-        void window.api.w5Recovery
-          .prepare()
-          .then(async (next) => {
-            setStatus(next);
-            if (next.state === 'restart-required')
-              await window.api.restartApp();
-          })
-          .catch(() => {
-            setStatus((previous) =>
-              previous
-                ? {
-                    ...previous,
-                    state: 'refused',
-                    canRecover: false,
-                    reason: 'request-unavailable',
-                  }
-                : previous,
-            );
-          })
-          .finally(() => setBusy(false));
-      }}
+      onRecover={recover}
     />
   );
 }

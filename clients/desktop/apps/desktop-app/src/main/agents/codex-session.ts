@@ -78,6 +78,8 @@ import {
 } from '../auth/provider-auth-state';
 import { isCodeGraphAvailableForWorkspace } from '../lib/code-graph-availability';
 import { isCoworkWorkspace } from '../lib/workspace-registry';
+import { isAgentSecretRequestsEnabled } from '../agent-secrets/feature-gate';
+import { requestSecrets } from '../agent-secrets/request-secrets';
 import {
   clearSessionProxyFailure,
   consumeSessionProxyFailure,
@@ -2943,9 +2945,42 @@ export class CodexProvider implements AgentProvider {
             : 'codex-worktree',
           assistantMode: opts.assistantMode,
         });
+        // RequestSecrets: interactive root chats only (a background run
+        // carries an executionContext), while the flag is on. Dynamic tools
+        // are fixed for the thread; each call re-checks the flag.
+        const includeSecretRequests =
+          this.providerType === 'codex' &&
+          (opts.assistantMode ?? 'default') === 'default' &&
+          opts.executionContext === undefined &&
+          isAgentSecretRequestsEnabled();
         const canopyRuntime: CanopyInjectedToolRuntime = {
           authorizeInstalledItemUninstall: (request, context) =>
             authorizeInstalledItemUninstall(approvalSession, request, context),
+          ...(includeSecretRequests
+            ? {
+                requestSecrets: (input, requestOptions) =>
+                  requestSecrets(
+                    {
+                      scope: {
+                        projectId: opts.projectId,
+                        worktreeId: opts.worktreeId,
+                        chatId: opts.chatId,
+                      },
+                      sessionKey: key,
+                      getWindow,
+                      providerType: 'codex',
+                      getApprovalMode,
+                      onAwaitingUser: (): void =>
+                        turnState.markTurnAwaitingUser(),
+                      ...((getModel() ?? opts.model)
+                        ? { model: getModel() ?? opts.model }
+                        : {}),
+                    },
+                    input,
+                    requestOptions,
+                  ),
+              }
+            : {}),
           ...(includeChatVisuals
             ? {
                 showVisual: createShowVisualHost({
@@ -3127,6 +3162,7 @@ export class CodexProvider implements AgentProvider {
           includeCodeGraph: codeGraphToolsAdvertised,
           includeChatVisuals,
           includeLedger: ledger.tools !== null,
+          includeSecretRequests,
           interfaceTools: opts.interfaceTools ?? [],
           isCodeReview,
           toolSchemaProfile,
@@ -3359,37 +3395,45 @@ export class CodexProvider implements AgentProvider {
             const commandInput = watchedCommand?.success
               ? watchedCommand.data
               : undefined;
-            const outcome = await approvalSession.check(
-              commandInput
-                ? {
-                    kind: 'command',
-                    command: commandInput.command,
-                    cwd: opts.cwd,
-                  }
-                : { kind: 'tool', toolName },
-              {
-                title: `Use ${toolName}?`,
-                ...(commandInput
-                  ? {
-                      description: `Repeated command in ${opts.cwd}. Limits: ${JSON.stringify(params.arguments)}; 60-second timeout per attempt.`,
-                    }
-                  : {}),
-                details: commandInput
-                  ? {
-                      kind: 'command',
-                      command: commandInput.command,
-                    }
-                  : {
-                      kind: 'tool',
-                      toolName,
-                      inputSummary: JSON.stringify(params.arguments),
-                    },
-                ...(!commandInput
-                  ? { suggestedTarget: { kind: 'tool' as const, toolName } }
-                  : {}),
-                toolUseId: `codex-${params.callId}`,
-              },
-            );
+            // The secret request form is not an approval: it needs the
+            // person in every mode (CONTRACTS.md §5), so it skips the tool
+            // approval card. Unoffered sessions refuse it in the executor.
+            const requestsSecrets =
+              toolName ===
+              CANOPY_INJECTED_TOOL_REGISTRY.request_secrets.codexToolName;
+            const outcome = requestsSecrets
+              ? null
+              : await approvalSession.check(
+                  commandInput
+                    ? {
+                        kind: 'command',
+                        command: commandInput.command,
+                        cwd: opts.cwd,
+                      }
+                    : { kind: 'tool', toolName },
+                  {
+                    title: `Use ${toolName}?`,
+                    ...(commandInput
+                      ? {
+                          description: `Repeated command in ${opts.cwd}. Limits: ${JSON.stringify(params.arguments)}; 60-second timeout per attempt.`,
+                        }
+                      : {}),
+                    details: commandInput
+                      ? {
+                          kind: 'command',
+                          command: commandInput.command,
+                        }
+                      : {
+                          kind: 'tool',
+                          toolName,
+                          inputSummary: JSON.stringify(params.arguments),
+                        },
+                    ...(!commandInput
+                      ? { suggestedTarget: { kind: 'tool' as const, toolName } }
+                      : {}),
+                    toolUseId: `codex-${params.callId}`,
+                  },
+                );
             if (requestOptions?.signal?.aborted) {
               return {
                 contentItems: [
@@ -3401,7 +3445,7 @@ export class CodexProvider implements AgentProvider {
                 success: false,
               };
             }
-            if (outcome.decision === 'deny') {
+            if (outcome?.decision === 'deny') {
               const response = {
                 contentItems: [
                   {

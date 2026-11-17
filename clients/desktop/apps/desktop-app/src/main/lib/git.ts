@@ -1,4 +1,10 @@
 import {
+  observeGitCommonDirectory,
+  observeGitOriginUrl,
+  observeGitBranchPresence,
+  invalidateObservedGitRefs,
+} from './git-observation';
+import {
   assertWorkingDirectoryAvailable,
   workingDirectoryLaunchError,
 } from '@canopy/desktop-shared/node/lib/working-directory';
@@ -565,7 +571,9 @@ export async function getGitCommonDir(
   // macOS exposes /var through the /private/var symlink. Electron launches can
   // therefore observe two spellings for the same repository across processes,
   // which would split any durable state keyed by the common Git directory.
-  return realpath(await resolveGitCommonDir(repoPath, signal));
+  const read = async (): Promise<string> =>
+    realpath(await resolveGitCommonDir(repoPath, signal));
+  return signal ? read() : observeGitCommonDirectory(repoPath, read);
 }
 
 export async function getGitPath(
@@ -1204,30 +1212,47 @@ export async function doesLocalBranchExist(
   repoPath: string,
   branchName: string,
 ): Promise<boolean> {
-  try {
-    await runGit(
-      ['show-ref', '--verify', '--quiet', `refs/heads/${branchName}`],
-      repoPath,
-    );
-    return true;
-  } catch {
-    return false;
-  }
+  return observeGitBranchPresence(
+    repoPath,
+    `refs/heads/${branchName}`,
+    async () => {
+      try {
+        await runGit(
+          ['show-ref', '--verify', '--quiet', `refs/heads/${branchName}`],
+          repoPath,
+        );
+        return true;
+      } catch {
+        return false;
+      }
+    },
+  );
 }
 
 export async function doesRemoteBranchExist(
   repoPath: string,
   branchName: string,
 ): Promise<boolean> {
-  try {
-    await runGit(
-      ['show-ref', '--verify', '--quiet', `refs/remotes/origin/${branchName}`],
-      repoPath,
-    );
-    return true;
-  } catch {
-    return false;
-  }
+  return observeGitBranchPresence(
+    repoPath,
+    `refs/remotes/origin/${branchName}`,
+    async () => {
+      try {
+        await runGit(
+          [
+            'show-ref',
+            '--verify',
+            '--quiet',
+            `refs/remotes/origin/${branchName}`,
+          ],
+          repoPath,
+        );
+        return true;
+      } catch {
+        return false;
+      }
+    },
+  );
 }
 
 /**
@@ -2326,9 +2351,13 @@ export async function fetchOrigin(
   // Explicit and lifecycle fetches keep their ordinary Git success/error contract.
   if (options.ttlMs !== undefined) {
     const { withGitReadPath } = await import('./worktree-read-availability');
-    return withGitReadPath(repoPath, undefined, () =>
-      fetchAvailableOrigin(repoPath, options),
-    );
+    try {
+      return await withGitReadPath(repoPath, undefined, () =>
+        fetchAvailableOrigin(repoPath, options),
+      );
+    } finally {
+      invalidateObservedGitRefs();
+    }
   }
   return fetchAvailableOrigin(repoPath, options);
 }
@@ -3933,11 +3962,16 @@ export async function getRemoteUrl(
   repoPath: string,
   signal?: AbortSignal,
 ): Promise<string | null> {
-  try {
-    return await runGit(['remote', 'get-url', 'origin'], repoPath, { signal });
-  } catch {
-    return null;
-  }
+  const read = async (): Promise<string | null> => {
+    try {
+      return await runGit(['remote', 'get-url', 'origin'], repoPath, {
+        signal,
+      });
+    } catch {
+      return null;
+    }
+  };
+  return signal ? read() : observeGitOriginUrl(repoPath, read);
 }
 
 /**

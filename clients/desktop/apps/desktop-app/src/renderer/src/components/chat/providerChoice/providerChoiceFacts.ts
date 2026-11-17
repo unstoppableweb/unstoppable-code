@@ -29,6 +29,8 @@ export type DesktopChoiceRow = ProviderChoiceRow<DesktopChoiceModel>;
 export interface DesktopProviderChoiceContext {
   /** The source this chat bills now, or `null` when it has none. */
   readonly current: ProviderSourceId | null;
+  /** The chat's model, for "Stays on {model}" and the resolver's target. */
+  readonly currentModel?: DesktopChoiceModel;
   /** The configured AI gateway's name, for "Continue with {name}". */
   readonly gatewayName?: string;
   /** Subscription (and, later, gateway) rows. */
@@ -103,6 +105,14 @@ export interface DesktopAccountSourcesInput {
   readonly blockedReasonFor?: (
     provider: DesktopSubscriptionSource,
   ) => string | undefined;
+  /**
+   * The provider's own route for the chat's model under another id (a chat
+   * on a gateway slug whose model the provider runs natively), as the model
+   * matcher found it.
+   */
+  readonly equivalentModelFor?: (
+    provider: DesktopSubscriptionSource,
+  ) => DesktopChoiceModel | undefined;
 }
 
 /** Each limited provider's reset time (ms), `null` when not known. */
@@ -161,10 +171,12 @@ export function buildDesktopAccountSources({
   limited,
   defaultModelFor,
   blockedReasonFor,
+  equivalentModelFor,
 }: DesktopAccountSourcesInput): ProviderSourceFacts<DesktopChoiceModel>[] {
   return DESKTOP_SUBSCRIPTION_SOURCES.map((source) => {
     const defaultModel = defaultModelFor(source);
     const blockedReason = blockedReasonFor?.(source);
+    const equivalentModel = equivalentModelFor?.(source);
     return {
       source,
       connection: desktopProviderConnection(
@@ -174,6 +186,7 @@ export function buildDesktopAccountSources({
       connectable: true,
       runsTargetModel: modelRunsNatively && modelProvider === source,
       ...(defaultModel !== undefined ? { defaultModel } : {}),
+      ...(equivalentModel !== undefined ? { equivalentModel } : {}),
       ...(blockedReason !== undefined ? { blockedReason } : {}),
     };
   });
@@ -191,6 +204,11 @@ export interface DesktopGatewaySourceInput {
   readonly switchModel?: DesktopChoiceModel;
   /** The chat already runs on this gateway. */
   readonly chatOnGateway: boolean;
+  /**
+   * The gateway's own route for the chat's model under another id, as the
+   * model matcher found it: the row then stays on the chat's model.
+   */
+  readonly equivalentModel?: DesktopChoiceModel;
   /** Why the chat can't move onto the gateway now, when it can't. */
   readonly blockedReason?: string;
 }
@@ -207,6 +225,7 @@ export function buildDesktopGatewaySource({
   keyHeld,
   switchModel,
   chatOnGateway,
+  equivalentModel,
   blockedReason,
 }: DesktopGatewaySourceInput): ProviderSourceFacts<DesktopChoiceModel> {
   const ready =
@@ -219,6 +238,7 @@ export function buildDesktopGatewaySource({
     ...(ready && switchModel !== undefined
       ? { defaultModel: switchModel }
       : {}),
+    ...(ready && equivalentModel !== undefined ? { equivalentModel } : {}),
     ...(blockedReason !== undefined ? { blockedReason } : {}),
   };
 }

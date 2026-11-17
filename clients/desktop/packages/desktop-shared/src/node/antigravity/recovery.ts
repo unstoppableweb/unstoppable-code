@@ -1,6 +1,30 @@
 import { AcpClientError } from '../acp/errors';
 import type { AcpClient } from '../acp/types';
 
+/** An optional recovery offer, never evidence that retry or replay is safe. */
+export class AntigravityResumeFailure extends Error {
+  constructor(
+    readonly sessionId: string,
+    readonly resumeError: AcpClientError,
+  ) {
+    super(resumeError.message);
+    this.name = 'AntigravityResumeFailure';
+  }
+}
+
+/** Transport and authentication errors must not suggest replacing a session. */
+export function antigravityResumeFailure(
+  error: unknown,
+  sessionId: string,
+): AntigravityResumeFailure | undefined {
+  return error instanceof AcpClientError &&
+    error.code === 'provider' &&
+    error.method === 'session/resume' &&
+    error.rpcCode === -32603
+    ? new AntigravityResumeFailure(sessionId, error)
+    : undefined;
+}
+
 /** Qualified against 1.5.1; loadSession can accept an ID with no saved history. */
 export async function isAntigravitySessionMissing(
   client: AcpClient,

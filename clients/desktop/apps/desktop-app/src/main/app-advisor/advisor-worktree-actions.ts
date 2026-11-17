@@ -13,6 +13,7 @@ import type {
   SidebarItem,
   SingleRepoSidebarItem,
   WorktreeData,
+  WorktreeEffectiveOverrides,
 } from '@canopy/desktop-shared/types';
 import type { AgentChatWorktreeResult } from '../lib/agent-chat-worktree';
 
@@ -60,6 +61,11 @@ export function isAdvisorWorktreeAction(action: {
 /** The main owners these actions use; tests replace them. */
 export interface AdvisorWorktreeActionHost {
   readItems(): Promise<SidebarItem[]>;
+  /** One worktree's own scripts and hooks, resolved on demand (CAN-6933). */
+  readWorktreeEffective(
+    projectId: string,
+    worktreeId: string,
+  ): Promise<WorktreeEffectiveOverrides | undefined>;
   updateWorktree(request: {
     workspaceId: string;
     worktreeId: string;
@@ -193,7 +199,7 @@ async function getSettings(
       workspace: workspaceSummary(target.workspace),
       worktree: worktreeSummary(target.worktree),
       effectiveOverrides: jsonValue(
-        target.workspace.worktreeEffective?.[action.worktreeId],
+        await host.readWorktreeEffective(action.projectId, action.worktreeId),
       ),
     },
   };

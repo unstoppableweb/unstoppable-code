@@ -1,0 +1,1684 @@
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+
+exports[`API key lifecycle clears and disconnects a manual key 1`] = `
+{
+  "cleared": {
+    "authMode": null,
+    "capabilities": [],
+    "credentialSource": null,
+    "enforcedSettings": [],
+    "hasApiKey": false,
+    "orgBillingStates": [],
+    "organizations": [],
+    "read": "ok",
+    "secureStorageStatus": {
+      "backend": "<host-backend>",
+      "state": "secure",
+      "version": 1,
+      "writeAvailable": true,
+    },
+    "storageAvailable": true,
+    "teams": [],
+  },
+  "disconnectedAgain": {
+    "authMode": null,
+    "capabilities": [],
+    "credentialSource": null,
+    "enforcedSettings": [],
+    "hasApiKey": false,
+    "orgBillingStates": [],
+    "organizations": [],
+    "read": "ok",
+    "secureStorageStatus": {
+      "backend": "<host-backend>",
+      "state": "secure",
+      "version": 1,
+      "writeAvailable": true,
+    },
+    "storageAvailable": true,
+    "teams": [],
+  },
+  "trace": {
+    "accessLossProcessed": [],
+    "changes": [
+      null,
+      null,
+    ],
+    "enforcedApplications": [
+      {
+        "hasApiKey": false,
+        "organizations": [],
+      },
+      {
+        "hasApiKey": false,
+        "organizations": [],
+      },
+    ],
+    "replicaPurgeFences": 2,
+    "requests": [],
+  },
+}
+`;
+
+exports[`API key lifecycle refuses an empty key and a rejected key without writing 1`] = `
+{
+  "empty": {
+    "account": {
+      "authMode": null,
+      "capabilities": [],
+      "credentialSource": null,
+      "enforcedSettings": [],
+      "hasApiKey": false,
+      "orgBillingStates": [],
+      "organizations": [],
+      "read": "ok",
+      "secureStorageStatus": {
+        "backend": "<host-backend>",
+        "state": "secure",
+        "version": 1,
+        "writeAvailable": true,
+      },
+      "storageAvailable": true,
+      "teams": [],
+    },
+    "status": {
+      "account": null,
+      "authenticated": false,
+      "capabilities": [],
+      "error": "<Brand> Cloud API key is required.",
+      "missingCapabilities": [
+        "pipelines-crud-v1",
+        "account-v1",
+        "organizations-v1",
+        "teams-v1",
+      ],
+      "organizations": [],
+      "teams": [],
+    },
+  },
+  "rejected": {
+    "account": {
+      "authMode": null,
+      "capabilities": [],
+      "credentialSource": null,
+      "enforcedSettings": [],
+      "hasApiKey": false,
+      "orgBillingStates": [],
+      "organizations": [],
+      "read": "ok",
+      "secureStorageStatus": {
+        "backend": "<host-backend>",
+        "state": "secure",
+        "version": 1,
+        "writeAvailable": true,
+      },
+      "storageAvailable": true,
+      "teams": [],
+    },
+    "status": {
+      "account": null,
+      "authenticated": false,
+      "capabilities": [
+        "pipelines-crud-v1",
+        "account-v1",
+        "organizations-v1",
+        "teams-v1",
+      ],
+      "credentialRejected": true,
+      "error": "{"error":"Invalid API key"}",
+      "missingCapabilities": [],
+      "organizations": [],
+      "teams": [],
+    },
+  },
+  "trace": {
+    "accessLossProcessed": [],
+    "changes": [],
+    "enforcedApplications": [],
+    "replicaPurgeFences": 0,
+    "requests": [
+      "GET /.well-known/<brand> auth=none",
+      "GET /api/v1/<brand-api>/account auth=<unknown>",
+    ],
+  },
+}
+`;
+
+exports[`API key lifecycle replaces a manual key with another account as an identity change 1`] = `
+{
+  "replaced": {
+    "account": {
+      "account": {
+        "email": "account-two@example.test",
+        "id": "account-two",
+        "name": "Name account-two",
+        "role": "DEVELOPER",
+      },
+      "authMode": "api_key",
+      "capabilities": [
+        "pipelines-crud-v1",
+        "account-v1",
+        "organizations-v1",
+        "teams-v1",
+      ],
+      "createdAt": "<time>",
+      "credentialSource": "manual",
+      "enforcedSettings": [
+        {
+          "organizationId": "22222222-2222-4222-8222-222222222222",
+          "organizationName": "Org 2222",
+          "policies": [],
+        },
+      ],
+      "hasApiKey": true,
+      "orgBillingStates": [],
+      "organizations": [
+        {
+          "createdAt": "<time>",
+          "id": "22222222-2222-4222-8222-222222222222",
+          "name": "Org 2222",
+          "role": "MEMBER",
+          "updatedAt": "<time>",
+        },
+      ],
+      "read": "ok",
+      "secureStorageStatus": {
+        "backend": "<host-backend>",
+        "state": "secure",
+        "version": 1,
+        "writeAvailable": true,
+      },
+      "storageAvailable": true,
+      "teams": [],
+      "updatedAt": "<time>",
+    },
+    "status": {
+      "account": {
+        "email": "account-two@example.test",
+        "id": "account-two",
+        "name": "Name account-two",
+        "role": "DEVELOPER",
+      },
+      "authenticated": true,
+      "capabilities": [
+        "pipelines-crud-v1",
+        "account-v1",
+        "organizations-v1",
+        "teams-v1",
+      ],
+      "enforcedSettings": [
+        {
+          "organizationId": "22222222-2222-4222-8222-222222222222",
+          "organizationName": "Org 2222",
+          "policies": [],
+        },
+      ],
+      "error": null,
+      "missingCapabilities": [],
+      "modelGatewayEnforcementUnavailable": false,
+      "organizations": [
+        {
+          "createdAt": "<time>",
+          "id": "22222222-2222-4222-8222-222222222222",
+          "name": "Org 2222",
+          "role": "MEMBER",
+          "updatedAt": "<time>",
+        },
+      ],
+      "organizationsRefreshed": true,
+      "personalOrganizationId": null,
+      "teams": [],
+    },
+  },
+  "trace": {
+    "accessLossProcessed": [],
+    "changes": [
+      "account-two",
+    ],
+    "enforcedApplications": [
+      {
+        "hasApiKey": true,
+        "organizations": [
+          "22222222-2222-4222-8222-222222222222",
+        ],
+      },
+    ],
+    "replicaPurgeFences": 1,
+    "requests": [
+      "GET /.well-known/<brand> auth=none",
+      "GET /api/v1/<brand-api>/account auth=<csk_manual_two>",
+    ],
+  },
+}
+`;
+
+exports[`API key lifecycle reports a signed-out account with no key 1`] = `
+{
+  "authMode": null,
+  "capabilities": [],
+  "credentialSource": null,
+  "enforcedSettings": [],
+  "hasApiKey": false,
+  "orgBillingStates": [],
+  "organizations": [],
+  "read": "ok",
+  "secureStorageStatus": {
+    "backend": "<host-backend>",
+    "state": "secure",
+    "version": 1,
+    "writeAvailable": true,
+  },
+  "storageAvailable": true,
+  "teams": [],
+}
+`;
+
+exports[`API key lifecycle saves a manual key, projects it without the secret and returns it to the renderer 1`] = `
+{
+  "rendererKey": "csk_manual_one",
+  "saved": {
+    "account": {
+      "account": {
+        "email": "account-one@example.test",
+        "id": "account-one",
+        "name": "Name account-one",
+        "role": "DEVELOPER",
+      },
+      "authMode": "api_key",
+      "capabilities": [
+        "pipelines-crud-v1",
+        "account-v1",
+        "organizations-v1",
+        "teams-v1",
+      ],
+      "createdAt": "<time>",
+      "credentialSource": "manual",
+      "enforcedSettings": [
+        {
+          "organizationId": "11111111-1111-4111-8111-111111111111",
+          "organizationName": "Org 1111",
+          "policies": [],
+        },
+      ],
+      "hasApiKey": true,
+      "orgBillingStates": [],
+      "organizations": [
+        {
+          "createdAt": "<time>",
+          "id": "11111111-1111-4111-8111-111111111111",
+          "name": "Org 1111",
+          "role": "MEMBER",
+          "updatedAt": "<time>",
+        },
+      ],
+      "read": "ok",
+      "secureStorageStatus": {
+        "backend": "<host-backend>",
+        "state": "secure",
+        "version": 1,
+        "writeAvailable": true,
+      },
+      "storageAvailable": true,
+      "teams": [],
+      "updatedAt": "<time>",
+    },
+    "status": {
+      "account": {
+        "email": "account-one@example.test",
+        "id": "account-one",
+        "name": "Name account-one",
+        "role": "DEVELOPER",
+      },
+      "authenticated": true,
+      "capabilities": [
+        "pipelines-crud-v1",
+        "account-v1",
+        "organizations-v1",
+        "teams-v1",
+      ],
+      "enforcedSettings": [
+        {
+          "organizationId": "11111111-1111-4111-8111-111111111111",
+          "organizationName": "Org 1111",
+          "policies": [],
+        },
+      ],
+      "error": null,
+      "missingCapabilities": [],
+      "modelGatewayEnforcementUnavailable": false,
+      "organizations": [
+        {
+          "createdAt": "<time>",
+          "id": "11111111-1111-4111-8111-111111111111",
+          "name": "Org 1111",
+          "role": "MEMBER",
+          "updatedAt": "<time>",
+        },
+      ],
+      "organizationsRefreshed": true,
+      "personalOrganizationId": null,
+      "teams": [],
+    },
+  },
+  "state": {
+    "account": {
+      "email": "account-one@example.test",
+      "id": "account-one",
+      "name": "Name account-one",
+      "role": "DEVELOPER",
+    },
+    "authMode": "api_key",
+    "capabilities": [
+      "pipelines-crud-v1",
+      "account-v1",
+      "organizations-v1",
+      "teams-v1",
+    ],
+    "createdAt": "<time>",
+    "credentialSource": "manual",
+    "enforcedSettings": [
+      {
+        "organizationId": "11111111-1111-4111-8111-111111111111",
+        "organizationName": "Org 1111",
+        "policies": [],
+      },
+    ],
+    "hasApiKey": true,
+    "orgBillingStates": [],
+    "organizations": [
+      {
+        "createdAt": "<time>",
+        "id": "11111111-1111-4111-8111-111111111111",
+        "name": "Org 1111",
+        "role": "MEMBER",
+        "updatedAt": "<time>",
+      },
+    ],
+    "read": "ok",
+    "secureStorageStatus": {
+      "backend": "<host-backend>",
+      "state": "secure",
+      "version": 1,
+      "writeAvailable": true,
+    },
+    "storageAvailable": true,
+    "teams": [],
+    "updatedAt": "<time>",
+  },
+  "trace": {
+    "accessLossProcessed": [],
+    "changes": [
+      "account-one",
+    ],
+    "enforcedApplications": [
+      {
+        "hasApiKey": true,
+        "organizations": [
+          "11111111-1111-4111-8111-111111111111",
+        ],
+      },
+    ],
+    "replicaPurgeFences": 1,
+    "requests": [
+      "GET /.well-known/<brand> auth=none",
+      "GET /api/v1/<brand-api>/account auth=<csk_manual_one>",
+    ],
+  },
+}
+`;
+
+exports[`API key lifecycle validates a candidate and the stored key without saving 1`] = `
+{
+  "candidate": {
+    "account": {
+      "email": "account-one@example.test",
+      "id": "account-one",
+      "name": "Name account-one",
+      "role": "DEVELOPER",
+    },
+    "authenticated": true,
+    "capabilities": [
+      "pipelines-crud-v1",
+      "account-v1",
+      "organizations-v1",
+      "teams-v1",
+    ],
+    "enforcedSettings": [
+      {
+        "organizationId": "11111111-1111-4111-8111-111111111111",
+        "organizationName": "Org 1111",
+        "policies": [],
+      },
+    ],
+    "error": null,
+    "missingCapabilities": [],
+    "modelGatewayEnforcementUnavailable": false,
+    "organizations": [
+      {
+        "createdAt": "<time>",
+        "id": "11111111-1111-4111-8111-111111111111",
+        "name": "Org 1111",
+        "role": "MEMBER",
+        "updatedAt": "<time>",
+      },
+    ],
+    "organizationsRefreshed": true,
+    "personalOrganizationId": null,
+    "teams": [],
+  },
+  "storedWhenSignedOut": {
+    "account": null,
+    "authenticated": false,
+    "capabilities": [],
+    "error": "<Brand> Cloud API key is required.",
+    "missingCapabilities": [
+      "pipelines-crud-v1",
+      "account-v1",
+      "organizations-v1",
+      "teams-v1",
+    ],
+    "organizations": [],
+    "teams": [],
+  },
+  "trace": {
+    "accessLossProcessed": [],
+    "changes": [],
+    "enforcedApplications": [],
+    "replicaPurgeFences": 0,
+    "requests": [
+      "GET /.well-known/<brand> auth=none",
+      "GET /api/v1/<brand-api>/account auth=<csk_manual_one>",
+    ],
+  },
+}
+`;
+
+exports[`browser key revocation revokes the replaced browser key on a manual save, and the browser key on disconnect 1`] = `
+{
+  "afterDisconnect": {
+    "accessLossProcessed": [],
+    "changes": [
+      null,
+    ],
+    "enforcedApplications": [
+      {
+        "hasApiKey": false,
+        "organizations": [],
+      },
+    ],
+    "replicaPurgeFences": 1,
+    "requests": [
+      "DELETE /api/v1/<brand-api>/desktop-auth/current-key auth=<csk_oauth_one>",
+    ],
+  },
+  "afterManual": {
+    "accessLossProcessed": [],
+    "changes": [
+      "account-two",
+    ],
+    "enforcedApplications": [
+      {
+        "hasApiKey": true,
+        "organizations": [
+          "22222222-2222-4222-8222-222222222222",
+        ],
+      },
+    ],
+    "replicaPurgeFences": 1,
+    "requests": [
+      "GET /.well-known/<brand> auth=none",
+      "GET /api/v1/<brand-api>/account auth=<csk_manual_two>",
+      "DELETE /api/v1/<brand-api>/desktop-auth/current-key auth=<csk_oauth_one>",
+    ],
+  },
+  "disconnected": {
+    "authMode": null,
+    "capabilities": [],
+    "credentialSource": null,
+    "enforcedSettings": [],
+    "hasApiKey": false,
+    "orgBillingStates": [],
+    "organizations": [],
+    "read": "ok",
+    "secureStorageStatus": {
+      "backend": "<host-backend>",
+      "state": "secure",
+      "version": 1,
+      "writeAvailable": true,
+    },
+    "storageAvailable": true,
+    "teams": [],
+  },
+  "manualAccount": {
+    "account": {
+      "email": "account-two@example.test",
+      "id": "account-two",
+      "name": "Name account-two",
+      "role": "DEVELOPER",
+    },
+    "authMode": "api_key",
+    "capabilities": [
+      "pipelines-crud-v1",
+      "account-v1",
+      "organizations-v1",
+      "teams-v1",
+    ],
+    "createdAt": "<time>",
+    "credentialSource": "manual",
+    "enforcedSettings": [
+      {
+        "organizationId": "22222222-2222-4222-8222-222222222222",
+        "organizationName": "Org 2222",
+        "policies": [],
+      },
+    ],
+    "hasApiKey": true,
+    "orgBillingStates": [],
+    "organizations": [
+      {
+        "createdAt": "<time>",
+        "id": "22222222-2222-4222-8222-222222222222",
+        "name": "Org 2222",
+        "role": "MEMBER",
+        "updatedAt": "<time>",
+      },
+    ],
+    "read": "ok",
+    "secureStorageStatus": {
+      "backend": "<host-backend>",
+      "state": "secure",
+      "version": 1,
+      "writeAvailable": true,
+    },
+    "storageAvailable": true,
+    "teams": [],
+    "updatedAt": "<time>",
+  },
+}
+`;
+
+exports[`browser sign-in cancels a pending sign-in and replaces it with a new one 1`] = `
+{
+  "browserOpens": 3,
+  "cancelledOutcome": "OAuth login cancelled.",
+  "replacedOutcome": "OAuth login replaced.",
+  "trace": {
+    "accessLossProcessed": [],
+    "changes": [
+      "account-one",
+    ],
+    "enforcedApplications": [
+      {
+        "hasApiKey": true,
+        "organizations": [
+          "11111111-1111-4111-8111-111111111111",
+          "22222222-2222-4222-8222-222222222222",
+        ],
+      },
+    ],
+    "replicaPurgeFences": 1,
+    "requests": [
+      "POST /api/v1/<brand-api>/desktop-auth/token auth=none",
+    ],
+  },
+  "winner": {
+    "account": {
+      "account": {
+        "email": "account-one@example.test",
+        "id": "account-one",
+        "name": "Name account-one",
+        "role": "DEVELOPER",
+      },
+      "authMode": "oauth",
+      "capabilities": [
+        "pipelines-crud-v1",
+        "account-v1",
+        "organizations-v1",
+        "teams-v1",
+      ],
+      "createdAt": "<time>",
+      "credentialSource": "oauth_desktop",
+      "enforcedSettings": [
+        {
+          "organizationId": "11111111-1111-4111-8111-111111111111",
+          "organizationName": "Org 1111",
+          "policies": [],
+        },
+        {
+          "organizationId": "22222222-2222-4222-8222-222222222222",
+          "organizationName": "Org 2222",
+          "policies": [],
+        },
+      ],
+      "hasApiKey": true,
+      "orgBillingStates": [],
+      "organizations": [
+        {
+          "createdAt": "<time>",
+          "id": "11111111-1111-4111-8111-111111111111",
+          "name": "Org 1111",
+          "role": "MEMBER",
+          "updatedAt": "<time>",
+        },
+        {
+          "createdAt": "<time>",
+          "id": "22222222-2222-4222-8222-222222222222",
+          "name": "Org 2222",
+          "role": "MEMBER",
+          "updatedAt": "<time>",
+        },
+      ],
+      "read": "ok",
+      "secureStorageStatus": {
+        "backend": "<host-backend>",
+        "state": "secure",
+        "version": 1,
+        "writeAvailable": true,
+      },
+      "serverApiKeyId": "server-key-oauth",
+      "storageAvailable": true,
+      "teams": [],
+      "updatedAt": "<time>",
+    },
+    "status": {
+      "account": {
+        "email": "account-one@example.test",
+        "id": "account-one",
+        "name": "Name account-one",
+        "role": "DEVELOPER",
+      },
+      "authenticated": true,
+      "capabilities": [
+        "pipelines-crud-v1",
+        "account-v1",
+        "organizations-v1",
+        "teams-v1",
+      ],
+      "enforcedSettings": [
+        {
+          "organizationId": "11111111-1111-4111-8111-111111111111",
+          "organizationName": "Org 1111",
+          "policies": [],
+        },
+        {
+          "organizationId": "22222222-2222-4222-8222-222222222222",
+          "organizationName": "Org 2222",
+          "policies": [],
+        },
+      ],
+      "error": null,
+      "missingCapabilities": [],
+      "orgBillingStates": [],
+      "organizations": [
+        {
+          "createdAt": "<time>",
+          "id": "11111111-1111-4111-8111-111111111111",
+          "name": "Org 1111",
+          "role": "MEMBER",
+          "updatedAt": "<time>",
+        },
+        {
+          "createdAt": "<time>",
+          "id": "22222222-2222-4222-8222-222222222222",
+          "name": "Org 2222",
+          "role": "MEMBER",
+          "updatedAt": "<time>",
+        },
+      ],
+      "teams": [],
+    },
+  },
+}
+`;
+
+exports[`browser sign-in carries a guest link ticket when signing in from a guest 1`] = `
+{
+  "authorize": [
+    {
+      "challengeMethod": "S256",
+      "guestLinkTicket": "glt_ticket",
+      "origin": "https://cloud.example.test",
+      "params": [
+        "client_device_id",
+        "client_hostname",
+        "client_name",
+        "client_version",
+        "code_challenge",
+        "code_challenge_method",
+        "guest_link_ticket",
+        "redirect_uri",
+        "state",
+      ],
+      "pathname": "/desktop-auth",
+      "redirect": "http://127.0.0.1:<port>/desktop-connect",
+    },
+  ],
+  "result": {
+    "account": {
+      "account": {
+        "email": "account-one@example.test",
+        "id": "account-one",
+        "name": "Name account-one",
+        "role": "DEVELOPER",
+      },
+      "authMode": "oauth",
+      "capabilities": [
+        "pipelines-crud-v1",
+        "account-v1",
+        "organizations-v1",
+        "teams-v1",
+      ],
+      "createdAt": "<time>",
+      "credentialSource": "oauth_desktop",
+      "enforcedSettings": [
+        {
+          "organizationId": "11111111-1111-4111-8111-111111111111",
+          "organizationName": "Org 1111",
+          "policies": [],
+        },
+        {
+          "organizationId": "22222222-2222-4222-8222-222222222222",
+          "organizationName": "Org 2222",
+          "policies": [],
+        },
+      ],
+      "hasApiKey": true,
+      "orgBillingStates": [],
+      "organizations": [
+        {
+          "createdAt": "<time>",
+          "id": "11111111-1111-4111-8111-111111111111",
+          "name": "Org 1111",
+          "role": "MEMBER",
+          "updatedAt": "<time>",
+        },
+        {
+          "createdAt": "<time>",
+          "id": "22222222-2222-4222-8222-222222222222",
+          "name": "Org 2222",
+          "role": "MEMBER",
+          "updatedAt": "<time>",
+        },
+      ],
+      "read": "ok",
+      "secureStorageStatus": {
+        "backend": "<host-backend>",
+        "state": "secure",
+        "version": 1,
+        "writeAvailable": true,
+      },
+      "serverApiKeyId": "server-key-oauth",
+      "storageAvailable": true,
+      "teams": [],
+      "updatedAt": "<time>",
+    },
+    "status": {
+      "account": {
+        "email": "account-one@example.test",
+        "id": "account-one",
+        "name": "Name account-one",
+        "role": "DEVELOPER",
+      },
+      "authenticated": true,
+      "capabilities": [
+        "pipelines-crud-v1",
+        "account-v1",
+        "organizations-v1",
+        "teams-v1",
+      ],
+      "enforcedSettings": [
+        {
+          "organizationId": "11111111-1111-4111-8111-111111111111",
+          "organizationName": "Org 1111",
+          "policies": [],
+        },
+        {
+          "organizationId": "22222222-2222-4222-8222-222222222222",
+          "organizationName": "Org 2222",
+          "policies": [],
+        },
+      ],
+      "error": null,
+      "missingCapabilities": [],
+      "orgBillingStates": [],
+      "organizations": [
+        {
+          "createdAt": "<time>",
+          "id": "11111111-1111-4111-8111-111111111111",
+          "name": "Org 1111",
+          "role": "MEMBER",
+          "updatedAt": "<time>",
+        },
+        {
+          "createdAt": "<time>",
+          "id": "22222222-2222-4222-8222-222222222222",
+          "name": "Org 2222",
+          "role": "MEMBER",
+          "updatedAt": "<time>",
+        },
+      ],
+      "teams": [],
+    },
+  },
+  "trace": {
+    "accessLossProcessed": [],
+    "changes": [
+      "account-one",
+    ],
+    "enforcedApplications": [
+      {
+        "hasApiKey": true,
+        "organizations": [
+          "11111111-1111-4111-8111-111111111111",
+          "22222222-2222-4222-8222-222222222222",
+        ],
+      },
+    ],
+    "replicaPurgeFences": 1,
+    "requests": [
+      "POST /api/v1/<brand-api>/desktop-auth/guest-link-ticket auth=<csk_guest>",
+      "POST /api/v1/<brand-api>/desktop-auth/token auth=none",
+    ],
+  },
+}
+`;
+
+exports[`browser sign-in completes the loopback exchange and stores the account 1`] = `
+{
+  "authorize": [
+    {
+      "challengeMethod": "S256",
+      "guestLinkTicket": null,
+      "origin": "https://cloud.example.test",
+      "params": [
+        "client_device_id",
+        "client_hostname",
+        "client_name",
+        "client_version",
+        "code_challenge",
+        "code_challenge_method",
+        "redirect_uri",
+        "state",
+      ],
+      "pathname": "/desktop-auth",
+      "redirect": "http://127.0.0.1:<port>/desktop-connect",
+    },
+  ],
+  "callbackStatus": [
+    200,
+  ],
+  "rendererKey": "",
+  "result": {
+    "account": {
+      "account": {
+        "email": "account-one@example.test",
+        "id": "account-one",
+        "name": "Name account-one",
+        "role": "DEVELOPER",
+      },
+      "authMode": "oauth",
+      "capabilities": [
+        "pipelines-crud-v1",
+        "account-v1",
+        "organizations-v1",
+        "teams-v1",
+      ],
+      "createdAt": "<time>",
+      "credentialSource": "oauth_desktop",
+      "enforcedSettings": [
+        {
+          "organizationId": "11111111-1111-4111-8111-111111111111",
+          "organizationName": "Org 1111",
+          "policies": [],
+        },
+        {
+          "organizationId": "22222222-2222-4222-8222-222222222222",
+          "organizationName": "Org 2222",
+          "policies": [],
+        },
+      ],
+      "hasApiKey": true,
+      "orgBillingStates": [],
+      "organizations": [
+        {
+          "createdAt": "<time>",
+          "id": "11111111-1111-4111-8111-111111111111",
+          "name": "Org 1111",
+          "role": "MEMBER",
+          "updatedAt": "<time>",
+        },
+        {
+          "createdAt": "<time>",
+          "id": "22222222-2222-4222-8222-222222222222",
+          "name": "Org 2222",
+          "role": "MEMBER",
+          "updatedAt": "<time>",
+        },
+      ],
+      "read": "ok",
+      "secureStorageStatus": {
+        "backend": "<host-backend>",
+        "state": "secure",
+        "version": 1,
+        "writeAvailable": true,
+      },
+      "serverApiKeyId": "server-key-oauth",
+      "storageAvailable": true,
+      "teams": [],
+      "updatedAt": "<time>",
+    },
+    "status": {
+      "account": {
+        "email": "account-one@example.test",
+        "id": "account-one",
+        "name": "Name account-one",
+        "role": "DEVELOPER",
+      },
+      "authenticated": true,
+      "capabilities": [
+        "pipelines-crud-v1",
+        "account-v1",
+        "organizations-v1",
+        "teams-v1",
+      ],
+      "enforcedSettings": [
+        {
+          "organizationId": "11111111-1111-4111-8111-111111111111",
+          "organizationName": "Org 1111",
+          "policies": [],
+        },
+        {
+          "organizationId": "22222222-2222-4222-8222-222222222222",
+          "organizationName": "Org 2222",
+          "policies": [],
+        },
+      ],
+      "error": null,
+      "missingCapabilities": [],
+      "orgBillingStates": [],
+      "organizations": [
+        {
+          "createdAt": "<time>",
+          "id": "11111111-1111-4111-8111-111111111111",
+          "name": "Org 1111",
+          "role": "MEMBER",
+          "updatedAt": "<time>",
+        },
+        {
+          "createdAt": "<time>",
+          "id": "22222222-2222-4222-8222-222222222222",
+          "name": "Org 2222",
+          "role": "MEMBER",
+          "updatedAt": "<time>",
+        },
+      ],
+      "teams": [],
+    },
+  },
+  "trace": {
+    "accessLossProcessed": [],
+    "changes": [
+      "account-one",
+    ],
+    "enforcedApplications": [
+      {
+        "hasApiKey": true,
+        "organizations": [
+          "11111111-1111-4111-8111-111111111111",
+          "22222222-2222-4222-8222-222222222222",
+        ],
+      },
+    ],
+    "replicaPurgeFences": 1,
+    "requests": [
+      "POST /api/v1/<brand-api>/desktop-auth/token auth=none",
+    ],
+  },
+}
+`;
+
+exports[`browser sign-in rejects a callback whose state does not match 1`] = `
+{
+  "callbackStatus": [
+    200,
+  ],
+  "outcome": {
+    "rejected": "OAuth callback state did not match.",
+  },
+  "trace": {
+    "accessLossProcessed": [],
+    "changes": [],
+    "enforcedApplications": [],
+    "replicaPurgeFences": 0,
+    "requests": [],
+  },
+}
+`;
+
+exports[`browser sign-in reports a provider error and a failed exchange 1`] = `
+{
+  "denied": {
+    "rejected": "access_denied",
+  },
+  "exchangeFailed": {
+    "rejected": "Code expired",
+  },
+  "trace": {
+    "accessLossProcessed": [],
+    "changes": [],
+    "enforcedApplications": [],
+    "replicaPurgeFences": 0,
+    "requests": [
+      "POST /api/v1/<brand-api>/desktop-auth/token auth=none",
+    ],
+  },
+}
+`;
+
+exports[`enforced settings re-probes the stored account and applies each organization once 1`] = `
+{
+  "refreshed": {
+    "account": {
+      "email": "account-one@example.test",
+      "id": "account-one",
+      "name": "Name account-one",
+      "role": "DEVELOPER",
+    },
+    "accountProbeApplied": true,
+    "authMode": "oauth",
+    "capabilities": [
+      "pipelines-crud-v1",
+      "account-v1",
+      "organizations-v1",
+      "teams-v1",
+    ],
+    "createdAt": "<time>",
+    "credentialSource": "oauth_desktop",
+    "enforcedSettings": [
+      {
+        "organizationId": "11111111-1111-4111-8111-111111111111",
+        "organizationName": "Org 1111",
+        "policies": [],
+      },
+      {
+        "organizationId": "22222222-2222-4222-8222-222222222222",
+        "organizationName": "Org 2222",
+        "policies": [],
+      },
+    ],
+    "hasApiKey": true,
+    "orgBillingStates": [],
+    "organizations": [
+      {
+        "createdAt": "<time>",
+        "id": "11111111-1111-4111-8111-111111111111",
+        "name": "Org 1111",
+        "role": "MEMBER",
+        "updatedAt": "<time>",
+      },
+      {
+        "createdAt": "<time>",
+        "id": "22222222-2222-4222-8222-222222222222",
+        "name": "Org 2222",
+        "role": "MEMBER",
+        "updatedAt": "<time>",
+      },
+    ],
+    "read": "ok",
+    "secureStorageStatus": {
+      "backend": "<host-backend>",
+      "state": "secure",
+      "version": 1,
+      "writeAvailable": true,
+    },
+    "storageAvailable": true,
+    "teams": [],
+    "updatedAt": "<time>",
+  },
+  "trace": {
+    "accessLossProcessed": [],
+    "changes": [
+      "account-one",
+    ],
+    "enforcedApplications": [
+      {
+        "hasApiKey": true,
+        "organizations": [
+          "11111111-1111-4111-8111-111111111111",
+          "22222222-2222-4222-8222-222222222222",
+        ],
+      },
+    ],
+    "replicaPurgeFences": 0,
+    "requests": [
+      "GET /.well-known/<brand> auth=none",
+      "GET /api/v1/<brand-api>/account auth=<csk_oauth_one>",
+    ],
+  },
+}
+`;
+
+exports[`guest accounts mints a guest and protects it from disconnect and manual replacement 1`] = `
+{
+  "disconnect": {
+    "account": {
+      "email": "guest-account@example.test",
+      "id": "guest-account",
+      "name": "Name guest-account",
+      "role": "DEVELOPER",
+    },
+    "authMode": "guest",
+    "capabilities": [
+      "pipelines-crud-v1",
+      "account-v1",
+      "organizations-v1",
+      "teams-v1",
+    ],
+    "createdAt": "<time>",
+    "credentialSource": "guest",
+    "enforcedSettings": [],
+    "hasApiKey": true,
+    "orgBillingStates": [],
+    "organizations": [],
+    "read": "ok",
+    "secureStorageStatus": {
+      "backend": "<host-backend>",
+      "state": "secure",
+      "version": 1,
+      "writeAvailable": true,
+    },
+    "serverApiKeyId": "server-key-guest",
+    "storageAvailable": true,
+    "teams": [],
+    "updatedAt": "<time>",
+  },
+  "manual": {
+    "account": {
+      "account": {
+        "email": "guest-account@example.test",
+        "id": "guest-account",
+        "name": "Name guest-account",
+        "role": "DEVELOPER",
+      },
+      "authMode": "guest",
+      "capabilities": [
+        "pipelines-crud-v1",
+        "account-v1",
+        "organizations-v1",
+        "teams-v1",
+      ],
+      "createdAt": "<time>",
+      "credentialSource": "guest",
+      "enforcedSettings": [],
+      "hasApiKey": true,
+      "orgBillingStates": [],
+      "organizations": [],
+      "read": "ok",
+      "secureStorageStatus": {
+        "backend": "<host-backend>",
+        "state": "secure",
+        "version": 1,
+        "writeAvailable": true,
+      },
+      "serverApiKeyId": "server-key-guest",
+      "storageAvailable": true,
+      "teams": [],
+      "updatedAt": "<time>",
+    },
+    "status": {
+      "account": null,
+      "authenticated": false,
+      "capabilities": [],
+      "error": "A manual API key cannot replace a guest session. Sign in with your browser to keep your guest work.",
+      "missingCapabilities": [
+        "pipelines-crud-v1",
+        "account-v1",
+        "organizations-v1",
+        "teams-v1",
+      ],
+      "organizations": [],
+      "teams": [],
+    },
+  },
+  "minted": {
+    "account": {
+      "account": {
+        "email": "guest-account@example.test",
+        "id": "guest-account",
+        "name": "Name guest-account",
+        "role": "DEVELOPER",
+      },
+      "authMode": "guest",
+      "capabilities": [
+        "pipelines-crud-v1",
+        "account-v1",
+        "organizations-v1",
+        "teams-v1",
+      ],
+      "createdAt": "<time>",
+      "credentialSource": "guest",
+      "enforcedSettings": [],
+      "hasApiKey": true,
+      "orgBillingStates": [],
+      "organizations": [],
+      "read": "ok",
+      "secureStorageStatus": {
+        "backend": "<host-backend>",
+        "state": "secure",
+        "version": 1,
+        "writeAvailable": true,
+      },
+      "serverApiKeyId": "server-key-guest",
+      "storageAvailable": true,
+      "teams": [],
+      "updatedAt": "<time>",
+    },
+    "status": {
+      "account": {
+        "email": "guest-account@example.test",
+        "id": "guest-account",
+        "name": "Name guest-account",
+        "role": "DEVELOPER",
+      },
+      "authenticated": true,
+      "capabilities": [
+        "pipelines-crud-v1",
+        "account-v1",
+        "organizations-v1",
+        "teams-v1",
+      ],
+      "enforcedSettings": [],
+      "error": null,
+      "missingCapabilities": [],
+      "orgBillingStates": [],
+      "organizations": [],
+      "teams": [],
+    },
+  },
+  "rendererKey": "",
+  "trace": {
+    "accessLossProcessed": [],
+    "changes": [
+      "guest-account",
+    ],
+    "enforcedApplications": [
+      {
+        "hasApiKey": true,
+        "organizations": [],
+      },
+    ],
+    "replicaPurgeFences": 1,
+    "requests": [
+      "POST /api/v1/<brand-api>/desktop-auth/guest auth=none",
+    ],
+  },
+}
+`;
+
+exports[`organization access loss commits a lost organization with the refreshed snapshot and hands it off without projecting it 1`] = `
+{
+  "organizations": [
+    "11111111-1111-4111-8111-111111111111",
+  ],
+  "refreshed": {
+    "account": {
+      "email": "account-one@example.test",
+      "id": "account-one",
+      "name": "Name account-one",
+      "role": "DEVELOPER",
+    },
+    "accountProbeApplied": true,
+    "authMode": "oauth",
+    "capabilities": [
+      "pipelines-crud-v1",
+      "account-v1",
+      "organizations-v1",
+      "teams-v1",
+    ],
+    "createdAt": "<time>",
+    "credentialSource": "oauth_desktop",
+    "enforcedSettings": [
+      {
+        "organizationId": "11111111-1111-4111-8111-111111111111",
+        "organizationName": "Org 1111",
+        "policies": [],
+      },
+    ],
+    "hasApiKey": true,
+    "orgBillingStates": [],
+    "organizations": [
+      {
+        "createdAt": "<time>",
+        "id": "11111111-1111-4111-8111-111111111111",
+        "name": "Org 1111",
+        "role": "MEMBER",
+        "updatedAt": "<time>",
+      },
+    ],
+    "read": "ok",
+    "secureStorageStatus": {
+      "backend": "<host-backend>",
+      "state": "secure",
+      "version": 1,
+      "writeAvailable": true,
+    },
+    "serverApiKeyId": "server-key-oauth",
+    "storageAvailable": true,
+    "teams": [],
+    "updatedAt": "<time>",
+  },
+  "trace": {
+    "accessLossProcessed": [
+      [
+        "22222222-2222-4222-8222-222222222222",
+      ],
+    ],
+    "changes": [
+      "account-one",
+    ],
+    "enforcedApplications": [
+      {
+        "hasApiKey": true,
+        "organizations": [
+          "11111111-1111-4111-8111-111111111111",
+        ],
+      },
+    ],
+    "replicaPurgeFences": 0,
+    "requests": [
+      "GET /.well-known/<brand> auth=none",
+      "GET /api/v1/<brand-api>/account auth=<csk_oauth_one>",
+    ],
+  },
+}
+`;
+
+exports[`secure storage refuses to save, read or reset while the OS cipher is unavailable 1`] = `
+{
+  "backups": [],
+  "reset": {
+    "rejected": "Secure storage unavailable",
+  },
+  "save": {
+    "account": {
+      "authMode": null,
+      "capabilities": [],
+      "credentialSource": null,
+      "enforcedSettings": [],
+      "hasApiKey": false,
+      "orgBillingStates": [],
+      "organizations": [],
+      "read": "unavailable",
+      "secureStorageFailure": {
+        "backend": "<host-backend>",
+        "code": "SECURE_STORAGE_READ_UNAVAILABLE",
+        "operation": "read",
+        "retryable": true,
+        "state": "unavailable",
+        "version": 1,
+      },
+      "secureStorageStatus": {
+        "backend": "<host-backend>",
+        "state": "unavailable",
+        "version": 1,
+        "writeAvailable": false,
+      },
+      "storageAvailable": false,
+      "teams": [],
+    },
+    "status": {
+      "account": null,
+      "authenticated": false,
+      "capabilities": [],
+      "error": "Secure storage is unavailable for <Brand> Cloud credentials.",
+      "missingCapabilities": [
+        "pipelines-crud-v1",
+        "account-v1",
+        "organizations-v1",
+        "teams-v1",
+      ],
+      "organizations": [],
+      "secureStorageFailure": {
+        "backend": "<host-backend>",
+        "code": "SECURE_STORAGE_READ_UNAVAILABLE",
+        "operation": "read",
+        "retryable": true,
+        "state": "unavailable",
+        "version": 1,
+      },
+      "teams": [],
+    },
+  },
+  "state": {
+    "authMode": null,
+    "capabilities": [],
+    "credentialSource": null,
+    "enforcedSettings": [],
+    "hasApiKey": false,
+    "orgBillingStates": [],
+    "organizations": [],
+    "read": "unavailable",
+    "secureStorageFailure": {
+      "backend": "<host-backend>",
+      "code": "SECURE_STORAGE_READ_UNAVAILABLE",
+      "operation": "read",
+      "retryable": true,
+      "state": "unavailable",
+      "version": 1,
+    },
+    "secureStorageStatus": {
+      "backend": "<host-backend>",
+      "state": "unavailable",
+      "version": 1,
+      "writeAvailable": false,
+    },
+    "storageAvailable": false,
+    "teams": [],
+  },
+  "trace": {
+    "accessLossProcessed": [],
+    "changes": [],
+    "enforcedApplications": [],
+    "replicaPurgeFences": 0,
+    "requests": [],
+  },
+}
+`;
+
+exports[`secure storage writes the account through the OS cipher, never in the clear 1`] = `
+[
+  "account",
+  "apiKey",
+  "authMode",
+  "capabilities",
+  "createdAt",
+  "credentialSource",
+  "enforcedSettings",
+  "orgBillingStates",
+  "organizations",
+  "teams",
+  "updatedAt",
+]
+`;
+
+exports[`unreadable credential recovery reports a decryptable file that is not an account as unreadable and resets it to a backup once 1`] = `
+{
+  "again": {
+    "account": {
+      "authMode": null,
+      "capabilities": [],
+      "credentialSource": null,
+      "enforcedSettings": [],
+      "hasApiKey": false,
+      "orgBillingStates": [],
+      "organizations": [],
+      "read": "ok",
+      "secureStorageStatus": {
+        "backend": "<host-backend>",
+        "state": "secure",
+        "version": 1,
+        "writeAvailable": true,
+      },
+      "storageAvailable": true,
+      "teams": [],
+    },
+    "status": "not-needed",
+  },
+  "backups": [
+    "canopy-cloud-account.enc.bak-<stamp>",
+  ],
+  "reset": {
+    "account": {
+      "authMode": null,
+      "capabilities": [],
+      "credentialSource": null,
+      "enforcedSettings": [],
+      "hasApiKey": false,
+      "orgBillingStates": [],
+      "organizations": [],
+      "read": "ok",
+      "secureStorageStatus": {
+        "backend": "<host-backend>",
+        "state": "secure",
+        "version": 1,
+        "writeAvailable": true,
+      },
+      "storageAvailable": true,
+      "teams": [],
+    },
+    "backupFileName": "canopy-cloud-account.enc.bak-<stamp>",
+    "status": "reset",
+  },
+  "trace": {
+    "accessLossProcessed": [],
+    "changes": [
+      null,
+    ],
+    "enforcedApplications": [
+      {
+        "hasApiKey": false,
+        "organizations": [],
+      },
+      {
+        "hasApiKey": false,
+        "organizations": [],
+      },
+    ],
+    "replicaPurgeFences": 1,
+    "requests": [],
+  },
+  "unreadable": {
+    "authMode": null,
+    "capabilities": [],
+    "credentialSource": null,
+    "enforcedSettings": [],
+    "hasApiKey": false,
+    "orgBillingStates": [],
+    "organizations": [],
+    "read": "error",
+    "secureStorageStatus": {
+      "backend": "<host-backend>",
+      "state": "secure",
+      "version": 1,
+      "writeAvailable": true,
+    },
+    "storageAvailable": true,
+    "teams": [],
+  },
+}
+`;
+
+exports[`unreadable credential recovery reports bytes the OS cipher cannot decrypt as unreadable and resets it to a backup once 1`] = `
+{
+  "again": {
+    "account": {
+      "authMode": null,
+      "capabilities": [],
+      "credentialSource": null,
+      "enforcedSettings": [],
+      "hasApiKey": false,
+      "orgBillingStates": [],
+      "organizations": [],
+      "read": "ok",
+      "secureStorageStatus": {
+        "backend": "<host-backend>",
+        "state": "secure",
+        "version": 1,
+        "writeAvailable": true,
+      },
+      "storageAvailable": true,
+      "teams": [],
+    },
+    "status": "not-needed",
+  },
+  "backups": [
+    "canopy-cloud-account.enc.bak-<stamp>",
+  ],
+  "reset": {
+    "account": {
+      "authMode": null,
+      "capabilities": [],
+      "credentialSource": null,
+      "enforcedSettings": [],
+      "hasApiKey": false,
+      "orgBillingStates": [],
+      "organizations": [],
+      "read": "ok",
+      "secureStorageStatus": {
+        "backend": "<host-backend>",
+        "state": "secure",
+        "version": 1,
+        "writeAvailable": true,
+      },
+      "storageAvailable": true,
+      "teams": [],
+    },
+    "backupFileName": "canopy-cloud-account.enc.bak-<stamp>",
+    "status": "reset",
+  },
+  "trace": {
+    "accessLossProcessed": [],
+    "changes": [
+      null,
+    ],
+    "enforcedApplications": [
+      {
+        "hasApiKey": false,
+        "organizations": [],
+      },
+      {
+        "hasApiKey": false,
+        "organizations": [],
+      },
+    ],
+    "replicaPurgeFences": 1,
+    "requests": [],
+  },
+  "unreadable": {
+    "authMode": null,
+    "capabilities": [],
+    "credentialSource": null,
+    "enforcedSettings": [],
+    "hasApiKey": false,
+    "orgBillingStates": [],
+    "organizations": [],
+    "read": "error",
+    "secureStorageFailure": {
+      "backend": "<host-backend>",
+      "code": "SECURE_STORAGE_DECRYPT_FAILED",
+      "operation": "read",
+      "retryable": false,
+      "state": "secure",
+      "version": 1,
+    },
+    "secureStorageStatus": {
+      "backend": "<host-backend>",
+      "state": "secure",
+      "version": 1,
+      "writeAvailable": true,
+    },
+    "storageAvailable": true,
+    "teams": [],
+  },
+}
+`;

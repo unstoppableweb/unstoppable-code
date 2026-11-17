@@ -36,6 +36,7 @@ import {
   readRunLogTailLines,
   startRunLogFiles,
   writeRunLogMeta,
+  type RunLogAccess,
   type RunLogFiles,
 } from './run-log-files';
 
@@ -187,7 +188,16 @@ export interface ScriptRunLogPaths {
  * unlocked.
  */
 export interface RunLogProcessLock {
-  run<T>(runDir: string, work: () => Promise<T>): Promise<T>;
+  /**
+   * `access` is `read` only for a section that reads the run logs and writes
+   * nothing under them (a snapshot copied elsewhere), so a host can admit it
+   * where it refuses writes (CAN-6985).
+   */
+  run<T>(
+    runDir: string,
+    work: () => Promise<T>,
+    access: RunLogAccess,
+  ): Promise<T>;
 }
 
 export interface ScriptRunLogStoreOptions {
@@ -512,8 +522,13 @@ export class ScriptRunLogStore {
               projectId: string,
               worktreeId: string,
               work: () => Promise<T>,
+              access: RunLogAccess,
             ): Promise<T> =>
-              lock.run(options.paths.runDir(projectId, worktreeId), work),
+              lock.run(
+                options.paths.runDir(projectId, worktreeId),
+                work,
+                access,
+              ),
           }
         : {},
     );
@@ -1190,6 +1205,8 @@ export class ScriptRunLogStore {
           await rename(tempPath, args.targetPath);
           return { status: 'copied' };
         },
+        // Copied outside the run logs: a read of `script_runs`.
+        'read',
       );
     } catch (error) {
       await rm(tempPath, { force: true }).catch(() => undefined);

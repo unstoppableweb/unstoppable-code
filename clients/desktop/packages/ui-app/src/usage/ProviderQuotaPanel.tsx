@@ -8,6 +8,7 @@ import type {
   PortalProviderUsageProjection,
 } from '@canopy/protocol/portal';
 import {
+  AntigravityAccountCard,
   getModelCatalogProviderLabel,
   newestUsageUpdate,
   OpenCodeAccountCard,
@@ -231,7 +232,11 @@ function QuotaCards({
         Usage is not available from this desktop yet.
       </p>
     );
-  if (projection.providers.length === 0 && !projection.openCodeAccounts)
+  if (
+    projection.providers.length === 0 &&
+    !projection.openCodeAccounts &&
+    !projection.antigravityAccount
+  )
     return <p className="p-4 text-s fg-secondary">Usage unavailable</p>;
   // One refresh reads every group again: each provider, then OpenCode.
   const refresh = async (): Promise<void> => {
@@ -288,6 +293,9 @@ function QuotaCards({
           key={workspaceLocalId}
           snapshot={projection.openCodeAccounts}
         />
+      )}
+      {projection.antigravityAccount && (
+        <AntigravityAccountCard snapshot={projection.antigravityAccount} />
       )}
     </div>
   );

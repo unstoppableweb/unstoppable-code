@@ -615,6 +615,54 @@ describe.each(W5_STORE_SIDES)('over the %s store', (side) => {
       expect(images()).toEqual(before);
     });
 
+    it('forwards a claimed worktree id and refuses a malformed one before creating', async () => {
+      const before = images();
+      const create = jest
+        .spyOn(worktreeService, 'createSingleRepoWorktree')
+        .mockRejectedValue(
+          new WorktreeCreationRefusedError(
+            'branch-checked-out',
+            'Branch "claimed" is already checked out',
+            { checkoutPath: join(getWorktreeDir('a', 'one'), 'repos', 'r') },
+          ),
+        );
+      const createCommand = (
+        worktreeId: string,
+      ): PortalCommandEnvelope<
+        PortalCommandPayloadMap['portal.worktree.create']
+      > => ({
+        id: `cmd-create-${worktreeId}`,
+        sequence: 1,
+        type: 'portal.worktree.create',
+        payload: { workspaceId: 'a', worktreeId },
+        createdAt: '2026-07-10T00:00:00.000Z',
+        expiresAt: null,
+      });
+
+      // A malformed claim is an input error: nothing is created.
+      await handlePortalWorktreeCreate(createCommand('../Escape'), context);
+      expect(create).not.toHaveBeenCalled();
+      expect(outcomes).toEqual([
+        expect.objectContaining({
+          kind: 'failed',
+          code: 'invalid_payload',
+        }),
+      ]);
+
+      // A well-formed claim reaches the service, which honors it when free.
+      outcomes = [];
+      await handlePortalWorktreeCreate(createCommand('otter'), context);
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(create.mock.calls[0]?.[0]).toEqual(
+        expect.objectContaining({
+          workspaceId: 'a',
+          claimedWorktreeId: 'otter',
+          startPostCreateSetup: false,
+        }),
+      );
+      expect(images()).toEqual(before);
+    });
+
     it('commits the first prompt while existing-branch Git is pending, then dispatches on readiness', async () => {
       const pendingWorktreeId = `pending-task-${side}`;
       const chatDir = join(dir, 'first-chat-state');

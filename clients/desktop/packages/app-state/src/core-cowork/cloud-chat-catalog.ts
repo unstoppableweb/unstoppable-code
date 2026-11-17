@@ -20,6 +20,7 @@ import {
   readProjectableCloudModel,
   toModelCatalog,
   type ModelCatalog,
+  type ModelLibraryAccess,
   type ProjectableCloudModelOption,
 } from '@canopy/protocol/models';
 import type {
@@ -150,7 +151,8 @@ function projectableModelOf(
  * and carry the AI Credits source, the Legacy flag and the owner's default
  * (CAN-6753). The rows come from the hosted catalog the web core answers at
  * revision 2, or from the entries when it sent none. A model the account's
- * library keeps locked is left out: the cloud composer has no unlock flow.
+ * library keeps locked is left out: nothing a chat runs or defaults to may be
+ * one. The picker lists those through {@link cloudChatPickerModels}.
  */
 export function cloudChatModels(
   entries: readonly CatalogEntry[],
@@ -165,13 +167,40 @@ export function cloudChatModels(
       }),
       null,
     );
+  return hostedModelCatalog(cloudModels).filter(
+    (option) => option.libraryEligibility !== 'locked',
+  );
+}
+
+function hostedModelCatalog(cloudModels: CatalogCloudModels): ModelCatalog {
   return toModelCatalog(
     cloudModels.models.flatMap((model) => {
       const row = readProjectableCloudModel(model);
       return row === null ? [] : [row];
     }),
     cloudModels.defaultModelId,
-  ).filter((option) => option.libraryEligibility !== 'locked');
+  );
+}
+
+/**
+ * The rows a cloud chat's picker lists when the owner's library keeps some
+ * models locked, as the web's picker lists them (CAN-6937): every model in
+ * catalog order, the locked ones marked `libraryEligibility: 'locked'`, with
+ * the access that says how to unlock them. Null when the catalog names no
+ * access, one that unlocks nothing, or no locked model: the picker then
+ * lists {@link cloudChatModels} alone, as before.
+ */
+export function cloudChatPickerModels(cloudModels?: CatalogCloudModels): {
+  readonly access: Exclude<ModelLibraryAccess, 'unlocked'>;
+  readonly models: ModelCatalog;
+} | null {
+  const access = cloudModels?.modelLibrary;
+  if (cloudModels === undefined || access === undefined) return null;
+  if (access === 'unlocked') return null;
+  const models = hostedModelCatalog(cloudModels);
+  return models.some((option) => option.libraryEligibility === 'locked')
+    ? { access, models }
+    : null;
 }
 
 interface MappedCatalog {

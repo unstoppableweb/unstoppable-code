@@ -7,12 +7,9 @@ import {
   DialogModal,
   ErrorBanner,
   ModelProviderIcon,
-  ProviderRowLabel,
-  ProviderStatusDot,
   GATEWAY_ROW_DESCRIPTION,
   GATEWAY_ROW_NAME,
   ReadyStatusLine,
-  SettingsRowsRow,
 } from '@canopy/ui-shared/components';
 import { Network } from '@canopy/ui-shared/icons/AppIcons';
 import { SettingsHostProvider } from '@canopy/ui-app/settings/host';
@@ -22,7 +19,10 @@ import {
   usePersonalAiGatewayAdapter,
   type AiGatewayEditorConfig,
 } from '@canopy/ui-app/settings/ai-gateway/ai-gateway-adapter';
-import type { ProviderChoicePresentation } from '@canopy/ui-app/providers';
+import {
+  ProviderSourceRow,
+  type ProviderChoicePresentation,
+} from '@canopy/ui-app/providers';
 import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { gatewayHostname } from '@canopy/protocol/model-gateway/discovery';
 import {
@@ -253,23 +253,17 @@ export function ConfiguredAiGatewayRow({
   // Laid out like the provider rows above: how it connects under the name,
   // then the ready check once this computer holds the key.
   return (
-    <SettingsRowsRow
+    <ProviderSourceRow
       dataTestId={testIdPrefix}
-      label={
-        <ProviderRowLabel
-          icon={gatewayIcon(summary.baseUrl)}
-          name={<span className={REPLAY_MASK_CLASS}>{summary.name}</span>}
-          status={
-            keyReady === null ? undefined : (
-              <ProviderStatusDot
-                tone={keyReady ? 'connected' : 'pending'}
-                label={keyReady ? 'Ready' : 'Add your API key'}
-                data-testid={`${testIdPrefix}-status`}
-              />
-            )
-          }
-        />
-      }
+      icon={gatewayIcon(summary.baseUrl)}
+      name={<span className={REPLAY_MASK_CLASS}>{summary.name}</span>}
+      {...(keyReady === null
+        ? {}
+        : {
+            status: keyReady ? 'connected' : 'pending',
+            statusLabel: keyReady ? 'Ready' : 'Add your API key',
+            statusTestId: `${testIdPrefix}-status`,
+          })}
       description={
         keyReady === false
           ? 'Add your API key to use this gateway.'
@@ -295,7 +289,7 @@ export function ConfiguredAiGatewayRow({
           models
         )}
       </span>
-    </SettingsRowsRow>
+    </ProviderSourceRow>
   );
 }
 

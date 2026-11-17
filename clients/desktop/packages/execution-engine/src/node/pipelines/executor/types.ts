@@ -393,6 +393,18 @@ export interface ExecutionRuntime {
     scope: PipelineModelPolicyScope,
   ) => Promise<boolean>;
   /**
+   * Whether the gateway requirement of the step's owner lets a model that
+   * skips AI Credits and gateway routing run: one on a native-only harness
+   * (Cursor, Copilot, OpenCode, Antigravity) or an Ollama model on the Codex
+   * harness. Checked before dispatch; a refusal fails the step with the
+   * message. Unavailable gateway settings refuse. A runtime without it (the
+   * standalone CLI) keeps its documented behavior.
+   */
+  checkNativeModelGatewayRoute?: (
+    modelId: string,
+    scope: PipelineModelPolicyScope,
+  ) => Promise<{ ok: true } | { ok: false; message: string }>;
+  /**
    * Whether any organization on the current account is actively enforcing a
    * model policy — independent of whether some specific id passes it.
    *
@@ -1408,4 +1420,10 @@ export interface AntigravityPromptRunner {
   runAntigravityPrompt(
     request: AntigravityPromptRunnerRequest,
   ): Promise<AntigravityPromptRunnerResult>;
+  /**
+   * Throws when this host cannot run Google steps now (disconnected, rollout
+   * off). Called before a run that still needs a Google step starts any job.
+   * The step runner still checks again before each step's inference.
+   */
+  preflight?(signal?: AbortSignal): Promise<void>;
 }

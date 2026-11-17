@@ -164,6 +164,11 @@ export interface PortalAdapterContext {
     details?: {
       refusal?: PortalWorktreeCreateRefusal;
       coworkFolderMissing?: CoworkFolderMissing;
+      /**
+       * A stable refusal reason carried beside a closed top-level code, as
+       * `PortalCommandFailedPayload.response` (CAN-6701).
+       */
+      response?: { code: string; message: string };
     },
   ): void;
 }

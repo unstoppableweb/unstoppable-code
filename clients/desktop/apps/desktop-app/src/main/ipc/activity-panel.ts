@@ -1,3 +1,4 @@
+import { withGitObservation } from '../lib/git-observation';
 import { classifyError } from '@canopy/protocol/app-errors/classification';
 import { withWorktreeGitRead } from '../lib/worktree-read-availability';
 import {
@@ -431,45 +432,49 @@ async function getWorkspaceChangedFiles(
   );
 
   const results = await Promise.all(
-    repoEntries.map(async (entry) => {
-      await waitForFetchHeadStart(
-        fetchOrigin(entry.repoPath, AUTOMATIC_ACTIVITY_FETCH_OPTIONS),
-      );
-      // `ls-remote` can wait on a credential helper as long as the fetch, so
-      // the remote default branch is revalidated in the background instead.
-      revalidateDefaultBranchInBackground(entry.repoPath);
-      const effectiveBaseBranch = await resolveEffectiveBaseBranchForRepo({
-        projectId: workspaceId,
-        worktreeId,
-        repoId: entry.repoId,
-        repoPath: entry.repoPath,
-        allowRemoteLookup: false,
-      });
-      const target = {
-        projectId: workspaceId,
-        worktreeId,
-        repoId: entry.repoId,
-        repoPath: entry.repoPath,
-      };
-      const [uncommitted, committed] = await Promise.all([
-        listUncommittedChangedFiles(dispatcher, caller, target).catch(() => []),
-        listCommittedChangedFiles(
-          dispatcher,
-          caller,
-          target,
-          effectiveBaseBranch.branch ?? undefined,
-        ).catch(() => []),
-      ]);
-      const enrich = (file: ChangedFileInfo): ChangedFileInfo => ({
-        ...file,
-        repoId: entry.repoId,
-        repoName: entry.repoName,
-      });
-      return {
-        uncommitted: uncommitted.map(enrich),
-        committed: committed.map(enrich),
-      };
-    }),
+    repoEntries.map((entry) =>
+      withGitObservation(async () => {
+        await waitForFetchHeadStart(
+          fetchOrigin(entry.repoPath, AUTOMATIC_ACTIVITY_FETCH_OPTIONS),
+        );
+        // `ls-remote` can wait on a credential helper as long as the fetch, so
+        // the remote default branch is revalidated in the background instead.
+        revalidateDefaultBranchInBackground(entry.repoPath);
+        const effectiveBaseBranch = await resolveEffectiveBaseBranchForRepo({
+          projectId: workspaceId,
+          worktreeId,
+          repoId: entry.repoId,
+          repoPath: entry.repoPath,
+          allowRemoteLookup: false,
+        });
+        const target = {
+          projectId: workspaceId,
+          worktreeId,
+          repoId: entry.repoId,
+          repoPath: entry.repoPath,
+        };
+        const [uncommitted, committed] = await Promise.all([
+          listUncommittedChangedFiles(dispatcher, caller, target).catch(
+            () => [],
+          ),
+          listCommittedChangedFiles(
+            dispatcher,
+            caller,
+            target,
+            effectiveBaseBranch.branch ?? undefined,
+          ).catch(() => []),
+        ]);
+        const enrich = (file: ChangedFileInfo): ChangedFileInfo => ({
+          ...file,
+          repoId: entry.repoId,
+          repoName: entry.repoName,
+        });
+        return {
+          uncommitted: uncommitted.map(enrich),
+          committed: committed.map(enrich),
+        };
+      }),
+    ),
   );
 
   return {
@@ -553,51 +558,52 @@ export function registerActivityPanelHandlers(
       request.projectId,
       request.worktreeId,
       { uncommitted: [], committed: [] },
-      async () => {
-        if (isMultiRepoWorkspace(request.projectId)) {
-          return getWorkspaceChangedFiles(
-            runtime.dispatcher,
-            runtime.resolveCaller(event),
+      () =>
+        withGitObservation(async () => {
+          if (isMultiRepoWorkspace(request.projectId)) {
+            return getWorkspaceChangedFiles(
+              runtime.dispatcher,
+              runtime.resolveCaller(event),
+              request.projectId,
+              request.worktreeId,
+            );
+          }
+
+          const worktreePath = resolveWorktreeCwd(
             request.projectId,
             request.worktreeId,
           );
-        }
+          await waitForFetchHeadStart(
+            fetchOrigin(worktreePath, AUTOMATIC_ACTIVITY_FETCH_OPTIONS),
+          );
+          // `ls-remote` can wait on a credential helper as long as the fetch, so the
+          // remote default branch is revalidated in the background instead.
+          revalidateDefaultBranchInBackground(worktreePath);
+          const effectiveBaseBranch = await resolveEffectiveBaseBranchForRepo({
+            projectId: request.projectId,
+            worktreeId: request.worktreeId,
+            repoPath: worktreePath,
+            allowRemoteLookup: false,
+          });
+          const caller = runtime.resolveCaller(event);
+          const target = {
+            projectId: request.projectId,
+            worktreeId: request.worktreeId,
+            repoId: WORKSPACE_ROOT_REPO_ID,
+            repoPath: worktreePath,
+          };
+          const [uncommitted, committed] = await Promise.all([
+            listUncommittedChangedFiles(runtime.dispatcher, caller, target),
+            listCommittedChangedFiles(
+              runtime.dispatcher,
+              caller,
+              target,
+              effectiveBaseBranch.branch ?? undefined,
+            ).catch(() => []),
+          ]);
 
-        const worktreePath = resolveWorktreeCwd(
-          request.projectId,
-          request.worktreeId,
-        );
-        await waitForFetchHeadStart(
-          fetchOrigin(worktreePath, AUTOMATIC_ACTIVITY_FETCH_OPTIONS),
-        );
-        // `ls-remote` can wait on a credential helper as long as the fetch, so the
-        // remote default branch is revalidated in the background instead.
-        revalidateDefaultBranchInBackground(worktreePath);
-        const effectiveBaseBranch = await resolveEffectiveBaseBranchForRepo({
-          projectId: request.projectId,
-          worktreeId: request.worktreeId,
-          repoPath: worktreePath,
-          allowRemoteLookup: false,
-        });
-        const caller = runtime.resolveCaller(event);
-        const target = {
-          projectId: request.projectId,
-          worktreeId: request.worktreeId,
-          repoId: WORKSPACE_ROOT_REPO_ID,
-          repoPath: worktreePath,
-        };
-        const [uncommitted, committed] = await Promise.all([
-          listUncommittedChangedFiles(runtime.dispatcher, caller, target),
-          listCommittedChangedFiles(
-            runtime.dispatcher,
-            caller,
-            target,
-            effectiveBaseBranch.branch ?? undefined,
-          ).catch(() => []),
-        ]);
-
-        return { uncommitted, committed };
-      },
+          return { uncommitted, committed };
+        }),
     );
   });
 

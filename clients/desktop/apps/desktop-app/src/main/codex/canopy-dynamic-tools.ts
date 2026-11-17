@@ -1,4 +1,8 @@
 import {
+  REQUEST_SECRETS_DESCRIPTION,
+  REQUEST_SECRETS_JSON_SCHEMA,
+} from '@canopy/agent-actions';
+import {
   SHOW_CAPABILITIES_DESCRIPTION,
   showCapabilitiesJsonSchema,
 } from '../canopy-tools/show-capabilities';
@@ -178,6 +182,12 @@ export function buildCanopyDynamicToolSpecs(options: {
    * call re-checks the gate. Defaults to false.
    */
   includeLedger?: boolean;
+  /**
+   * Adds RequestSecrets in `'worktree'` and `'cowork'` modes, for an
+   * interactive root chat started with `canopy-shared-agent-secret-requests`
+   * on. Every call re-checks the flag. Defaults to false.
+   */
+  includeSecretRequests?: boolean;
   includeChatVisuals: boolean;
   /**
    * ShowFiles is advertised only while the main window's interface lease
@@ -253,6 +263,16 @@ export function buildCanopyDynamicToolSpecs(options: {
   if (mode === 'minimal') {
     return finalize(tools);
   }
+  if (options.includeSecretRequests === true)
+    tools.splice(
+      1,
+      0,
+      defineCodexFunctionToolSpec({
+        name: CANOPY_INJECTED_TOOL_REGISTRY.request_secrets.codexToolName,
+        description: REQUEST_SECRETS_DESCRIPTION,
+        inputSchema: REQUEST_SECRETS_JSON_SCHEMA,
+      }),
+    );
   const actionTools: DynamicToolSpec[] = [
     defineCodexFunctionToolSpec({
       name: CANOPY_INJECTED_TOOL_REGISTRY.save_memory.codexToolName,

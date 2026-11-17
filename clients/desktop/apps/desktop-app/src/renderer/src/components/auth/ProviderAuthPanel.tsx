@@ -50,7 +50,9 @@ import {
   StatusLabel,
   TextInput,
   Heading,
+  type ProviderStatusDotTone,
 } from '@canopy/ui-shared/components';
+import { ProviderSourceRow } from '@canopy/ui-app/providers';
 import { ClaudeLogo, CodexLogo } from '@canopy/ui-shared/icons';
 import {
   EyeIcon,
@@ -309,12 +311,14 @@ function TerminalProviderAuthPanel({
     // Only a signed-out row changes tone; a signed-in row whose check failed
     // still reads as signed in.
     const neutral = neutralTone && status !== null && !status.authenticated;
-    const rowStatusDot = status ? (
-      <StatusDot
-        ok={status.authenticated}
-        tone={neutral ? 'neutral' : 'error'}
-      />
-    ) : null;
+    // The same tones as `StatusDot`, on the shared provider row.
+    const rowStatus: ProviderStatusDotTone | undefined = status
+      ? status.authenticated
+        ? 'connected'
+        : neutral
+          ? 'signed-out'
+          : 'failed'
+      : undefined;
     // One status line: the account and plan when signed in, the provider's
     // own error otherwise.
     let statusLine: ReactNode;
@@ -356,11 +360,11 @@ function TerminalProviderAuthPanel({
       );
     }
     return (
-      <SettingsRow
+      <ProviderSourceRow
         dataTestId={`auth-panel-${provider}`}
-        label={
-          <ProviderRowLabel icon={logo} name={name} status={rowStatusDot} />
-        }
+        icon={logo}
+        name={name}
+        {...(rowStatus !== undefined ? { status: rowStatus } : {})}
         description={statusLine}
         control={
           <Button
@@ -383,7 +387,7 @@ function TerminalProviderAuthPanel({
           refreshKey={refreshKey}
         />
         {loginModal}
-      </SettingsRow>
+      </ProviderSourceRow>
     );
   }
 

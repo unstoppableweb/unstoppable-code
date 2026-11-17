@@ -5,6 +5,7 @@ import {
   w5WorktreesImagePath,
 } from '@canopy/core-runtime/node/w5/record-image-repositories';
 import { createHash } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { existsSync } from 'node:fs';
 import { join } from 'path';
 import { scriptRunFileStem } from '@canopy/core-runtime/node/script/run-log-stem';
@@ -42,7 +43,32 @@ import {
 } from './workspace-registry';
 import { validateId } from './validation';
 
+const codeReviewStorageIdentity = new AsyncLocalStorage<{
+  active: boolean;
+  dataDir: string;
+  appManaged: boolean;
+}>();
+
+/** Pin legacy review teardown to the root/routing selected before it queues. */
+export async function withCodeReviewStorageIdentity<T>(
+  operation: () => Promise<T>,
+): Promise<T> {
+  const identity = {
+    active: true,
+    dataDir: getDataDir(),
+    appManaged: isAppManagedChatWorkspace(CODE_REVIEW_CHAT_PROJECT_ID),
+  };
+  try {
+    return await codeReviewStorageIdentity.run(identity, operation);
+  } finally {
+    // Detached teardown callbacks must not retain a released root/routing lease.
+    identity.active = false;
+  }
+}
+
 export function getDataDir(): string {
+  const identity = codeReviewStorageIdentity.getStore();
+  if (identity?.active) return identity.dataDir;
   return getCanopyDataDir();
 }
 
@@ -114,6 +140,19 @@ export function getSharedContainerRunEnvFilePath(): string {
 }
 
 /**
+ * Secrets people gave agents through RequestSecrets, per chat: values
+ * encrypted with safe storage, never plaintext. See agent-secrets/.
+ */
+export function getAgentChatSecretsFilePath(): string {
+  return join(getDataDir(), 'agent-secrets', 'chat-secrets.json');
+}
+
+/** Metadata-only audit events for agent secrets: names, never values. */
+export function getAgentSecretAuditFilePath(): string {
+  return join(getDataDir(), 'agent-secrets', 'audit.jsonl');
+}
+
+/**
  * Attempt journals for installing a fork's capability package: what each
  * attempt created, so a crashed attempt can be finished or compensated. App
  * metadata beside the install ledger; never inside a checkout.
@@ -141,6 +180,9 @@ function isAppManagedChatWorkspaceId(workspaceId: string): boolean {
 }
 
 function isAppManagedChatWorkspace(workspaceId: string): boolean {
+  const identity = codeReviewStorageIdentity.getStore();
+  if (identity?.active && workspaceId === CODE_REVIEW_CHAT_PROJECT_ID)
+    return identity.appManaged;
   if (
     isBotProjectId(workspaceId) ||
     workspaceId === SHARED_CONTAINER_VIEWER_PROJECT_ID
@@ -801,6 +843,16 @@ export function getWorktreeTerminalStateFilePath(
   return join(
     getWorktreeDataDir(workspaceId, worktreeId),
     'terminal-state.json',
+  );
+}
+
+export function getWorktreeTerminalPresentationFilePath(
+  workspaceId: string,
+  worktreeId: string,
+): string {
+  return join(
+    getWorktreeDataDir(workspaceId, worktreeId),
+    'terminal-presentation.json',
   );
 }
 

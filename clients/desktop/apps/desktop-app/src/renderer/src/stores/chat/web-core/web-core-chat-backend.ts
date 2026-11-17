@@ -50,6 +50,7 @@ import type {
   PersistedChatMessage,
   ChatTabSettingsPatch,
   PersistedChatTab,
+  SecretRequestSettleResponse,
   ThinkingLevelToggleRequest,
 } from '@canopy/desktop-shared/types';
 import type {
@@ -670,8 +671,35 @@ export interface WebCoreAttachmentFile {
   readonly bytes: Uint8Array;
 }
 
+/** A cloud chat's secret request answer, as the composer's secret form sends it. Holds values. */
+export interface CloudSecretRequestAnswer {
+  /** The store's chat id. */
+  readonly chatId: string;
+  readonly requestId: string;
+  readonly action: 'provide' | 'decline';
+  readonly values?: Readonly<Record<string, string>>;
+}
+
+/** One secret a cloud chat's agent holds: metadata only. */
+export interface CloudChatSecret {
+  readonly name: string;
+  readonly lastUsedAt: string | null;
+}
+
 export interface WebCoreChatBackendCore {
   readonly getState: (req: ChatGetStateRequest) => Promise<ChatStateSnapshot>;
+  /**
+   * Answers a cloud agent's secret request (`core.chat.secretRequest.submit`)
+   * with a fresh submission id; the values are sent once and kept nowhere.
+   * A refusal the person can act on is `accepted: false` with a safe reason.
+   */
+  readonly answerSecretRequest: (
+    answer: CloudSecretRequestAnswer,
+  ) => Promise<SecretRequestSettleResponse>;
+  /** The secrets a cloud chat's agent holds (`core.chat.secret.list`). */
+  readonly listChatSecrets: (chatId: string) => Promise<CloudChatSecret[]>;
+  /** Revokes one (`core.chat.secret.revoke`); false when it was not held. */
+  readonly revokeChatSecret: (chatId: string, name: string) => Promise<boolean>;
   /**
    * Reads a task ahead of a likely open, with chat reads only, installing
    * and following nothing; its open takes the reads (CAN-6774).
@@ -809,6 +837,14 @@ export interface WebCoreChatBackendCore {
     target: ChatTarget,
     commandId: string,
   ) => Promise<CloudSendSupersedeOutcome>;
+  /**
+   * Forks a cloud chat into a new task under `claimId` (CAN-7007). The claim
+   * keys the fork, so a retry with it never forks twice.
+   */
+  readonly forkChat: (
+    target: ChatTarget,
+    claimId: string,
+  ) => Promise<CloudForkOutcome>;
 }
 
 /**
@@ -838,6 +874,25 @@ export type CloudSendSupersedeOutcome =
   | 'unfenced'
   | 'chatUnfenced'
   | 'unknown';
+
+/**
+ * Where a cloud chat's fork stands (CAN-7007): `forked` with the new chat,
+ * which is its own task; `refused` when the web core answered and made no
+ * fork; `unknown` when no answer says, so only a retry with the same claim
+ * may follow.
+ */
+export type CloudForkOutcome =
+  | { readonly kind: 'forked'; readonly taskId: string }
+  | { readonly kind: 'refused'; readonly reason: string }
+  | { readonly kind: 'unknown' };
+
+/** Error kinds that answer a fork without settling whether it happened. */
+const UNSETTLED_ERROR_KINDS: ReadonlySet<CanopyErrorPayload['kind']> = new Set([
+  'cancelled',
+  'deadline_exceeded',
+  'unavailable',
+  'internal',
+]);
 
 type ChatTarget = {
   readonly projectId: string;
@@ -3970,6 +4025,46 @@ export function createWebCoreChatBackendCore(
     return result.success ? result.data.outcome : 'unknown';
   }
 
+  async function forkChat(
+    target: ChatTarget,
+    claimId: string,
+  ): Promise<CloudForkOutcome> {
+    let reply: unknown;
+    try {
+      reply = await request('core.chat.fork', {
+        projectId: bareId(target.projectId),
+        worktreeId: bareId(target.worktreeId),
+        commandId: claimId,
+        action: {
+          type: 'chat.fork_tab',
+          sourceTabId: ids.chatToCore(target.chatId),
+          targetTabId: claimId,
+        },
+        _meta: { idempotencyKey: claimId },
+      });
+    } catch (error) {
+      if (
+        error instanceof CoreCoworkRequestError &&
+        !UNSETTLED_ERROR_KINDS.has(error.payload.kind)
+      )
+        return {
+          kind: 'refused',
+          reason: error.payload.code ?? error.payload.kind,
+        };
+      reportClientAppError(error);
+      return { kind: 'unknown' };
+    }
+    const receipt = CoreChatCommandReceiptSchema.safeParse(reply);
+    if (!receipt.success) return { kind: 'unknown' };
+    const { outcome, entityId } = receipt.data;
+    if (
+      (outcome === 'applied' || outcome === 'already_applied') &&
+      entityId !== undefined
+    )
+      return { kind: 'forked', taskId: entityId };
+    return { kind: 'refused', reason: outcome };
+  }
+
   /**
    * The attachments a send carries: each pending attachment the web core
    * holds by id. A local file, or more than a message takes, is refused
@@ -5018,8 +5113,105 @@ export function createWebCoreChatBackendCore(
     }
   }
 
+  /** What the form says about a refused secret submission, never a value. */
+  function secretRefusal(error: CoreCoworkRequestError): string {
+    const { code, details } = error.payload;
+    if (code === 'core.chat.secretRequest.signInRequired')
+      return 'Sign in to provide secrets.';
+    // The web core's rollout gate refuses uncoded.
+    if (
+      code === 'core.chat.secretRequest.unavailable' ||
+      error.payload.kind === 'capability_unavailable'
+    )
+      return "Secret requests aren't available for your account.";
+    if (code === 'core.chat.secretRequest.notFound')
+      return 'This request is no longer waiting.';
+    const field =
+      isRecord(details) && typeof details.field === 'string'
+        ? details.field
+        : '';
+    const reason =
+      isRecord(details) && typeof details.reason === 'string'
+        ? details.reason
+        : '';
+    const name = field.startsWith('values.') ? field.slice(7) : null;
+    if (name === null) return "The secrets weren't accepted.";
+    if (reason === 'required_missing') return `Enter ${name}.`;
+    if (reason === 'too_long') return `${name} is too long.`;
+    if (reason === 'empty') return `${name} is empty.`;
+    return `${name} wasn't accepted.`;
+  }
+
+  async function answerSecretRequest(
+    answer: CloudSecretRequestAnswer,
+  ): Promise<SecretRequestSettleResponse> {
+    try {
+      await request('core.chat.secretRequest.submit', {
+        chatId: ids.chatToCore(answer.chatId),
+        interactionId: answer.requestId,
+        // Fresh each time: a resend after a lost answer that Agentic Core
+        // settled reads as already answered, which it was.
+        submissionId: defaultId(),
+        action: answer.action,
+        ...(answer.action === 'provide' && answer.values !== undefined
+          ? { values: { ...answer.values } }
+          : {}),
+      });
+      return { accepted: true };
+    } catch (error) {
+      if (!(error instanceof CoreCoworkRequestError)) throw error;
+      // Settled already (perhaps by this send): the request is gone.
+      if (error.payload.code === 'core.chat.secretRequest.alreadyResolved')
+        return { accepted: true };
+      if (
+        error.payload.kind === 'unavailable' ||
+        error.payload.kind === 'deadline_exceeded'
+      )
+        throw error;
+      return { accepted: false, error: secretRefusal(error) };
+    }
+  }
+
+  async function listChatSecrets(chatId: string): Promise<CloudChatSecret[]> {
+    const value = await request('core.chat.secret.list', {
+      chatId: ids.chatToCore(chatId),
+    });
+    const secrets = isRecord(value) ? value.secrets : undefined;
+    if (!Array.isArray(secrets)) return [];
+    return secrets.flatMap((item) =>
+      isRecord(item) &&
+      typeof item.name === 'string' &&
+      (item.lastUsedAt === null || typeof item.lastUsedAt === 'string')
+        ? [{ name: item.name, lastUsedAt: item.lastUsedAt }]
+        : [],
+    );
+  }
+
+  async function revokeChatSecret(
+    chatId: string,
+    name: string,
+  ): Promise<boolean> {
+    try {
+      await request('core.chat.secret.revoke', {
+        chatId: ids.chatToCore(chatId),
+        name,
+      });
+      return true;
+    } catch (error) {
+      if (
+        error instanceof CoreCoworkRequestError &&
+        error.payload.code === 'core.chat.secret.notFound'
+      )
+        return false;
+      throw error;
+    }
+  }
+
   return {
     getState,
+    answerSecretRequest,
+    listChatSecrets,
+    revokeChatSecret,
     readAhead,
     setStateScopes,
     onStateChanged: (cb) => {
@@ -5070,5 +5262,6 @@ export function createWebCoreChatBackendCore(
     uploadAttachment,
     readSendReceipt,
     supersedeSend,
+    forkChat,
   };
 }

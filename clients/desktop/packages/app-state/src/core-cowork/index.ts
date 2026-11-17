@@ -23,6 +23,7 @@ export {
 } from './sidebar-rows';
 export {
   cloudChatModels,
+  cloudChatPickerModels,
   createCloudChatCatalog,
   type CloudChatCatalog,
   type CloudChatCatalogScope,

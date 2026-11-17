@@ -30,6 +30,8 @@ export const WORK_METRIC_SOURCES = Object.freeze([
   'react',
   'disk',
   'codeGraph',
+  // CAN-6969: retained-worktrees-idle's per-event counts.
+  'retained',
   SCALING_WORK_SOURCE,
 ]);
 
@@ -40,6 +42,7 @@ const APP_WORK_SOURCE_LABELS = Object.freeze({
   react: 'React',
   disk: 'Disk I/O',
   codeGraph: 'Code graph',
+  retained: 'Retained worktrees',
 });
 
 const COUNT_METRIC_UNITS = new Set(['count', 'bytes', 'ratio']);

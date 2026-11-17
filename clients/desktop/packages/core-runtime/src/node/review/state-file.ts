@@ -8,6 +8,20 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
+import {
+  assertAdmittedWriter,
+  STORAGE_OWNERSHIP,
+  type StorageWriterPrincipal,
+} from '../../storage';
+
+function assertStateWriter(writer: StorageWriterPrincipal): void {
+  assertAdmittedWriter(
+    'code_review_state',
+    writer,
+    'packages/core-runtime/src/node/review/state-file.ts',
+    STORAGE_OWNERSHIP,
+  );
+}
 
 /*
  * The v1 code-review state file of one worktree (CAN-4167). Electron main is
@@ -75,7 +89,9 @@ export async function readReviewStateText(
 export async function writeReviewStateText(
   statePath: string,
   content: string,
+  writer: StorageWriterPrincipal = 'electron_main',
 ): Promise<void> {
+  assertStateWriter(writer);
   const directory = dirname(statePath);
   await mkdir(directory, { recursive: true });
   const tempPath = join(
@@ -92,6 +108,10 @@ export async function writeReviewStateText(
 }
 
 /** Removes the state file; a missing file is already removed. */
-export async function removeReviewState(statePath: string): Promise<void> {
+export async function removeReviewState(
+  statePath: string,
+  writer: StorageWriterPrincipal = 'electron_main',
+): Promise<void> {
+  assertStateWriter(writer);
   await rm(statePath, { force: true });
 }

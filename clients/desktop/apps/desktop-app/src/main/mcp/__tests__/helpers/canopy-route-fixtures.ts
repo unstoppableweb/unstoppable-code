@@ -98,6 +98,11 @@ export function canopyRouteFixtures(): CanopyWorktreeSessionRoute[] {
       providerType: 'opencode',
       deferredToolsAllowed: false,
     }),
+    fixture('antigravity-no-deferred', {
+      toolSurface: 'antigravity-acp',
+      providerType: 'antigravity',
+      deferredToolsAllowed: false,
+    }),
     fixture('advisor-claude', {
       assistantMode: 'app-advisor',
       providerType: 'claude',

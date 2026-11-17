@@ -3,10 +3,15 @@ import {
   CORE_CATALOG_SNAPSHOT_GET_SCHEMA_REVISION,
   CatalogSnapshotGetResultSchema,
 } from '@canopy/protocol/canopy-core';
-import type { ModelCatalog, ModelCatalogOption } from '@canopy/protocol/models';
+import type {
+  ModelCatalog,
+  ModelCatalogOption,
+  ModelLibraryAccess,
+} from '@canopy/protocol/models';
 import type { AgentProviderType } from '@canopy/desktop-shared/types';
 import {
   cloudChatModels,
+  cloudChatPickerModels,
   type CoreCoworkInvoker,
 } from '@canopy/app-state/core-cowork';
 import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
@@ -29,10 +34,23 @@ export interface WebCoreModelCatalogState {
   >;
   /** Workspaces whose catalog every read failed for, until Try again. */
   readonly failed: Readonly<Record<string, true>>;
+  /**
+   * The picker's rows for a workspace whose owner's library keeps models
+   * locked, with the access that unlocks them (CAN-6937). Only the picker
+   * reads them: a locked model is never in `byProject`, so nothing a chat
+   * runs, restores or defaults to can be one.
+   */
+  readonly lockedByProject: Readonly<Record<string, WebCoreLockedModels>>;
+}
+
+/** A workspace's picker rows with locked models, and how to unlock them. */
+export interface WebCoreLockedModels {
+  readonly access: Exclude<ModelLibraryAccess, 'unlocked'>;
+  readonly models: ModelCatalog;
 }
 
 export const useWebCoreModelCatalogStore = create<WebCoreModelCatalogState>(
-  () => ({ byProject: {}, failed: {} }),
+  () => ({ byProject: {}, failed: {}, lockedByProject: {} }),
 );
 
 /** Waits before the second and third read of a catalog that failed. */
@@ -65,13 +83,18 @@ class CatalogReadError extends Error {
 }
 
 const reads = new Map<string, Promise<void>>();
+/** Each workspace's newest re-read: an older one that answers later is dropped. */
+const rereads = new Map<string, number>();
 /** Moves when the connection goes offline: an older read publishes nothing. */
 let generation = 0;
 
 async function readCatalog(
   connection: CoreCoworkInvoker,
   workspaceId: string,
-): Promise<Map<string, ModelCatalogOption>> {
+): Promise<{
+  readonly models: Map<string, ModelCatalogOption>;
+  readonly locked: WebCoreLockedModels | null;
+}> {
   const reply = await connection.request('core.catalog.snapshot.get', {
     scope: { workspaceId },
     kinds: ['model'],
@@ -93,11 +116,14 @@ async function readCatalog(
       'The web core returned an invalid catalog.',
       false,
     );
-  return new Map(
-    cloudChatModels(parsed.data.entries, parsed.data.cloudModels).map(
-      (model) => [model.id, model],
+  return {
+    models: new Map(
+      cloudChatModels(parsed.data.entries, parsed.data.cloudModels).map(
+        (model) => [model.id, model],
+      ),
     ),
-  );
+    locked: cloudChatPickerModels(parsed.data.cloudModels),
+  };
 }
 
 /**
@@ -128,12 +154,9 @@ export function loadWebCoreModelCatalog(
       const connection = invoker();
       if (connection === null || !current()) return;
       try {
-        const models = await readCatalog(connection, workspaceId);
+        const read = await readCatalog(connection, workspaceId);
         if (!current()) return;
-        useWebCoreModelCatalogStore.setState((before) => ({
-          byProject: { ...before.byProject, [projectId]: models },
-          failed: withoutKey(before.failed, projectId),
-        }));
+        publishCatalog(projectId, read);
         return;
       } catch (error) {
         const backoff = RETRY_DELAYS_MS[attempt];
@@ -161,6 +184,75 @@ export function loadWebCoreModelCatalog(
   return read;
 }
 
+function publishCatalog(
+  projectId: string,
+  { models, locked }: Awaited<ReturnType<typeof readCatalog>>,
+): void {
+  useWebCoreModelCatalogStore.setState((before) => ({
+    byProject: { ...before.byProject, [projectId]: models },
+    failed: withoutKey(before.failed, projectId),
+    lockedByProject:
+      locked === null
+        ? withoutKey(before.lockedByProject, projectId)
+        : { ...before.lockedByProject, [projectId]: locked },
+  }));
+}
+
+/**
+ * Reads a workspace's models again once the owner's library may have
+ * unlocked some (CAN-6937). The rows shown stay until the new read lands,
+ * and a read that fails keeps them; only the newest re-read lands, so an
+ * older answer that arrives later never locks a model again. A workspace
+ * whose first read is still in flight is read again once that read settles,
+ * since its answer may predate the unlock.
+ */
+export function reloadWebCoreModelCatalog(
+  projectId: string,
+  invoker: () => CoreCoworkInvoker | null,
+): Promise<void> {
+  const firstRead = reads.get(projectId);
+  if (firstRead !== undefined)
+    return firstRead.then(() => reloadWebCoreModelCatalog(projectId, invoker));
+  const workspaceId = webCoreLocalId(projectId);
+  const connection = invoker();
+  if (
+    workspaceId === null ||
+    connection === null ||
+    !(projectId in useWebCoreModelCatalogStore.getState().byProject)
+  )
+    return Promise.resolve();
+  const readGeneration = generation;
+  const reread = (rereads.get(projectId) ?? 0) + 1;
+  rereads.set(projectId, reread);
+  return readCatalog(connection, workspaceId).then(
+    (read) => {
+      if (readGeneration === generation && rereads.get(projectId) === reread)
+        publishCatalog(projectId, read);
+    },
+    (error: unknown) => {
+      reportClientAppError(error);
+    },
+  );
+}
+
+/**
+ * Reads again every workspace whose picker lists locked models, and every
+ * workspace whose first read is still in flight, which may list some.
+ */
+export function reloadLockedWebCoreModelCatalogs(
+  invoker: () => CoreCoworkInvoker | null,
+): Promise<void> {
+  const projectIds = new Set([
+    ...Object.keys(useWebCoreModelCatalogStore.getState().lockedByProject),
+    ...reads.keys(),
+  ]);
+  return Promise.all(
+    [...projectIds].map((projectId) =>
+      reloadWebCoreModelCatalog(projectId, invoker),
+    ),
+  ).then(() => undefined);
+}
+
 /** Try again on a workspace whose catalog could not be read. */
 export function retryWebCoreModelCatalog(
   projectId: string,
@@ -173,10 +265,10 @@ export function retryWebCoreModelCatalog(
   return loadWebCoreModelCatalog(projectId, invoker, options);
 }
 
-function withoutKey(
-  record: Readonly<Record<string, true>>,
+function withoutKey<T>(
+  record: Readonly<Record<string, T>>,
   key: string,
-): Readonly<Record<string, true>> {
+): Readonly<Record<string, T>> {
   if (!(key in record)) return record;
   return Object.fromEntries(
     Object.entries(record).filter(([each]) => each !== key),
@@ -248,13 +340,33 @@ export function webCorePickerModels(
   });
 }
 
-/** A web core workspace's models as the shared model picker lists them. */
+/**
+ * A web core workspace's models as the shared model picker lists them: with
+ * the owner's locked models among them, as the web's picker lists them, when
+ * the library keeps some locked and the composer can unlock them (CAN-6937).
+ */
 export function webCoreModelList(
   state: WebCoreModelCatalogState,
   projectId: string,
+  withLocked: boolean,
 ): ModelCatalog {
   const models = state.byProject[projectId];
-  return models === undefined ? NO_MODELS : [...models.values()];
+  if (models === undefined) return NO_MODELS;
+  const locked = withLocked ? state.lockedByProject[projectId] : undefined;
+  return locked?.models ?? [...models.values()];
+}
+
+/**
+ * The owner's library access when its picker lists locked models, for the
+ * picker's unlock action; undefined otherwise, and the picker locks nothing.
+ */
+export function webCoreLockedAccess(
+  state: WebCoreModelCatalogState,
+  projectId: string,
+): WebCoreLockedModels['access'] | undefined {
+  return state.byProject[projectId] === undefined
+    ? undefined
+    : state.lockedByProject[projectId]?.access;
 }
 
 const SET_MODEL_PROVIDERS: readonly AgentProviderType[] = [
@@ -283,5 +395,10 @@ export function webCoreModelProvider(
 export function clearWebCoreModelCatalog(): void {
   generation += 1;
   reads.clear();
-  useWebCoreModelCatalogStore.setState({ byProject: {}, failed: {} });
+  rereads.clear();
+  useWebCoreModelCatalogStore.setState({
+    byProject: {},
+    failed: {},
+    lockedByProject: {},
+  });
 }

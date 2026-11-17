@@ -155,7 +155,7 @@ import { isVisiblePlanExploreChat } from '../plan-explore-registry';
 import { attachmentMetasFromPaths } from '../attachments';
 import { isVisibleCodeReviewChat } from '../code-review-registry';
 import { useGitHubStore } from '../../githubStore';
-import { STALE_SESSION_DETECTION_THRESHOLD_MS } from '../constants';
+import { shouldDetectStaleSessionResume } from '../stale-session-detection';
 import {
   applyQueuedHookPlaceholderTabSettings,
   fromPersistedTab,
@@ -1604,24 +1604,25 @@ export const createEventsSlice: StateCreator<
         : false;
     const hasExplicitExpirySignal = hasExplicitSessionExpirySignal(data);
 
+    const updatedTabMessages = updatedTab?.messages;
     const shouldDetectStaleSession =
-      isTerminal &&
-      !isCancellationTerminal &&
-      updatedTabProvider !== 'codex' &&
-      // Cursor reopens a lost session itself (a failed load starts a fresh
-      // one), so a fast, empty Cursor failure is a real error such as a
-      // startup fault. Read-only here would block a retry that can succeed.
-      updatedTabProvider !== 'cursor' &&
-      updatedTab?.lastTurnWasResumeAttempt === true &&
-      // Main's canonical empty-completion verdict owns this state. Replacing
-      // it with the legacy stale-session transition would make the tab
-      // read-only before its Resume / Try again / Report bug notice can render.
-      updatedTab.emptyCompletionRecovery === undefined &&
-      updatedTab.cancelRequestedByUser !== true &&
-      hasAssistantMessageAfterLastUser(updatedTab.messages) === false &&
-      (!suppressImplicitStaleSessionDetection || hasExplicitExpirySignal) &&
-      (getLastCompletedTurnDuration(updatedTab.messages) ?? Infinity) <
-        STALE_SESSION_DETECTION_THRESHOLD_MS;
+      updatedTab !== undefined &&
+      updatedTabMessages !== undefined &&
+      shouldDetectStaleSessionResume({
+        isTerminal,
+        isCancellationTerminal,
+        provider: updatedTabProvider,
+        lastTurnWasResumeAttempt: updatedTab.lastTurnWasResumeAttempt,
+        hasEmptyCompletionRecovery:
+          updatedTab.emptyCompletionRecovery !== undefined,
+        cancelRequestedByUser: updatedTab.cancelRequestedByUser,
+        hasAssistantMessageAfterLastUser: () =>
+          hasAssistantMessageAfterLastUser(updatedTabMessages),
+        suppressImplicitDetection: suppressImplicitStaleSessionDetection,
+        hasExplicitExpirySignal,
+        lastTurnDurationMs: () =>
+          getLastCompletedTurnDuration(updatedTabMessages),
+      });
 
     if (shouldDetectStaleSession && updatedTab) {
       if (staleSessionInfo) {

@@ -45,15 +45,17 @@ export type DeferredResourceKind = 'skill' | 'plugin' | 'mcp';
 /**
  * Provider universe for the deferred-tools surface. Ollama follows Claude
  * compatibility for plugin support (both require native Claude), so it is a
- * first-class member alongside `claude` and `codex`. Copilot and OpenCode
- * read installed skill/command/MCP members through their host projections.
+ * first-class member alongside `claude` and `codex`. Copilot, OpenCode and
+ * Antigravity read installed skill/command/MCP members through their host
+ * projections.
  */
 export type DeferredToolProvider =
   | 'claude'
   | 'codex'
   | 'ollama'
   | 'copilot'
-  | 'opencode';
+  | 'opencode'
+  | 'antigravity';
 
 // ---------------------------------------------------------------------------
 // Search input

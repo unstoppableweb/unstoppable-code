@@ -11,6 +11,7 @@ import {
 import { copyPublishedCodeGraphBaseForSeed } from '@canopy/code-graph/host/base-seed';
 import { resolveWorkspaceReferenceRepoPath } from './workspace-reference-repo';
 import { getRepoShadowDir } from './repo-shadow';
+import { CODE_GRAPH_BASE_RUNNER_KEY_PREFIX } from '../code-graph/base-runner-key';
 
 const variantLocks = new Map<string, Promise<unknown>>();
 const retiringShadowDirs = new Set<string>();
@@ -117,7 +118,7 @@ export function codeGraphBaseRunnerKey(
     .update(`${shadowKey}\0${variantHash}`)
     .digest('hex')
     .slice(0, 32);
-  return `base:${scopedHash}`;
+  return `${CODE_GRAPH_BASE_RUNNER_KEY_PREFIX}${scopedHash}`;
 }
 
 export function codeGraphBaseVariantDir(

@@ -54,6 +54,13 @@ const NO_SERVER_CLOSE =
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
+/**
+ * Room for a slow runner to send the call before `request()` rejects an
+ * already-passed deadline locally, and still inside `within()`'s one second
+ * so the test observes `deadline_exceeded`.
+ */
+const LAPSED_CALL_DEADLINE_MS = 200;
+
 /** Bounded, so a missed settle fails the assertion instead of the Jest timeout. */
 function within<T>(promise: Promise<T>): Promise<T | 'timeout'> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -589,7 +596,13 @@ export function describeCanopyClientConformance(
         client.query(
           'core.test.echo',
           { text: 'later' },
-          { metadata: { deadlineAt: new Date(Date.now() + 10).toISOString() } },
+          {
+            metadata: {
+              deadlineAt: new Date(
+                Date.now() + LAPSED_CALL_DEADLINE_MS,
+              ).toISOString(),
+            },
+          },
         ),
       );
       expect(await received(core, 3)).toBe(true);
@@ -968,7 +981,9 @@ export function describeCanopyClientConformance(
       const { client, core } = await open();
       const abort = new AbortController();
       const aborted = await openHeld(client, { signal: abort.signal });
-      const deadlineAt = new Date(Date.now() + 200).toISOString();
+      const deadlineAt = new Date(
+        Date.now() + LAPSED_CALL_DEADLINE_MS,
+      ).toISOString();
       const expiring = await openHeld(client, { metadata: { deadlineAt } });
       abort.abort();
       expect(await drain(aborted.frames)).toMatchObject([
@@ -985,7 +1000,9 @@ export function describeCanopyClientConformance(
       const { client, core } = await open({ 'core.test.ticks': () => held() });
       const abort = new AbortController();
       const aborted = rejection(openHeld(client, { signal: abort.signal }));
-      const deadlineAt = new Date(Date.now() + 10).toISOString();
+      const deadlineAt = new Date(
+        Date.now() + LAPSED_CALL_DEADLINE_MS,
+      ).toISOString();
       const lapsed = rejection(openHeld(client, { metadata: { deadlineAt } }));
       expect(await received(core, 3)).toBe(true);
       abort.abort();

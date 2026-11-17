@@ -240,7 +240,7 @@ export function hasRecords(db: DatabaseSync): boolean {
       `SELECT (EXISTS (SELECT 1 FROM vault_entries)
         OR EXISTS (SELECT 1 FROM vault_intents)
         OR EXISTS (SELECT 1 FROM vault_tombstones)
-        OR EXISTS (SELECT 1 FROM vault_meta WHERE key IN ('copilot_migration_v1', 'copilot_migration_format'))
+        OR EXISTS (SELECT 1 FROM vault_meta WHERE key IN ('copilot_migration_v1', 'copilot_migration_format', 'copilot_authority_v1', 'copilot_authority_format'))
         OR EXISTS (SELECT 1 FROM sqlite_sequence WHERE name = 'vault_intents')) AS n`,
     ) === 1
   );

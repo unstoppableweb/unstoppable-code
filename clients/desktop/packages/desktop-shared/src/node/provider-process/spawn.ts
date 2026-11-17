@@ -6,6 +6,11 @@ import {
   killProcessGroupByPid,
   signalExitedProcessGroup,
 } from '@canopy/execution-engine/node/lib/process-kill';
+import { delay, reapDescendantGroups, traceWithin } from './descendant-groups';
+import type { DescendantCleanup, DescendantGroups } from './descendant-groups';
+
+/** The least time between two descendant records of one child. */
+const RECORD_INTERVAL_MS = 1_000;
 
 /*
  * The spawn seam for provider CLIs (CAN-4118; consumed by the Cursor, Copilot
@@ -39,6 +44,15 @@ export interface ProviderProcessRequest {
   readonly owner: ProviderProcessOwner;
   /** Default 'pipe'. With 'ignore', the returned process has no `stdin`. */
   readonly stdin?: ProviderProcessStdin;
+  /**
+   * Also stop descendants that started their own process group (CAN-6726,
+   * CAN-6738). They are recorded while the child runs, when its owner calls
+   * `recordDescendants`, never at stop, so the stop signals the child at
+   * once. Best effort; POSIX only. Owners must call `stop` even after the
+   * child closes on its own: that stop reaps what was recorded, and through
+   * the provider process host it also releases the closed child.
+   */
+  readonly reapDescendantGroups?: boolean;
   /** cmd.exe callers supply their complete, quoted command line on Windows. */
   readonly windowsVerbatimArguments?: boolean;
 }
@@ -73,9 +87,46 @@ export interface ProviderProcess {
    * SIGTERM to the child's process group (Windows: forced tree kill), wait for
    * close or graceMs, then SIGKILL the group whether or not the child closed,
    * then resolve after close. Idempotent: later calls return the first promise.
+   *
+   * With `reapDescendantGroups` (CAN-6726, CAN-6738), the child is still
+   * signalled at once; descendants recorded while it ran are reaped after its
+   * group is killed: SIGTERM, then SIGKILL after `graceMs` to any group still
+   * proven ours. Completion depends on the spawner:
+   * - the direct spawner resolves after that reap. With a grace, its group
+   *   is killed within `graceMs + 1 s` (the grace, then a 1 s trace if the
+   *   child still runs), and the reap ends within `graceMs + 9 s` after that
+   *   (a record in flight, up to 2 s; two 3 s proof rounds around the grace;
+   *   a 1 s check that killed groups are gone): `2 × graceMs + 10 s` in all.
+   *   A forced stop (`graceMs` 0) waits for no record: one 3 s SIGKILL round
+   *   and the 1 s check, 4 s in all;
+   * - through the provider process host, it resolves at the child's close,
+   *   and the host finishes the reap afterwards within the same bounds.
+   * The bounds are budgets enforced around each platform read, plus timer
+   * delay. Resolution never proves descendants gone; `stopCleanup` reports
+   * that.
    */
   stop(options?: ProviderProcessStopOptions): Promise<void>;
+  /**
+   * With `reapDescendantGroups`, records the child's current descendants
+   * outside its group for the reap at stop (CAN-6738). Owners call it when a
+   * descendant may have started, such as on a tool call update. Throttled,
+   * best effort and never awaited; a no-op without the option or once
+   * stopping.
+   */
+  recordDescendants?(): void;
+  /**
+   * With `reapDescendantGroups`: the outcome of the descendant cleanup a
+   * stop ran, once it finishes (CAN-6738); see `DescendantCleanup`. Undefined
+   * when the process does not reap or was never stopped. `none` and `reaped`
+   * speak for recorded members only, and only when every recording requested
+   * before the stop finished; never for complete containment. A cancelled
+   * task never implies `reaped`.
+   */
+  stopCleanup?(): Promise<ProviderProcessCleanup | undefined>;
 }
+
+/** See `ProviderProcess.stopCleanup`. */
+export type ProviderProcessCleanup = DescendantCleanup;
 
 export type ProviderProcessSpawner = (
   request: ProviderProcessRequest,
@@ -163,12 +214,35 @@ class DirectProviderProcess extends EventEmitter implements ProviderProcess {
   private childExited = false;
   private spawned = false;
   private stopping: Promise<void> | undefined;
+  /** Set when descendants that left the group are reaped on stop. */
+  private readonly reapsDescendants: boolean;
+  /** Descendants recorded while the child runs, reaped at stop. */
+  private readonly recorded: DescendantGroups = new Map();
+  /** The record in flight, so at most one runs at a time. */
+  private recording: Promise<void> | undefined;
+  /**
+   * A requested recording was dropped, failed or ran out of time, so the
+   * recorded set may miss descendants: the cleanup can only be `unverified`.
+   */
+  private recordingIncomplete = false;
+  /** Whether the record in flight answers a caller (see `record`). */
+  private recordingRequested = false;
+  /** Ends a record's throttle wait once the stop begins. */
+  private readonly recordWait = new AbortController();
+  private recordQueued = false;
+  /** A trailing record is owed after the latest requested one. */
+  private trailingRecord = false;
+  private lastRecordAt = Number.NEGATIVE_INFINITY;
+  private cleanupOutcome: ProviderProcessCleanup | undefined;
 
   constructor(request: ProviderProcessRequest) {
     super();
     this.closed = new Promise<void>((resolve) => {
       this.markClosed = resolve;
     });
+    this.reapsDescendants =
+      request.reapDescendantGroups === true &&
+      hostPlatformOperatingSystem() !== 'win32';
     if (!isProviderProcessOwner(request.owner)) {
       this.child = undefined;
       [this.stdin, this.stdout, this.stderr] = placeholderStreams(
@@ -230,6 +304,74 @@ class DirectProviderProcess extends EventEmitter implements ProviderProcess {
     return this.child?.pid;
   }
 
+  recordDescendants(): void {
+    if (!this.canRecord()) return;
+    this.trailingRecord = true;
+    this.record(true);
+  }
+
+  private canRecord(): boolean {
+    return (
+      this.reapsDescendants &&
+      !this.stopping &&
+      !this.childExited &&
+      this.pid !== undefined
+    );
+  }
+
+  /**
+   * Traces now, or once the throttle allows. `requested` records answer a
+   * caller, so dropping one leaves the coverage incomplete; the trailing
+   * record after a burst is best effort, for a command that started just
+   * after the update that asked for the last trace.
+   */
+  private record(requested: boolean): void {
+    const pid = this.pid;
+    if (pid === undefined) return;
+    if (this.recording) {
+      if (requested) this.recordQueued = true;
+      return;
+    }
+    const wait = Math.max(
+      0,
+      this.lastRecordAt + RECORD_INTERVAL_MS - performance.now(),
+    );
+    this.recordingRequested = requested;
+    this.recording = delay(wait, true, this.recordWait.signal)
+      .then(async () => {
+        if (this.stopping || this.childExited) {
+          // Requested before the stop, never traced: a gap.
+          if (requested) this.recordingIncomplete = true;
+          return;
+        }
+        this.lastRecordAt = performance.now();
+        if (!(await traceWithin(pid, this.recorded)) && requested)
+          this.recordingIncomplete = true;
+      })
+      .catch(() => {
+        if (requested) this.recordingIncomplete = true;
+      })
+      .finally(() => {
+        this.recording = undefined;
+        if (this.recordQueued) {
+          this.recordQueued = false;
+          if (this.canRecord()) this.record(true);
+          else this.recordingIncomplete = true;
+          return;
+        }
+        if (this.trailingRecord && this.canRecord()) {
+          this.trailingRecord = false;
+          this.record(false);
+        }
+      });
+  }
+
+  stopCleanup(): Promise<ProviderProcessCleanup | undefined> {
+    if (!this.reapsDescendants || !this.stopping)
+      return Promise.resolve(undefined);
+    return this.stopping.then(() => this.cleanupOutcome);
+  }
+
   stop(options: ProviderProcessStopOptions = {}): Promise<void> {
     this.stopping ??= this.runStop(
       options.graceMs ?? PROVIDER_PROCESS_DEFAULT_GRACE_MS,
@@ -240,10 +382,18 @@ class DirectProviderProcess extends EventEmitter implements ProviderProcess {
   private async runStop(graceMs: number): Promise<void> {
     const pid = this.pid;
     if (pid === undefined || pid <= 0) {
+      this.cleanupOutcome = 'none';
       await this.closed;
       return;
     }
+    // Signalled at once, as without reaping: the provider's own cleanup
+    // (Antigravity ends its commands on SIGTERM) must not wait for a trace.
+    // Descendants were recorded while it ran (recordDescendants).
+    const groups = this.recorded;
     this.signal(pid, 'SIGTERM');
+    // A record still waiting out its throttle is dropped now rather than
+    // holding the reap.
+    this.recordWait.abort();
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
@@ -252,11 +402,35 @@ class DirectProviderProcess extends EventEmitter implements ProviderProcess {
           timer = setTimeout(resolve, graceMs);
         }),
       ]);
+      // A child still running after a grace may have started more; with no
+      // grace (a forced stop) there was no time to, so the kill is not held.
+      // Its 1 s budget is shorter than a recording's 2 s.
+      if (
+        this.reapsDescendants &&
+        graceMs > 0 &&
+        !this.childExited &&
+        !(await traceWithin(pid, groups, 1_000))
+      )
+        this.recordingIncomplete = true;
     } finally {
       if (timer) clearTimeout(timer);
       // Parent closure does not imply group closure: terminate surviving
       // descendants before reporting the child stopped.
       this.signal(pid, 'SIGKILL');
+    }
+    if (this.reapsDescendants) {
+      // A record still in flight finishes within its own budget; one only
+      // waiting for its turn is dropped and marks the coverage incomplete.
+      // A forced stop does not wait for it, which keeps it inside a 5 s
+      // shutdown, and its cleanup can then only be unverified.
+      if (graceMs > 0) await this.recording;
+      else if (this.recording && (this.recordingRequested || this.recordQueued))
+        this.recordingIncomplete = true;
+      const reaped = await reapDescendantGroups(groups, pid, graceMs).catch(
+        (): ProviderProcessCleanup => 'unverified',
+      );
+      // Incomplete coverage outranks an empty or fully reaped recorded set.
+      this.cleanupOutcome = this.recordingIncomplete ? 'unverified' : reaped;
     }
     await this.closed;
   }

@@ -1,0 +1,209 @@
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+
+exports[`staged advance (CAN-4145) advances only after the ledger accepts, and fires again when it does not 1`] = `
+{
+  "accepted": [
+    {
+      "capturedAt": "2026-11-16T10:01:00.000Z",
+      "subjectMatches": true,
+      "triggers": [
+        "pr:update:comments",
+      ],
+    },
+  ],
+  "afterAccept": {
+    "current": "2026-11-16T10:01:00.000Z",
+    "files": [
+      "current.json",
+      "previous.json",
+      "state.json",
+    ],
+    "previous": "2026-11-16T10:00:00.000Z",
+  },
+  "afterFailure": {
+    "current": "2026-11-16T10:00:00.000Z",
+    "files": [
+      "current.json",
+      "state.json",
+    ],
+  },
+  "failed": {
+    "rejected": "ledger unavailable",
+  },
+  "retried": [
+    "pr:update:comments",
+  ],
+}
+`;
+
+exports[`staged advance (CAN-4145) promotes or discards a staged advance left by a crash, by the committed head 1`] = `
+{
+  "discarded": {
+    "current": "2026-11-16T10:01:00.000Z",
+    "files": [
+      "current.json",
+      "previous.json",
+      "state.json",
+    ],
+    "nextFires": [
+      "pr:update:comments",
+    ],
+    "read": "2026-11-16T10:01:00.000Z",
+  },
+  "promoted": {
+    "current": "2026-11-16T10:01:00.000Z",
+    "files": [
+      "current.json",
+      "previous.json",
+      "state.json",
+    ],
+    "previous": "2026-11-16T10:00:00.000Z",
+  },
+  "stagedAtFirstCrash": [
+    "advance.next.json",
+    "current.json",
+    "current.next.json",
+    "previous.next.json",
+    "state.json",
+    "state.next.json",
+  ],
+  "stagedAtSecondCrash": [
+    "advance.next.json",
+    "current.json",
+    "current.next.json",
+    "previous.json",
+    "previous.next.json",
+    "state.json",
+    "state.next.json",
+  ],
+}
+`;
+
+exports[`staged advance (CAN-4145) settles an advance on accept failure in the same call by the ledger head 1`] = `
+{
+  "current": "2026-11-16T10:01:00.000Z",
+  "files": [
+    "current.json",
+    "previous.json",
+    "state.json",
+  ],
+  "outcome": {
+    "rejected": "reply lost after the ledger commit",
+  },
+  "replay": [],
+}
+`;
+
+exports[`suppression resets the baseline on a credential scope change and on a branch change 1`] = `
+{
+  "baseline under scope A": [],
+  "branch renamed": [],
+  "new comment after the branch change": [
+    "pr:update:comments",
+  ],
+  "scope B sees more comments and a review": [],
+}
+`;
+
+exports[`suppression suppresses comment and review triggers across an incomplete read 1`] = `
+{
+  "complete again with the same comments and a review": [
+    "pr:update:comments",
+    "pr:reviews:new",
+  ],
+  "complete baseline": [],
+  "complete with a genuinely new comment": [
+    "pr:update:comments",
+  ],
+  "incomplete read with a new comment": [],
+}
+`;
+
+exports[`trigger detection fires check triggers once per finished check set 1`] = `
+{
+  "baseline, checks pending": [],
+  "new head, all pass": [
+    "pr:checks:pass",
+    "pr:checks:pass:all",
+    "pr:checks:finished",
+  ],
+  "one passes, one fails": [
+    "pr:checks:fail",
+    "pr:checks:pass",
+    "pr:checks:finished",
+    "pr:checks:finished:has-fail",
+  ],
+  "same results again": [],
+}
+`;
+
+exports[`trigger detection fires comment, review, inline review and label triggers on new activity 1`] = `
+{
+  "baseline": [],
+  "label added": [
+    "pr:update:labels",
+  ],
+  "new comment": [
+    "pr:update:comments",
+  ],
+  "new review with inline comments": [
+    "pr:update:comments",
+    "pr:reviews:new",
+    "pr:reviews:new:has-comments",
+  ],
+  "new review without inline comments": [
+    "pr:update:comments",
+    "pr:reviews:new",
+  ],
+}
+`;
+
+exports[`trigger detection fires merge-conflict, merged and closed transitions 1`] = `
+{
+  "closed": {
+    "baseline": [],
+    "closed": [
+      "pr:closed",
+    ],
+    "reopened as draft": [],
+  },
+  "merged": {
+    "baseline, mergeable": [],
+    "conflicts appear": [
+      "pr:merge-conflicts",
+    ],
+    "merged": [
+      "pr:merged",
+    ],
+  },
+  "mergedUsage": [
+    "usage",
+  ],
+}
+`;
+
+exports[`trigger detection fires pr:create when a PR appears on an already tracked branch 1`] = `
+{
+  "PR opened": [
+    "pr:create",
+  ],
+  "no PR yet": [],
+  "replaced by another PR": [
+    "pr:create",
+  ],
+  "same PR, nothing new": [],
+}
+`;
+
+exports[`trigger detection never fires on the first observation of a tracked branch 1`] = `
+{
+  "files": [
+    "current.json",
+    "state.json",
+  ],
+  "triggers": {
+    "first observation of an open PR with comments, reviews and checks": [],
+  },
+  "usageEvents": [],
+}
+`;

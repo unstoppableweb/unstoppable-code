@@ -231,8 +231,37 @@ function approvalChange({
         JSON.stringify(next.approvalDefaults),
   };
 }
+export type CopilotSelectionAuthorityChange =
+  | { kind: 'changing'; selection: PreferencesData['copilotVaultSelection'] }
+  | { kind: 'unavailable' };
+const copilotSelectionObservers = new Set<
+  (change: CopilotSelectionAuthorityChange) => void
+>();
+/** Synchronous invalidation only: observers must never await the credential or preferences queue. */
+export function observeCopilotSelectionAuthority(
+  observer: (change: CopilotSelectionAuthorityChange) => void,
+): () => void {
+  copilotSelectionObservers.add(observer);
+  return () => {
+    copilotSelectionObservers.delete(observer);
+  };
+}
+function notifyCopilotSelectionAuthority(
+  change: CopilotSelectionAuthorityChange,
+): void {
+  for (const observer of copilotSelectionObservers) observer(change);
+}
 const preferencesHooks: PreferencesRepositoryHooks<PreferencesData> = {
-  beforeSave: async ({ next }, document): Promise<void> => {
+  beforeSave: async ({ previous, next }, document): Promise<void> => {
+    if (
+      copilotSelectionObservers.size > 0 &&
+      JSON.stringify(previous.copilotVaultSelection) !==
+        JSON.stringify(next.copilotVaultSelection)
+    )
+      notifyCopilotSelectionAuthority({
+        kind: 'changing',
+        selection: next.copilotVaultSelection,
+      });
     await recordUsageDataRevocations(
       createUsageDataConsentJournal(document.key),
       next.usageData,
@@ -248,6 +277,7 @@ const preferencesHooks: PreferencesRepositoryHooks<PreferencesData> = {
         })
       : save,
   onSaveOutcomeUnknown: (change) => {
+    notifyCopilotSelectionAuthority({ kind: 'unavailable' });
     if (approvalChange(change).authorityChanged)
       markPreferencesAuthorityUnconfirmed({
         globalApprovalRules: change.previous.globalApprovalRules,
@@ -267,6 +297,11 @@ const preferencesHooks: PreferencesRepositoryHooks<PreferencesData> = {
     ) {
       // All admitted writers invalidate in serialized commit order. A late
       // discovery or sign-in cannot restore a disconnected model catalog.
+      const { retireAntigravityConnection } =
+        await import('../antigravity/connection-generation');
+      // The generation changes before this commit settles. A disconnect
+      // notifies running delegates synchronously; they stop themselves.
+      retireAntigravityConnection(next.googleSubscriptionDisconnected === true);
       const { invalidateAntigravityModels } =
         await import('../antigravity/models');
       invalidateAntigravityModels();
@@ -299,6 +334,7 @@ const preferencesHooks: PreferencesRepositoryHooks<PreferencesData> = {
     getUsageDataPolicy().setPreferences(next.usageData);
   },
   onRecoveryLatched: () => {
+    notifyCopilotSelectionAuthority({ kind: 'unavailable' });
     markGlobalApprovalRulesChanged();
     invalidateRendererPreferencesCache();
   },

@@ -64,6 +64,9 @@ jest.mock('../../feature-flags', () => ({
     onSnapshotChanged: (): (() => void) => (): void => undefined,
   }),
 }));
+jest.mock('../../antigravity/feature-flag', () => ({
+  isAntigravityHarnessEnabled: (): boolean => false,
+}));
 jest.mock('../../cursor/feature-flag', () => ({
   isCursorHarnessEnabled: (): boolean => false,
 }));

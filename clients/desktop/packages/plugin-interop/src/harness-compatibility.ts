@@ -7,7 +7,7 @@ import type {
   HARNESS_COMPATIBILITY_RULES_VERSION,
 } from '@canopy/protocol/plugins';
 import { cursorLoadsPluginMemberKind } from './cursor-support';
-import { PLUGIN_HARNESSES, type PluginHarnessId } from './harness-support';
+import { PLUGIN_HARNESSES } from './harness-support';
 import { opencodeSupportsCommandHook } from './opencode-support';
 import type { PluginHookMember } from './types';
 
@@ -15,14 +15,10 @@ import type { PluginHookMember } from './types';
 export const COMPATIBILITY_WIRE_VERSION: typeof HARNESS_COMPATIBILITY_VERSION = 1;
 export const COMPATIBILITY_RULES_VERSION: typeof HARNESS_COMPATIBILITY_RULES_VERSION = 1;
 
-type SameHarnesses = [HarnessCompatibilityHarness] extends [PluginHarnessId]
-  ? [PluginHarnessId] extends [HarnessCompatibilityHarness]
-    ? true
-    : false
-  : false;
-const HARNESSES: SameHarnesses extends true
-  ? readonly HarnessCompatibilityHarness[]
-  : never = PLUGIN_HARNESSES;
+// Experimental Antigravity support is not a qualified compatibility target.
+const HARNESSES = PLUGIN_HARNESSES.filter(
+  (id): id is HarnessCompatibilityHarness => id !== 'antigravity',
+);
 
 const PARTS: readonly HarnessCompatibilityPart[] = [
   'skills',
@@ -54,7 +50,7 @@ const NATIVE_PATHS: Partial<Record<HarnessCompatibilityHarness, string>> = {
 export function publisherNativeHarnesses(
   manifests: readonly PublisherPluginManifest[],
 ): HarnessCompatibilityHarness[] {
-  return PLUGIN_HARNESSES.filter((harness) =>
+  return HARNESSES.filter((harness) =>
     manifests.some(
       ({ path, manifest }) =>
         path === NATIVE_PATHS[harness] &&

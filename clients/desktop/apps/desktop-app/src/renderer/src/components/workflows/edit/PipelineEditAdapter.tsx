@@ -237,6 +237,22 @@ export function PipelineEditAdapter({
   );
 
   const projects = useProjectsStore((state) => state.projects);
+  const projectsLoadCount = useProjectsStore(
+    (state) => state.projectsLoadCount,
+  );
+  // CAN-6933: hook-triggered automations can differ by branch, so the editor
+  // reads every worktree's own hooks when it opens and after each load.
+  useEffect(() => {
+    const { projects: current, ensureWorktreeEffective } =
+      useProjectsStore.getState();
+    for (const project of current) {
+      if (project.type === 'cowork' || project.worktrees.length === 0) continue;
+      void ensureWorktreeEffective(
+        project.id,
+        project.worktrees.map((worktree) => worktree.id),
+      );
+    }
+  }, [projectsLoadCount]);
   // CAN-6065: Remove on an installed workflow's last schedule opens the
   // page's Delete confirmation.
   const [deleteRequest, setDeleteRequest] = useState(0);

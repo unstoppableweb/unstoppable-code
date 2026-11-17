@@ -8,6 +8,7 @@ import {
   CodeBlockSpecimen,
   ModelUnlockPendingSpecimen,
   OnboardingTipSpecimen,
+  AntigravityAccountSpecimen,
   OpenCodeAccountSpecimen,
   PageColumnSpecimen,
   ComposerSuggestionMenuSpecimen,
@@ -77,6 +78,15 @@ export const GAP_ROOT_3A_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
     source: `${SRC}/OnboardingTip.tsx`,
     prs: [],
     View: OnboardingTipSpecimen,
+  },
+  {
+    id: 'antigravity-account-card',
+    name: 'AntigravityAccountCard',
+    group: 'Unified',
+    note: "The Google plan label Antigravity reports, as a usage group. No limits or account identity are shown, and a failed read is couldn't check, never signed out.",
+    source: `${SRC}/AntigravityAccountCard.tsx`,
+    prs: [],
+    View: AntigravityAccountSpecimen,
   },
   {
     id: 'opencode-account-card',

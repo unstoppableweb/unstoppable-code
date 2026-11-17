@@ -86,6 +86,7 @@ import {
 import {
   applyResolvedApprovalModeForNewTab,
   approvalDefaultCacheKey,
+  pendingProvisionalApprovalMode,
 } from '../approval-defaults';
 import {
   billingSeedFields,
@@ -1110,20 +1111,37 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
     // A reservation returned by creation is known new. Resolve the real defaults
     // alongside hydration and expose its editable starter without waiting for
     // the history snapshot. Existing worktrees never take this path.
+    // With model defaults loaded and an approval default cached, expose the
+    // starter at once with that cached mode, marked provisional (CAN-6957):
+    // `applyResolvedApprovalModeForNewTab` still runs the fresh lookup, and
+    // canonical creation and sends wait for it, so the cached value is
+    // display-only. A cold cache keeps the wait below.
     if (options?.newlyCreated) {
-      void Promise.all([
-        get().ensureModelDefaultsLoaded(),
-        get().fetchApprovalDefault(projectId, worktreeId, { forceFresh: true }),
-      ])
-        .then(([, approvalMode]) =>
-          get().ensureWorktreeHasChatTab(
-            { projectId, worktreeId },
-            { eager: true, approvalMode },
-          ),
-        )
-        .catch(() => {
-          // The normal hydration path owns recovery and its retry surface.
-        });
+      const cachedApprovalMode = get().approvalDefaultsCache[approvalCacheKey];
+      const starter =
+        get().modelDefaults !== null && cachedApprovalMode !== undefined
+          ? get().ensureWorktreeHasChatTab(
+              { projectId, worktreeId },
+              {
+                eager: true,
+                approvalMode: cachedApprovalMode,
+                approvalModeProvisional: true,
+              },
+            )
+          : Promise.all([
+              get().ensureModelDefaultsLoaded(),
+              get().fetchApprovalDefault(projectId, worktreeId, {
+                forceFresh: true,
+              }),
+            ]).then(([, approvalMode]) =>
+              get().ensureWorktreeHasChatTab(
+                { projectId, worktreeId },
+                { eager: true, approvalMode },
+              ),
+            );
+      void starter.catch(() => {
+        // The normal hydration path owns recovery and its retry surface.
+      });
     }
 
     // New-worktree Home sends hydrate with setup-aware options immediately
@@ -2454,7 +2472,14 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
     );
     // A starter tab's model defaults are resolved before it is constructed.
     // Resolve its approval default at the same boundary so the composer never
-    // renders a fallback mode and then changes underneath the user.
+    // renders a fallback mode and then changes underneath the user. The one
+    // exception is a supplied cached mode marked provisional: it is shown at
+    // once and confirmed by `applyResolvedApprovalModeForNewTab` before
+    // canonical creation, so it can change once if the cache was stale.
+    const starterApprovalModeProvisional =
+      needsStarterTab &&
+      options?.approvalMode !== undefined &&
+      options.approvalModeProvisional === true;
     const starterApprovalMode = needsStarterTab
       ? (options?.approvalMode ??
         (await stateBeforeEnsure.fetchApprovalDefault(
@@ -2549,6 +2574,9 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
               : {}),
             ...(starterApprovalMode
               ? { approvalMode: starterApprovalMode }
+              : {}),
+            ...(starterApprovalModeProvisional
+              ? { approvalModeProvisional: true as const }
               : {}),
           }
         : null;
@@ -2654,6 +2682,10 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
     };
     const creation = (async (): Promise<ChatCommandDisposition> => {
       const createdTabApprovalMode = await createdTabApprovalModePromise;
+      // A creation re-driven for a starter this call did not create may find
+      // its provisional mode's lookup still running (CAN-6957). Commit only
+      // the fresh mode or the user's pick, never the cached display value.
+      await pendingProvisionalApprovalMode(target, ensuredTab.id);
       const latestTab = get().worktreeChats[key]?.tabs.find(
         (tab) => tab.id === ensuredTab.id,
       );

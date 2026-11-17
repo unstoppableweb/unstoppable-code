@@ -24,10 +24,13 @@ import type { CreditsNoticeProviderChoice } from '@canopy/ui-app/credits';
 import {
   ProviderChoiceActionButton,
   SwitchProviderDialog,
+  type ProviderChoiceActionContext,
   type ProviderChoicePresentations,
+  type ProviderChoiceRowError,
 } from '@canopy/ui-app/providers';
 import {
   CREDITS_ROW_DESCRIPTION,
+  CREDITS_ROW_EMPTY_DESCRIPTION,
   ModelProviderIcon,
   PROVIDER_ROW_DESCRIPTIONS,
   providerSwitchFailedMessage,
@@ -117,8 +120,15 @@ export interface DesktopProviderChoice {
   readonly notePurchaseStart: () => void;
   readonly choose: (row: DesktopChoiceRow) => void;
   readonly busy: boolean;
-  /** Why the last choice didn't move the chat, shown in the dialog. */
-  readonly error: string | null;
+  /**
+   * Why the last choice didn't move the chat, shown on that row. Cleared
+   * when the dialog closes, a new attempt starts or the condition changes.
+   */
+  readonly rowError: ProviderChoiceRowError | null;
+  /** Why the notice is open, for the dialog's title and subtitle. */
+  readonly condition: CreditsPromptCondition;
+  /** The credits balance, for the credits row's description. */
+  readonly creditsBalance: CreditsBalanceState;
   /** The notice's button, for `CreditsNotice`'s `providerChoice`. */
   readonly notice: (testId: string) => CreditsNoticeProviderChoice;
   readonly restoreFocusRef: RefObject<HTMLElement | null>;
@@ -145,7 +155,14 @@ export function useDesktopProviderChoice({
 }): DesktopProviderChoice | null {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [rowError, setRowError] = useState<ProviderChoiceRowError | null>(null);
+  // A failure belongs to the condition it happened under; it never carries
+  // into another.
+  const [errorCondition, setErrorCondition] = useState(condition);
+  if (errorCondition !== condition) {
+    setErrorCondition(condition);
+    setRowError(null);
+  }
   const busyRef = useRef(false);
   const restoreFocusRef = useRef<HTMLElement | null>(null);
   // A purchase started from this list's credits row closes it once its
@@ -166,7 +183,12 @@ export function useDesktopProviderChoice({
         : resolveProviderChoices<DesktopChoiceModel>({
             current: context.current,
             condition,
-            target: { kind: 'continue-chat' },
+            target: {
+              kind: 'continue-chat',
+              ...(context.currentModel !== undefined
+                ? { model: context.currentModel }
+                : {}),
+            },
             sources: [
               ...context.accountSources,
               {
@@ -218,7 +240,7 @@ export function useDesktopProviderChoice({
       // Close first: the switch dialog may open next, and two modals never
       // stack.
       setOpen(false);
-      setError(null);
+      setRowError(null);
       trackCreditsRecoveryClick({
         surface,
         action: 'provider_use',
@@ -226,12 +248,13 @@ export function useDesktopProviderChoice({
       });
       // A choice that didn't move the chat reopens the list and says so.
       const failed = (): void => {
-        setError(
-          providerSwitchFailedMessage(
+        setRowError({
+          source: row.source,
+          message: providerSwitchFailedMessage(
             row.source,
             sourceName(row.source, context.gatewayName),
           ),
-        );
+        });
         setOpen(true);
       };
       // Started inside the chain, so even a synchronous throw ends `busy`.
@@ -251,7 +274,7 @@ export function useDesktopProviderChoice({
     const active = document.activeElement;
     restoreFocusRef.current = active instanceof HTMLElement ? active : null;
     trackCreditsRecoveryClick({ surface, action: 'provider_switch_open' });
-    setError(null);
+    setRowError(null);
     // A purchase that never started (a cancelled gate, a failed open) must
     // not let a later hand-off close this new list.
     purchaseStartedRef.current = false;
@@ -259,7 +282,7 @@ export function useDesktopProviderChoice({
   }, [surface]);
   const closeDialog = useCallback((): void => {
     setOpen(false);
-    setError(null);
+    setRowError(null);
   }, []);
   const notePurchaseStart = useCallback((): void => {
     purchaseStartedRef.current = true;
@@ -274,7 +297,9 @@ export function useDesktopProviderChoice({
     notePurchaseStart,
     choose,
     busy,
-    error,
+    rowError,
+    condition,
+    creditsBalance: credits.balance,
     restoreFocusRef,
     surface,
     context,
@@ -341,24 +366,40 @@ export function DesktopProviderChoiceDialog({
   };
   // The gateway row's name, mark and description follow its setup: the
   // option before setup, then the configured gateway and whether this
-  // computer can use it.
-  const gatewayRowReady = choice.choices.rows.some(
-    (row) => row.source === 'gateway' && row.connection.kind === 'ready',
-  );
+  // computer can use it. The current gateway may be unlisted (the header
+  // explains it), so `current` counts too.
+  const gatewayRowReady = [
+    ...choice.choices.rows,
+    ...(choice.choices.current !== null ? [choice.choices.current] : []),
+  ].some((row) => row.source === 'gateway' && row.connection.kind === 'ready');
   const presentation: ProviderChoicePresentations = {
     ...DESKTOP_PROVIDER_PRESENTATION,
+    credits: {
+      ...DESKTOP_PROVIDER_PRESENTATION.credits,
+      name: SOURCE_NAMES.credits,
+      // A known empty balance replaces the description; an unknown one
+      // keeps it.
+      description:
+        choice.creditsBalance === 'empty'
+          ? CREDITS_ROW_EMPTY_DESCRIPTION
+          : CREDITS_ROW_DESCRIPTION,
+    },
     gateway: desktopGatewayPresentation(
       gateway?.summary ?? null,
       gatewayRowReady,
     ),
   };
-  const renderAction = (row: DesktopChoiceRow): ReactNode => {
+  const renderAction = (
+    row: DesktopChoiceRow,
+    { recommended }: ProviderChoiceActionContext,
+  ): ReactNode => {
     switch (row.action) {
       case 'use':
         return (
           <ProviderChoiceActionButton
             source={row.source}
             action="use"
+            recommended={recommended}
             busy={choice.busy}
             onClick={(): void => choice.choose(row)}
           />
@@ -368,6 +409,7 @@ export function DesktopProviderChoiceDialog({
           <ProviderChoiceActionButton
             source={row.source}
             action="connect"
+            isCurrent={row.isCurrent}
             onClick={(): void => {
               if (!isDesktopSubscriptionSource(row.source)) return;
               trackCreditsRecoveryClick({
@@ -389,6 +431,7 @@ export function DesktopProviderChoiceDialog({
           <ProviderChoiceActionButton
             source="gateway"
             action="set-up"
+            isCurrent={row.isCurrent}
             onClick={openGatewaySetup}
           />
         ) : null;
@@ -402,13 +445,19 @@ export function DesktopProviderChoiceDialog({
       <SwitchProviderDialog
         open={choice.open}
         onClose={choice.closeDialog}
-        rows={choice.choices.rows}
-        target={{ kind: 'continue-chat' }}
+        choices={choice.choices}
+        target={{
+          kind: 'continue-chat',
+          ...(choice.context.currentModel !== undefined
+            ? { model: choice.context.currentModel }
+            : {}),
+        }}
+        condition={choice.condition}
         presentation={presentation}
         renderAction={renderAction}
         formatResetsAt={choice.context.formatResetsAt}
         restoreFocusRef={choice.restoreFocusRef}
-        error={choice.error}
+        rowError={choice.rowError}
       />
       {gateway !== null && gatewaySetupOpen && (
         <DesktopAiGatewayDialog

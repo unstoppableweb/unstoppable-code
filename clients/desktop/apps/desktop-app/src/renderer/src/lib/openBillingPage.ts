@@ -782,6 +782,10 @@ export async function unlockModels(
   scope: AiCreditsScopeRequest | undefined,
   request: UnlockModelsRequest,
 ): Promise<UnlockModelsResult> {
+  // The owner is the one shown when the unlock was asked for; checkout below
+  // re-reads the context, so a switch while this reads the account would
+  // otherwise move the purchase to the new owner (CAN-6937).
+  const scopeKey = aiCreditsScopeKey(scope, readNavigationScopeKey());
   let needsAccount = false;
   try {
     // A guest credential cannot buy anything, and neither can no credential
@@ -791,6 +795,8 @@ export async function unlockModels(
   } catch {
     return { outcome: 'failed' };
   }
+  if (scopeKey !== aiCreditsScopeKey(scope, readNavigationScopeKey()))
+    return { outcome: 'failed' };
   if (!needsAccount) return openUnlockCheckout(scope, request);
   useCloudConnectGateStore.getState().requestConnect(
     {

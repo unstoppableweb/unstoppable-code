@@ -20,6 +20,7 @@ export interface AcpAttachmentSelection {
 
 const MAX_ATTACHMENT_BYTES = 4 * 1024 * 1024;
 const MAX_ENCODED_BYTES = 6 * 1024 * 1024;
+const MAX_ATTACHMENTS = 32;
 const IMAGE_TYPES: Readonly<Record<string, string>> = {
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
@@ -27,6 +28,31 @@ const IMAGE_TYPES: Readonly<Record<string, string>> = {
   '.gif': 'image/gif',
   '.webp': 'image/webp',
 };
+
+/** Per-prompt bounds shared by every attachment a single ACP prompt carries. */
+export const ACP_ATTACHMENT_LIMITS = {
+  count: MAX_ATTACHMENTS,
+  encodedBytes: MAX_ENCODED_BYTES,
+  /** Raw bytes one read may carry, so also the most one file can be. */
+  rawBytes: MAX_ATTACHMENT_BYTES,
+} as const;
+
+/**
+ * The reader refuses this file's type (a refused PDF, or bytes that are not
+ * UTF-8 text). Attaching the same file again cannot help; the message is the
+ * same one the current message shows.
+ */
+export class AcpAttachmentTypeError extends Error {}
+
+/** Whether the reader sends this file as an image block. */
+export function isAcpImagePath(path: string): boolean {
+  return extname(path).toLowerCase() in IMAGE_TYPES;
+}
+
+/** The encoded size counted against `ACP_ATTACHMENT_LIMITS.encodedBytes`. */
+export function acpAttachmentEncodedBytes(block: ContentBlock): number {
+  return Buffer.byteLength(JSON.stringify(block));
+}
 
 /** Imported attachments are regular files under a host-owned directory. */
 export async function readAcpAttachments(
@@ -37,8 +63,10 @@ export async function readAcpAttachments(
   const label = options.providerLabel;
   if (!selection?.paths.length) return [];
   signal.throwIfAborted();
-  if (selection.paths.length > 32)
-    throw new Error(`${label} accepts at most 32 attachments per message.`);
+  if (selection.paths.length > MAX_ATTACHMENTS)
+    throw new Error(
+      `${label} accepts at most ${MAX_ATTACHMENTS} attachments per message.`,
+    );
   const root = resolve(selection.baseDir);
   if (!(await lstat(root)).isDirectory())
     throw new Error(`${label} could not read the attachment directory.`);
@@ -143,7 +171,7 @@ export async function readAcpAttachments(
     const uri = pathToFileURL(file).href;
     const imageType = IMAGE_TYPES[extname(file).toLowerCase()];
     if (extname(file).toLowerCase() === '.pdf' && options.pdf === false)
-      throw new Error(
+      throw new AcpAttachmentTypeError(
         `Couldn't send this PDF to ${label}. Attach images of its pages or a text version.`,
       );
     let block: ContentBlock;
@@ -176,7 +204,7 @@ export async function readAcpAttachments(
           options.pdf === false
             ? 'image or UTF-8 text'
             : 'image, PDF or UTF-8 text';
-        throw new Error(
+        throw new AcpAttachmentTypeError(
           `Couldn't send this file to ${label}. Convert it to ${formats} and attach it again.`,
         );
       }
@@ -185,7 +213,7 @@ export async function readAcpAttachments(
         resource: { uri, mimeType: 'text/plain', text },
       };
     }
-    encodedBytes += Buffer.byteLength(JSON.stringify(block));
+    encodedBytes += acpAttachmentEncodedBytes(block);
     if (encodedBytes > MAX_ENCODED_BYTES)
       throw new Error(
         `${label} attachments are too large after encoding. Send fewer or smaller files.`,

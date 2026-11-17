@@ -38,6 +38,7 @@ export const CATALOG_HARNESS_IDS = [
   'ollama',
   'copilot',
   'opencode',
+  'antigravity',
 ] as const;
 
 export type CatalogHarnessId = (typeof CATALOG_HARNESS_IDS)[number];
@@ -66,13 +67,18 @@ export const CatalogPluginHarnessSchema = z.strictObject({
 
 export type CatalogPluginHarness = z.output<typeof CatalogPluginHarnessSchema>;
 
-/** One entry per harness, so a client never reads a missing one as unknown. */
+/**
+ * One entry per harness, so a client never reads a missing one as unknown.
+ * `antigravity` (CAN-6684) is optional only so hosts built before it still
+ * parse: a reader treats its absence as unsupported, never as supported.
+ */
 export const CatalogPluginHarnessesSchema = z.strictObject({
   claude: CatalogPluginHarnessSchema,
   codex: CatalogPluginHarnessSchema,
   ollama: CatalogPluginHarnessSchema,
   copilot: CatalogPluginHarnessSchema,
   opencode: CatalogPluginHarnessSchema,
+  antigravity: CatalogPluginHarnessSchema.optional(),
 });
 
 export type CatalogPluginHarnesses = z.output<

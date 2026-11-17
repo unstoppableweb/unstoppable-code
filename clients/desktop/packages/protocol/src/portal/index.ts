@@ -61,6 +61,13 @@ export {
   type OpenCodeReportedUsage,
 } from './opencode-usage';
 import type { OpenCodeAccountSnapshot } from './opencode-accounts';
+import type { AntigravityAccountSnapshot } from './antigravity-account';
+export {
+  ANTIGRAVITY_PLAN_LABEL_MAX_LENGTH,
+  antigravityAccountSnapshotSchema,
+  isAntigravityPlanLabel,
+  type AntigravityAccountSnapshot,
+} from './antigravity-account';
 export {
   openCodeAccountMetadataSchema,
   openCodeAccountSnapshotSchema,
@@ -1546,6 +1553,8 @@ export type BrowserPortalCommandStatus =
  * instead of treating the queued submit as a failure.
  */
 export interface BrowserPortalCommandStatusResponse {
+  /** Stable pre-save chat refusal code, paired with the authored error. */
+  errorCode?: string;
   /** Delivered work may outlive expiry; only undelivered expiry is retryable. */
   delivered?: boolean;
   commandId: string;
@@ -5771,6 +5780,15 @@ export interface PortalWorktreeCreatePayload extends SidebarItemGroupCreationOpt
    * The desktop create ignores it — a worktree owns no client-supplied id.
    */
   chatId?: string;
+  /**
+   * A client-claimed id for the new worktree, picked with
+   * `pickUniqueAnimalName` and the workspace's `worktreeIdClaimPrefix`. Send
+   * it only when the workspace publishes that prefix. The host honors a free,
+   * generator-shaped claim and otherwise names the worktree itself; the id the
+   * host actually used is authoritative. A malformed id is `invalid_payload`.
+   * Older hosts ignore the field.
+   */
+  worktreeId?: string;
   /** Check out this existing branch instead of creating one (`worktree_create_from_v1`). */
   existingBranch?: string;
   /**
@@ -6508,7 +6526,11 @@ export interface PortalCommandCompletedPayload<TResult = unknown> {
  * limits.
  */
 export interface PortalCommandFailedPayload {
-  /** Typed script-action, collection-save or task-refs-list refusal retained by the waited RPC path. */
+  /**
+   * Typed refusal retained by the waited RPC path: a script-action,
+   * collection-save or task-refs-list refusal, or a chat send refused before
+   * anything was saved (`model_gateway_refused`, CAN-6701).
+   */
   response?: { code: string; message: string };
   commandId: string;
   sequenceNumber: number;
@@ -9674,6 +9696,11 @@ export interface PortalProviderUsageEntry {
 export interface PortalProviderUsageProjection {
   /** Optional metadata, separate from quotas so older peers can ignore it. */
   openCodeAccounts?: OpenCodeAccountSnapshot;
+  /**
+   * Optional Antigravity plan metadata, separate from quotas so older peers
+   * ignore it. Never identity, quota or a billing signal.
+   */
+  antigravityAccount?: AntigravityAccountSnapshot;
   updatedAt: string;
   providers: PortalProviderUsageEntry[];
 }
@@ -10279,6 +10306,14 @@ export interface PortalSessionShellState {
      * That legacy default is the ONLY place `type` may inform placement.
      */
     layout?: PortalWorkspaceLayout;
+    /**
+     * The prefix this host puts on generated worktree ids (empty in
+     * production). Its presence, even as `''`, means the host honors a
+     * client-claimed worktree id on create (`PortalWorktreeCreatePayload.worktreeId`);
+     * test `!== undefined`, never truthiness. Absent on hosts that name every
+     * worktree themselves (older desktops, cloud).
+     */
+    worktreeIdClaimPrefix?: string;
     /**
      * Backend that owns this workspace record. Consumers rendering a header
      * treatment should derive it from the workspace's rows when it has any and

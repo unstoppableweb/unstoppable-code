@@ -22,6 +22,7 @@ import { getExecutionHostPort } from '../execution-host/utility-process-host';
 import { codeGraphHostBudget } from '@canopy/code-graph/host/budgets';
 import {
   CODE_GRAPH_BUILD_CONCURRENCY_CAP,
+  CodeGraphWorkerBuildError,
   createCodeGraphBuildScheduler,
   type CodeGraphBuildCancelOptions,
   type CodeGraphBuildQueueStatus,
@@ -40,6 +41,12 @@ import type {
   CodeGraphWorkerEagerSeedRequest,
   CodeGraphWorkerEagerSeedResponse,
 } from '@canopy/code-graph/host/build-protocol';
+import {
+  evaluateStorageWrite,
+  STORAGE_OWNERSHIP,
+  StorageWriteRefusedError,
+} from '@canopy/core-runtime/storage';
+import { isCodeGraphBaseRunnerKey } from './base-runner-key';
 
 // The build host protocol lives with the host in `@canopy/code-graph/host`,
 // and the scheduler beside it. This module composes the scheduler for
@@ -202,12 +209,46 @@ export function reorderCodeGraphGenerationQueue(
   return scheduler.reorderQueue(request);
 }
 
+/**
+ * Admits a worktree graph write by this scheduler's build utility process
+ * (CAN-6985): builds, eager seeds and summary repairs. It admits them while
+ * `worktree_code_graph` stays legacy and refuses them once the daemon owns
+ * the store. Workspace base graphs share the scheduler but are another store,
+ * so their keys are not checked here.
+ */
+function worktreeGraphWriteRefusal(
+  key: string,
+): StorageWriteRefusedError | null {
+  if (isCodeGraphBaseRunnerKey(key)) return null;
+  const decision = evaluateStorageWrite(
+    'worktree_code_graph',
+    'utility_process',
+    STORAGE_OWNERSHIP,
+  );
+  return decision.allowed
+    ? null
+    : new StorageWriteRefusedError(
+        'worktree_code_graph',
+        'utility_process',
+        decision.reason,
+      );
+}
+
+/** A refused write fails the way the scheduler fails an unavailable build. */
+function refusedBuild(
+  refusal: StorageWriteRefusedError,
+): CodeGraphWorkerBuildError {
+  return new CodeGraphWorkerBuildError('unavailable', refusal.message);
+}
+
 /** See {@link CodeGraphBuildScheduler.runBuild}. */
 export function runCodeGraphWorkerBuild(
   key: string,
   request: CodeGraphWorkerBuildRequest,
   scheduling?: CodeGraphBuildSchedulingOptions,
 ): Promise<CodeGraphWorkerBuildResponse> {
+  const refusal = worktreeGraphWriteRefusal(key);
+  if (refusal) return Promise.reject(refusedBuild(refusal));
   return scheduler.runBuild(key, request, scheduling);
 }
 
@@ -216,6 +257,9 @@ export function beginCodeGraphWorkerBuild(
   request: CodeGraphWorkerBuildRequest,
   scheduling?: CodeGraphBuildSchedulingOptions,
 ): CodeGraphWorkerBuildHandle {
+  const refusal = worktreeGraphWriteRefusal(key);
+  if (refusal)
+    return { attemptId: null, promise: Promise.reject(refusedBuild(refusal)) };
   return scheduler.beginBuild(key, request, scheduling);
 }
 
@@ -224,6 +268,8 @@ export function runCodeGraphWorkerEagerSeed(
   request: CodeGraphWorkerEagerSeedRequest,
   scheduling?: CodeGraphBuildSchedulingOptions,
 ): Promise<CodeGraphWorkerEagerSeedResponse> {
+  const refusal = worktreeGraphWriteRefusal(key);
+  if (refusal) return Promise.reject(refusedBuild(refusal));
   return scheduler.runEagerSeed(key, request, scheduling);
 }
 
@@ -257,6 +303,14 @@ export function isCodeGraphSummaryRepairActive(key: string): boolean {
 export function requestCodeGraphSummaryRepair(
   input: CodeGraphSummaryRepairRequest,
 ): Promise<CodeGraphSummaryRepairResult> {
+  const refusal = worktreeGraphWriteRefusal(input.key);
+  if (refusal)
+    return Promise.resolve({
+      ok: false,
+      attemptId: null,
+      reason: 'unavailable',
+      message: refusal.message,
+    });
   return scheduler.requestSummaryRepair(input);
 }
 

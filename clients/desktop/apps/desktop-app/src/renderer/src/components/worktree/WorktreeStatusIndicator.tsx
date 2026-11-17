@@ -29,11 +29,9 @@ function getStatusTitle(props: WorktreeStatusIndicatorProps): string | null {
   if (props.isTearingDown) {
     return 'Deleting worktree…';
   }
-  if (props.isRunningSetup) {
+  // Git checkout through setup reads as one state (CAN-6957).
+  if (props.isRunningSetup || props.isPendingGitSetup) {
     return 'Running setup…';
-  }
-  if (props.isPendingGitSetup) {
-    return 'Setting up worktree (git operations in progress)';
   }
   return null;
 }

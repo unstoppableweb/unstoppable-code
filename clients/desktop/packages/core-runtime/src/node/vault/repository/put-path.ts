@@ -64,6 +64,8 @@ export type VaultPutRefusalStep =
   | 'intent';
 
 export interface VaultPutHooks {
+  /** Qualification binding admission, including same-key retries. */
+  readonly migrationAdmission?: (family: string, key: string) => void;
   /** Internal inert seam: attach authenticated provenance to the minted intent. */
   readonly migrationIntent?: (
     draft: VaultIntentDraft,
@@ -704,6 +706,7 @@ export function createVaultWritePath(
       return notAccepted('validation', null, null, toTypeError(error));
     }
     try {
+      options.migrationAdmission?.(family, input.idempotencyKey);
       return route(family, input);
     } catch (error) {
       zeroBytes(input.material);

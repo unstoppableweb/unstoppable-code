@@ -6,7 +6,9 @@
  *
  * - `all` — every account provider plus AI Credits, divider-separated.
  * - `active-chat` — follows the worktree's active (or most-recently-active)
- *   chat provider, switching between Claude, Codex, and Cursor live.
+ *   chat provider, switching between Claude, Codex, and Cursor live. A scope
+ *   whose chats don't run on this computer's subscriptions (a cloud task)
+ *   shows AI Credits instead (CAN-6942).
  * - `codex` / `claude` / `cursor` — pinned to one provider.
  *
  * A self-owned `ResizeObserver` (the panel engine passes no size to content)
@@ -23,11 +25,13 @@ import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { useObservabilityStore } from '@/stores/observabilityStore';
 import { useWorktreeChatRenderState } from '@/stores/chatStore';
+import { useScopeCapabilities } from '@/hooks/useScopeCapabilities';
 import { resolveTabProviderType } from '@/stores/chat/tab-utils';
 import { EmptyState } from '@canopy/ui-shared/components';
 import { UsageUpdatedLine } from '@canopy/ui-shared';
 import {
   ProviderUsageCard,
+  AntigravityUsageSection,
   OpenCodeUsageSection,
   selectAccountProviderUsageSummaries,
   type AccountProviderUsageSummary,
@@ -198,9 +202,15 @@ export const UsagePanel = memo(function UsagePanel({
     (s) => s.refreshingProviders,
   );
 
+  // A cloud task's chats run on AI Credits, never on this computer's
+  // provider accounts, so the active chat has no account of its own here.
+  const runsOnLocalAccounts =
+    useScopeCapabilities({ projectId }).subscriptionProviders === true;
+  const cloudActiveChat = variant === 'active-chat' && !runsOnLocalAccounts;
+
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
   const { updatedAt, refreshing, refresh } = useUsageRefresh({
-    includeAiCredits: variant === 'all',
+    includeAiCredits: variant === 'all' || cloudActiveChat,
   });
 
   useEffect(() => {
@@ -242,11 +252,21 @@ export const UsagePanel = memo(function UsagePanel({
   const opencodeEnabled = useFeatureFlagsStore((state) =>
     state.isEnabled(CLIENT_FEATURE_FLAGS.canopyDesktopOpenCodeHarness.key),
   );
-  const activeProvider = resolveActiveProvider(variant, activeChatProvider);
+  const antigravityEnabled = useFeatureFlagsStore((state) =>
+    state.isEnabled(CLIENT_FEATURE_FLAGS.canopyDesktopAntigravityHarness.key),
+  );
+  const activeProvider = cloudActiveChat
+    ? null
+    : resolveActiveProvider(variant, activeChatProvider);
   const showOpenCode =
     opencodeEnabled &&
     usage.openCodeAccounts !== undefined &&
     (variant === 'all' || activeProvider === 'opencode');
+  // Per-chat views follow account-usage providers, which exclude Antigravity.
+  const showAntigravity =
+    antigravityEnabled &&
+    usage.antigravityAccount !== undefined &&
+    variant === 'all';
   const targetProvider = resolveTargetProvider(variant, activeProvider);
   const cards = filterVariantCards(
     targetProvider,
@@ -255,7 +275,7 @@ export const UsagePanel = memo(function UsagePanel({
 
   const padX = sizeMode === 'full' ? 'px-6' : 'px-3';
   const noActiveChat = variant === 'active-chat' && activeProvider === null;
-  const showAiCredits = variant === 'all';
+  const showAiCredits = variant === 'all' || cloudActiveChat;
 
   return (
     <div
@@ -276,7 +296,16 @@ export const UsagePanel = memo(function UsagePanel({
           onRefresh={refresh}
         />
         <InterruptedSessionsNotice />
-        {cards.length === 0 && !showOpenCode ? (
+        {cloudActiveChat ? (
+          <p
+            data-testid="usage-panel-cloud-chat"
+            className="text-s fg-secondary"
+          >
+            {
+              "This chat runs in the cloud on AI Credits. Accounts on this computer don't apply to it."
+            }
+          </p>
+        ) : cards.length === 0 && !showOpenCode && !showAntigravity ? (
           <EmptyState
             tone="quiet"
             titleWeight="normal"
@@ -300,6 +329,7 @@ export const UsagePanel = memo(function UsagePanel({
           ))
         )}
         {showOpenCode && <OpenCodeUsageSection usage={usage} />}
+        {showAntigravity && <AntigravityUsageSection usage={usage} />}
         {showAiCredits && <AiCreditsUsageCard />}
       </div>
     </div>

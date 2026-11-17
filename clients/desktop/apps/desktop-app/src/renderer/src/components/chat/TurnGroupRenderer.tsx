@@ -128,6 +128,15 @@ import { useShallow } from 'zustand/react/shallow';
 import { AutoArchiveToggleButton } from './AutoArchiveToggleButton';
 import { ChatMessageItem, type SpawningCallTarget } from './ChatMessageItem';
 import { ForkChatButton } from './ForkChatButton';
+import { CloudForkNotice } from './CloudForkNotice';
+import {
+  cloudForkKey,
+  cloudForkOpensItsTask,
+  forkCloudChat,
+  useCloudForkStore,
+} from '@/stores/chat/web-core/cloud-forks';
+import { useStore } from 'zustand';
+import { cloudCoworkStore } from '@/cloud-chats/cloud-cowork-store';
 import { ResetToPointDialog } from './ResetToPointDialog';
 import { TurnMoreActions } from './TurnMoreActions';
 import { DesktopAgentActivitySection } from './DesktopAgentActivitySection';
@@ -719,7 +728,7 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
   const selectedWorktreeWorktreeId = useChatStore(
     (s) => targetOverride?.worktreeId ?? s.selectedWorktree?.worktreeId,
   );
-  const { chatTabFork } = useScopeCapabilities({
+  const { chatTabFork, chatTaskFork } = useScopeCapabilities({
     projectId: selectedWorktreeProjectId ?? '',
   });
   // This turn's chat. Its selectors run only when this chat's tab changes,
@@ -1608,16 +1617,44 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
       : completionStatus;
   const forksActiveTurn =
     !group.isComplete && (isActiveTimer || continuationActive);
+  // A whole-chat fork into a new task (a cloud chat, CAN-7007) has no fork
+  // point, so it sits on the latest completed turn only.
+  const forkOpensItsTask = useStore(cloudCoworkStore, (state) =>
+    cloudForkOpensItsTask(selectedWorktreeProjectId ?? '', state.projects),
+  );
+  const forksWholeChat =
+    chatTabFork !== true && chatTaskFork === true && forkOpensItsTask;
   const showForkAction =
     !readOnly &&
-    chatTabFork === true &&
     Boolean(chatId) &&
-    (forksActiveTurn
-      ? promptHead &&
-        sourceSdkSessionId !== undefined &&
-        !suppressActiveForkAction
-      : group.isComplete &&
-        (isLastForkableTurnGroup || hasForkableAssistantContent(group)));
+    (forksWholeChat
+      ? group.isComplete && !forksActiveTurn && isLastForkableTurnGroup
+      : chatTabFork === true &&
+        (forksActiveTurn
+          ? promptHead &&
+            sourceSdkSessionId !== undefined &&
+            !suppressActiveForkAction
+          : group.isComplete &&
+            (isLastForkableTurnGroup || hasForkableAssistantContent(group))));
+  // Branch, Share and Run comments act on a local session, so they ride
+  // only with the local fork; a cloud chat's whole-chat fork shows Fork alone.
+  const showLocalTurnActions = showForkAction && !forksWholeChat;
+  const cloudForkTarget =
+    forksWholeChat &&
+    chatId !== undefined &&
+    selectedWorktreeProjectId !== undefined &&
+    selectedWorktreeWorktreeId !== undefined
+      ? {
+          projectId: selectedWorktreeProjectId,
+          worktreeId: selectedWorktreeWorktreeId,
+          chatId,
+        }
+      : null;
+  const cloudForkPending = useCloudForkStore((state) =>
+    cloudForkTarget === null
+      ? false
+      : state.forks[cloudForkKey(cloudForkTarget)]?.status === 'pending',
+  );
   // Note: in raw `source.messages` the turn timer is appended right after
   // the user message (before any assistant content arrives) — only
   // `reorderMessagesForDisplay` floats it to the end for rendering. So we
@@ -1708,7 +1745,7 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
     ) : undefined;
   const shareButton =
     !isActiveTimer &&
-    showForkAction &&
+    showLocalTurnActions &&
     chatId &&
     selectedWorktreeProjectId &&
     selectedWorktreeWorktreeId &&
@@ -1732,7 +1769,7 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
   // comment surface, so the footer stays exactly as it was.
   const commentsButton =
     !isActiveTimer &&
-    showForkAction &&
+    showLocalTurnActions &&
     chatId &&
     selectedWorktreeProjectId &&
     selectedWorktreeWorktreeId &&
@@ -1749,7 +1786,7 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
   // Clean chat look: the reply row is Copy, Fork, then "•••" with Branch,
   // Share (and Run comments) and Good / Bad response, then the time.
   const branchHandler =
-    showForkAction && canBranch && !isActiveTimer && chatId
+    showLocalTurnActions && canBranch && !isActiveTimer && chatId
       ? (): void => {
           void branchTab(chatId, forkTarget, { forkAfterUserMessageId });
         }
@@ -1785,18 +1822,22 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
     ) : undefined;
 
   const forkHandler =
-    showForkAction && chatId
+    showForkAction && cloudForkTarget !== null
       ? (): void => {
-          if (forksActiveTurn) {
-            forkTab(chatId, forkTarget, {
-              includeActiveTurn: true,
-              ...(sourceSdkSessionId ? { sourceSdkSessionId } : {}),
-            });
-            return;
-          }
-          forkTab(chatId, forkTarget, { forkAfterUserMessageId });
+          void forkCloudChat(cloudForkTarget);
         }
-      : undefined;
+      : showForkAction && chatId
+        ? (): void => {
+            if (forksActiveTurn) {
+              forkTab(chatId, forkTarget, {
+                includeActiveTurn: true,
+                ...(sourceSdkSessionId ? { sourceSdkSessionId } : {}),
+              });
+              return;
+            }
+            forkTab(chatId, forkTarget, { forkAfterUserMessageId });
+          }
+        : undefined;
   // Clean chat look: while the turn runs, its watch, fork and auto-archive
   // actions sit at the end of the "Working for" header, and the row under
   // the reply holds the live line, so that row keeps one height from the
@@ -2146,11 +2187,12 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
           commentsButton={moreMenu ? undefined : commentsButton}
           showForkAction={showForkAction}
           onFork={forkHandler}
+          forkDisabled={cloudForkPending}
           showBranchAction={
-            !moreMenu && showForkAction && canBranch && !isActiveTimer
+            !moreMenu && showLocalTurnActions && canBranch && !isActiveTimer
           }
           onBranch={
-            showForkAction && canBranch && chatId
+            showLocalTurnActions && canBranch && chatId
               ? (): void => {
                   void branchTab(chatId, forkTarget, {
                     forkAfterUserMessageId,
@@ -2184,7 +2226,12 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
             feedbackControl !== undefined) && (
             <TurnFooterRow variant="actions" data-testid="turn-feedback-row">
               {fallbackCopyAction}
-              {forkHandler ? <ForkChatButton onClick={forkHandler} /> : null}
+              {forkHandler ? (
+                <ForkChatButton
+                  onClick={forkHandler}
+                  disabled={cloudForkPending}
+                />
+              ) : null}
               {moreMenu ?? (
                 <>
                   {shareButton}
@@ -2196,6 +2243,9 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
           )}
         </>
       )}
+      {showForkAction && cloudForkTarget !== null ? (
+        <CloudForkNotice target={cloudForkTarget} />
+      ) : null}
     </ToolApprovalWaitProvider>,
   );
 });

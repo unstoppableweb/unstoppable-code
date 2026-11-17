@@ -1379,3 +1379,123 @@ test('combining repository worktrees opens a temporary destination and preserves
     if (electronApp) await closeCanopy(electronApp, userDataDir);
   }
 });
+
+test.describe('Sidebar worktree create', () => {
+  test('the sidebar + shows the created worktree at once, under one id, and opens it (CAN-6957)', async () => {
+    test.setTimeout(90_000);
+
+    const userDataDir = mkdtempSync(
+      path.join(os.tmpdir(), 'canopy-sidebar-create-'),
+    );
+    // No pre-existing worktree, so every row the project shows is this create.
+    const summary = seedDemoWorkspaces({
+      userDataDir,
+      apps: [DEMO_APP_ID],
+      createWorktrees: false,
+    });
+    const workspace = summary.workspaces[0];
+
+    const { electronApp } = await launchCanopy({ userDataDir });
+
+    try {
+      const window = await electronApp.firstWindow();
+      const app = new CanopyAppDriver(window);
+      await app.waitForShell({ timeout: 30_000 });
+
+      // Hold main's create at its real IPC boundary, so "at once" means
+      // before the host has answered, not merely fast.
+      await electronApp.evaluate(({ ipcMain }) => {
+        const channel = 'worktree:create';
+        const original = ipcMain._invokeHandlers.get(channel);
+        if (!original) throw new Error('Worktree create handler is missing.');
+        let release;
+        globalThis.__can6957ReleaseCreate = new Promise((resolve) => {
+          release = resolve;
+        });
+        globalThis.__can6957Release = () => release();
+        ipcMain.removeHandler(channel);
+        ipcMain.handle(channel, async (...args) => {
+          ipcMain.removeHandler(channel);
+          ipcMain.handle(channel, original);
+          await globalThis.__can6957ReleaseCreate;
+          return original(...args);
+        });
+      });
+
+      // Every worktree id this project's rows show from the click on.
+      await window.evaluate((projectId) => {
+        const seen = new Set();
+        const record = () => {
+          for (const row of document.querySelectorAll(
+            `[data-testid="worktree-row"][data-project-id="${projectId}"]`,
+          )) {
+            seen.add(row.getAttribute('data-worktree-id'));
+          }
+        };
+        new MutationObserver(record).observe(document.body, {
+          subtree: true,
+          childList: true,
+          attributes: true,
+          attributeFilter: ['data-worktree-id'],
+        });
+        globalThis.__can6957SeenRowIds = seen;
+      }, workspace.id);
+
+      const header = window
+        .locator(
+          `[data-sidebar-workspace-id="${workspace.id}"] [data-testid^="sidebar-project-header-"]`,
+        )
+        .first();
+      // The + is revealed on hover; this is setup by stable identity, not a
+      // hover assertion, so dispatch to the resolved button directly.
+      const add = header.getByLabel(/^Create worktree for /);
+      await expect(add).toBeEnabled();
+      await add.evaluate((element) => {
+        if (!(element instanceof HTMLElement)) {
+          throw new Error('Expected the create button element');
+        }
+        element.click();
+      });
+
+      // While main still holds the create, the project already shows the
+      // new worktree's row.
+      const rows = window.locator(
+        `[data-testid="worktree-row"][data-project-id="${workspace.id}"]`,
+      );
+      await expect(rows).toHaveCount(1);
+      const shownId = await rows.first().getAttribute('data-worktree-id');
+      expect(shownId).toBeTruthy();
+
+      await electronApp.evaluate(() => globalThis.__can6957Release());
+
+      // The row it showed is the worktree main created, now open.
+      const createdRow = window.locator(
+        `[data-testid="worktree-row"][data-worktree-id="${shownId}"]`,
+      );
+      await expect(
+        window.locator('[data-sidebar-selected-item]').filter({
+          has: createdRow,
+        }),
+      ).toHaveCount(1, { timeout: 30_000 });
+      await expect(window.getByTestId('worktree-part')).toBeVisible();
+      await expect
+        .poll(() =>
+          execFileSync('git', ['worktree', 'list', '--porcelain'], {
+            cwd: workspace.repoPath,
+            encoding: 'utf8',
+          })
+            .split('\n')
+            .filter((line) => line.startsWith('worktree '))
+            .map((line) => path.basename(line.slice('worktree '.length))),
+        )
+        .toContain(shownId);
+      // No other id ever stood in for it.
+      expect(
+        await window.evaluate(() => [...globalThis.__can6957SeenRowIds]),
+      ).toEqual([shownId]);
+      await expect(rows).toHaveCount(1);
+    } finally {
+      await closeCanopy(electronApp, userDataDir);
+    }
+  });
+});

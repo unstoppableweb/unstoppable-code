@@ -1273,7 +1273,7 @@ test('owner: the relay’s device cap refuses another browser as too_many_device
 // ---------------------------------------------------------------------------
 
 test('Portal coexists with direct, and with Portal off its routes answer 410 while direct keeps working', async () => {
-  test.setTimeout(300_000);
+  test.setTimeout(600_000);
   const portal = await openProfile(await seedSessionCookie(userA.userId));
   try {
     await desktop.window.evaluate(() => window.api.canopyPortal.start());

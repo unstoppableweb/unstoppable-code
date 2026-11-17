@@ -325,13 +325,15 @@ export const WORKTREE_STATE_GALLERY_SECTIONS: WorktreeGallerySection[] = [
       {
         id: 'setup-git-pending',
         label: 'Creating worktree',
-        description: 'Git operations still pending — trailing setup loader.',
+        description:
+          'Git operations still pending — the same rocket, loader, and "Running setup…" as the setup script (CAN-6957).',
         props: { uiStatus: 'idle', setupPhase: 'git-pending' },
       },
       {
         id: 'setup-running',
         label: 'Running setup script',
-        description: 'Setup script executing — same loader, setup title.',
+        description:
+          'Setup script executing — rocket, trailing setup loader, "Running setup…".',
         props: { uiStatus: 'idle', setupPhase: 'running-setup' },
       },
       {

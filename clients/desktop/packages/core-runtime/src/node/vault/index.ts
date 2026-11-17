@@ -18,3 +18,13 @@ export * from './migration-windows-verifier';
 export * from './migration-linux-verifier';
 export * from './copilot-grant-contracts';
 export * from './copilot-grant-authority';
+export * from './copilot-legacy-source';
+
+export * from './copilot-import';
+export * from './copilot-handoff-bridge';
+export * from './copilot-handoff-core';
+
+export {
+  createCopilotMigrationUse,
+  type CopilotUseCompletion,
+} from './copilot-use';

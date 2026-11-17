@@ -277,6 +277,10 @@ export const DESKTOP_CONTROL_RECIPES = {
   // A Customize row's split action (CAN-6813): the state segment and its
   // caret, each lighting up alone on the Add button's secondary surface.
   'customize-row-action': `focus-ring flex min-w-0 flex-1 items-center gap-1.5 pl-2.5 pr-2 text-xs font-medium fg-primary transition-colors ${SECONDARY_SURFACE_HOVER_CLASS} ${SECONDARY_SURFACE_OPEN_CLASS} aria-disabled:cursor-default disabled:cursor-default disabled:opacity-70`,
+  // New Customize's status-line "Sign in" and "Retry": plain text; only the
+  // triangle beside it carries the warning color (Sergii's QA).
+  'customize-row-sign-in':
+    'focus-ring rounded font-medium fg-primary hover:underline disabled:cursor-not-allowed disabled:no-underline disabled:opacity-60',
   'customize-row-action-menu': `focus-ring flex w-7 shrink-0 items-center justify-center fg-secondary transition-colors hover:fg-primary ${SECONDARY_SURFACE_HOVER_CLASS} ${SECONDARY_SURFACE_OPEN_CLASS} aria-expanded:fg-primary`,
   'worktree-open-menu': (split: boolean) =>
     `focus-ring flex items-center transition-colors ${SECONDARY_SURFACE_HOVER_CLASS} ${

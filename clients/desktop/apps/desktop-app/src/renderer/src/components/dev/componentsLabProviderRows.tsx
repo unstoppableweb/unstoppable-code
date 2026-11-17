@@ -2,7 +2,12 @@ import { useContext, type JSX } from 'react';
 import { LabBrandDisplayNameContext } from './componentsLabStageContext';
 import {
   CREDITS_ROW_DESCRIPTION,
+  CREDITS_ROW_EMPTY_DESCRIPTION,
   PROVIDER_ROW_DESCRIPTIONS,
+  providerChoiceReason,
+  providerSwitchFailedMessage,
+  switchProviderDialogTitle,
+  usageLimitReasonAfterName,
   Surface,
   ProviderRowLabel,
   ProviderStatusDot,
@@ -19,12 +24,15 @@ import {
   type CreditsSourceFacts,
   type ProviderChoiceInput,
   type ProviderChoiceRow,
+  type ProviderChoices,
 } from '@canopy/app-state/provider-choice';
 import {
   ProviderChoiceActionButton,
   ProviderChoiceList,
   providerChoicePrimaryLabel,
+  type ProviderChoiceActionContext,
   type ProviderChoicePresentations,
+  type ProviderChoiceRowError,
 } from '@canopy/ui-app/providers';
 import {
   SpecimenCell,
@@ -258,6 +266,9 @@ export function ServerMarkdownSpecimen(): JSX.Element {
 }
 
 const CODEX_DEFAULT = { id: 'gpt-6-sol', label: 'GPT-6 Sol' };
+/** The chat's model in every recovery scenario. */
+const CHAT_MODEL = { id: 'claude-opus-4-7', label: 'Opus 4.7' };
+const CONTINUE_CHAT = { kind: 'continue-chat', model: CHAT_MODEL } as const;
 const CREDITS_DEFAULT = { id: 'gpt-6-sol', label: 'GPT-6 Sol' };
 const RESETS_AT = Date.UTC(2026, 10, 14, 20, 0);
 
@@ -281,13 +292,103 @@ function credits(
 const SCENARIOS: readonly {
   readonly label: string;
   readonly input: ProviderChoiceInput;
+  /** A failed choice, shown on its row. */
+  readonly rowError?: ProviderChoiceRowError;
 }[] = [
+  {
+    label:
+      'Usage limit: the gateway has its own route for the model (Stays on)',
+    input: {
+      current: 'claude',
+      condition: 'quota_limit',
+      target: CONTINUE_CHAT,
+      sources: [
+        {
+          source: 'claude',
+          connection: { kind: 'limited', resetsAt: RESETS_AT },
+          connectable: true,
+          runsTargetModel: true,
+        },
+        {
+          source: 'codex',
+          connection: { kind: 'ready' },
+          connectable: true,
+          runsTargetModel: false,
+          defaultModel: CODEX_DEFAULT,
+        },
+        {
+          source: 'gateway',
+          connection: { kind: 'ready' },
+          connectable: true,
+          runsTargetModel: false,
+          defaultModel: { id: 'gw-sonnet-5-5', label: 'Sonnet 5.5' },
+          equivalentModel: {
+            id: 'gw-anthropic/claude-opus-4.7',
+            label: 'Opus 4.7',
+          },
+        },
+        credits({ runsTargetModel: false }),
+      ],
+    },
+  },
+  {
+    label: 'Signed out of the current provider (Reconnect)',
+    input: {
+      current: 'claude',
+      condition: 'no_billing_source',
+      target: CONTINUE_CHAT,
+      sources: [
+        {
+          source: 'claude',
+          connection: { kind: 'not-connected' },
+          connectable: true,
+          runsTargetModel: true,
+        },
+        {
+          source: 'codex',
+          connection: { kind: 'ready' },
+          connectable: true,
+          runsTargetModel: false,
+          defaultModel: CODEX_DEFAULT,
+        },
+        credits({ balance: 'unknown' }),
+      ],
+    },
+  },
+  {
+    label: 'A failed switch, shown on its row',
+    rowError: {
+      source: 'codex',
+      message: providerSwitchFailedMessage('codex', 'Codex'),
+    },
+    input: {
+      current: 'claude',
+      condition: 'quota_limit',
+      target: CONTINUE_CHAT,
+      sources: [
+        {
+          source: 'claude',
+          connection: { kind: 'limited', resetsAt: null },
+          connectable: true,
+          runsTargetModel: true,
+        },
+        {
+          source: 'codex',
+          connection: { kind: 'ready' },
+          connectable: true,
+          runsTargetModel: false,
+          defaultModel: CODEX_DEFAULT,
+        },
+        credits({ balance: 'spendable' }),
+      ],
+    },
+  },
   {
     label: 'Usage limit: one other source can continue (Continue with)',
     input: {
       current: 'claude',
       condition: 'quota_limit',
-      target: { kind: 'continue-chat' },
+      target: CONTINUE_CHAT,
       sources: [
         {
           source: 'claude',
@@ -311,7 +412,7 @@ const SCENARIOS: readonly {
     input: {
       current: 'codex',
       condition: 'quota_limit',
-      target: { kind: 'continue-chat' },
+      target: CONTINUE_CHAT,
       sources: [
         {
           source: 'claude',
@@ -331,11 +432,12 @@ const SCENARIOS: readonly {
     },
   },
   {
-    label: 'No billing source: connect a provider or buy credits',
+    label:
+      'Nothing ready, so no primary: connect a provider or buy credits (no credits left)',
     input: {
       current: 'codex',
       condition: 'no_billing_source',
-      target: { kind: 'continue-chat' },
+      target: CONTINUE_CHAT,
       sources: [
         {
           source: 'claude',
@@ -358,7 +460,7 @@ const SCENARIOS: readonly {
     input: {
       current: 'claude',
       condition: 'quota_limit',
-      target: { kind: 'continue-chat' },
+      target: CONTINUE_CHAT,
       sources: [
         {
           source: 'claude',
@@ -382,7 +484,7 @@ const SCENARIOS: readonly {
     input: {
       current: 'claude',
       condition: 'quota_limit',
-      target: { kind: 'continue-chat' },
+      target: CONTINUE_CHAT,
       sources: [
         {
           source: 'claude',
@@ -411,7 +513,7 @@ const SCENARIOS: readonly {
     input: {
       current: 'credits',
       condition: 'out_of_credits',
-      target: { kind: 'continue-chat' },
+      target: CONTINUE_CHAT,
       sources: [
         ...(['claude', 'codex'] as const).map(
           (source): AnyProviderSourceFacts => ({
@@ -428,14 +530,44 @@ const SCENARIOS: readonly {
   },
 ];
 
-function renderAction(row: ProviderChoiceRow): JSX.Element | null {
+function renderAction(
+  row: ProviderChoiceRow,
+  { recommended }: ProviderChoiceActionContext,
+): JSX.Element | null {
   return (
     <ProviderChoiceActionButton
       source={row.source}
       action={row.action}
+      recommended={recommended}
+      isCurrent={row.isCurrent}
       onClick={noop}
     />
   );
+}
+
+/**
+ * The dialog's header for a scenario, as one caption: its title and the
+ * reason the subtitle gives. The lab's names are plain strings.
+ */
+function headerCaption(
+  input: ProviderChoiceInput,
+  choices: ProviderChoices,
+  presentation: ProviderChoicePresentations,
+  resetsLabel: string,
+): string {
+  const title = switchProviderDialogTitle({ condition: input.condition });
+  const { current } = choices;
+  const name =
+    current !== null ? presentation[current.source]?.name : undefined;
+  const reason =
+    input.condition === 'quota_limit' &&
+    current?.connection.kind === 'limited' &&
+    typeof name === 'string'
+      ? `${name} ${usageLimitReasonAfterName(
+          current.connection.resetsAt !== null ? resetsLabel : undefined,
+        )}`
+      : providerChoiceReason(input.condition);
+  return reason !== undefined ? `${title}. ${reason}` : title;
 }
 
 /** The provider list's row states, as the Switch provider dialog shows them. */
@@ -455,13 +587,33 @@ export function ProviderRowsSpecimen(): JSX.Element {
       description: PROVIDER_ROW_DESCRIPTIONS.codex,
     },
     credits: { name: brandDisplayName, description: CREDITS_ROW_DESCRIPTION },
+    gateway: {
+      name: 'OpenRouter',
+      description: PROVIDER_ROW_DESCRIPTIONS.gateway,
+    },
   };
   const formatResetsAt = (): string => '3:00 PM';
   return (
     <div className="flex flex-col gap-6">
       <SpecimenPanel title="ProviderChoiceList">
-        {SCENARIOS.map(({ label, input }) => {
+        {SCENARIOS.map(({ label, input, rowError }) => {
           const choices = resolveProviderChoices(input);
+          const creditsBalance = input.sources.find(
+            (facts) => facts.source === 'credits',
+          );
+          // An empty balance replaces the credits description, as hosts do.
+          const scenarioPresentation: ProviderChoicePresentations = {
+            ...presentation,
+            credits: {
+              name: brandDisplayName,
+              description:
+                creditsBalance !== undefined &&
+                'balance' in creditsBalance &&
+                creditsBalance.balance === 'empty'
+                  ? CREDITS_ROW_EMPTY_DESCRIPTION
+                  : CREDITS_ROW_DESCRIPTION,
+            },
+          };
           const continueName =
             choices.primary.kind === 'continue-with'
               ? presentation[choices.primary.source]?.name
@@ -475,12 +627,23 @@ export function ProviderRowsSpecimen(): JSX.Element {
               )}"`}
               wide
             >
-              <div className="w-full max-w-lg">
+              <div className="flex w-full max-w-lg flex-col gap-2">
+                <p className="text-xs fg-secondary">
+                  {headerCaption(
+                    input,
+                    choices,
+                    scenarioPresentation,
+                    formatResetsAt(),
+                  )}
+                </p>
                 <ProviderChoiceList
                   rows={choices.rows}
-                  presentation={presentation}
+                  recommended={choices.recommended}
+                  presentation={scenarioPresentation}
                   renderAction={renderAction}
                   formatResetsAt={formatResetsAt}
+                  targetModelLabel={CHAT_MODEL.label}
+                  {...(rowError !== undefined ? { rowError } : {})}
                 />
               </div>
             </SpecimenCell>

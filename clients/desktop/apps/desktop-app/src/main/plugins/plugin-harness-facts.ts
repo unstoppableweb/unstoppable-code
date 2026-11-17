@@ -33,8 +33,9 @@ function providerAllowsPluginSupport(
   plugin: PluginInfo,
   provider: CatalogHarnessId,
 ): boolean {
-  // OpenCode uses the same projected facet/member contract as Cursor.
-  if (provider === 'opencode') {
+  // OpenCode and Antigravity use the projected facet/member contract Cursor
+  // uses: skills, commands and MCP servers. Hooks and agents never load.
+  if (provider === 'opencode' || provider === 'antigravity') {
     return cursorPluginFacetSupport(plugin.facets).supported;
   }
   if (provider === 'codex') {
@@ -48,21 +49,17 @@ function providerHasInstalledPluginFacet(
   plugin: PluginInfo,
   provider: CatalogHarnessId,
 ): boolean {
-  if (
-    provider !== 'opencode' &&
-    plugin.cachePath &&
-    existsSync(plugin.cachePath)
-  ) {
+  const projected = provider === 'opencode' || provider === 'antigravity';
+  if (!projected && plugin.cachePath && existsSync(plugin.cachePath)) {
     return true;
   }
-  const facets =
-    provider === 'opencode'
-      ? [plugin.facets[cursorPluginFacetProvider(plugin.facets)]]
-      : provider === 'codex'
-        ? plugin.providerSupport.codex === 'native'
-          ? [plugin.facets.codex]
-          : [plugin.facets.codexCompatibility, plugin.facets.claude]
-        : [plugin.facets.claude];
+  const facets = projected
+    ? [plugin.facets[cursorPluginFacetProvider(plugin.facets)]]
+    : provider === 'codex'
+      ? plugin.providerSupport.codex === 'native'
+        ? [plugin.facets.codex]
+        : [plugin.facets.codexCompatibility, plugin.facets.claude]
+      : [plugin.facets.claude];
   return facets.some(
     (facet) =>
       facet !== undefined &&
@@ -77,14 +74,14 @@ function pluginMembersForProvider(
   plugin: PluginInfo,
   provider: CatalogHarnessId,
 ): PluginMember[] {
-  const details =
-    provider === 'opencode'
-      ? plugin.facets[cursorPluginFacetProvider(plugin.facets)]?.details
-      : provider === 'codex'
-        ? (plugin.facets.codex?.details ??
-          plugin.facets.codexCompatibility?.details ??
-          plugin.details)
-        : (plugin.facets.claude?.details ?? plugin.details);
+  const projected = provider === 'opencode' || provider === 'antigravity';
+  const details = projected
+    ? plugin.facets[cursorPluginFacetProvider(plugin.facets)]?.details
+    : provider === 'codex'
+      ? (plugin.facets.codex?.details ??
+        plugin.facets.codexCompatibility?.details ??
+        plugin.details)
+      : (plugin.facets.claude?.details ?? plugin.details);
   if (!details) return [];
 
   const members: PluginMember[] = [];
@@ -100,7 +97,7 @@ function pluginMembersForProvider(
     });
   }
   const commands =
-    provider === 'opencode' &&
+    projected &&
     !cursorLoadsPluginMemberKind(
       cursorPluginFacetProvider(plugin.facets),
       'commands',
@@ -188,5 +185,6 @@ export async function pluginHarnessFacts(
     ollama: facetHarness(plugin, 'ollama'),
     copilot: await copilotHarness(marketplace, plugin),
     opencode: facetHarness(plugin, 'opencode'),
+    antigravity: facetHarness(plugin, 'antigravity'),
   };
 }

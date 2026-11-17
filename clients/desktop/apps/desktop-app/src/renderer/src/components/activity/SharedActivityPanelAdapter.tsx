@@ -269,6 +269,7 @@ function SharedActivityPanelAdapterContents({
     void requestChangedFilesRefresh(
       selectedWorktree.projectId,
       selectedWorktree.worktreeId,
+      { kind: 'automatic' },
     ).catch(() => undefined);
   }, [isSharedContainer, selectedWorktree]);
   const lastOutputWorktreeKeyRef = useRef<string | null>(null);

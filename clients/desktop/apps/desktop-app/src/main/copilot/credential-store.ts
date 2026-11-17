@@ -1,5 +1,12 @@
+import { copilotCleanupClaim, type CopilotClaimStep } from './cleanup-claim';
+import { constants } from 'node:fs';
+import {
+  CopilotVaultGrantSchema,
+  type CopilotVaultGrant,
+  type CopilotLegacyCiphertextPort,
+} from '@canopy/core-runtime/node/vault';
 import { createHash, randomBytes } from 'node:crypto';
-import { mkdir, readFile, rm } from 'node:fs/promises';
+import { lstat, mkdir, open, readFile, rm } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { syncDirectory, writeFileAtomically } from '../lib/atomic-file';
 import { isE2eBuild } from '../lib/e2e-gate';
@@ -368,4 +375,191 @@ export function deleteCopilotCredential(expected: {
  */
 export function clearCopilotCredential(): Promise<void> {
   return serialized(remove);
+}
+
+export type CopilotMigrationSourceRead =
+  | {
+      readonly kind: 'present';
+      readonly generation: string;
+      readonly grant: CopilotVaultGrant;
+    }
+  | {
+      readonly kind: 'absent' | 'malformed' | 'unreadable' | 'outcome_unknown';
+    };
+export interface CopilotMigrationSource {
+  readonly ciphertext: CopilotLegacyCiphertextPort;
+  cleanup(
+    dataRoot: string,
+    operationId: string,
+    generation: string,
+    step: CopilotClaimStep,
+  ): Promise<'done' | 'changed' | 'unavailable'>;
+  capture(): Promise<CopilotMigrationSourceRead>;
+  compare(
+    generation: string,
+  ): Promise<
+    | 'same'
+    | 'changed'
+    | 'absent'
+    | 'malformed'
+    | 'unreadable'
+    | 'outcome_unknown'
+  >;
+}
+
+async function readMigrationCiphertext(): ReturnType<
+  CopilotLegacyCiphertextPort['read']
+> {
+  const path = getCopilotCredentialFilePath();
+  let observed = false;
+  try {
+    const before = await lstat(path);
+    if (
+      !before.isFile() ||
+      before.nlink !== 1 ||
+      before.size < 1 ||
+      before.size > 1048576
+    )
+      return { kind: 'malformed' };
+    observed = true;
+    const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const opened = await file.stat();
+      if (opened.dev !== before.dev || opened.ino !== before.ino)
+        return { kind: 'outcome_unknown' };
+      const buffer = Buffer.alloc(before.size + 1);
+      const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
+      const bytes = buffer.subarray(0, bytesRead);
+      const after = await file.stat();
+      const named = await lstat(path);
+      if (
+        bytesRead !== before.size ||
+        after.nlink !== 1 ||
+        !named.isFile() ||
+        after.size !== before.size ||
+        after.mtimeMs !== before.mtimeMs ||
+        after.ctimeMs !== before.ctimeMs ||
+        named.dev !== after.dev ||
+        named.ino !== after.ino ||
+        named.nlink !== 1 ||
+        named.size !== after.size ||
+        named.mtimeMs !== after.mtimeMs ||
+        named.ctimeMs !== after.ctimeMs
+      ) {
+        bytes.fill(0);
+        return { kind: 'outcome_unknown' };
+      }
+      return { kind: 'present', bytes };
+    } finally {
+      await file.close();
+    }
+  } catch (error) {
+    return {
+      kind: observed
+        ? 'outcome_unknown'
+        : isMissing(error)
+          ? 'absent'
+          : 'unreadable',
+    };
+  }
+}
+
+/** Authority calls only after affirmative quiescence; the existing writer queue is held throughout. */
+export function withCopilotMigrationSource<T>(
+  operation: (source: CopilotMigrationSource) => Promise<T>,
+): Promise<T> {
+  return serialized(async () => {
+    let active = true;
+    const read: CopilotLegacyCiphertextPort['read'] = () => {
+      if (!active) return Promise.resolve({ kind: 'outcome_unknown' });
+      return readMigrationCiphertext();
+    };
+    const implementation: CopilotMigrationSource = {
+      ciphertext: { read },
+      cleanup: (dataRoot, operationId, generation, step) =>
+        active
+          ? copilotCleanupClaim({
+              sourcePath: getCopilotCredentialFilePath(),
+              dataRoot,
+              operationId,
+              generation,
+              step,
+            })
+          : Promise.resolve('unavailable'),
+      async capture(): Promise<CopilotMigrationSourceRead> {
+        if (unsavedAdoption) return { kind: 'outcome_unknown' };
+        const result = await read();
+        if (result.kind !== 'present') return result;
+        try {
+          const generation = createHash('sha256')
+            .update(result.bytes)
+            .digest('hex');
+          let plaintext: string;
+          try {
+            plaintext = getSecretStoragePolicy().decrypt(
+              Buffer.from(result.bytes),
+            );
+          } catch {
+            return { kind: 'unreadable' };
+          }
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(plaintext);
+          } catch {
+            return { kind: 'malformed' };
+          }
+          const grant = parseGrant(parsed);
+          if (!grant) return { kind: 'malformed' };
+          // A partially revisioned record is not an old-format grant.
+          if (
+            typeof parsed === 'object' &&
+            parsed !== null &&
+            ('entryId' in parsed || 'revision' in parsed) &&
+            !parseRevision(parsed)
+          )
+            return { kind: 'malformed' };
+          const projected = CopilotVaultGrantSchema.safeParse({
+            version: 1,
+            ...grant,
+          });
+          return projected.success
+            ? { kind: 'present', generation, grant: projected.data }
+            : { kind: 'malformed' };
+        } finally {
+          result.bytes.fill(0);
+        }
+      },
+      async compare(generation): ReturnType<CopilotMigrationSource['compare']> {
+        const result = await read();
+        if (result.kind !== 'present') return result.kind;
+        try {
+          return createHash('sha256').update(result.bytes).digest('hex') ===
+            generation
+            ? 'same'
+            : 'changed';
+        } finally {
+          result.bytes.fill(0);
+        }
+      },
+    };
+    const pending = new Set<Promise<unknown>>();
+    function owned<T>(action: () => Promise<T>): Promise<T> {
+      const work = action();
+      pending.add(work);
+      void work.finally(() => pending.delete(work)).catch(() => undefined);
+      return work;
+    }
+    const source: CopilotMigrationSource = {
+      ciphertext: { read: () => owned(() => implementation.ciphertext.read()) },
+      cleanup: (...args) => owned(() => implementation.cleanup(...args)),
+      capture: () => owned(() => implementation.capture()),
+      compare: (generation) => owned(() => implementation.compare(generation)),
+    };
+    try {
+      return await operation(source);
+    } finally {
+      active = false;
+      await Promise.allSettled([...pending]);
+    }
+  });
 }

@@ -75,7 +75,12 @@ export function WorktreeDiscardPanel({
         recovery={view.recovery}
         busy={view.busy}
         error={view.error}
-        unconfirmedAction={view.unconfirmedAction}
+        unconfirmedAction={
+          view.unconfirmedAction === 'finish' &&
+          view.offer.recovery?.check === 'completed-turn-diff-cleanup'
+            ? 'finish-cleanup'
+            : view.unconfirmedAction
+        }
         outcome={view.outcome}
         canResolve={client.capabilities.worktreeRecoveryResolution === true}
         onAction={(action) => {

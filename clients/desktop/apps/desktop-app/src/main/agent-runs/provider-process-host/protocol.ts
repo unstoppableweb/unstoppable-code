@@ -19,11 +19,15 @@ export type ProviderProcessHostRequest =
       env: Record<string, string | undefined>;
       owner: ProviderProcessOwner;
       stdin?: ProviderProcessStdin;
+      /** CAN-6726: also stop traced descendants that left the child's group. */
+      reapDescendantGroups?: boolean;
       windowsVerbatimArguments?: boolean;
     }
   | { type: 'stdin'; requestId: string; dataBase64: string }
   | { type: 'stdin-end'; requestId: string }
   | { type: 'stop'; requestId: string; graceMs: number }
+  /** CAN-6738: record the child's escaped descendants for the reap at stop. */
+  | { type: 'record-descendants'; requestId: string }
   | { type: 'stdout-ack'; requestId: string; bytes: number }
   | { type: 'shutdown' };
 
@@ -43,6 +47,12 @@ export type ProviderProcessHostResponse =
       requestId: string;
       code: number | null;
       signal: NodeJS.Signals | null;
+    }
+  /** CAN-6738: the descendant cleanup of a reaping child's stop, after its close. */
+  | {
+      type: 'stopped';
+      requestId: string;
+      cleanup: 'none' | 'reaped' | 'unverified';
     }
   | { type: 'shutdown-complete' };
 
@@ -78,6 +88,10 @@ function isStdin(value: unknown): value is ProviderProcessStdin | undefined {
   return value === undefined || value === 'pipe' || value === 'ignore';
 }
 
+function isOptionalBoolean(value: unknown): value is boolean | undefined {
+  return value === undefined || typeof value === 'boolean';
+}
+
 function isSignal(value: unknown): value is NodeJS.Signals | null {
   return value === null || (typeof value === 'string' && value.length > 0);
 }
@@ -104,8 +118,8 @@ export function isProviderProcessHostRequest(
         isEnvironment(field(value, 'env')) &&
         isProviderProcessOwner(field(value, 'owner')) &&
         isStdin(field(value, 'stdin')) &&
-        (field(value, 'windowsVerbatimArguments') === undefined ||
-          typeof field(value, 'windowsVerbatimArguments') === 'boolean')
+        isOptionalBoolean(field(value, 'reapDescendantGroups')) &&
+        isOptionalBoolean(field(value, 'windowsVerbatimArguments'))
       );
     case 'stdin':
       return typeof field(value, 'dataBase64') === 'string';
@@ -113,6 +127,8 @@ export function isProviderProcessHostRequest(
       return true;
     case 'stop':
       return isCount(field(value, 'graceMs'));
+    case 'record-descendants':
+      return true;
     case 'stdout-ack':
       return isCount(field(value, 'bytes'));
     default:
@@ -147,6 +163,12 @@ export function isProviderProcessHostResponse(
       return (
         isExitCode(field(value, 'code')) && isSignal(field(value, 'signal'))
       );
+    case 'stopped': {
+      const cleanup = field(value, 'cleanup');
+      return (
+        cleanup === 'none' || cleanup === 'reaped' || cleanup === 'unverified'
+      );
+    }
     default:
       return false;
   }

@@ -22,6 +22,7 @@ import { w5StoreScenarios } from './w5-store-scenario.mjs';
 import {
   padRetainedWorktreeRow,
   retainedIdleRates,
+  retainedEventWork,
   retainedWorktreesIdleConfig,
   scaled,
 } from './retained-worktrees.mjs';
@@ -4010,6 +4011,8 @@ async function runRetainedWorktreesIdle({
     },
   };
   const rowsAfter = retainedRowBytes(userDataDir);
+  const retainedWork = retainedEventWork({ idle, stale, focus: focusRates });
+  if (retainedWork) tasks.extraWork.retained = retainedWork;
   for (const [label, phase] of [
     ['idle', idle],
     ['stale', stale],
@@ -15926,6 +15929,10 @@ function inflatePerformanceGitCheckout(seed, config) {
     'git',
     [
       '-c',
+      'user.name=Canopy Performance',
+      '-c',
+      'user.email=performance@example.invalid',
+      '-c',
       `core.hooksPath=${os.devNull}`,
       'commit',
       '-m',
@@ -16331,6 +16338,8 @@ async function browserPanelBindings(page) {
         groupId: leaf.groupId,
         panelId: panel.panelId,
         browserId: panel.instance.browserId,
+        activePanelId: leaf.activePanelId,
+        active: leaf.activePanelId === panel.panelId,
       })),
   );
 }
@@ -16427,7 +16436,20 @@ async function runBrowserPanels({
   if (bindings.length !== 2) {
     throw new Error(`Expected two Browser panels; found ${bindings.length}`);
   }
-  const [first, second] = bindings;
+  const activeBindings = bindings.filter((binding) => binding.active);
+  if (
+    bindings[0].groupId !== bindings[1].groupId ||
+    activeBindings.length !== 1
+  ) {
+    throw new Error(
+      'Expected both Browser panels in one group with one active; found ' +
+        JSON.stringify(bindings),
+    );
+  }
+  // After a move, the source group falls back to the selected chat
+  // (05a5c368db9), so move the inactive Browser panel to keep both visible.
+  const first = activeBindings[0];
+  const second = bindings.find((binding) => !binding.active);
   await recordTask(tasks, 'browser_arrange_side_by_side', async () => {
     await movePanelViaApi(page, second.panelId, first.groupId, 'right');
     await expect(

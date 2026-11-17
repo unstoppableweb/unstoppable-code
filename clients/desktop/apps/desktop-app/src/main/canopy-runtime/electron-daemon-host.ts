@@ -45,6 +45,11 @@ import {
   CORE_TRANSPORT_STREAM_DEFINITIONS,
   CORE_WORKSPACE_RECORDS_INSTRUCTION_DEFINITIONS,
   CORE_WORKSPACE_RECORDS_QUERY_DEFINITIONS,
+  OPERATION_INSTRUCTION_DEFINITIONS,
+  OPERATION_QUERY_DEFINITIONS,
+  OPERATION_STREAM_DEFINITIONS,
+  PIPELINE_DEFINITION_INSTRUCTION_DEFINITIONS,
+  PIPELINE_DEFINITION_QUERY_DEFINITIONS,
   WORKER_CODE_GRAPH_INSTRUCTION_DEFINITIONS,
   WORKER_CODE_GRAPH_READ_QUERY_DEFINITIONS,
   WORKER_PIPELINE_INSTRUCTION_DEFINITIONS,
@@ -106,6 +111,12 @@ export const ELECTRON_DAEMON_DEFINITIONS = {
     // Eligible local window workflows without model steps (CAN-5086).
     'worker.pipeline.execution.get':
       WORKER_PIPELINE_QUERY_DEFINITIONS['worker.pipeline.execution.get'],
+    // CAN-5092 S1a: typing only; production daemons do not serve operation
+    // records, so the manifest refuses each call capability_unavailable.
+    ...OPERATION_QUERY_DEFINITIONS,
+    // CAN-5092 S1b: typing only; production daemons do not serve workflow
+    // definitions, so the manifest refuses each call capability_unavailable.
+    ...PIPELINE_DEFINITION_QUERY_DEFINITIONS,
   },
   instructions: {
     // CAN-5908: typing only; no production entry route is selected.
@@ -148,6 +159,26 @@ export const ELECTRON_DAEMON_DEFINITIONS = {
       WORKER_SCRIPT_INSTRUCTION_DEFINITIONS['worker.script.execute'],
     'worker.script.execution.cancel':
       WORKER_SCRIPT_INSTRUCTION_DEFINITIONS['worker.script.execution.cancel'],
+    // CAN-5092 S1a: typing only, as the operation record queries.
+    ...OPERATION_INSTRUCTION_DEFINITIONS,
+    // CAN-5092 S1b: typing only, as the definition queries. No import: it is
+    // not on the interface authority list.
+    'core.pipeline.definition.upsert':
+      PIPELINE_DEFINITION_INSTRUCTION_DEFINITIONS[
+        'core.pipeline.definition.upsert'
+      ],
+    'core.pipeline.definition.delete':
+      PIPELINE_DEFINITION_INSTRUCTION_DEFINITIONS[
+        'core.pipeline.definition.delete'
+      ],
+    'core.pipeline.definition.duplicate':
+      PIPELINE_DEFINITION_INSTRUCTION_DEFINITIONS[
+        'core.pipeline.definition.duplicate'
+      ],
+    'core.pipeline.definition.setEnabled':
+      PIPELINE_DEFINITION_INSTRUCTION_DEFINITIONS[
+        'core.pipeline.definition.setEnabled'
+      ],
   },
   streams: {
     // CAN-5908: typing only; CAN-4730 owns watch route selection.
@@ -173,6 +204,8 @@ export const ELECTRON_DAEMON_DEFINITIONS = {
       WORKER_CODE_GRAPH_STREAM_DEFINITIONS[
         'worker.codeGraph.buildQueue.events'
       ],
+    // CAN-5092 S1a: typing only, as the operation record queries.
+    ...OPERATION_STREAM_DEFINITIONS,
   },
 };
 type D = typeof ELECTRON_DAEMON_DEFINITIONS;

@@ -24,6 +24,8 @@ import type {
   ChatTabUsage,
   McpQuestion,
   McpQuestionAnswer,
+  McpSecretRequest,
+  McpSecretRequestItem,
   PersistedChatMessage,
   PersistedChatTab,
   PersistedPendingQuestion,
@@ -348,6 +350,70 @@ const isQuestionControl = (
   value === 'number' ||
   value === 'date';
 
+const SECRET_NAME = /^[A-Z_][A-Z0-9_]{0,63}$/;
+
+/** One requested secret of a cloud secret request: metadata only, or null. */
+function mcpSecretRequestItem(value: unknown): McpSecretRequestItem | null {
+  if (!isRecord(value) || typeof value.name !== 'string') return null;
+  if (!SECRET_NAME.test(value.name)) return null;
+  const hint = isRecord(value.hint) ? value.hint : undefined;
+  return {
+    name: value.name,
+    ...(typeof value.label === 'string' ? { label: value.label } : {}),
+    ...(typeof value.description === 'string'
+      ? { description: value.description }
+      : {}),
+    ...(value.kind === 'password' ||
+    value.kind === 'token' ||
+    value.kind === 'multiline'
+      ? { kind: value.kind }
+      : {}),
+    ...(typeof value.required === 'boolean'
+      ? { required: value.required }
+      : {}),
+    ...(hint === undefined
+      ? {}
+      : {
+          hint: {
+            ...(typeof hint.prefix === 'string' ? { prefix: hint.prefix } : {}),
+            ...(typeof hint.minLength === 'number' &&
+            Number.isInteger(hint.minLength) &&
+            hint.minLength > 0
+              ? { minLength: hint.minLength }
+              : {}),
+          },
+        }),
+  };
+}
+
+/**
+ * A cloud chat's secret request as the composer's secret form shows it
+ * (agent secret requests): the web core carries it on its one question.
+ * Always the cloud form: its values go to the chat's cloud workspace over
+ * `core.chat.secretRequest.submit`, never the local store. Null when absent
+ * or unreadable, so the question shows as the update notice it reads as.
+ */
+function mcpSecretRequest(value: unknown): McpSecretRequest | null {
+  if (
+    !isRecord(value) ||
+    typeof value.reason !== 'string' ||
+    !Array.isArray(value.secrets) ||
+    value.secrets.length === 0
+  )
+    return null;
+  const secrets = value.secrets.map(mcpSecretRequestItem);
+  if (secrets.some((item) => item === null)) return null;
+  return {
+    reason: value.reason,
+    agentName: typeof value.agentName === 'string' ? value.agentName : 'Agent',
+    accessMode: 'cloud',
+    storage: 'encrypted',
+    secrets: secrets.filter(
+      (item): item is McpSecretRequestItem => item !== null,
+    ),
+  };
+}
+
 /** One question as the desktop's question card takes it, or null. */
 function mcpQuestion(value: unknown): McpQuestion | null {
   if (
@@ -381,6 +447,10 @@ function mcpQuestion(value: unknown): McpQuestion | null {
     ...(typeof value.placeholder === 'string'
       ? { placeholder: value.placeholder }
       : {}),
+    ...(() => {
+      const secretRequest = mcpSecretRequest(value.secretRequest);
+      return secretRequest === null ? {} : { secretRequest };
+    })(),
   };
 }
 

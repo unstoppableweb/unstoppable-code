@@ -3,7 +3,11 @@ description: Detect uncommitted or unpushed repo changes across the workspace, g
 scope: worktree
 inputs:
   commit_model:
-    description: Optional commit-message model override. Falls back to {{BRAND_ENV_PREFIX}}_PREF_COMMIT_GENERATION_MODEL and then Haiku.
+    description: >
+      Optional commit-message model override. Falls back to
+      {{BRAND_ENV_PREFIX}}_PREF_COMMIT_GENERATION_MODEL and then Haiku. Codex,
+      Cursor, Copilot, OpenCode and Google models run one read-only turn per
+      repository on the host runner before anything is committed.
     required: false
   commit_thinking_level:
     description: >

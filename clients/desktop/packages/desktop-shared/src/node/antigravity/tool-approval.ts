@@ -3,6 +3,7 @@ import { isAbsolute } from 'node:path';
 import type { AcpPermissionRequest } from '@canopy/desktop-shared/node/acp';
 import type { NativeToolApprovalPort } from '../approvals/native-tool-port';
 import { approvalCheckForClaudeTool } from '../approvals/tool-checks';
+import { writesAntigravityExecutableConfiguration } from './workspace-configuration';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -23,7 +24,17 @@ export function antigravityNativeOperation(
   const raw = call.rawInput;
   if (!isRecord(raw)) return undefined;
   let operation: AntigravityNativeOperation | undefined;
-  const path = raw.Path ?? raw.TargetFile ?? raw.AbsolutePath;
+  // Never approve one alias while the native tool executes another. Missing
+  // aliases are fine; supplied aliases must identify the exact same path.
+  const paths = [raw.Path, raw.TargetFile, raw.AbsolutePath].filter(
+    (value) => value !== undefined,
+  );
+  const path = paths[0];
+  if (
+    (name === 'read_file' || name === 'write_file') &&
+    paths.some((value) => typeof value !== 'string' || value !== path)
+  )
+    return undefined;
   if (name === 'read_file' && call.kind === 'read' && typeof path === 'string')
     operation = { tool: 'Read', input: { file_path: path }, mutates: false };
   if (
@@ -68,7 +79,12 @@ export async function authorizeAntigravityTool(
   if (request.signal.aborted) return 'deny';
   const call = request.request.toolCall;
   const operation = antigravityNativeOperation(request);
-  if (!operation || (context.planMode && operation.mutates)) return 'deny';
+  if (
+    !operation ||
+    (context.planMode && operation.mutates) ||
+    (await writesAntigravityExecutableConfiguration(operation, context.cwd))
+  )
+    return 'deny';
   const normalized = approvalCheckForClaudeTool(
     operation.tool,
     operation.input,

@@ -46,6 +46,8 @@ import {
   type PersistedChatMessage,
   type PortalChatMessage,
 } from '@canopy/desktop-shared/types';
+import { resolveAiCreditsScopeOwner } from '../agents/work-owner';
+import { assertTurnModelGatewayRoute } from '../lib/model-gateway-turn';
 import { codexServiceTierForModelConfig } from '@canopy/execution-engine/lib/codex-model-config';
 import { applyAgentSessionCodexSpeed } from '@canopy/execution-engine/lib/codex-speed';
 import { turnSessionApprovalRules } from '@canopy/desktop-shared/lib/send-approval-narrowing';
@@ -519,6 +521,22 @@ export async function dispatchAppAdvisorChatMessage(
       });
     if (selectedProviderType === 'copilot')
       await assertCopilotModelAvailable(selectedModel);
+    // Before anything is saved or any session is torn down, including a
+    // provider switch, so the composer keeps the draft (CAN-6701). The
+    // session gate re-checks after saving.
+    await assertTurnModelGatewayRoute(
+      selectedModel,
+      selectedProviderType,
+      () =>
+        resolveAiCreditsScopeOwner({
+          kind: 'work',
+          projectId: APP_ADVISOR_PROJECT_ID,
+          worktreeId: request.worktreeId,
+          chatId: request.chatId,
+        }),
+      'before-save',
+      { deferToPolicy: true },
+    );
     if (switchesActiveSessionProvider) {
       await destroySession(
         request.projectId,

@@ -8,6 +8,7 @@ import type {
 } from '@canopy/protocol/installed-items';
 import { CheckIcon, ChevronDownIcon } from '../icons/AppIcons';
 import { InstalledItemStatusGlyphIcon } from '../icons/InstalledItemStatusGlyphIcon';
+import { ItemStateMark, useItemStateMarks } from './ItemStateMark';
 import {
   INSTALLED_ITEM_STATUS_COPY,
   INSTALLED_ITEM_STATUS_ORDER,
@@ -44,6 +45,11 @@ const STATUS_INK: Record<InstalledItemStatusGlyph, string> = {
   unavailable: 'fg-tertiary',
 };
 
+/**
+ * A state's icon in the picker, its menu and every status surface. New
+ * Customize (the `customize-discovery` Labs experiment) draws the shared
+ * `ItemStateMark`; with the experiment off the original dots stay.
+ */
 export function InstalledItemStatusIndicator({
   status,
   size = 14,
@@ -51,16 +57,21 @@ export function InstalledItemStatusIndicator({
   readonly status: InstalledItemStatusGlyph;
   readonly size?: number;
 }): JSX.Element {
+  const marks = useItemStateMarks();
   return (
     <span
       aria-hidden
       className="inline-flex shrink-0 items-center justify-center"
       style={{ width: size, height: size }}
     >
-      <InstalledItemStatusGlyphIcon
-        status={status}
-        className={STATUS_INK[status]}
-      />
+      {marks ? (
+        <ItemStateMark tone={status} size={size} />
+      ) : (
+        <InstalledItemStatusGlyphIcon
+          status={status}
+          className={STATUS_INK[status]}
+        />
+      )}
     </span>
   );
 }

@@ -1,5 +1,5 @@
-import { randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync, renameSync, rmSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdirSync, readFileSync, renameSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { writeFileAtomicallySync } from '@canopy/execution-engine/node/lib/atomic-file';
@@ -8,8 +8,6 @@ import {
   pruneDamagedCopiesSync,
 } from '@canopy/execution-engine/node/lib/damaged-copies';
 import {
-  DEFAULT_TERMINAL_DRAWER_COLLAPSED,
-  TERMINAL_CUSTOM_NAME_MAX_LENGTH,
   TERMINAL_PERSISTED_SCROLLBACK_MAX_LINES,
   type LoadWorktreeTerminalStateResponse,
   type PersistedTerminalEntry,
@@ -17,24 +15,51 @@ import {
   type SaveWorktreeTerminalStateRequest,
   type TerminalGroup,
   type TerminalSession,
-  type WorktreeTerminalLayoutState,
 } from '@canopy/desktop-shared/types';
+import {
+  assertAdmittedWriter,
+  STORAGE_OWNERSHIP,
+} from '@canopy/core-runtime/storage';
+import {
+  composeRecords,
+  createEmptyState,
+  hasVersion1Shape,
+  isFiniteNumber,
+  isPresentationFile,
+  isWorkerFile,
+  normalizeCustomNameMap,
+  normalizePersistedState,
+  normalizeSplitSizes,
+  recordsForState,
+  type TerminalRecords,
+} from './persistence-codec';
 import { logMainProcessWarn } from '../lib/main-process-logging';
-import { getWorktreeTerminalStateFilePath } from '../lib/paths';
+import {
+  getWorktreeTerminalStateFilePath,
+  getWorktreeTerminalPresentationFilePath,
+} from '../lib/paths';
 import { isRecord } from '../lib/type-guards';
 
 interface CachedWorktreeTerminalState {
   projectId: string;
   worktreeId: string;
   filePath: string;
+  presentationPath: string;
   state: PersistedWorktreeTerminalStateFile;
+  records: TerminalRecords;
+  workerDirty: boolean;
+  presentationDirty: boolean;
+  migrationPending: boolean;
+  workerInstalled: string | undefined;
+  presentationInstalled: string | undefined;
+  damaged: string[];
   /** False while the file on disk must be left as it is this session. */
   writable: boolean;
 }
 
 type TerminalStateFileRead =
   | { kind: 'absent' }
-  | { kind: 'readable'; value: Record<string, unknown> }
+  | { kind: 'readable'; value: Record<string, unknown>; bytes: Buffer }
   | { kind: 'damaged' }
   | { kind: 'newer' }
   | { kind: 'unreadable'; code: string | undefined };
@@ -53,10 +78,13 @@ function errorCode(error: unknown): string | undefined {
   return typeof code === 'string' ? code : undefined;
 }
 
-function readTerminalStateFile(filePath: string): TerminalStateFileRead {
-  let raw: string;
+function readTerminalStateFile(
+  filePath: string,
+  presentation = false,
+): TerminalStateFileRead {
+  let bytes: Buffer;
   try {
-    raw = readFileSync(filePath, 'utf8');
+    bytes = readFileSync(filePath);
   } catch (error) {
     const code = errorCode(error);
     return code === 'ENOENT'
@@ -66,31 +94,24 @@ function readTerminalStateFile(filePath: string): TerminalStateFileRead {
 
   let parsed: unknown;
   try {
-    parsed = JSON.parse(raw);
+    parsed = JSON.parse(bytes.toString('utf8'));
   } catch {
     return { kind: 'damaged' };
   }
   if (!isRecord(parsed) || typeof parsed.version !== 'number') {
     return { kind: 'damaged' };
   }
-  if (parsed.version > 1) {
+  if (parsed.version > (presentation ? 1 : 2)) {
     return { kind: 'newer' };
   }
-  return parsed.version === 1 && hasVersion1Shape(parsed)
-    ? { kind: 'readable', value: parsed }
-    : { kind: 'damaged' };
-}
-
-/** Absent lists read as empty; present ones must hold only valid entries. */
-function hasVersion1Shape(value: Record<string, unknown>): boolean {
-  const { terminals, groups } = value;
   return (
-    (terminals === undefined ||
-      (Array.isArray(terminals) &&
-        terminals.every(isPersistedTerminalEntry))) &&
-    (groups === undefined ||
-      (Array.isArray(groups) && groups.every(isTerminalGroup)))
-  );
+    presentation
+      ? isPresentationFile(parsed)
+      : isWorkerFile(parsed) ||
+        (parsed.version === 1 && hasVersion1Shape(parsed))
+  )
+    ? { kind: 'readable', value: parsed, bytes }
+    : { kind: 'damaged' };
 }
 
 /**
@@ -114,251 +135,6 @@ function setAsideDamagedStateFile(filePath: string): boolean {
 
 function isShutdownExitSignal(signal: string | null): boolean {
   return signal === 'app-quit' || signal === 'fatal-exit';
-}
-
-function defaultLayoutState(): WorktreeTerminalLayoutState {
-  return {
-    drawerCollapsed: DEFAULT_TERMINAL_DRAWER_COLLAPSED,
-    groups: [],
-    activeGroupId: null,
-    nextGroupOrdinal: 1,
-    groupOrdinals: {},
-    terminalCustomNames: {},
-    groupCustomNames: {},
-  };
-}
-
-function createEmptyState(): PersistedWorktreeTerminalStateFile {
-  return {
-    version: 1,
-    ...defaultLayoutState(),
-    terminals: [],
-  };
-}
-
-function isStringArray(value: unknown): value is string[] {
-  return (
-    Array.isArray(value) && value.every((entry) => typeof entry === 'string')
-  );
-}
-
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value);
-}
-
-function isTerminalGroup(value: unknown): value is TerminalGroup {
-  return (
-    isRecord(value) &&
-    typeof value.id === 'string' &&
-    isStringArray(value.terminalIds) &&
-    typeof value.focusedTerminalId === 'string' &&
-    Array.isArray(value.splitSizes) &&
-    value.splitSizes.every((entry) => isFiniteNumber(entry))
-  );
-}
-
-function isTerminalSession(value: unknown): value is TerminalSession {
-  return (
-    isRecord(value) &&
-    typeof value.id === 'string' &&
-    typeof value.projectId === 'string' &&
-    typeof value.worktreeId === 'string' &&
-    typeof value.shell === 'string' &&
-    typeof value.shellBasename === 'string' &&
-    typeof value.cwd === 'string' &&
-    isFiniteNumber(value.createdAt)
-  );
-}
-
-function isPersistedTerminalEntry(
-  value: unknown,
-): value is PersistedTerminalEntry {
-  return (
-    isRecord(value) &&
-    isTerminalSession(value.session) &&
-    isStringArray(value.scrollbackLines) &&
-    (value.exitCode === null || isFiniteNumber(value.exitCode)) &&
-    (value.signal === null || typeof value.signal === 'string')
-  );
-}
-
-function sanitizeCustomName(value: unknown): string | null {
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  const trimmed = value.trim().slice(0, TERMINAL_CUSTOM_NAME_MAX_LENGTH);
-  return trimmed.length > 0 ? trimmed : null;
-}
-
-function normalizeCustomNameMap(
-  value: unknown,
-  allowedIds: Set<string>,
-): Record<string, string> {
-  if (!isRecord(value)) {
-    return {};
-  }
-
-  const normalized: Record<string, string> = {};
-  for (const [key, rawValue] of Object.entries(value)) {
-    if (!allowedIds.has(key)) {
-      continue;
-    }
-    const sanitized = sanitizeCustomName(rawValue);
-    if (sanitized !== null) {
-      normalized[key] = sanitized;
-    }
-  }
-  return normalized;
-}
-
-function normalizeSplitSizes(count: number, existing?: number[]): number[] {
-  if (count <= 0) {
-    return [];
-  }
-
-  if (existing && existing.length === count) {
-    const total = existing.reduce((sum, value) => sum + value, 0);
-    if (total > 0) {
-      return existing.map((value) => value / total);
-    }
-  }
-
-  const even = 1 / count;
-  const sizes: number[] = [];
-  for (let index = 0; index < count; index += 1) {
-    sizes.push(even);
-  }
-  return sizes;
-}
-
-function normalizeScrollbackLines(value: unknown): string[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  const lines = value.filter(
-    (entry): entry is string => typeof entry === 'string',
-  );
-  if (lines.length <= TERMINAL_PERSISTED_SCROLLBACK_MAX_LINES) {
-    return lines;
-  }
-  return lines.slice(lines.length - TERMINAL_PERSISTED_SCROLLBACK_MAX_LINES);
-}
-
-function normalizeTerminalEntry(
-  value: unknown,
-  projectId: string,
-  worktreeId: string,
-): PersistedTerminalEntry | null {
-  if (!isPersistedTerminalEntry(value)) {
-    return null;
-  }
-
-  if (
-    value.session.projectId !== projectId ||
-    value.session.worktreeId !== worktreeId
-  ) {
-    return null;
-  }
-
-  return {
-    session: value.session,
-    scrollbackLines: normalizeScrollbackLines(value.scrollbackLines),
-    exitCode: value.exitCode,
-    signal: value.signal,
-  };
-}
-
-function normalizePersistedState(
-  value: unknown,
-  projectId: string,
-  worktreeId: string,
-): PersistedWorktreeTerminalStateFile {
-  if (!isRecord(value) || value.version !== 1) {
-    return createEmptyState();
-  }
-
-  const terminals = Array.isArray(value.terminals)
-    ? value.terminals
-        .map((entry) => normalizeTerminalEntry(entry, projectId, worktreeId))
-        .filter((entry): entry is PersistedTerminalEntry => entry !== null)
-    : [];
-  const terminalIdSet = new Set(terminals.map((entry) => entry.session.id));
-
-  const groupsSource = Array.isArray(value.groups) ? value.groups : [];
-  const groups: TerminalGroup[] = [];
-  for (const rawGroup of groupsSource) {
-    if (!isTerminalGroup(rawGroup)) {
-      continue;
-    }
-
-    const terminalIds = rawGroup.terminalIds.filter((id) =>
-      terminalIdSet.has(id),
-    );
-    if (terminalIds.length === 0) {
-      continue;
-    }
-
-    const focusedTerminalId = terminalIds.includes(rawGroup.focusedTerminalId)
-      ? rawGroup.focusedTerminalId
-      : terminalIds[0];
-    groups.push({
-      id: rawGroup.id,
-      terminalIds,
-      focusedTerminalId,
-      splitSizes: normalizeSplitSizes(terminalIds.length, rawGroup.splitSizes),
-    });
-  }
-
-  const groupIdSet = new Set(groups.map((group) => group.id));
-  const groupOrdinalsSource = isRecord(value.groupOrdinals)
-    ? value.groupOrdinals
-    : {};
-  const groupOrdinals: Record<string, number> = {};
-  for (const group of groups) {
-    const rawOrdinal = groupOrdinalsSource[group.id];
-    if (isFiniteNumber(rawOrdinal) && rawOrdinal >= 1) {
-      groupOrdinals[group.id] = Math.round(rawOrdinal);
-    }
-  }
-
-  let nextGroupOrdinal =
-    isFiniteNumber(value.nextGroupOrdinal) && value.nextGroupOrdinal >= 1
-      ? Math.round(value.nextGroupOrdinal)
-      : 1;
-  for (const ordinal of Object.values(groupOrdinals)) {
-    if (ordinal >= nextGroupOrdinal) {
-      nextGroupOrdinal = ordinal + 1;
-    }
-  }
-
-  const activeGroupId =
-    typeof value.activeGroupId === 'string' &&
-    groupIdSet.has(value.activeGroupId)
-      ? value.activeGroupId
-      : (groups[0]?.id ?? null);
-
-  return {
-    version: 1,
-    drawerCollapsed:
-      typeof value.drawerCollapsed === 'boolean'
-        ? value.drawerCollapsed
-        : DEFAULT_TERMINAL_DRAWER_COLLAPSED,
-    groups,
-    activeGroupId,
-    nextGroupOrdinal,
-    groupOrdinals,
-    terminalCustomNames: normalizeCustomNameMap(
-      value.terminalCustomNames,
-      terminalIdSet,
-    ),
-    groupCustomNames: normalizeCustomNameMap(
-      value.groupCustomNames,
-      groupIdSet,
-    ),
-    terminals,
-  };
 }
 
 function createTerminalEntry(session: TerminalSession): PersistedTerminalEntry {
@@ -438,14 +214,6 @@ function buildSyntheticGroup(
   };
 }
 
-function isEmptyState(state: PersistedWorktreeTerminalStateFile): boolean {
-  return (
-    state.drawerCollapsed === DEFAULT_TERMINAL_DRAWER_COLLAPSED &&
-    state.groups.length === 0 &&
-    state.terminals.length === 0
-  );
-}
-
 function isDrawerOwnedTerminal(session: TerminalSession): boolean {
   return (
     session.kind === undefined ||
@@ -470,7 +238,7 @@ export class TerminalPersistenceStore {
 
   private readonly suppressedLiveTerminals = new Map<string, Set<string>>();
 
-  private readonly utf8Decoders = new Map<string, StringDecoder>();
+  private readonly utf8Decoders = new Map<string, Map<string, StringDecoder>>();
 
   private ensureLoaded(
     projectId: string,
@@ -483,30 +251,124 @@ export class TerminalPersistenceStore {
     }
 
     const filePath = getWorktreeTerminalStateFilePath(projectId, worktreeId);
+    const presentationPath = getWorktreeTerminalPresentationFilePath(
+      projectId,
+      worktreeId,
+    );
     const file = readTerminalStateFile(filePath);
-    let writable = true;
-    if (file.kind === 'damaged') {
-      writable = setAsideDamagedStateFile(filePath);
-    } else if (file.kind === 'newer' || file.kind === 'unreadable') {
-      writable = false;
+    const presentation = readTerminalStateFile(presentationPath, true);
+    const writable = ![file.kind, presentation.kind].some(
+      (kind) => kind === 'newer' || kind === 'unreadable',
+    );
+    if (!writable) {
       logMainProcessWarn('Leaving terminal state unchanged this session', {
         reason: file.kind,
         ...(file.kind === 'unreadable' ? { code: file.code } : {}),
       });
     }
 
+    const worker =
+      file.kind === 'readable' && isWorkerFile(file.value)
+        ? file.value
+        : undefined;
+    const legacy = file.kind === 'readable' && file.value.version === 1;
+    const lineage =
+      worker?.lineage ??
+      (legacy && file.kind === 'readable'
+        ? `legacy/${createHash('sha256')
+            .update(
+              JSON.stringify([
+                projectId,
+                worktreeId,
+                file.bytes.toString('base64'),
+              ]),
+            )
+            .digest('hex')}`
+        : randomUUID());
+    let state =
+      legacy && file.kind === 'readable'
+        ? normalizePersistedState(file.value, projectId, worktreeId)
+        : createEmptyState();
+    const acceptedPresentation =
+      presentation.kind === 'readable' &&
+      isPresentationFile(presentation.value) &&
+      presentation.value.lineage === lineage
+        ? presentation.value
+        : undefined;
+    let records = worker
+      ? {
+          worker,
+          presentation:
+            acceptedPresentation ??
+            recordsForState(state, lineage).presentation,
+        }
+      : recordsForState(state, lineage, undefined, legacy);
+    if (worker || acceptedPresentation) {
+      state = composeRecords(
+        records.worker,
+        acceptedPresentation,
+        projectId,
+        worktreeId,
+      );
+      records = recordsForState(state, lineage, {
+        worker: records.worker,
+        presentation: acceptedPresentation ?? records.presentation,
+      });
+    }
+    const materialized =
+      file.kind !== 'absent' || presentation.kind !== 'absent';
     const cached: CachedWorktreeTerminalState = {
       projectId,
       worktreeId,
       filePath,
-      state:
-        file.kind === 'readable'
-          ? normalizePersistedState(file.value, projectId, worktreeId)
-          : createEmptyState(),
+      presentationPath,
+      state,
+      records,
+      migrationPending: legacy,
+      workerDirty: materialized && !worker,
+      presentationDirty:
+        materialized &&
+        JSON.stringify(records.presentation) !==
+          JSON.stringify(acceptedPresentation),
+      workerInstalled: worker
+        ? JSON.stringify(records.worker, null, 2)
+        : undefined,
+      presentationInstalled: acceptedPresentation
+        ? JSON.stringify(acceptedPresentation, null, 2)
+        : undefined,
+      damaged: [
+        ...(file.kind === 'damaged' ? [filePath] : []),
+        ...(presentation.kind === 'damaged' ? [presentationPath] : []),
+      ],
       writable,
     };
     this.cache.set(key, cached);
     return cached;
+  }
+
+  private refreshRecords(cached: CachedWorktreeTerminalState): void {
+    const next = recordsForState(
+      cached.state,
+      cached.records.worker.lineage,
+      cached.records,
+    );
+    if (
+      JSON.stringify([
+        next.worker.bindings,
+        next.worker.terminalCustomNames,
+      ]) !==
+      JSON.stringify([
+        cached.records.worker.bindings,
+        cached.records.worker.terminalCustomNames,
+      ])
+    )
+      cached.workerDirty = true;
+    if (
+      JSON.stringify(next.presentation) !==
+      JSON.stringify(cached.records.presentation)
+    )
+      cached.presentationDirty = true;
+    cached.records = next;
   }
 
   private clearPendingWrite(key: string): void {
@@ -557,17 +419,86 @@ export class TerminalPersistenceStore {
     }
 
     try {
-      if (isEmptyState(cached.state)) {
-        rmSync(cached.filePath, { force: true });
+      this.refreshRecords(cached);
+      if (
+        !cached.workerDirty &&
+        !cached.presentationDirty &&
+        !cached.migrationPending
+      )
         return;
-      }
-
-      mkdirSync(dirname(cached.filePath), { recursive: true });
-      writeFileAtomicallySync(
-        cached.filePath,
-        JSON.stringify(cached.state, null, 2),
-        { encoding: 'utf8' },
+      // Preflight the pair before mkdir, evidence preservation or either install.
+      assertAdmittedWriter(
+        'terminal_state',
+        'electron_main',
+        'main/terminal/persistence',
+        STORAGE_OWNERSHIP,
       );
+      assertAdmittedWriter(
+        'terminal_presentation',
+        'electron_main',
+        'main/terminal/persistence',
+        STORAGE_OWNERSHIP,
+      );
+      for (const path of [...cached.damaged]) {
+        if (!setAsideDamagedStateFile(path)) {
+          cached.writable = false;
+          return;
+        }
+        cached.damaged.splice(cached.damaged.indexOf(path), 1);
+      }
+      mkdirSync(dirname(cached.filePath), { recursive: true });
+      const installWorker = (): void => {
+        const bytes = JSON.stringify(cached.records.worker, null, 2);
+        if (cached.workerInstalled !== bytes) {
+          writeFileAtomicallySync(
+            getWorktreeTerminalStateFilePath(projectId, worktreeId),
+            bytes,
+            {
+              encoding: 'utf8',
+              admittedWriter: {
+                namespace: 'terminal_state',
+                writer: 'electron_main',
+                module: 'main/terminal/persistence',
+              },
+            },
+          );
+          cached.workerInstalled = bytes;
+        }
+        cached.workerDirty = false;
+      };
+      const installPresentation = (): void => {
+        const bytes = JSON.stringify(cached.records.presentation, null, 2);
+        if (cached.presentationInstalled !== bytes) {
+          writeFileAtomicallySync(
+            getWorktreeTerminalPresentationFilePath(projectId, worktreeId),
+            bytes,
+            {
+              encoding: 'utf8',
+              admittedWriter: {
+                namespace: 'terminal_presentation',
+                writer: 'electron_main',
+                module: 'main/terminal/persistence',
+              },
+            },
+          );
+          cached.presentationInstalled = bytes;
+        }
+        cached.presentationDirty = false;
+      };
+      if (cached.migrationPending) {
+        installPresentation();
+        installWorker();
+        cached.migrationPending = false;
+      } else {
+        // A first presentation-only mutation still materializes the v2 fence.
+        if (cached.workerDirty || cached.workerInstalled === undefined)
+          installWorker();
+        if (
+          cached.presentationDirty ||
+          cached.presentationInstalled === undefined
+        )
+          installPresentation();
+      }
     } catch (error) {
       logMainProcessWarn('Failed to write terminal state', {
         projectId,
@@ -614,6 +545,7 @@ export class TerminalPersistenceStore {
 
       liveTerminalIds.push(session.id);
       this.upsertTerminalEntry(cached.state, session);
+      cached.workerDirty = true;
       if (!hasGroupForTerminal(cached.state.groups, session.id)) {
         const group = buildSyntheticGroup(cached.state, session.id);
         cached.state.groups.push(group);
@@ -626,17 +558,23 @@ export class TerminalPersistenceStore {
       }
     }
 
+    this.refreshRecords(cached);
     return serializeResponse(cached.state, liveTerminalIds);
   }
 
-  private getUtf8Decoder(terminalId: string): StringDecoder {
-    const existing = this.utf8Decoders.get(terminalId);
+  private getUtf8Decoder(key: string, terminalId: string): StringDecoder {
+    let decoders = this.utf8Decoders.get(key);
+    if (!decoders) {
+      decoders = new Map();
+      this.utf8Decoders.set(key, decoders);
+    }
+    const existing = decoders.get(terminalId);
     if (existing) {
       return existing;
     }
 
     const created = new StringDecoder('utf8');
-    this.utf8Decoders.set(terminalId, created);
+    decoders.set(terminalId, created);
     return created;
   }
 
@@ -653,6 +591,7 @@ export class TerminalPersistenceStore {
       return;
     }
     const entry = this.upsertTerminalEntry(cached.state, session);
+    cached.workerDirty = true;
     entry.exitCode = null;
     entry.signal = null;
     if (!hasGroupForTerminal(cached.state.groups, session.id)) {
@@ -662,6 +601,7 @@ export class TerminalPersistenceStore {
         cached.state.activeGroupId = group.id;
       }
     }
+    this.refreshRecords(cached);
     this.scheduleWrite(session.projectId, session.worktreeId);
   }
 
@@ -685,7 +625,10 @@ export class TerminalPersistenceStore {
       return;
     }
 
-    const decodedChunk = this.getUtf8Decoder(terminalId).write(chunk);
+    const decodedChunk = this.getUtf8Decoder(
+      worktreeKey(projectId, worktreeId),
+      terminalId,
+    ).write(chunk);
     if (decodedChunk.length === 0) {
       return;
     }
@@ -694,6 +637,7 @@ export class TerminalPersistenceStore {
       entry.scrollbackLines,
       decodedChunk,
     );
+    cached.workerDirty = true;
     this.scheduleWrite(projectId, worktreeId);
   }
 
@@ -706,8 +650,9 @@ export class TerminalPersistenceStore {
   ): void {
     const wasLive = this.liveSessions.delete(terminalId);
     const key = worktreeKey(projectId, worktreeId);
-    const trailingChunk = this.utf8Decoders.get(terminalId)?.end() ?? '';
-    this.utf8Decoders.delete(terminalId);
+    const decoders = this.utf8Decoders.get(key);
+    const trailingChunk = decoders?.get(terminalId)?.end() ?? '';
+    decoders?.delete(terminalId);
     if (!wasLive && !this.cache.has(key)) {
       return;
     }
@@ -730,6 +675,7 @@ export class TerminalPersistenceStore {
       entry.exitCode = exitCode;
       entry.signal = signal;
     }
+    cached.workerDirty = true;
     this.scheduleWrite(projectId, worktreeId);
   }
 
@@ -765,6 +711,14 @@ export class TerminalPersistenceStore {
       }
     }
 
+    // Legacy omission inference stays scoped to the request, including ungrouped history.
+    for (const terminalId of new Set(
+      cached.state.terminals.map((entry) => entry.session.id),
+    )) {
+      if (!referencedTerminalIds.has(terminalId))
+        this.forgetCached(cached, terminalId);
+    }
+
     const nextGroups: TerminalGroup[] = [];
     for (const group of request.groups) {
       const terminalIds = group.terminalIds.filter((id) =>
@@ -785,9 +739,6 @@ export class TerminalPersistenceStore {
       });
     }
 
-    const previouslyPersistedTerminalIds = new Set(
-      cached.state.terminals.map((entry) => entry.session.id),
-    );
     cached.state.drawerCollapsed = request.drawerCollapsed;
     cached.state.groups = nextGroups;
     cached.state.groupOrdinals = {};
@@ -798,9 +749,6 @@ export class TerminalPersistenceStore {
       }
     }
 
-    cached.state.terminals = cached.state.terminals.filter((entry) =>
-      referencedTerminalIds.has(entry.session.id),
-    );
     const existingTerminalIds = new Set(
       cached.state.terminals.map((entry) => entry.session.id),
     );
@@ -811,21 +759,12 @@ export class TerminalPersistenceStore {
       const liveSession = this.liveSessions.get(terminalId);
       if (liveSession) {
         cached.state.terminals.push(createTerminalEntry(liveSession));
+        cached.workerDirty = true;
       }
     }
 
     for (const terminalId of Array.from(referencedTerminalIds)) {
       suppressed.delete(terminalId);
-    }
-    for (const terminalId of Array.from(previouslyPersistedTerminalIds)) {
-      if (referencedTerminalIds.has(terminalId)) {
-        continue;
-      }
-      if (this.liveSessions.has(terminalId)) {
-        suppressed.add(terminalId);
-      } else {
-        suppressed.delete(terminalId);
-      }
     }
 
     const groupIdSet = new Set(nextGroups.map((group) => group.id));
@@ -852,7 +791,94 @@ export class TerminalPersistenceStore {
       }
     }
 
+    this.refreshRecords(cached);
     this.scheduleWrite(request.projectId, request.worktreeId);
+  }
+
+  private forgetCached(
+    cached: CachedWorktreeTerminalState,
+    terminalId: string,
+  ): void {
+    const state = cached.state;
+    const presentationAffected = state.groups.some((group) =>
+      group.terminalIds.includes(terminalId),
+    );
+    const present =
+      state.terminals.some((entry) => entry.session.id === terminalId) ||
+      presentationAffected ||
+      Object.prototype.hasOwnProperty.call(
+        state.terminalCustomNames,
+        terminalId,
+      );
+    if (!present) return;
+    state.terminals = state.terminals.filter(
+      (entry) => entry.session.id !== terminalId,
+    );
+    // Preserve surviving occurrence identities even when equal-ID groups disappear.
+    cached.records.worker.bindings = cached.records.worker.bindings.flatMap(
+      (binding) => {
+        const members = binding.members.filter(
+          (member) => member.terminalId !== terminalId,
+        );
+        return members.length ? [{ ...binding, members }] : [];
+      },
+    );
+    const bindingKeys = new Set(
+      cached.records.worker.bindings.map((binding) => binding.key),
+    );
+    cached.records.presentation.groups =
+      cached.records.presentation.groups.filter((group) =>
+        bindingKeys.has(group.bindingKey),
+      );
+    delete state.terminalCustomNames[terminalId];
+    state.groups = state.groups.flatMap((group) => {
+      const terminalIds = group.terminalIds.filter((id) => id !== terminalId);
+      if (!terminalIds.length) return [];
+      if (terminalIds.length === group.terminalIds.length) return [group];
+      return [
+        {
+          ...group,
+          terminalIds,
+          focusedTerminalId: terminalIds.includes(group.focusedTerminalId)
+            ? group.focusedTerminalId
+            : terminalIds[0],
+          splitSizes: normalizeSplitSizes(terminalIds.length),
+        },
+      ];
+    });
+    const groupIds = new Set(state.groups.map((group) => group.id));
+    state.groupOrdinals = Object.fromEntries(
+      Object.entries(state.groupOrdinals).filter(([id]) => groupIds.has(id)),
+    );
+    state.groupCustomNames = Object.fromEntries(
+      Object.entries(state.groupCustomNames).filter(([id]) => groupIds.has(id)),
+    );
+    if (state.activeGroupId !== null && !groupIds.has(state.activeGroupId))
+      state.activeGroupId = state.groups[0]?.id ?? null;
+    this.utf8Decoders
+      .get(worktreeKey(cached.projectId, cached.worktreeId))
+      ?.delete(terminalId);
+    const live = this.liveSessions.get(terminalId);
+    if (
+      live &&
+      live.projectId === cached.projectId &&
+      live.worktreeId === cached.worktreeId &&
+      isDrawerOwnedTerminal(live)
+    ) {
+      this.getSuppressedLiveTerminals(
+        worktreeKey(cached.projectId, cached.worktreeId),
+      ).add(terminalId);
+    }
+    cached.workerDirty = true;
+    if (presentationAffected) cached.presentationDirty = true;
+    this.refreshRecords(cached);
+    this.scheduleWrite(cached.projectId, cached.worktreeId);
+  }
+
+  /** Explicit deletion; never scans unloaded worktrees and never kills a shell. */
+  public forget(terminalId: string): void {
+    for (const cached of this.cache.values())
+      this.forgetCached(cached, terminalId);
   }
 
   public getPersistedTerminalEntry(
@@ -884,6 +910,7 @@ export class TerminalPersistenceStore {
   public forgetWorktree(projectId: string, worktreeId: string): void {
     const key = worktreeKey(projectId, worktreeId);
     this.clearPendingWrite(key);
+    this.utf8Decoders.delete(key);
     this.cache.delete(key);
     this.suppressedLiveTerminals.delete(key);
     for (const session of Array.from(this.liveSessions.values())) {
@@ -892,7 +919,6 @@ export class TerminalPersistenceStore {
         session.worktreeId === worktreeId
       ) {
         this.liveSessions.delete(session.id);
-        this.utf8Decoders.delete(session.id);
       }
     }
   }

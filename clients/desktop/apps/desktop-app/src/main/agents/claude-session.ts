@@ -1,4 +1,5 @@
 import { isWatchDelegatesCompatibilityName } from '@canopy/desktop-shared/node/delegation/watch-delegates-tombstone';
+import { isAgentSecretRequestsEnabled } from '../agent-secrets/feature-gate';
 import {
   APPROVAL_CANCELLED_MESSAGE,
   APPROVAL_CHECK_FAILED_MESSAGE,
@@ -191,6 +192,7 @@ import { getMcpHttpProxyService } from '../mcp/http-proxy-service';
 import { rejectAllForSession } from '../mcp/pending-requests';
 import {
   ASK_USER_HTTP_TIMEOUT_MS,
+  CANOPY_INJECTED_TOOL_REGISTRY,
   CANOPY_MCP_TOOL_TIMEOUT_MS,
 } from '@canopy/execution-engine/lib/canopy-injected-tools';
 import type { CanopyInjectedToolRuntime } from '../canopy-tools/core';
@@ -284,6 +286,9 @@ import { requestShowFilesThroughLease } from '../canopy-tools/show-files-runtime
 import { hasInterfaceTool } from './interface-tool-binding';
 import { createE2eClaudeQueryWithPrelude } from '../lib/e2e-claude-query-prelude';
 import { assertAgentWorkerContext } from '../agent-runs/agent-worker-context';
+
+const SUBAGENT_SECRET_REQUEST_DENIAL =
+  'RequestSecrets is not available to subagents. Ask from the main conversation instead.';
 
 /** Map of session keys to their active Query refs — used by stopTaskForClaudeSession. */
 const queryRefs = new Map<string, Query>();
@@ -3853,6 +3858,13 @@ export class ClaudeCodeProvider implements AgentProvider {
           toolSurface: isCoworkWorkspace(opts.projectId)
             ? 'native-sdk-standalone'
             : 'native-sdk',
+          // RequestSecrets: interactive root chats only (a background run
+          // carries an executionContext), and only while the flag is on.
+          ...((opts.providerType ?? 'claude') === 'claude' &&
+          opts.executionContext === undefined &&
+          isAgentSecretRequestsEnabled()
+            ? { secretRequests: true, getApprovalMode }
+            : {}),
           cwd: opts.cwd,
           ...(opts.selectedRepoId ? { repoId: opts.selectedRepoId } : {}),
           sdkSessionId: opts.sdkSessionId ?? key,
@@ -4076,6 +4088,24 @@ export class ClaudeCodeProvider implements AgentProvider {
           signal?: AbortSignal;
         },
       ): Promise<PermissionResult> => {
+        // Native subagents don't get secret requests in v1 (CONTRACTS.md §5).
+        if (
+          authorizationOptions.agentID &&
+          toolName ===
+            CANOPY_INJECTED_TOOL_REGISTRY.request_secrets.claudeToolName
+        ) {
+          return { behavior: 'deny', message: SUBAGENT_SECRET_REQUEST_DENIAL };
+        }
+        // The secret request form is not an approval: it needs the person in
+        // every mode, so a tool approval card before it would only ask twice
+        // (CONTRACTS.md §5). The router refuses the call when the session
+        // does not offer secret requests.
+        if (
+          toolName ===
+          CANOPY_INJECTED_TOOL_REGISTRY.request_secrets.claudeToolName
+        ) {
+          return { behavior: 'allow' };
+        }
         // Native Plan mode may still call this fallback after the hook. Honor
         // Full Access before parsing policy requirements, as the hook does.
         if (
@@ -4410,6 +4440,20 @@ export class ClaudeCodeProvider implements AgentProvider {
               permissionDecision: 'deny',
               permissionDecisionReason:
                 'Malformed tool input; denied by default.',
+            },
+          };
+        }
+        // Full access skips authorizeClaudeTool, so subagents are refused here.
+        if (
+          input.agent_id &&
+          input.tool_name ===
+            CANOPY_INJECTED_TOOL_REGISTRY.request_secrets.claudeToolName
+        ) {
+          return {
+            hookSpecificOutput: {
+              hookEventName: 'PreToolUse',
+              permissionDecision: 'deny',
+              permissionDecisionReason: SUBAGENT_SECRET_REQUEST_DENIAL,
             },
           };
         }

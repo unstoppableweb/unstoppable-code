@@ -9,6 +9,7 @@ import {
   defineCanopyQueryRegistry,
 } from '../../definitions';
 import { inherentOperationErrorSchema } from '../shared';
+import { CloudAccountStatusSchema } from './cloud-account';
 
 export const CORE_INTEGRATION_GRANTS = {
   read: 'core.integration.read',
@@ -82,6 +83,7 @@ export const CoreIntegrationSchema = z
     revision: z.number().int().min(0),
     githubCredential: GitHubCredentialStatusSchema.optional(),
     githubCli: GitHubCliStatusSchema.optional(),
+    cloudAccount: CloudAccountStatusSchema.optional(),
   })
   .catchall(CanopyJsonValueSchema);
 

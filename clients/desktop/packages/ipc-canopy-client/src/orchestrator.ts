@@ -513,6 +513,15 @@ export function createOrchestratorHandlers(
           'Sign in to the required provider on your computer, then try again.',
         );
       }
+      // Refused before anything was saved (CAN-6701); the host's sentence
+      // names the organization and its gateway.
+      if (
+        isRecord(result) &&
+        isRecord(result.refusedSend) &&
+        typeof result.refusedSend.message === 'string'
+      ) {
+        return refused(commandId, result.refusedSend.message);
+      }
       return accepted(commandId, { userMessageId }, chatId);
     },
     'appAdvisor.cancel': async ({ payload }) => {

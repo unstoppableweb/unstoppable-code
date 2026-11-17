@@ -19,7 +19,10 @@ import {
  */
 import { readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import { getCoworkManagedSubdir } from '@canopy/desktop-shared/node/lib/cowork-managed-dir';
+import {
+  getCoworkManagedSubdir,
+  getCoworkManagedSubdirCandidates,
+} from '@canopy/desktop-shared/node/lib/cowork-managed-dir';
 import {
   getAppAdvisorHomeDir,
   getCoworkWorkspaceRootDir,
@@ -42,15 +45,41 @@ export function resolveAgentAttachmentsDir(
   }
   if (isCoworkWorkspace(projectId)) {
     return getCoworkManagedSubdir(
-      getCoworkWorkspaceRootDir(
-        resolveCoworkWorkspaceId(
-          projectId === STANDALONE_CHAT_PROJECT_ID ? worktreeId : projectId,
-        ),
-      ),
+      coworkAttachmentsRoot(projectId, worktreeId),
       'attachments',
     );
   }
   return getWorktreeAttachmentsDir(projectId, worktreeId);
+}
+
+function coworkAttachmentsRoot(projectId: string, worktreeId: string): string {
+  return getCoworkWorkspaceRootDir(
+    resolveCoworkWorkspaceId(
+      projectId === STANDALONE_CHAT_PROJECT_ID ? worktreeId : projectId,
+    ),
+  );
+}
+
+/**
+ * Every folder where this chat's earlier uploads may be found, for reads:
+ * `resolveAgentAttachmentsDir` first, then the other brand's managed folder
+ * for Work Entries and Bots. Code workspaces have one folder.
+ */
+export function resolveAgentAttachmentsDirCandidates(
+  projectId: string,
+  worktreeId: string,
+): string[] {
+  if (isBotProjectId(projectId))
+    return getCoworkManagedSubdirCandidates(
+      getAppAdvisorHomeDir(),
+      'attachments',
+    );
+  if (isCoworkWorkspace(projectId))
+    return getCoworkManagedSubdirCandidates(
+      coworkAttachmentsRoot(projectId, worktreeId),
+      'attachments',
+    );
+  return [getWorktreeAttachmentsDir(projectId, worktreeId)];
 }
 
 /**

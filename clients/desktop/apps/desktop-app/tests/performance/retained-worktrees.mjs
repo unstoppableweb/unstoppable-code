@@ -170,3 +170,34 @@ export function retainedIdleRates(start, end, events) {
     },
   };
 }
+
+/**
+ * CAN-6969: the counts the work-counter ratchet reads for this scenario, as
+ * its `retained` work source. Idle values are totals over the idle window;
+ * stale and focus values are per event, so they hold whatever the phase's
+ * length. Null when an active phase saw no events, so a broken run is
+ * `missing` rather than a clean zero.
+ */
+export function retainedEventWork({ idle, stale, focus }) {
+  if (!stale?.events?.perEvent || !focus?.events?.perEvent) return null;
+  const work = {};
+  const add = (key, value) => {
+    if (Number.isFinite(value)) work[key] = value;
+  };
+  const total = (perSecond) =>
+    perSecond === null ? null : Math.round(perSecond * idle.seconds);
+  add('idle.metadataReads', total(idle.metadataReadsPerSecond));
+  add('idle.metadataCaptures', total(idle.metadataCapturesPerSecond));
+  add('idle.configReads', total(idle.configReadsPerSecond));
+  for (const [phase, rates] of [
+    ['stale', stale],
+    ['focus', focus],
+  ]) {
+    const { perEvent } = rates.events;
+    add(`${phase}.perEvent.metadataReads`, perEvent.metadataReads);
+    add(`${phase}.perEvent.configReads`, perEvent.configReads);
+    for (const [channel, value] of Object.entries(perEvent.ipc ?? {}))
+      add(`${phase}.perEvent.ipc.${channel}`, value);
+  }
+  return work;
+}

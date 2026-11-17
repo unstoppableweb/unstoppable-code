@@ -50,6 +50,9 @@ const mockOwnerFor = jest.fn<Promise<unknown>, unknown[]>(() =>
   Promise.resolve({ kind: 'personal' }),
 );
 const mockPolicyActive = jest.fn<boolean, unknown[]>(() => false);
+const mockGatewayRoute = jest.fn<Promise<unknown>, unknown[]>(() =>
+  Promise.resolve({ ok: true, orgRoute: false }),
+);
 const mockCreateApprovalSession = jest.fn(() => ({
   check: jest.fn(),
   dispose: jest.fn(),
@@ -74,6 +77,11 @@ jest.mock('../../agents/codex-gateway-proxy-service', () => ({
 jest.mock('../../agents/work-owner', () => ({
   resolveBackgroundWorkOwner: (...args: unknown[]): unknown =>
     Reflect.apply(mockOwnerFor, undefined, args),
+}));
+jest.mock('../../lib/model-gateway-state', () => ({
+  ...jest.requireActual<object>('../../lib/model-gateway-state'),
+  checkModelGatewayRoute: (...args: unknown[]): unknown =>
+    Reflect.apply(mockGatewayRoute, undefined, args),
 }));
 jest.mock('../../lib/model-policy-state', () => ({
   isModelBlockedByStoredPolicy: (): boolean => false,
@@ -583,6 +591,7 @@ describe('PipelineOwnerRunContext', () => {
     ];
     for (const { model, routed, harness: assigned } of cases) {
       mockRouting.mockImplementation(() => Promise.resolve(routed));
+      mockGatewayRoute.mockClear();
       const harness = assigned ?? (model === CODEX ? 'codex' : 'claude');
       const options = {
         harness,
@@ -621,6 +630,52 @@ describe('PipelineOwnerRunContext', () => {
         modelGatewayRouted: inProcess?.modelGatewayRouted === true,
         accountProxyRouted: inProcess?.accountProxyRouted === true,
       });
+      // CAN-6701: an Ollama model on the Codex harness skips gateway routing,
+      // so both paths ask for the owner's gateway requirement first.
+      expect(mockGatewayRoute).toHaveBeenCalledTimes(
+        model === OLLAMA && harness === 'codex' ? 2 : 0,
+      );
+    }
+  });
+
+  it('a gateway refusal fails both paths closed (CAN-6701)', async () => {
+    const refusal =
+      'Acme requires model traffic to use its configured gateway.';
+    mockGatewayRoute.mockImplementation(() =>
+      Promise.resolve({ ok: false, message: refusal }),
+    );
+    try {
+      const runtime = createElectronExecutionRuntime();
+      await expect(
+        runtime.resolveModelHarnessInvocation?.(OLLAMA, {
+          harness: 'codex',
+          routeSessionId: ROUTE,
+          workspaceId: 'workspace-1',
+          worktreeId: 'worktree-1',
+          executionContext: 'personal',
+          signal,
+        }),
+      ).rejects.toThrow(refusal);
+      // The refusal is a typed model-selection error, so the owner channel
+      // forwards the chat's gateway message to the daemon step.
+      const settlement = await new PipelineOwnerRunContext(run()).apply(
+        ownerRequest({
+          action: 'owner.model.invocation',
+          harness: 'codex',
+          model: OLLAMA,
+          routeSessionId: ROUTE,
+        }),
+        signal,
+      );
+      expect(settlement.result).toMatchObject({
+        status: 'failure',
+        message: refusal,
+      });
+      expect(settlement.values).toBeUndefined();
+    } finally {
+      mockGatewayRoute.mockImplementation(() =>
+        Promise.resolve({ ok: true, orgRoute: false }),
+      );
     }
   });
 

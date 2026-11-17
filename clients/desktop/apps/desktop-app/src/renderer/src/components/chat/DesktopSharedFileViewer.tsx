@@ -147,6 +147,7 @@ import {
   type FileSetupRetryState,
 } from './file-setup-retry';
 import { Tooltip } from '@canopy/ui-shared';
+import { useWorktreeEffective } from '@/hooks/useWorktreeEffective';
 
 function isSelectableDiffSource(
   value: string,
@@ -273,6 +274,7 @@ function DesktopSharedFileViewerImpl({
   onPreserveMountedChange,
   trailingHeaderActions,
 }: DesktopSharedFileViewerProps): JSX.Element {
+  useWorktreeEffective(projectId, worktreeId);
   const [request, setRequest] = useState<PortalFileReadPayload | null>(null);
   const [resolvedRoot, setResolvedRoot] = useState<FileTreeRoot | null>(null);
   const [imageSaveSupport, setImageSaveSupport] = useState<

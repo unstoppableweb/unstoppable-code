@@ -45,6 +45,7 @@ import {
 import type {
   CanopyCapabilities,
   WorkspaceCreateResult,
+  WorktreeCreateOptions,
   WorktreeCreateResult,
 } from '@canopy/app-core';
 import type {
@@ -474,10 +475,17 @@ export interface SidebarSurfaceProps {
     payload: PortalWorkspaceCreatePayload,
   ) => Promise<WorkspaceCreateResult>;
   readonly onOpenCreateWorkspaceOverride?: () => boolean;
+  /**
+   * A creating host returns its result. `undefined`, returned or resolved,
+   * means no create was started (a navigation-only rail hands off to another
+   * page, or a repair must come first), so no pending row is kept.
+   */
   readonly onCreateWorktree?: (
     workspaceLocalId: string,
     sidebarItemGroupId?: string,
-  ) => Promise<WorktreeCreateResult> | void;
+    /** `worktreeId` is a client claim; the result's id is authoritative. */
+    options?: WorktreeCreateOptions,
+  ) => Promise<WorktreeCreateResult | undefined> | undefined;
   readonly itemGroupCommandsFor?: WorkspacesSidebarSectionsProps['itemGroupCommandsFor'];
   readonly onCreateStandaloneGroupItem?: (
     workspaceLocalId: string,
@@ -870,6 +878,11 @@ export interface SidebarSurfaceProps {
     worktreeLocalId: string,
     workspaceLocalId: string,
   ) => boolean;
+  /** A row's actions menu opened, so the host can refresh what it offers. */
+  readonly onWorktreeMenuOpened?: (
+    workspaceLocalId: string,
+    worktreeLocalId: string,
+  ) => void;
   readonly isLaunchRunning?: (
     worktreeLocalId: string,
     workspaceLocalId: string,
@@ -3625,12 +3638,18 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
           rowRemoval ? { 'data-delete-enabled': 'true' } : undefined
         }
         onOpen={
-          props.onWorktreeNotificationSettingsRequested
-            ? (): void =>
+          props.onWorktreeNotificationSettingsRequested ||
+          props.onWorktreeMenuOpened
+            ? (): void => {
                 props.onWorktreeNotificationSettingsRequested?.(
                   workspace.localId,
                   worktree.localId,
-                )
+                );
+                props.onWorktreeMenuOpened?.(
+                  workspace.localId,
+                  worktree.localId,
+                );
+              }
             : undefined
         }
       />
@@ -3917,12 +3936,10 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
         onWorktreeIntent={props.onWorktreeIntent}
         onWorktreeRowElement={props.onWorktreeRowElement}
         pendingRevealTarget={props.pendingRevealTarget}
-        onCreateWorktree={async (id, groupId) =>
+        onCreateWorktree={async (id, groupId, options) =>
           readOnly
             ? { status: 'pending' }
-            : ((await props.onCreateWorktree?.(id, groupId)) ?? {
-                status: 'pending',
-              })
+            : props.onCreateWorktree?.(id, groupId, options)
         }
         onReorderWorkspace={readOnly ? undefined : props.onReorderWorkspaces}
         onReorderWorktree={readOnly ? undefined : props.onReorderWorktrees}
@@ -4256,7 +4273,7 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
           setPendingCloudChat(request);
           void Promise.resolve()
             .then(
-              async (): Promise<WorktreeCreateResult | void> =>
+              async (): Promise<WorktreeCreateResult | undefined> =>
                 onCreateWorktree(workspaceLocalId),
             )
             .then((result) => {

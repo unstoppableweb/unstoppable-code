@@ -47,6 +47,9 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     // The generic relay admits only tracked local renderer surfaces; no
     // domain caller has moved to it yet. Remote calls use compatibility IPC.
     canopyCoreRelay: 'blocked',
+    // A controlling desktop gets each worktree's scripts and hooks in the
+    // tunneled projects:load (CAN-6933); this on-demand read stays local.
+    worktreeEffectiveGet: 'blocked',
     scriptActionsList: 'tunnel',
     scriptActionsRescan: 'tunnel',
     scriptActionsReview: 'tunnel',
@@ -570,6 +573,9 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     mcpAnswerUser: 'tunnel',
     mcpDismissUser: 'tunnel',
     mcpExpireAskUser: 'tunnel',
+    // Values go only from the local window to this computer's store.
+    secretRequestSubmit: 'blocked',
+    secretRequestDecline: 'blocked',
     approvalRequest: 'tunnel',
     approvalCancelled: 'tunnel',
     approvalAutoResolved: 'tunnel',

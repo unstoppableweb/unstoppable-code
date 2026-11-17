@@ -30,6 +30,8 @@ export async function readOpenCodeMcpSnapshot(
   brokerStdio: (
     server: Extract<McpServer, { command: string }>,
   ) => Promise<Extract<McpServer, { command: string }>>,
+  /** The harness named in errors; Antigravity reuses this discovery. */
+  label: 'OpenCode' | 'Antigravity' = 'OpenCode',
 ): Promise<OpenCodeCapabilitySnapshot['mcp']> {
   const snapshots: {
     name: string;
@@ -37,7 +39,7 @@ export async function readOpenCodeMcpSnapshot(
     tools: readonly Tool[];
   }[] = [];
   if (servers.length > 64)
-    throw new Error('OpenCode has too many MCP servers selected.');
+    throw new Error(`${label} has too many MCP servers selected.`);
   const responseLimit = new AbortController();
   const tableDeadline = AbortSignal.any([
     signal,
@@ -94,7 +96,7 @@ export async function readOpenCodeMcpSnapshot(
                 fetch: discoveryFetch,
               });
       }
-      if (!transport) throw new Error('OpenCode MCP transport is unavailable.');
+      if (!transport) throw new Error(`${label} MCP transport is unavailable.`);
       deadline.throwIfAborted();
       // The SDK does not pass connect's signal to transport.start(). In
       // particular, closing silent SSE never settles its endpoint handshake.
@@ -135,25 +137,25 @@ export async function readOpenCodeMcpSnapshot(
         );
         deadline.throwIfAborted();
         if (tools.length + page.tools.length > 5000)
-          throw new Error('OpenCode MCP tool catalog exceeds the size limit.');
+          throw new Error(`${label} MCP tool catalog exceeds the size limit.`);
         for (const tool of page.tools) {
           catalogBytes +=
             Buffer.byteLength(canonicalOpenCodeCapability(tool)) + 1;
           if (catalogBytes > MAX_CATALOG_BYTES)
             throw new Error(
-              'OpenCode MCP tool catalog exceeds the size limit.',
+              `${label} MCP tool catalog exceeds the size limit.`,
             );
         }
         tools.push(...page.tools);
         cursor = page.nextCursor;
         if (cursor && (cursors.has(cursor) || cursors.size >= 100))
-          throw new Error('OpenCode MCP tool catalog pagination is invalid.');
+          throw new Error(`${label} MCP tool catalog pagination is invalid.`);
         if (cursor) cursors.add(cursor);
       } while (cursor);
       const names = new Set<string>();
       for (const tool of tools) {
         if (names.has(tool.name))
-          throw new Error('OpenCode MCP tool names are ambiguous.');
+          throw new Error(`${label} MCP tool names are ambiguous.`);
         names.add(tool.name);
       }
       tools.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
@@ -170,7 +172,7 @@ export async function readOpenCodeMcpSnapshot(
     } catch {
       signal.throwIfAborted();
       throw new Error(
-        `OpenCode could not check the tools for ${server.name}. Reconnect the server and try again.`,
+        `${label} could not check the tools for ${server.name}. Reconnect the server and try again.`,
       );
     } finally {
       deadline.removeEventListener('abort', close);

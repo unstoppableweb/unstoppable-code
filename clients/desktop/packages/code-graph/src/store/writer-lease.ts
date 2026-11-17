@@ -49,6 +49,12 @@ export interface AcquireCodeGraphWriterLeaseOptions {
   signal?: AbortSignal;
   /** Called once, when the lease is not immediately available. */
   onWait?: () => void;
+  /**
+   * Called before the lease is acquired, so before anything is written; a
+   * throw refuses the write. A host passes its storage ownership admission
+   * here (CAN-6985); graph hosts that own the store pass none.
+   */
+  admit?: () => void;
 }
 
 const LEASE_POLL_MIN_MS = 25;
@@ -117,6 +123,7 @@ export async function acquireCodeGraphWriterLease(
   dbPath: string,
   options: AcquireCodeGraphWriterLeaseOptions = {},
 ): Promise<CodeGraphWriterLease> {
+  options.admit?.();
   const deadline =
     options.waitMs === undefined ? Infinity : Date.now() + options.waitMs;
   const connection = openLeaseConnection(dbPath);

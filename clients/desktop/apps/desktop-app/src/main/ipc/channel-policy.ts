@@ -8,6 +8,8 @@ export const IPC_PRIVATE_CHANNELS = new Set<string>([
   IPC_CHANNELS.orgProjectLinksDecide,
   IPC_CHANNELS.scriptRun,
   IPC_CHANNELS.approvalSecretInput,
+  IPC_CHANNELS.secretRequestSubmit,
+  IPC_CHANNELS.secretRequestDecline,
   IPC_CHANNELS.slowActionSnapshot,
   IPC_CHANNELS.slowActionClear,
 ]);

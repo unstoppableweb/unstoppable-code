@@ -36,6 +36,7 @@ import { PluginModNotice, pluginModRows } from './PluginModMembers';
 import { ErrorBanner } from './StatusBlocks';
 import { Tooltip } from './Tooltip';
 import { McpServerLogo } from './McpServerLogo';
+import { StatusToneText, useItemStateMarks } from './ItemStateMark';
 import {
   HarnessLogoList,
   PluginWorksWith,
@@ -686,6 +687,8 @@ export function PluginDetailContent({
   const mcpRows = useRef(new Map<string, HTMLTableRowElement>());
   const consumedMcpTarget = useRef<string | null>(null);
   const [mcpTargetError, setMcpTargetError] = useState(false);
+  // New Customize: status text stays plain; only its icon is colored.
+  const neutralStatusText = useItemStateMarks();
   useEffect(() => {
     if (!mcpTarget) {
       setMcpTargetError(false);
@@ -965,15 +968,22 @@ export function PluginDetailContent({
             </Stack>
           )}
         </Stack>
-        {mcpTargetError && (
-          <p
-            role="status"
-            className="text-s fg-warning"
-            data-testid="plugin-mcp-target-unavailable"
-          >
-            This MCP server is no longer available
-          </p>
-        )}
+        {mcpTargetError &&
+          (neutralStatusText ? (
+            <p role="status" data-testid="plugin-mcp-target-unavailable">
+              <StatusToneText tone="warning" size="s">
+                This MCP server is no longer available
+              </StatusToneText>
+            </p>
+          ) : (
+            <p
+              role="status"
+              className="text-s fg-warning"
+              data-testid="plugin-mcp-target-unavailable"
+            >
+              This MCP server is no longer available
+            </p>
+          ))}
         {metadataFooter}
       </section>
 

@@ -1,3 +1,4 @@
+import { verifyCommittedReceipt } from './committed-receipt';
 import { randomUUID } from 'node:crypto';
 import type { VaultSecretPin } from '../../../vault/contracts';
 import {
@@ -38,6 +39,8 @@ export interface MigrationStorage {
     draft: VaultIntentDraft,
   ): VaultMigrationUpdate | undefined;
   resolve(id: string): MigrationImportOutcome;
+  /** Repository history remains accessible after cancellation retires selection eligibility. */
+  resolveExact(id: string): MigrationImportOutcome;
   reconcile(id: string, epoch: number): MigrationImportOutcome;
   select(id: string, epoch: number): void;
   recordUse(id: string, epoch: number, receipt: MigrationUseReceipt): void;
@@ -48,6 +51,14 @@ export interface MigrationStorage {
     operationId: string,
     generation: string,
     completionId: string | null,
+  ): void;
+  /** Trusted retirement owner only; never admits a late ordinary deletion response. */
+  retiredDeletionReceipt(
+    id: string,
+    epoch: number,
+    operationId: string,
+    generation: string,
+    completionId: string,
   ): void;
   supersede(epoch: number, reason: string): void;
 }
@@ -156,8 +167,12 @@ export function createMigrationStorage(
       ),
     };
   }
-  function outcome(attempt: MigrationAttempt): MigrationImportOutcome {
-    if (attempt.disposition === 'cancelled') return { kind: 'retired' };
+  function outcome(
+    attempt: MigrationAttempt,
+    exact = false,
+  ): MigrationImportOutcome {
+    if (!exact && attempt.disposition === 'cancelled')
+      return { kind: 'retired' };
     if (attempt.destination === null) return { kind: 'not_accepted' };
     const intent = store.findIntent('copilot-account', importKey(attempt.id));
     if (!intent || intent.entryId !== attempt.destination.entryId)
@@ -207,6 +222,15 @@ export function createMigrationStorage(
       revision += 1;
     }
     if (revision !== entry.revision) return invalidMigration();
+    if (
+      exact &&
+      !verifyCommittedReceipt(
+        keys,
+        entry,
+        successors[successors.length - 1] ?? intent,
+      )
+    )
+      return invalidMigration();
     if (
       lineage.some((item) =>
         isLiveMigrationIntent(
@@ -310,6 +334,10 @@ export function createMigrationStorage(
       const { journal } = load();
       const attempt = journal.attempts.find((item) => item.id === id);
       return attempt ? outcome(attempt) : invalidMigration();
+    },
+    resolveExact(id: string): MigrationImportOutcome {
+      const attempt = load().journal.attempts.find((item) => item.id === id);
+      return attempt ? outcome(attempt, true) : invalidMigration();
     },
     reconcile(id: string, epoch: number): MigrationImportOutcome {
       const { stored, journal } = load();
@@ -419,6 +447,39 @@ export function createMigrationStorage(
             phase: completionId === null ? 'submitted' : 'completed',
             completionId,
           },
+        }),
+      );
+    },
+    retiredDeletionReceipt(
+      id,
+      epoch,
+      operationId,
+      generation,
+      completionId,
+    ): void {
+      const { stored, journal } = load();
+      const attempt = journal.attempts.find(
+        (a) => a.id === id && a.epoch === epoch,
+      );
+      const deletion = attempt?.deletion;
+      if (
+        !attempt ||
+        attempt.disposition !== 'cancelled' ||
+        !completionId ||
+        journal.head.epoch <= epoch ||
+        !deletion ||
+        deletion.id !== operationId ||
+        deletion.generation !== generation ||
+        deletion.phase !== 'submitted' ||
+        attempt.state !== 'verified'
+      )
+        throw new Error('Retired cleanup receipt does not match.');
+      write(
+        stored,
+        replace(journal, {
+          ...attempt,
+          state: 'legacy_deleted',
+          deletion: { ...deletion, phase: 'completed', completionId },
         }),
       );
     },

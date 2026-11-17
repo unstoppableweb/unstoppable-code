@@ -917,3 +917,5 @@ export const ThumbsDownIcon = /* @__PURE__ */ createAppIcon(IconThumbsDown);
 export const SteerIcon = /* @__PURE__ */ createAppIcon(IconSteer);
 export const MentionIcon = /* @__PURE__ */ createAppIcon(IconMention);
 export const SingleSignOnIcon = /* @__PURE__ */ createAppIcon(IconSingleSignOn);
+/** Agent secrets: a key, never a lock (the form hides a value; it is not end-to-end encryption). */
+export const KeyIcon = /* @__PURE__ */ createAppIcon(IconSingleSignOn);

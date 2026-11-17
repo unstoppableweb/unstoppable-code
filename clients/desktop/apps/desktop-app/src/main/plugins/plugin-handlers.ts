@@ -127,7 +127,8 @@ function toErrorMessage(error: unknown): string {
  * Run a mutating plugin/marketplace operation and, on success, kick the
  * invocable-inventory rebuild. Shared by the renderer IPC handlers below and
  * the portal mutation adapters so every mutation path refreshes the inventory
- * the same way.
+ * the same way. Catalog effects/publications also schedule settled invalidation
+ * in plugin-service, independently of this success-only compatibility hook.
  */
 export async function refreshAfterSuccess<T>(
   reason: string,

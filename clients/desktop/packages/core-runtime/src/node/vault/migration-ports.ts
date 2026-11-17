@@ -1,3 +1,4 @@
+import type { CopilotVaultAccount } from './copilot-grant-contracts';
 import type { MigrationProcessIdentity } from './migration-platform';
 import type { VaultSecretPin } from '../../vault/contracts';
 import type { MigrationUseReceipt } from './repository/migration-codec';
@@ -233,6 +234,19 @@ export interface MigrationFamilyPorts {
   readonly slot: string;
   readonly snapshot?: MigrationSnapshotPort;
   readonly importer?: {
+    /** Trusted non-consuming checkpoint before complete P2 grant ingress. */
+    begin?(
+      context: MigrationAttemptContext & {
+        readonly idempotencyKey: string;
+        readonly account: CopilotVaultAccount;
+        readonly predecessorGeneration: string | null;
+      },
+    ): Promise<void>;
+    /** Both initial import and reconciliation must pass the family publication gate. */
+    finalize?(
+      context: MigrationAttemptContext,
+      isCurrent: () => boolean,
+    ): Promise<void>;
     /**
      * Create-only using P1's reserved key and mint/intent attachment.
      * Do not retain plaintext after settlement, including failed imports.
@@ -241,6 +255,7 @@ export interface MigrationFamilyPorts {
       context: MigrationAttemptContext & {
         readonly idempotencyKey: string;
         readonly value: Uint8Array;
+        readonly isCurrent?: () => boolean;
       },
     ): Promise<void>;
   };
@@ -276,4 +291,11 @@ export type MigrationDeletionResult =
       readonly generation: string;
       readonly completionId: string;
     }
-  | { readonly kind: 'absent' | 'changed' | 'unreadable' | 'outcome_unknown' };
+  | {
+      readonly kind:
+        | 'absent'
+        | 'changed'
+        | 'unreadable'
+        | 'unavailable'
+        | 'outcome_unknown';
+    };

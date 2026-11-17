@@ -300,6 +300,14 @@
       [
         "SetBaseBranch",
         "6f226b8c364674c84fbb610a4e757c5b08175f6d487d873e4239fe8e34b5aa78"
+      ],
+      [
+        "SearchDeferredTools",
+        "d2d0f2eb677a59b45d24800947338b74a14a9f070f41153693e6c21d484bae85"
+      ],
+      [
+        "LoadDeferredTools",
+        "b648a20e720868417ff63a4b3ac751fbec9d4cf7717e97f6d0eb928b19cae2b4"
       ]
     ],
     "ui": [
@@ -406,6 +414,62 @@
       [
         "SetBaseBranch",
         "6f226b8c364674c84fbb610a4e757c5b08175f6d487d873e4239fe8e34b5aa78"
+      ],
+      [
+        "AddFeedEntry",
+        "94e5e5a412337d64269ee4bd8a747f9d6beb99aa176ba3c8c84cf914eefd0ecb"
+      ],
+      [
+        "SearchFeedEntries",
+        "7a61eb04900b8ce9461dd53158885e4e858ea2085400358c282e16c2db12c018"
+      ],
+      [
+        "UpdateFeedEntry",
+        "afae682bb8ba33b8570bce8cb07a3914eacfe5d3344680569e233f273b14b742"
+      ],
+      [
+        "GetCodeGraphContext",
+        "aadde86b17fe87ac06a1f95ee20df4810918845c25efd0d68251ab7c245f0de8"
+      ],
+      [
+        "BuildOrUpdateCodeGraph",
+        "cc50ec1f6ed5fc471124fe8fb56cf575bdc7bcdd2bed201dc8c36fe570d86fcf"
+      ],
+      [
+        "QueryCodeGraph",
+        "fc5b51c57835b814872124cdf62e1065a7761517bd833ed0f02242b86fb8cd12"
+      ],
+      [
+        "SearchCodeGraph",
+        "66f8da5f4cf3dd6fa803f56d7aad0dcd2aa2c7b9f8de2186236849ae660dba90"
+      ],
+      [
+        "ExplainCodeSymbol",
+        "6ecd646fbf632e0342f79fc7db2b8abe864d976a2129cca723caca6471847933"
+      ],
+      [
+        "GetImpactRadius",
+        "0c1040ef31b0c525c7b228db038ce8b7d97a07ecfd79bb8666727782df5e13ac"
+      ],
+      [
+        "DetectChangedSymbols",
+        "3c0f88baedd0d667d98c8a174e46be208a42d5d372ff96e224eb708e04c98a3e"
+      ],
+      [
+        "CompareChangeImpact",
+        "e5d85db5245b5103ff262e89604c840ddf495f8cb8ade269e21a59829927dee1"
+      ],
+      [
+        "GetReviewContext",
+        "50667826d823342d77051d193566a091c7b4c81d1de1072488fd0150ee91225e"
+      ],
+      [
+        "SearchDeferredTools",
+        "d2d0f2eb677a59b45d24800947338b74a14a9f070f41153693e6c21d484bae85"
+      ],
+      [
+        "LoadDeferredTools",
+        "b648a20e720868417ff63a4b3ac751fbec9d4cf7717e97f6d0eb928b19cae2b4"
       ]
     ],
     "ui": [
@@ -504,6 +568,14 @@
       [
         "SetWorkEntryAutoDelete",
         "f2484532a6c616223fe451767b664ab43e9d937cd7499ab2c9a3ecc40dc5cb07"
+      ],
+      [
+        "SearchDeferredTools",
+        "d2d0f2eb677a59b45d24800947338b74a14a9f070f41153693e6c21d484bae85"
+      ],
+      [
+        "LoadDeferredTools",
+        "b648a20e720868417ff63a4b3ac751fbec9d4cf7717e97f6d0eb928b19cae2b4"
       ]
     ],
     "ui": [
@@ -602,6 +674,156 @@
       [
         "SetWorkEntryAutoDelete",
         "f2484532a6c616223fe451767b664ab43e9d937cd7499ab2c9a3ecc40dc5cb07"
+      ],
+      [
+        "SearchDeferredTools",
+        "d2d0f2eb677a59b45d24800947338b74a14a9f070f41153693e6c21d484bae85"
+      ],
+      [
+        "LoadDeferredTools",
+        "b648a20e720868417ff63a4b3ac751fbec9d4cf7717e97f6d0eb928b19cae2b4"
+      ]
+    ],
+    "ui": [
+      [
+        "AskUserQuestion",
+        "242a37c05ed52ffc382fc930a1514526d6a7a1dfc72f8ebf253eca21896bfffe"
+      ]
+    ]
+  },
+  "antigravity-no-deferred": {
+    "main": [
+      [
+        "GetScriptOutput",
+        "1eb249756fcea42b3820b7c92b59898b3a8602a44c74e0d662bc785aeb3c7cc2"
+      ],
+      [
+        "GetGitPreferences",
+        "7c3f879662f3c3b11100df907874c67279444645cbc60e4af36843e40dbff2df"
+      ],
+      [
+        "SaveMemory",
+        "863ed2b921cca167114e617332b6b1c65dda230648c1b11673623908d9eb0b7a"
+      ],
+      [
+        "SearchMemory",
+        "72b52fe019cd2d62f6e4448faecaebcbc7810ab2f35497961891ec34334a4cd3"
+      ],
+      [
+        "SearchChats",
+        "9eb8726678d711b4e2d6f25dd2d0185c97a0e76c50703d337d2947ef7c5656eb"
+      ],
+      [
+        "ReadChatExcerpt",
+        "1fd88334d41c547e8a7c4f15b5e4ba26214b8c6555c66d06d483ec396415d0fe"
+      ],
+      [
+        "ReadMemory",
+        "a38ee252dec295505ab1524f53b5dc87e94a6e6cd295cfd9331779af98fbf149"
+      ],
+      [
+        "ReadPipelineYaml",
+        "1e93a1974135902cef01c7b03ac4b1c7c55a87f1c92e6e7d0116d2f17a9f0377"
+      ],
+      [
+        "ShowFiles",
+        "02c056e03c13e16f2ca5ed327dab044c293cb07eb515b557384f4d56dffde807"
+      ],
+      [
+        "ShowCapabilities",
+        "f0cecda978c3e77f45d4ea4f66565eebd0f6b2c6b0046c183e9a262a2603a85d"
+      ],
+      [
+        "GetFileComments",
+        "e3fb61b022cab7ac5977f3f8ebc581ce50e953c2870d61006e1718513e3b2737"
+      ],
+      [
+        "RespondToFileComment",
+        "ea2b115881087761ae11107e4ab25cce86bbd7f5e3246ac1c4a1efda311d810d"
+      ],
+      [
+        "SearchActions",
+        "53474b41b77c336dbffdfc8586c44e08239d62aed992cde7b84c37fd9761898a"
+      ],
+      [
+        "DispatchAction",
+        "52b47ba13c1cffe229de879844986da8fbccf69d2db8d1d6f4b809c7834a85cf"
+      ],
+      [
+        "SearchWatchers",
+        "9def2985460f48199b643002bec574cd2a9157ac37950c5eb578f568c159f238"
+      ],
+      [
+        "SetupWatchers",
+        "861d0a8f8c5b0bf36a5a7c01830f9a4f3ff103cdc943d4b283e22b4478b1014a"
+      ],
+      [
+        "WatchGitHubItems",
+        "a2f55a27eb694e4d622cb30f47a0a69f74bfb6c93b2c3985c4f30a9383baad8e"
+      ],
+      [
+        "GetGitHubPullRequestStatus",
+        "6e26bf2322cdbe397abb3f5b0a9015657dd50e05e86995930ac55bbac23738ef"
+      ],
+      [
+        "WatchCommand",
+        "961f40b07a589584cc18f231d4fe204713f02aeffedb718604d72e13554f81d5"
+      ],
+      [
+        "ScheduleWakeup",
+        "7bf99a622d77fa6a8349efa7bd452408d2f85ea1c9de5b643b0e6e618b9de668"
+      ],
+      [
+        "DeleteWatchers",
+        "ac1bdb777fa86d5f9ae7c9c9803d13fce17740ec89b38771367c1d85e4b63cd3"
+      ],
+      [
+        "SetChatAutoArchive",
+        "7ee02fd94b3bc9f0d28694817974b8a896efd80aacdeaa19621638029dafdf24"
+      ],
+      [
+        "SetWorkEntryAutoDelete",
+        "f2484532a6c616223fe451767b664ab43e9d937cd7499ab2c9a3ecc40dc5cb07"
+      ],
+      [
+        "SetBaseBranch",
+        "6f226b8c364674c84fbb610a4e757c5b08175f6d487d873e4239fe8e34b5aa78"
+      ],
+      [
+        "GetCodeGraphContext",
+        "aadde86b17fe87ac06a1f95ee20df4810918845c25efd0d68251ab7c245f0de8"
+      ],
+      [
+        "BuildOrUpdateCodeGraph",
+        "cc50ec1f6ed5fc471124fe8fb56cf575bdc7bcdd2bed201dc8c36fe570d86fcf"
+      ],
+      [
+        "QueryCodeGraph",
+        "fc5b51c57835b814872124cdf62e1065a7761517bd833ed0f02242b86fb8cd12"
+      ],
+      [
+        "SearchCodeGraph",
+        "66f8da5f4cf3dd6fa803f56d7aad0dcd2aa2c7b9f8de2186236849ae660dba90"
+      ],
+      [
+        "ExplainCodeSymbol",
+        "6ecd646fbf632e0342f79fc7db2b8abe864d976a2129cca723caca6471847933"
+      ],
+      [
+        "GetImpactRadius",
+        "0c1040ef31b0c525c7b228db038ce8b7d97a07ecfd79bb8666727782df5e13ac"
+      ],
+      [
+        "DetectChangedSymbols",
+        "3c0f88baedd0d667d98c8a174e46be208a42d5d372ff96e224eb708e04c98a3e"
+      ],
+      [
+        "CompareChangeImpact",
+        "e5d85db5245b5103ff262e89604c840ddf495f8cb8ade269e21a59829927dee1"
+      ],
+      [
+        "GetReviewContext",
+        "50667826d823342d77051d193566a091c7b4c81d1de1072488fd0150ee91225e"
       ]
     ],
     "ui": [

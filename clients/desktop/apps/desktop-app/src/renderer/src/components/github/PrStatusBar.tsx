@@ -132,6 +132,7 @@ import { LocalOnlyMergeConfirmationModal } from './LocalOnlyMergeConfirmationMod
 import { PrMergeWarningModal } from './PrMergeWarningModal';
 import { PrMergeMultiRepoModal } from './PrMergeMultiRepoModal';
 import { POSTHOG_REPLAY_MASK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
+import { useWorktreeEffective } from '@/hooks/useWorktreeEffective';
 
 // ---------------------------------------------------------------------------
 // Helper functions
@@ -683,6 +684,7 @@ export const PrStatusBar = memo(function PrStatusBar({
   viewMode,
   viewModeReady,
 }: PrStatusBarProps): JSX.Element {
+  useWorktreeEffective(projectId, worktreeId);
   const key = `${projectId}/${worktreeId}`;
   const leadingInsetClassName = useTopBarLeadingInsetClassName();
   const activePage = useNavigationStore((state) => state.activePage);

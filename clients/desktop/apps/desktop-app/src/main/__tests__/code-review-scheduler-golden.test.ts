@@ -7,6 +7,7 @@
 // A change here is a behaviour change: re-record deliberately with
 // `pnpm test <this file> -u` and review the snapshot diff.
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -18,6 +19,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   IPC_CHANNELS,
+  CODE_REVIEW_CHAT_PROJECT_ID,
   PLAN_DIAGRAM_SCHEMA_VERSION,
   type CodeReviewFile,
   type CodeReviewGenerationResult,
@@ -28,6 +30,8 @@ import type * as Persistence from '../lib/code-review-persistence';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import type * as MainProcessLogging from '../lib/main-process-logging';
 import { getCodeReviewStateFilePath } from '../lib/paths';
+import { withReviewStateLock } from '@canopy/core-runtime/node/review';
+import { registerWorkspaceTypes } from '../lib/workspace-registry';
 
 jest.setTimeout(60_000);
 
@@ -237,11 +241,53 @@ beforeEach(() => {
   hold = null;
 });
 
+it('binds a queued review mutation to the path it locked even if workspace routing changes', async () => {
+  registerWorkspaceTypes(new Map([[WORKSPACE_ID, 'single-repo']]));
+  const reviewProject = CODE_REVIEW_CHAT_PROJECT_ID;
+  const capturedPath = getCodeReviewStateFilePath(reviewProject, WORKTREE_ID);
+  const blocked = gate();
+  const acquired = gate();
+  const lock = withReviewStateLock(capturedPath, async () => {
+    acquired.release();
+    await blocked.promise;
+  });
+  await acquired.promise;
+  const mutation = persistence.setCodeReviewArmed(reviewProject, WORKTREE_ID);
+  registerWorkspaceTypes(new Map([[reviewProject, 'single-repo']]));
+  const otherPath = getCodeReviewStateFilePath(reviewProject, WORKTREE_ID);
+  try {
+    expect(otherPath).not.toBe(capturedPath);
+    blocked.release();
+    await lock;
+    await mutation;
+    expect(JSON.parse(readFileSync(capturedPath, 'utf8'))).toMatchObject({
+      armed: true,
+    });
+    expect(existsSync(otherPath)).toBe(false);
+  } finally {
+    blocked.release();
+    registerWorkspaceTypes(new Map([[WORKSPACE_ID, 'single-repo']]));
+  }
+});
+
 function invoke<T>(channel: string, request: unknown): Promise<T> {
   const handler = handlers.get(channel);
   if (!handler) throw new Error(`No handler for ${channel}`);
   return Promise.resolve(handler({ sender: { id: 1 } }, request)) as Promise<T>;
 }
+
+it('registration IPC preserves a historical key owner instead of replacing it', async () => {
+  await invoke(IPC_CHANNELS.codeReviewRegister, {
+    projectId: 'ipc-project--part',
+    worktreeId: 'tree',
+  });
+  await expect(
+    invoke(IPC_CHANNELS.codeReviewRegister, {
+      projectId: 'ipc-project',
+      worktreeId: 'part--tree',
+    }),
+  ).rejects.toMatchObject({ reason: 'owner_changed' });
+});
 
 // The real clock, captured before any case installs fake timers. Scheduler
 // work finishes on the thread pool, so waits are measured in real time, not

@@ -1,4 +1,8 @@
 import { createChatStateServiceFixture } from '../../__tests__/helpers/chat-state-service-fixture';
+import {
+  ChatSecretStore,
+  setChatSecretStoreForTests,
+} from '../../agent-secrets/chat-secret-store';
 import type {
   ChatStateCommit,
   TranscriptFieldPreparation,
@@ -38902,6 +38906,39 @@ describe('chat state service', () => {
     });
 
     expect(archived.archived[0]?.tab.messages).toContainEqual(assistant);
+  });
+
+  it('deletes agent secrets when the compatibility path archives a chat', async () => {
+    const target = service();
+    await createChat(target);
+    const store = new ChatSecretStore({
+      filePath: (): string => join(tempDir, 'agent-secrets.json'),
+      auditFilePath: (): string => join(tempDir, 'agent-secrets-audit.jsonl'),
+      encryption: {
+        available: (): boolean => false,
+        encrypt: (): Buffer => Buffer.alloc(0),
+        decrypt: (): string => '',
+      },
+    });
+    setChatSecretStoreForTests(store);
+    try {
+      const chat = { ...SCOPE, chatId: 'chat-1' };
+      const other = { ...SCOPE, chatId: 'chat-2' };
+      await store.put(chat, { STRIPE_SECRET_KEY: 'fake-value' });
+      await store.put(other, { STRIPE_SECRET_KEY: 'fake-value' });
+      const live = await target.getCompatibilityTabs(SCOPE, {
+        chatIds: ['chat-1'],
+      });
+      await target.archiveCompatibilityTab(SCOPE, {
+        tab: live.tabs[0],
+        archivedAt: '2026-08-10T00:00:00.000Z',
+        turnCount: 0,
+      });
+      expect(await store.listNames(chat)).toEqual([]);
+      expect(await store.listNames(other)).toEqual(['STRIPE_SECRET_KEY']);
+    } finally {
+      setChatSecretStoreForTests(null);
+    }
   });
 
   it('settles the latest canonical transcript inside the archive transaction', async () => {

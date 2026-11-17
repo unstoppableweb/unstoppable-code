@@ -30,8 +30,11 @@ import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 //   3. A member of an organization whose pool needs its admin gets the admin
 //      line on the credits row and no purchase action.
 //   4. On a usage limit, an AI gateway with a key is a provider row like the
-//      others: Use continues the chat on the gateway's model, and the next
-//      turn reaches the gateway under that model's gateway id.
+//      others: Continue continues the chat on the gateway's model, and the
+//      next turn reaches the gateway under that model's gateway id.
+//   5. When the gateway offers the chat's own model under another id, its
+//      row stays on that model and holds the only primary button, and
+//      Continue sends the gateway's own route id.
 //
 // Deviation from the plan: it named the mock `usage-limit-reached` scenario
 // and `seedUsageLimitedChats.mjs`, but those model a Claude/Codex provider
@@ -169,6 +172,122 @@ async function showWorktree(window, app) {
   return panel;
 }
 
+/**
+ * Seed one chat on `model` that hit Claude's usage limit, launch signed out
+ * of the cloud, save this device's gateway with a key that offers only
+ * Gateway Sonnet 5.5, and open the chat's worktree.
+ */
+async function openGatewayChat({ prefix, model }) {
+  const userDataDir = mkdtempSync(path.join(os.tmpdir(), `canopy-${prefix}-`));
+  seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+  seedWorktreeChat({
+    userDataDir,
+    workspaceId: WORKSPACE_ID,
+    worktreeId: WORKTREE_ID,
+    providerType: 'claude',
+    tabs: [
+      {
+        id: `${prefix}-chat`,
+        title: 'Credits notice',
+        model,
+        llmProviderUsageLimitBanner: {
+          provider: 'claude',
+          message: "You've hit your usage limit.",
+          detectedAt: Date.now() - 60_000,
+          dismissKey: `${prefix}-${randomUUID()}`,
+          resetsAt: Date.now() + 2 * 60 * 60 * 1000,
+        },
+      },
+    ],
+  });
+  const authKey = `csk_${prefix.replaceAll('-', '_')}_${randomUUID()}`;
+  await registerScenario(DEFAULT_MOCK_BASE_URL, authKey, {
+    authUsage: { scenario: 'authed-low-usage' },
+  });
+  const { electronApp } = await withBundledBinaryOverridesScrubbed(() =>
+    launchCanopy({
+      userDataDir,
+      env: {
+        CANOPY_MOCK_API_KEY: authKey,
+        CANOPY_E2E_CLOUD_BASE_URL: DEFAULT_MOCK_BASE_URL,
+        CANOPY_E2E_CLIENT_FEATURE_FLAGS: JSON.stringify({
+          'canopy-ai-gateway-settings-enabled': true,
+          'canopy-desktop-hosted-settings': false,
+        }),
+      },
+    }),
+  );
+  const close = async () => {
+    await closeCanopy(electronApp, userDataDir);
+    await clearScenario(DEFAULT_MOCK_BASE_URL, authKey);
+  };
+  try {
+    const window = await electronApp.firstWindow();
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell({ timeout: 30_000 });
+    // Signed out of the cloud, the gateway is this device's: save one with
+    // a key through the real preload, as its setup dialog does.
+    const saved = await window.evaluate(async () => {
+      const { organizationId } = await window.api.localModelGateway.read();
+      const update = await window.api.localModelGateway.update({
+        expectedOrganizationId: organizationId,
+        expectedRevision: 'absent',
+        baseUrl: 'https://openrouter.ai/api',
+        enabled: true,
+        models: [
+          {
+            id: 'gateway-sonnet-5-5',
+            gatewayId: 'anthropic/claude-sonnet-5.5',
+            label: 'Gateway Sonnet 5.5',
+            harness: 'claude',
+            contextWindow: 200_000,
+            supportedThinkingLevels: [],
+            toolSchemaProfile: 'standard',
+          },
+        ],
+      });
+      const connect = await window.api.localModelGateway.connect({
+        expectedOrganizationId: organizationId,
+        baseUrl: 'https://openrouter.ai/api',
+        apiKey: 'sk-or-e2e-credits-notice',
+      });
+      return { update, connect };
+    });
+    expect(saved.update.ok).toBe(true);
+    expect(saved.connect.value?.status).toBe('connected');
+    const panel = await showWorktree(window, app);
+    return { window, panel, close };
+  } catch (error) {
+    await close();
+    throw error;
+  }
+}
+
+/** Send one turn and expect it to reach the gateway under `gatewayId`. */
+async function expectTurnOnGateway({ window, panel, gatewayId, reply }) {
+  const marker = `Canopy-Ccredits-gateway-${randomUUID()}`;
+  await registerScenario(DEFAULT_MOCK_BASE_URL, marker, {
+    llm: { steps: [{ text: reply, stopReason: 'end_turn' }] },
+  });
+  const composer = panel.getByRole('textbox').first();
+  await composer.click();
+  await composer.fill(`[${marker}] Keep going.`);
+  await window.getByRole('button', { name: 'Send message' }).click();
+  await expect
+    .poll(
+      async () =>
+        (await getScenarioActivity(DEFAULT_MOCK_BASE_URL, marker)).activity[
+          `llmModel:${gatewayId}`
+        ] ?? 0,
+      { timeout: 60_000 },
+    )
+    .toBeGreaterThan(0);
+  await expect(panel.getByText(reply).first()).toBeVisible({
+    timeout: 30_000,
+  });
+  await clearScenario(DEFAULT_MOCK_BASE_URL, marker);
+}
+
 test.describe('Credits notice', () => {
   test('a buyer buys, waits on the hand-off, checks again and sees the credits arrive', async () => {
     test.setTimeout(180_000);
@@ -221,6 +340,15 @@ test.describe('Credits notice', () => {
       await expect(
         dialog.getByTestId('provider-choice-row-claude-badge'),
       ).toHaveCount(0);
+      // Nothing is ready now, so no button is primary and the list stays
+      // neutral.
+      await expect(dialog.locator('[data-recommended="true"]')).toHaveCount(0);
+      // The credits row runs the chat's model once credits are added (a
+      // switch would have no Buy here: a worktree Claude chat is never
+      // offered the default credits model).
+      await expect(
+        dialog.getByTestId('provider-choice-detail-credits'),
+      ).toHaveText(/^Stays on \S.* after you add credits$/);
 
       // Buy hands off to the browser once, the dialog closes, and the notice
       // waits on it.
@@ -365,85 +493,14 @@ test.describe('Credits notice', () => {
       await fixture.close();
     }
   });
-  test('an AI gateway with a key is a Use row that continues the chat on its model', async () => {
+  test('an AI gateway with a key is a Continue row that continues the chat on its model', async () => {
     test.setTimeout(180_000);
-    const userDataDir = mkdtempSync(
-      path.join(os.tmpdir(), 'canopy-credits-notice-gateway-'),
-    );
-    seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
-    seedWorktreeChat({
-      userDataDir,
-      workspaceId: WORKSPACE_ID,
-      worktreeId: WORKTREE_ID,
-      providerType: 'claude',
-      tabs: [
-        {
-          id: 'credits-notice-gateway-chat',
-          title: 'Credits notice',
-          model: 'opus[1m]',
-          llmProviderUsageLimitBanner: {
-            provider: 'claude',
-            message: "You've hit your usage limit.",
-            detectedAt: Date.now() - 60_000,
-            dismissKey: `credits-notice-gateway-${randomUUID()}`,
-            resetsAt: Date.now() + 2 * 60 * 60 * 1000,
-          },
-        },
-      ],
+    const fixture = await openGatewayChat({
+      prefix: 'credits-notice-gateway',
+      model: 'opus[1m]',
     });
-    const authKey = `csk_credits_notice_gateway_${randomUUID()}`;
-    await registerScenario(DEFAULT_MOCK_BASE_URL, authKey, {
-      authUsage: { scenario: 'authed-low-usage' },
-    });
-    const { electronApp } = await withBundledBinaryOverridesScrubbed(() =>
-      launchCanopy({
-        userDataDir,
-        env: {
-          CANOPY_MOCK_API_KEY: authKey,
-          CANOPY_E2E_CLOUD_BASE_URL: DEFAULT_MOCK_BASE_URL,
-          CANOPY_E2E_CLIENT_FEATURE_FLAGS: JSON.stringify({
-            'canopy-ai-gateway-settings-enabled': true,
-            'canopy-desktop-hosted-settings': false,
-          }),
-        },
-      }),
-    );
     try {
-      const window = await electronApp.firstWindow();
-      const app = new CanopyAppDriver(window);
-      await app.waitForShell({ timeout: 30_000 });
-      // Signed out of the cloud, the gateway is this device's: save one with
-      // a key through the real preload, as its setup dialog does.
-      const saved = await window.evaluate(async () => {
-        const { organizationId } = await window.api.localModelGateway.read();
-        const update = await window.api.localModelGateway.update({
-          expectedOrganizationId: organizationId,
-          expectedRevision: 'absent',
-          baseUrl: 'https://openrouter.ai/api',
-          enabled: true,
-          models: [
-            {
-              id: 'gateway-sonnet-5-5',
-              gatewayId: 'anthropic/claude-sonnet-5.5',
-              label: 'Gateway Sonnet 5.5',
-              harness: 'claude',
-              contextWindow: 200_000,
-              supportedThinkingLevels: [],
-              toolSchemaProfile: 'standard',
-            },
-          ],
-        });
-        const connect = await window.api.localModelGateway.connect({
-          expectedOrganizationId: organizationId,
-          baseUrl: 'https://openrouter.ai/api',
-          apiKey: 'sk-or-e2e-credits-notice',
-        });
-        return { update, connect };
-      });
-      expect(saved.update.ok).toBe(true);
-      expect(saved.connect.value?.status).toBe('connected');
-
-      const panel = await showWorktree(window, app);
+      const { window, panel } = fixture;
       const notice = panel.getByTestId('chat-input-usage-limit-banner');
       const choose = notice.getByTestId(
         'chat-input-usage-limit-provider-choice',
@@ -454,20 +511,28 @@ test.describe('Credits notice', () => {
       await choose.click();
       const dialog = window.getByTestId('switch-provider-dialog');
       const use = dialog.getByTestId('provider-choice-action-gateway');
-      await expect(use).toHaveText('Use', { timeout: 15_000 });
+      await expect(use).toHaveText('Continue', { timeout: 15_000 });
+      // The chat is on Opus and the gateway offers only Sonnet, so there is
+      // no equivalent route: the row switches model.
       await expect(
         dialog.getByTestId('provider-choice-detail-gateway'),
-      ).toHaveText('Continues on Gateway Sonnet 5.5');
-      // Connected rows lead; the gateway ranks ahead of credits.
-      const rowIds = await dialog
-        .locator('[data-testid^="provider-choice-row-"]')
-        .evaluateAll((rows) =>
-          rows
-            .map((row) => row.getAttribute('data-testid'))
-            .filter((id) => id !== null && !id.endsWith('-badge')),
-        );
-      expect(rowIds.indexOf('provider-choice-row-gateway')).toBeLessThan(
-        rowIds.indexOf('provider-choice-row-credits'),
+      ).toHaveText('Switches to Gateway Sonnet 5.5');
+      // Rows group by what they can do: the gateway is ready now, and
+      // credits, which need buying, are not.
+      const ready = dialog.getByTestId('provider-choice-group-ready');
+      await expect(
+        ready.getByTestId('provider-choice-row-gateway'),
+      ).toBeVisible();
+      await expect(
+        ready.getByTestId('provider-choice-row-credits'),
+      ).toHaveCount(0);
+      // One primary button: Codex's, since both ready rows switch model and
+      // the tie-break order puts Codex first.
+      const recommended = dialog.locator('[data-recommended="true"]');
+      await expect(recommended).toHaveCount(1);
+      await expect(recommended).toHaveAttribute(
+        'data-testid',
+        'provider-choice-action-codex',
       );
 
       await use.click();
@@ -476,33 +541,65 @@ test.describe('Credits notice', () => {
         'Gateway Sonnet 5.5',
         { timeout: 30_000 },
       );
-
-      const marker = `Canopy-Ccredits-gateway-${randomUUID()}`;
-      const reply = 'Continued on the gateway.';
-      await registerScenario(DEFAULT_MOCK_BASE_URL, marker, {
-        llm: { steps: [{ text: reply, stopReason: 'end_turn' }] },
-      });
-      const composer = panel.getByRole('textbox').first();
-      await composer.click();
-      await composer.fill(`[${marker}] Keep going.`);
-      await window.getByRole('button', { name: 'Send message' }).click();
       // The gateway pays: the turn reached it under the model's gateway id.
-      await expect
-        .poll(
-          async () =>
-            (await getScenarioActivity(DEFAULT_MOCK_BASE_URL, marker)).activity[
-              'llmModel:anthropic/claude-sonnet-5.5'
-            ] ?? 0,
-          { timeout: 60_000 },
-        )
-        .toBeGreaterThan(0);
-      await expect(panel.getByText(reply).first()).toBeVisible({
-        timeout: 30_000,
+      await expectTurnOnGateway({
+        window,
+        panel,
+        gatewayId: 'anthropic/claude-sonnet-5.5',
+        reply: 'Continued on the gateway.',
       });
-      await clearScenario(DEFAULT_MOCK_BASE_URL, marker);
     } finally {
-      await closeCanopy(electronApp, userDataDir);
-      await clearScenario(DEFAULT_MOCK_BASE_URL, authKey);
+      await fixture.close();
+    }
+  });
+
+  test("a gateway route for the chat's own model stays on it and holds the only primary", async () => {
+    test.setTimeout(180_000);
+    // Claude's Sonnet runs on the gateway as `anthropic/claude-sonnet-5.5`,
+    // which the gateway lists under its own id `gateway-sonnet-5-5`.
+    const fixture = await openGatewayChat({
+      prefix: 'credits-notice-gateway-same-model',
+      model: 'sonnet',
+    });
+    try {
+      const { window, panel } = fixture;
+      const notice = panel.getByTestId('chat-input-usage-limit-banner');
+      await notice
+        .getByTestId('chat-input-usage-limit-provider-choice')
+        .click({ timeout: 30_000 });
+      const dialog = window.getByTestId('switch-provider-dialog');
+      const use = dialog.getByTestId('provider-choice-action-gateway');
+      await expect(use).toHaveText('Continue', { timeout: 15_000 });
+      // The row keeps the chat's label even though this route's context
+      // window (200K) is smaller than native Sonnet's. A same-model route
+      // reads as "Stays on", with no context-window copy (CAN-6965).
+      await expect(
+        dialog.getByTestId('provider-choice-detail-gateway'),
+      ).toHaveText('Stays on Sonnet 5.5');
+      // A row that keeps the chat's model beats ones that switch it, so the
+      // gateway, not Codex, holds the only primary button.
+      const recommended = dialog.locator('[data-recommended="true"]');
+      await expect(recommended).toHaveCount(1);
+      await expect(recommended).toHaveAttribute(
+        'data-testid',
+        'provider-choice-action-gateway',
+      );
+
+      await use.click();
+      await expect(dialog).toHaveCount(0);
+      // Continue sent the gateway's own route id, not the chat's `sonnet`.
+      await expect(panel.getByTestId('chat-model-picker')).toContainText(
+        'Gateway Sonnet 5.5',
+        { timeout: 30_000 },
+      );
+      await expectTurnOnGateway({
+        window,
+        panel,
+        gatewayId: 'anthropic/claude-sonnet-5.5',
+        reply: 'Stayed on Sonnet through the gateway.',
+      });
+    } finally {
+      await fixture.close();
     }
   });
 });

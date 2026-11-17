@@ -9,6 +9,10 @@
       "variant": "sequential",
       "note": "One chat streams at a time and every chunk of the fixed event script is released only after the previous one is committed, rendered, and quiet. This is the fixture later phases qualify gating counters on."
     },
+    "retained-worktrees-idle": {
+      "variant": "sequential",
+      "note": "CAN-6969. Stale signals and focus events are each awaited before the next and counted per event; idle counts are totals over a fixed window with no input. Counts are ratcheted at the counters profile's smoke tier (30 worktrees); the 110-worktree runs report CPU."
+    },
     "stress-transcript": {
       "variant": "sequential",
       "note": "Each task is awaited to its rendered state with no provider activity. Main-process tab and transcript updates still arrive asynchronously, so event-driven counts vary between runs."
@@ -61,6 +65,66 @@
     "multi-chat-streaming-sequential.work.scaling.syncsPerProviderEvent": {
       "status": "advisory",
       "tolerancePercent": 1,
+      "determinism": [],
+      "correlation": []
+    },
+    "retained-worktrees-idle.work.retained.focus.perEvent.configReads": {
+      "status": "advisory",
+      "tolerancePercent": 0,
+      "determinism": [],
+      "correlation": []
+    },
+    "retained-worktrees-idle.work.retained.focus.perEvent.metadataReads": {
+      "status": "advisory",
+      "tolerancePercent": 0,
+      "determinism": [],
+      "correlation": []
+    },
+    "retained-worktrees-idle.work.retained.idle.configReads": {
+      "status": "advisory",
+      "tolerancePercent": 0,
+      "determinism": [],
+      "correlation": []
+    },
+    "retained-worktrees-idle.work.retained.idle.metadataCaptures": {
+      "status": "advisory",
+      "tolerancePercent": 0,
+      "determinism": [],
+      "correlation": []
+    },
+    "retained-worktrees-idle.work.retained.idle.metadataReads": {
+      "status": "advisory",
+      "tolerancePercent": 0,
+      "determinism": [],
+      "correlation": []
+    },
+    "retained-worktrees-idle.work.retained.stale.perEvent.configReads": {
+      "status": "advisory",
+      "tolerancePercent": 0,
+      "determinism": [],
+      "correlation": []
+    },
+    "retained-worktrees-idle.work.retained.stale.perEvent.ipc.invoke.desktop:session-snapshot": {
+      "status": "advisory",
+      "tolerancePercent": 0,
+      "determinism": [],
+      "correlation": []
+    },
+    "retained-worktrees-idle.work.retained.stale.perEvent.ipc.invoke.preferences:load": {
+      "status": "advisory",
+      "tolerancePercent": 0,
+      "determinism": [],
+      "correlation": []
+    },
+    "retained-worktrees-idle.work.retained.stale.perEvent.ipc.invoke.worktree:recovery-list": {
+      "status": "advisory",
+      "tolerancePercent": 0,
+      "determinism": [],
+      "correlation": []
+    },
+    "retained-worktrees-idle.work.retained.stale.perEvent.metadataReads": {
+      "status": "advisory",
+      "tolerancePercent": 0,
       "determinism": [],
       "correlation": []
     },

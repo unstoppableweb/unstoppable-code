@@ -1,9 +1,13 @@
 import type { PortalChatTabPluginSelections } from '@canopy/protocol/portal';
 import type {
   CanopyErrorPayload,
+  CatalogCloudModels,
   CatalogEntry,
 } from '@canopy/protocol/canopy-core';
-import { createCloudChatCatalog } from '../cloud-chat-catalog';
+import {
+  cloudChatPickerModels,
+  createCloudChatCatalog,
+} from '../cloud-chat-catalog';
 import type { CanopyCoreRelayLikeReply, CoreCoworkInvoker } from '../invoker';
 
 // A fake web core serving the catalog reads and `core.chat.update` the way
@@ -537,6 +541,59 @@ describe('cloud chat catalog over the web core (CAN-5972)', () => {
       core.calls.find((call) => call.method === 'core.catalog.snapshot.get')
         ?.params,
     ).toMatchObject({ revision: 5 });
+  });
+
+  it("lists the owner's locked models for the picker, in catalog order, only when the library names how to unlock them (CAN-6937)", () => {
+    const hosted = (
+      modelLibrary: 'unlocked' | 'needs_purchase' | undefined,
+      lockedToo = true,
+    ): CatalogCloudModels => ({
+      models: [
+        {
+          id: 'vendor-a-model',
+          label: 'Vendor A model',
+          provider: 'anthropic',
+          family: 'family-a',
+          familyLabel: 'Family A',
+          harness: 'claude',
+          libraryEligibility: 'available',
+        },
+        ...(lockedToo
+          ? [
+              {
+                id: 'vendor-a-locked',
+                label: 'Vendor A locked',
+                provider: 'anthropic',
+                family: 'family-a',
+                familyLabel: 'Family A',
+                harness: 'claude',
+                libraryEligibility: 'locked',
+              },
+            ]
+          : []),
+      ],
+      modelHarnesses: {
+        'vendor-a-model': 'claude',
+        'vendor-a-locked': 'claude',
+      },
+      defaultModelId: 'vendor-a-model',
+      defaultModelBlocked: false,
+      ...(modelLibrary === undefined ? {} : { modelLibrary }),
+    });
+
+    const listed = cloudChatPickerModels(hosted('needs_purchase'));
+    expect(listed?.access).toBe('needs_purchase');
+    expect(
+      listed?.models.map((model) => [model.id, model.libraryEligibility]),
+    ).toEqual([
+      ['vendor-a-model', 'available'],
+      ['vendor-a-locked', 'locked'],
+    ]);
+    // An unlocked library, none named, or nothing locked: nothing to unlock.
+    expect(cloudChatPickerModels(hosted('unlocked'))).toBeNull();
+    expect(cloudChatPickerModels(hosted(undefined))).toBeNull();
+    expect(cloudChatPickerModels(hosted('needs_purchase', false))).toBeNull();
+    expect(cloudChatPickerModels(undefined)).toBeNull();
   });
 
   it("names each row's source as the web core labels it and lists a curated skill once, through its plugin (CAN-6397)", async () => {

@@ -7,9 +7,10 @@ import {
 
 /**
  * Every word the provider-choice surfaces say: the recovery notices' single
- * button, the Switch provider dialog and its rows, and the locked-model
- * hints. Credits are one provider among peers, so nothing here sells; the
- * only purchase action is the credits row's, in the purchase labels' words
+ * button, the Switch provider dialog's header, group headings and rows
+ * (each row's one outcome line), and the locked-model hints. Credits are one
+ * provider among peers, so nothing here sells; the only purchase action is
+ * the credits row's, in the purchase labels' words
  * (docs/ux-writing/labels.md#ai-credits-purchases).
  */
 
@@ -53,11 +54,136 @@ export const CHOOSE_PROVIDER_LABEL = 'Choose provider';
  */
 export const CONTINUE_MENU_LABEL = 'Continue';
 
-/** The Switch provider dialog's title, naming the model in `run-model` mode. */
-export function switchProviderDialogTitle(modelLabel?: string): string {
+/**
+ * Why a provider choice is open. Mirrors `CreditsPromptCondition` in
+ * `@canopy/app-state/billing/credits`; keep the two in step.
+ */
+export type ProviderChoiceConditionKey =
+  | 'out_of_credits'
+  | 'quota_limit'
+  | 'no_billing_source'
+  | 'model_locked'
+  | 'queued_held';
+
+/**
+ * Mirrors `ProviderChoiceGroup` in `@canopy/app-state/provider-choice`: how
+ * a list groups its rows, by what each can do now.
+ */
+export type ProviderChoiceGroupKey = 'ready' | 'needs-setup' | 'unavailable';
+
+/** Each group's heading in the Switch provider dialog. */
+export const PROVIDER_CHOICE_GROUP_HEADINGS: Readonly<
+  Record<ProviderChoiceGroupKey, string>
+> = {
+  ready: 'Ready now',
+  'needs-setup': 'Needs setup',
+  unavailable: 'Not available',
+};
+
+/**
+ * The Switch provider dialog's title: naming the model in `run-model` mode,
+ * otherwise from why it opened. A stopped chat reads "Keep this chat going";
+ * a held message, no billing source or no condition at all (the Components
+ * Lab, or one cleared while the dialog is open) reads "Choose a provider".
+ */
+export function switchProviderDialogTitle({
+  condition,
+  modelLabel,
+}: {
+  readonly condition?: ProviderChoiceConditionKey | null;
+  readonly modelLabel?: string;
+} = {}): string {
   const label = modelLabel?.trim();
-  return label ? `Choose a provider for ${label}` : 'Choose a provider';
+  if (label) return `Choose a provider for ${label}`;
+  return condition === 'quota_limit' || condition === 'out_of_credits'
+    ? 'Keep this chat going'
+    : 'Choose a provider';
 }
+
+/** The carryover promise every recovery subtitle ends on. */
+const CARRIES_OVER =
+  'Pick another provider and your conversation carries over.';
+
+/**
+ * The usage-limit subtitle after the limited provider's name, which the
+ * dialog renders in front as a node (a gateway's name is user-written and
+ * masked, so it is never interpolated here): "reached its usage limit and
+ * resets at 3:00 PM. Pick another provider and your conversation carries
+ * over." Without a reset time the clause drops.
+ */
+export function usageLimitReasonAfterName(resetsLabel?: string): string {
+  const resets = resetsLabel?.trim();
+  return resets
+    ? `reached its usage limit and resets at ${resets}. ${CARRIES_OVER}`
+    : `reached its usage limit. ${CARRIES_OVER}`;
+}
+
+/**
+ * The Switch provider dialog's subtitle when no provider name leads it, or
+ * `undefined` when there is none (a locked-model pick, or no condition). A
+ * usage limit with no limited current source names no one.
+ */
+export function providerChoiceReason(
+  condition: ProviderChoiceConditionKey | null | undefined,
+): string | undefined {
+  switch (condition) {
+    case 'quota_limit':
+      return `You reached a usage limit. ${CARRIES_OVER}`;
+    case 'out_of_credits':
+      return "You're out of credits. Add more or pick another provider, and your conversation carries over.";
+    case 'no_billing_source':
+    case 'queued_held':
+      return 'Pick a provider to send your message.';
+    case 'model_locked':
+    case null:
+    case undefined:
+      return undefined;
+  }
+}
+
+/**
+ * What choosing a row does to the chat's model, split around the model so
+ * the row can set the model apart. Reads as a sentence without the markup:
+ * "Stays on Opus 4.7", or "Stays on your current model" when the label is
+ * unknown (then `model` is absent).
+ */
+export interface ProviderChoiceOutcomeWords {
+  /** The words before the model: "Stays on" or "Switches to". */
+  readonly lead: string;
+  /** The model's label; absent when `lead` already names it. */
+  readonly model?: string;
+}
+
+/** A row that keeps the chat on its model. */
+export function staysOn(modelLabel?: string): ProviderChoiceOutcomeWords {
+  const model = modelLabel?.trim();
+  return model
+    ? { lead: 'Stays on', model }
+    : { lead: 'Stays on your current model' };
+}
+
+/** A row that moves the chat to the source's own model. */
+export function switchesTo(modelLabel: string): ProviderChoiceOutcomeWords {
+  return { lead: 'Switches to', model: modelLabel };
+}
+
+/** The step a row needs before its outcome applies, after the outcome. */
+export type ProviderChoiceSetupStep =
+  | 'connect'
+  | 'reconnect'
+  | 'add-credits'
+  | 'credits-arrive';
+
+/** The words after an outcome for a row that needs a step first. */
+export const PROVIDER_CHOICE_SETUP_SUFFIXES: Readonly<
+  Record<ProviderChoiceSetupStep, string>
+> = {
+  // A gateway's setup reads the same as a subscription's connect.
+  connect: 'after you connect',
+  reconnect: 'after you reconnect',
+  'add-credits': 'after you add credits',
+  'credits-arrive': 'once your credits arrive',
+};
 
 /**
  * The notice button when exactly one other source can keep the chat going.
@@ -98,32 +224,43 @@ export function usageLimitMessage(resetsLabel?: string): string {
     : 'You can wait for your limit to reset, or keep going with another provider.';
 }
 
-/** A row's status and detail lines. */
+/**
+ * A row's status and outcome lines. A row's outcome otherwise comes from
+ * {@link staysOn} or {@link switchesTo}; the current source's limit is the
+ * dialog's subtitle, not a row line.
+ */
 export const PROVIDER_CHOICE_ROW_COPY = {
   /** The current row's badge, after its name. */
   current: 'Current',
-  ready: 'Ready',
   checking: 'Checking…',
   notConnected: 'Not connected',
+  /** Another provider's limit, on its own row. */
   limited: (resetsLabel?: string): string =>
     resetsLabel ? `Limit reached, resets at ${resetsLabel}` : 'Limit reached',
-  continuesOn: (modelLabel: string): string => `Continues on ${modelLabel}`,
   modelNotOffered: (modelLabel: string): string =>
     `Doesn't offer ${modelLabel}`,
   desktopOnly: 'Available in the desktop app',
   crossHarness: 'Not available for this chat yet',
   policy: 'Turned off by your organization',
   noRunnableModel: 'No model available',
+  /** A gateway not set up yet: its models are unknown until it is. */
+  pickModelOnceConnected: "Pick a model once it's connected",
+  /** A row that offers nothing and has no other reason to give. */
+  notAvailableNow: 'Not available right now',
   askAdmin: CONTACT_ORG_ADMIN_COPY,
 } as const;
 
-/** The label of each row action that is a plain button. */
+/**
+ * The label of each row action that is a plain button. A gateway's set up
+ * reads Connect, like a subscription's; the action key stays apart because
+ * hosts route it to the gateway's own setup.
+ */
 export const PROVIDER_CHOICE_ACTION_LABELS: Readonly<
   Record<Exclude<ProviderChoiceActionKey, 'ask-admin' | 'none'>, string>
 > = {
-  use: 'Use',
+  use: 'Continue',
   connect: 'Connect',
-  'set-up': 'Set up',
+  'set-up': 'Connect',
   buy: AI_CREDITS_PURCHASE_LABEL,
   'sign-in-to-buy': AI_CREDITS_GUEST_PURCHASE_LABEL,
   'check-again': AI_CREDITS_CHECK_AGAIN_LABEL,
@@ -136,8 +273,22 @@ export const GATEWAY_ROW_NAME = 'AI gateway';
 export const GATEWAY_ROW_DESCRIPTION =
   'Use your own gateway, such as OpenRouter or LiteLLM.';
 
-/** The credits row's description; the row itself carries the brand name. */
-export const CREDITS_ROW_DESCRIPTION = 'Pay as you go with credits.';
+/**
+ * The current row's Connect or Set up once it is signed out: connecting it
+ * again is how the chat keeps going on the same source.
+ */
+export const PROVIDER_CHOICE_RECONNECT_LABEL = 'Reconnect';
+
+/**
+ * The credits row's description, on first run and in the Switch provider
+ * dialog alike; the row itself carries the brand name. A known state
+ * replaces it (the signed-in account on first run, an empty balance here).
+ */
+export const CREDITS_ROW_DESCRIPTION =
+  'Pay as you go for top models from many providers.';
+
+/** The credits row's description once its balance is known to be empty. */
+export const CREDITS_ROW_EMPTY_DESCRIPTION = 'No credits left';
 
 /** How a locked-model hint names each source that can run the model. */
 const RUNS_ON_NAMES: Readonly<Record<ProviderChoiceSourceKey, string>> = {

@@ -210,8 +210,12 @@ posix(CONTRACT, () => {
         controller.signal,
       ),
     );
-    // A freshly written script can take a while to start on macOS.
-    await until(() => existsSync(log));
+    // A freshly written script can take a while to start on macOS. Wait for
+    // the first chunk's complete line: the shell creates the log before echo
+    // writes to it, and an abort in that gap leaves it empty (CAN-7025).
+    await until(
+      () => existsSync(log) && readFileSync(log, 'utf8').endsWith('\n'),
+    );
     controller.abort(reason);
     const outcome = await work;
     expect(outcome).toEqual({ error: reason });

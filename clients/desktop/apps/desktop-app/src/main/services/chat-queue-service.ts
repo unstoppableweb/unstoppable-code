@@ -79,6 +79,7 @@ import {
 } from '../agents/provider-turn-evidence';
 import { getInheritedPluginDefaultsRevision } from '../plugins/plugin-defaults-revision';
 import { isTurnAuthPreflightRefusal } from '../lib/auth-preflight-error';
+import { isModelGatewayRefusal } from '../lib/model-gateway-refusal';
 import { beginChatTurnPreparation } from '../lib/chat-turn-cancel';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import { sendToWindow } from '../lib/window-send';
@@ -6137,8 +6138,13 @@ export class ChatQueueService {
       const refusedByBackgroundWork =
         turnSessionReuse.isTurnHeldForBackgroundWorkError(error);
       const retiredChatScope = error instanceof RetiredChatScopeError;
+      // Refused before anything was saved (CAN-6701). The row is kept once and
+      // parked with no retry loop; nothing re-drains it on its own, so it waits
+      // for the user to edit or remove it, and later rows wait behind it.
+      const refusedByGateway = isModelGatewayRefusal(error);
       waitsForExternalRetryTrigger =
         refusedByAuthPreflight ||
+        refusedByGateway ||
         autoModelApplyFailed ||
         refusedByBackgroundWork;
       let shouldRestore =
@@ -6199,17 +6205,19 @@ export class ChatQueueService {
         logMainProcessWarn(
           refusedByAuthPreflight
             ? '[chat-queue] Retaining queued message refused by the authentication preflight:'
-            : refusedByBackgroundWork
-              ? '[chat-queue] Retaining queued message while native background work is live:'
-              : autoModelApplyFailed
-                ? '[chat-queue] Retaining queued Auto message after its routed model could not be applied:'
-                : autoModelRoutingInProgress
-                  ? '[chat-queue] Retaining queued Auto message while its routing decision is still in progress:'
-                  : !providerDispatchStarted
-                    ? '[chat-queue] Retaining queued message after dispatch failed before provider start:'
-                    : committedMessageFallbackRetryCapped
-                      ? '[chat-queue] Retaining queued message after dispatch failed before prompt commit; waiting for a retry trigger:'
-                      : '[chat-queue] Retaining queued message after dispatch failed before prompt commit:',
+            : refusedByGateway
+              ? '[chat-queue] Retaining queued message refused by the organization gateway:'
+              : refusedByBackgroundWork
+                ? '[chat-queue] Retaining queued message while native background work is live:'
+                : autoModelApplyFailed
+                  ? '[chat-queue] Retaining queued Auto message after its routed model could not be applied:'
+                  : autoModelRoutingInProgress
+                    ? '[chat-queue] Retaining queued Auto message while its routing decision is still in progress:'
+                    : !providerDispatchStarted
+                      ? '[chat-queue] Retaining queued message after dispatch failed before provider start:'
+                      : committedMessageFallbackRetryCapped
+                        ? '[chat-queue] Retaining queued message after dispatch failed before prompt commit; waiting for a retry trigger:'
+                        : '[chat-queue] Retaining queued message after dispatch failed before prompt commit:',
           error,
         );
       }

@@ -29,6 +29,10 @@
 import * as path from 'path';
 import { BRAND } from '@canopy/brand/current';
 import {
+  observePluginCatalog,
+  isPluginCatalogObservationCurrent,
+} from './plugin-catalog-store';
+import {
   CURATED_PLUGIN_MARKETPLACE_ID,
   CURATED_PLUGIN_MARKETPLACE_SOURCE_URL,
   type MarketplaceInfo,
@@ -119,8 +123,10 @@ export interface CuratedMarketplaceScanDeps {
 const CURATED_MARKETPLACE_SCAN_TTL_MS = 30_000;
 let curatedMarketplaceScanCache: {
   scannedAt: number;
+  observation: ReturnType<typeof observePluginCatalog>;
   marketplace: MarketplaceInfo | null;
 } | null = null;
+let curatedScanGeneration = 0;
 
 /**
  * Drops the memoized curated scan. Callers must use this after anything that
@@ -128,6 +134,7 @@ let curatedMarketplaceScanCache: {
  * install state (a curated plugin install).
  */
 export function invalidateCuratedMarketplaceScanCache(): void {
+  curatedScanGeneration += 1;
   curatedMarketplaceScanCache = null;
 }
 
@@ -174,15 +181,31 @@ export async function scanCuratedMarketplace(
   await recoverCuratedPluginPromotions();
   if (
     curatedMarketplaceScanCache &&
+    isPluginCatalogObservationCurrent(
+      curatedMarketplaceScanCache.observation,
+    ) &&
     Date.now() - curatedMarketplaceScanCache.scannedAt <
       CURATED_MARKETPLACE_SCAN_TTL_MS
   ) {
     // Clone so downstream merge/overlay steps can never mutate the cache.
     return structuredClone(curatedMarketplaceScanCache.marketplace);
   }
-  const marketplace = await scanCuratedMarketplaceUncached(deps);
-  curatedMarketplaceScanCache = { scannedAt: Date.now(), marketplace };
-  return structuredClone(marketplace);
+  for (;;) {
+    const generation = curatedScanGeneration;
+    const observation = observePluginCatalog();
+    const marketplace = await scanCuratedMarketplaceUncached(deps);
+    if (
+      generation !== curatedScanGeneration ||
+      !isPluginCatalogObservationCurrent(observation)
+    )
+      continue;
+    curatedMarketplaceScanCache = {
+      scannedAt: Date.now(),
+      marketplace,
+      observation,
+    };
+    return structuredClone(marketplace);
+  }
 }
 
 async function scanCuratedMarketplaceUncached(

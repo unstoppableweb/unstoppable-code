@@ -243,7 +243,12 @@ export function worktreeRecoveryRetainedFact(
 /** Preservation and withdrawal never promise to undo earlier scripts or stopped sessions. */
 export function worktreeRecoveryResultCopy(
   result: WorktreeRecoveryFinishResult | WorktreeRecoveryResolveResult,
-  action?: 'keep-worktree' | 'release' | 'finish' | 'delete-hold',
+  action?:
+    | 'keep-worktree'
+    | 'release'
+    | 'finish'
+    | 'finish-cleanup'
+    | 'delete-hold',
 ): string {
   const verb = action
     ? RECOVERY_ACTION_VERBS[action]
@@ -268,7 +273,11 @@ export function worktreeRecoveryResultCopy(
         !result.gitCleanupPending &&
         result.status === 'finished'
       )
-        return 'Archive finished. The worktree has been removed.';
+        return action === 'finish-cleanup'
+          ? 'Cleanup finished. The worktree was already removed.'
+          : 'Archive finished. The worktree has been removed.';
+      if (action === 'finish-cleanup')
+        return 'The archive finished, but some cleanup is still pending. Check again before continuing.';
       return (
         'Archive saved. The worktree has been removed. ' +
         (result.gitCleanupPending
@@ -287,6 +296,7 @@ const RECOVERY_ACTION_VERBS = {
   'keep-worktree': 'keep the worktree',
   release: 'withdraw the archive attempt',
   finish: 'finish the archive',
+  'finish-cleanup': 'finish cleanup',
   'delete-hold': 'delete recovery material',
 };
 
@@ -301,12 +311,18 @@ function retainedRecoveryCopy(result: {
 
 /** Unknown delivery is not a refusal or completion, and is never retried automatically. */
 export function worktreeRecoveryUnconfirmedCopy(
-  action: 'keep-worktree' | 'release' | 'finish' | 'delete-hold',
+  action:
+    | 'keep-worktree'
+    | 'release'
+    | 'finish'
+    | 'finish-cleanup'
+    | 'delete-hold',
 ): string {
   const subject = {
     'keep-worktree': 'Keeping the worktree',
     release: 'Withdrawing the archive attempt',
     finish: 'Finishing the archive',
+    'finish-cleanup': 'Finishing cleanup',
     'delete-hold': 'Deleting recovery material',
   }[action];
   return `${subject} hasn't been confirmed. Check again before continuing.`;

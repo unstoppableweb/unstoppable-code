@@ -1,13 +1,9 @@
 import type { JSX, ReactNode } from 'react';
-import {
-  ProviderRowLabel,
-  ProviderStatusDot,
-} from '@canopy/ui-shared/components/ProviderRowLabel';
+import { CREDITS_ROW_DESCRIPTION } from '@canopy/ui-shared/components/providerChoiceCopy';
 import { ReadyStatusLine } from '@canopy/ui-shared/components/ReadyStatusLine';
-import { SettingsRowsRow } from '@canopy/ui-shared/components/settings/SettingsRows';
+import { ProviderSourceRow } from '../providers/ProviderSourceRow';
 import {
   FIRST_RUN_ACCOUNT_CHECKING,
-  FIRST_RUN_ACCOUNT_OFFER,
   FIRST_RUN_ACCOUNT_READY,
   FIRST_RUN_ACCOUNT_SIGNED_IN,
 } from './first-run-account-copy';
@@ -56,13 +52,15 @@ function stateSentence(state: FirstRunAccountRowState): ReactNode {
     case 'handoff':
       return state.message;
     case 'offer':
-      return FIRST_RUN_ACCOUNT_OFFER;
+      // The same description the Switch provider dialog's credits row has.
+      return CREDITS_ROW_DESCRIPTION;
   }
 }
 
 /**
  * The account's AI Credits, the third way in beside Claude and Codex
- * (CAN-4762, CAN-4765). It is laid out like the provider rows: logo, name
+ * (CAN-4762, CAN-4765). It is the shared provider row
+ * ({@link ProviderSourceRow}), as the Switch provider dialog shows it: logo, name
  * and a sign-in dot; once signed in, who is signed in under the label and
  * where the account stands on the line below, with the ready check when
  * credits are spendable. The host owns sign-in, the purchase, and changing
@@ -91,22 +89,16 @@ export function FirstRunAccountRow({
     </span>
   );
   return (
-    <SettingsRowsRow
+    <ProviderSourceRow
       dataTestId="first-run-account"
-      label={
-        <ProviderRowLabel
-          icon={logo}
-          name={<span data-testid="first-run-account-label">{appName}</span>}
-          status={
-            signedIn === null ? undefined : (
-              <ProviderStatusDot
-                tone={signedIn ? 'connected' : 'signed-out'}
-                data-testid="first-run-account-status"
-              />
-            )
-          }
-        />
-      }
+      icon={logo}
+      name={<span data-testid="first-run-account-label">{appName}</span>}
+      {...(signedIn === null
+        ? {}
+        : {
+            status: signedIn ? 'connected' : 'signed-out',
+            statusTestId: 'first-run-account-status',
+          })}
       description={
         signedIn === true ? (account ?? FIRST_RUN_ACCOUNT_SIGNED_IN) : stateLine
       }
@@ -125,6 +117,6 @@ export function FirstRunAccountRow({
           )}
         </span>
       ) : null}
-    </SettingsRowsRow>
+    </ProviderSourceRow>
   );
 }

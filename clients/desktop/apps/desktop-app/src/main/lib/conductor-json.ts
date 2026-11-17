@@ -36,7 +36,7 @@ export function getConductorJsonPath(repoPath: string): string {
   return join(repoPath, 'conductor.json');
 }
 
-function parseConductorJson(raw: string): ConductorJsonScripts | null {
+export function parseConductorJson(raw: string): ConductorJsonScripts | null {
   let parsed: unknown;
 
   try {

@@ -264,6 +264,10 @@ export async function startCloudChatsWebCore({
     const call = {
       method: message.method,
       worktreeId: params.scope?.worktreeId,
+      // The client capabilities the request announced (agent secret requests).
+      capabilities: request.headers['x-agent-conversation-capabilities'],
+      // The whole message, so a spec can check where a value travelled.
+      body: JSON.stringify(message),
       startedAt: Date.now(),
       endedAt: null,
     };

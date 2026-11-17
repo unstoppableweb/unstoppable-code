@@ -15,19 +15,28 @@ import { handleCopilotTurnCleanupError } from '@canopy/copilot-recipient/turn-cl
 import { invalidateCopilotRuntimeAvailability } from './runtime-availability';
 
 export const COPILOT_VAULT_OPEN_FIELDS = {
-  owner: { disposition: 'parity' },
-  signal: { disposition: 'parity' },
-  cwd: { disposition: 'parity' },
-  workspaceId: { disposition: 'parity' },
-  executionKind: { disposition: 'parity' },
-  restrictedEnvironment: { disposition: 'parity' },
-  environment: { disposition: 'parity' },
+  owner: { importAdmission: 'published', disposition: 'parity' },
+  signal: {
+    importAdmission: 'published',
+    disposition: 'parity',
+    renewalCases: ['slow-open'],
+  },
+  cwd: { importAdmission: 'published', disposition: 'parity' },
+  workspaceId: { importAdmission: 'published', disposition: 'parity' },
+  executionKind: { importAdmission: 'published', disposition: 'parity' },
+  restrictedEnvironment: {
+    importAdmission: 'published',
+    disposition: 'parity',
+  },
+  environment: { importAdmission: 'published', disposition: 'parity' },
   purpose: {
+    importAdmission: 'published',
     disposition: 'bounded',
     accepts: (value: unknown): boolean =>
       value === 'session' || value === 'models' || value === 'quota',
   },
   requireAccount: {
+    importAdmission: 'published',
     disposition: 'bounded',
     accepts: (value: unknown): boolean => value === true,
   },
@@ -139,14 +148,18 @@ export function createCopilotConnectionProxy(options: {
     async openManagedCopilotRuntime(
       input: ManagedCopilotRuntimeOptions,
     ): Promise<CopilotRecipientHandle> {
+      const entryGeneration = generation;
+      const alreadySelected = selected;
       const source = await backend();
+      // Initial selection advances once; revocation during routing must not admit a new open.
+      const epoch = entryGeneration + (!alreadySelected && selected ? 1 : 0);
+      assert(epoch);
       const vaultSelected = selected;
       if (
         vaultSelected &&
         !copilotVaultFieldsCovered(input, COPILOT_VAULT_OPEN_FIELDS)
       )
         throw new CopilotVaultUnavailableError();
-      const epoch = generation;
       const abort = new AbortController();
       const signal = AbortSignal.any([input.signal, abort.signal]);
       let runtime: CopilotRecipientHandle | undefined;

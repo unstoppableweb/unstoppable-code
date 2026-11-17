@@ -4,7 +4,7 @@ inputs:
   text:
     description: Inline text to condense.
     required: false
-    default: ""
+    default: ''
   text_file:
     description: Path to a file containing text to condense.
     required: false
@@ -17,7 +17,10 @@ inputs:
     required: false
     default: 4000
   model:
-    description: Optional Claude model override for LLM-backed strategies.
+    description: >
+      Optional model override for LLM-backed strategies. Codex, Cursor,
+      Copilot, OpenCode and Google models run the summary turn through the host
+      runner with at most read access.
     required: false
   permission_preset:
     description: Permission preset for LLM-backed strategies.
@@ -25,6 +28,9 @@ inputs:
     default: read_only
   system_prompt:
     description: Optional system prompt appendix for LLM-backed strategies.
+    required: false
+  fast_mode:
+    description: Codex models only. Run the summary turn in fast mode.
     required: false
   structured_output_schema:
     description: Optional schema for structured-summary.

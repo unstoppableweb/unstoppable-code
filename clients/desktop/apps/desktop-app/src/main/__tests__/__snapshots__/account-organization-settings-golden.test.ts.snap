@@ -1,0 +1,291 @@
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+
+exports[`Personal organization promotion routes the promotion write to the upgrade orchestration instead of a hosted call 1`] = `
+{
+  "changed": {
+    "error": {
+      "code": "expired",
+    },
+    "ok": false,
+  },
+  "log": [
+    "acquireSession account-one",
+    "ensureReady account-one#1 user=true",
+    "promote 33333333-3333-4333-8333-333333333333 Team name",
+    "acquireSession account-one",
+    "ensureReady account-one#1 user=true",
+  ],
+  "promoted": {
+    "ok": true,
+    "result": {
+      "alreadyUpgraded": false,
+      "name": "Team name",
+      "operationId": "66666666-6666-4666-8666-666666666666",
+      "organizationId": "33333333-3333-4333-8333-333333333333",
+      "personalOrganizationId": "33333333-3333-4333-8333-333333333333",
+      "warnings": [],
+    },
+  },
+}
+`;
+
+exports[`payment handoff opens an authenticated billing page only for a current member 1`] = `
+{
+  "log": [
+    "paymentHandoffAvailable account-one",
+    "paymentHandoffAvailable account-one",
+    "openStrictPortalPage /account/billing?topUp=1&reason=credits&source=desktop&requestId=request-0001 key=present",
+    "paymentHandoffAvailable account-one",
+    "acquireSession account-one",
+    "ensureReady account-one#1 user=true",
+    "execute settings.bootstrap {}",
+    "openStrictPortalPage /organization/44444444-4444-4444-8444-444444444444/settings?tab=billing&topUp=1&reason=unlock_models&source=desktop&requestId=request-0001 key=present",
+    "paymentHandoffAvailable account-one",
+    "acquireSession account-one",
+    "ensureReady account-one#1 user=true",
+    "execute settings.bootstrap {}",
+    "paymentHandoffAvailable account-two",
+    "paymentHandoffAvailable account-one",
+  ],
+  "results": {
+    "availability": {
+      "available": true,
+    },
+    "notAMember": {
+      "ok": false,
+      "reason": "forbidden",
+    },
+    "otherAccount": {
+      "ok": false,
+      "reason": "identity_changed",
+    },
+    "personalTopUp": {
+      "ok": true,
+    },
+    "unlockModels": {
+      "ok": true,
+      "requestId": "request-0001",
+    },
+  },
+  "unavailable": {
+    "ok": false,
+    "reason": "unavailable",
+  },
+}
+`;
+
+exports[`reads and writes reads through the signed-in bridge session and refuses bad requests before any session 1`] = `
+{
+  "log": [
+    "acquireSession account-one",
+    "ensureReady account-one#1 user=true",
+    "execute settings.bootstrap {}",
+    "acquireSession account-two",
+  ],
+  "results": {
+    "bootstrap": {
+      "ok": true,
+      "result": {
+        "account": {
+          "billingEnabled": true,
+          "digestsEnabled": true,
+          "freeAccess": true,
+          "integrationsEnabled": true,
+        },
+        "organization": null,
+        "organizations": [
+          {
+            "id": "33333333-3333-4333-8333-333333333333",
+            "isPersonal": true,
+            "name": "Personal",
+            "role": "OWNER",
+          },
+          {
+            "id": "44444444-4444-4444-8444-444444444444",
+            "isPersonal": false,
+            "name": "Team",
+            "role": "MEMBER",
+          },
+        ],
+        "version": 1,
+        "viewer": {
+          "email": "account-one@example.test",
+          "id": "account-one",
+          "name": null,
+        },
+      },
+    },
+    "invalidInput": {
+      "error": {
+        "code": "failed",
+        "message": "Invalid input",
+      },
+      "ok": false,
+    },
+    "otherAccount": {
+      "error": {
+        "code": "unauthenticated",
+      },
+      "ok": false,
+    },
+    "unknownOperation": {
+      "error": {
+        "code": "failed",
+        "message": "Unknown settings operation",
+      },
+      "ok": false,
+    },
+    "writeThroughRead": {
+      "error": {
+        "code": "failed",
+        "message": "Unknown settings operation",
+      },
+      "ok": false,
+    },
+  },
+}
+`;
+
+exports[`reads and writes reports an account change during a read as expired and during a write as uncertain 1`] = `
+{
+  "log": [
+    "acquireSession account-one",
+    "ensureReady account-one#1 user=true",
+    "execute settings.bootstrap {}",
+    "acquireSession account-one",
+    "ensureReady account-one#2 user=true",
+    "execute organization.leave {"organizationId":"44444444-4444-4444-8444-444444444444"}",
+  ],
+  "read": {
+    "error": {
+      "code": "expired",
+    },
+    "ok": false,
+  },
+  "write": {
+    "error": {
+      "code": "uncertain",
+    },
+    "ok": false,
+  },
+}
+`;
+
+exports[`reads and writes runs the follow-up each write names and none for the others 1`] = `
+{
+  "log": [
+    "acquireSession account-one",
+    "ensureReady account-one#1 user=true",
+    "execute organization.leave {"organizationId":"44444444-4444-4444-8444-444444444444"}",
+    "followUp refresh",
+    "acquireSession account-one",
+    "ensureReady account-one#1 user=true",
+    "execute organization.invitations.respond {"inviteId":"invite-1","action":"accept"}",
+    "followUp refresh",
+    "acquireSession account-one",
+    "ensureReady account-one#1 user=true",
+    "execute organization.invitations.respond {"inviteId":"invite-2","action":"decline"}",
+  ],
+  "results": {
+    "accept": {
+      "ok": true,
+      "result": null,
+    },
+    "decline": {
+      "ok": true,
+      "result": null,
+    },
+    "leave": {
+      "ok": true,
+      "result": null,
+    },
+  },
+}
+`;
+
+exports[`subscriptions delivers feed events to the owning window and closes on account change, session disposal and window loss 1`] = `
+{
+  "counts": {
+    "afterAccountChange": 0,
+    "afterDisposal": 0,
+    "afterEvent": 2,
+    "afterReopen": 1,
+    "afterResubscribe": 2,
+    "afterWindowLoss": 1,
+  },
+  "firstWindow": [
+    {
+      "args": [
+        {
+          "event": {
+            "organizationId": "44444444-4444-4444-8444-444444444444",
+            "state": "open",
+            "type": "state",
+          },
+          "subscriptionId": "feed-1",
+        },
+      ],
+      "channel": "account-organization-settings:event",
+    },
+    {
+      "args": [
+        {
+          "event": {
+            "error": "expired",
+            "organizationId": "44444444-4444-4444-8444-444444444444",
+            "state": "disabled",
+            "type": "state",
+          },
+          "subscriptionId": "feed-1",
+        },
+      ],
+      "channel": "account-organization-settings:event",
+    },
+    {
+      "args": [
+        {
+          "event": {
+            "error": "expired",
+            "organizationId": "44444444-4444-4444-8444-444444444444",
+            "state": "disabled",
+            "type": "state",
+          },
+          "subscriptionId": "feed-2",
+        },
+      ],
+      "channel": "account-organization-settings:event",
+    },
+  ],
+  "listenersLeft": [
+    0,
+    0,
+  ],
+  "log": [
+    "acquireSession account-one",
+    "ensureReady account-one#1 user=false",
+    "openFeedStream {"kind":"organization-feed","organizationId":"44444444-4444-4444-8444-444444444444"}",
+    "acquireSession account-one",
+    "ensureReady account-one#1 user=false",
+    "openFeedStream {"kind":"credit-pool"}",
+    "closeFeedStream {"kind":"organization-feed","organizationId":"44444444-4444-4444-8444-444444444444"}",
+    "acquireSession account-one",
+    "ensureReady account-one#1 user=false",
+    "openFeedStream {"kind":"organization-feed","organizationId":"44444444-4444-4444-8444-444444444444"}",
+    "closeFeedStream {"kind":"credit-pool"}",
+    "closeFeedStream {"kind":"organization-feed","organizationId":"44444444-4444-4444-8444-444444444444"}",
+    "acquireSession account-one",
+    "ensureReady account-one#4 user=false",
+    "openFeedStream {"kind":"organization-feed","organizationId":"44444444-4444-4444-8444-444444444444"}",
+    "closeFeedStream {"kind":"organization-feed","organizationId":"44444444-4444-4444-8444-444444444444"}",
+  ],
+  "reopened": {
+    "ok": true,
+    "result": null,
+  },
+  "secondWindow": [],
+  "subscribed": {
+    "ok": true,
+    "result": null,
+  },
+}
+`;

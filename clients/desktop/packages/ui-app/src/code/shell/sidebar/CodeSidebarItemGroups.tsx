@@ -528,8 +528,6 @@ export function CodeSidebarItemGroups({
   onCreate,
   canCreate = true,
   onReorderChild,
-  pendingGroupId,
-  placeholder,
   onError,
   canDragRow,
   isItemSelected,
@@ -572,8 +570,6 @@ export function CodeSidebarItemGroups({
    */
   canCreate?: boolean;
   onReorderChild?: (activeId: string, overId: string) => void;
-  pendingGroupId?: string | null;
-  placeholder?: ReactNode;
   onError: (error: unknown) => void;
   canDragRow: (id: string) => boolean;
   /**
@@ -1063,15 +1059,13 @@ export function CodeSidebarItemGroups({
         className={`flex min-w-0 flex-col ${SIDEBAR_ROW_GAP_CLASS_NAMES[rowGap]}`}
         data-testid="sidebar-code-item-groups"
       >
-        {blocks.map((block, blockIndex): ReactNode => {
+        {blocks.map((block): ReactNode => {
           const rows = (
             <>
-              {block.group?.id === pendingGroupId && placeholder}
               {block.units.map((unit) => renderUnit(block, unit))}
               {block.group &&
                 !block.group.collapsed &&
-                block.units.length === 0 &&
-                block.group.id !== pendingGroupId && (
+                block.units.length === 0 && (
                   <div
                     className={`py-1 ${SIDEBAR_ROW_TEXT_INSET_CLASSNAME} pr-2 text-s fg-quaternary`}
                     data-testid="sidebar-item-group-empty"
@@ -1091,18 +1085,9 @@ export function CodeSidebarItemGroups({
                 {rows}
               </div>
             );
-          const ungroupedPlaceholder =
-            pendingGroupId === null &&
-            block.units[0]?.pinned !== true &&
-            blocks
-              .slice(0, blockIndex)
-              .every((previous) => previous.units[0]?.pinned === true)
-              ? placeholder
-              : null;
           if (!block.group)
             return (
               <div key={block.id} className="relative">
-                {ungroupedPlaceholder}
                 {children}
                 {edgeZones(block)}
               </div>
@@ -1128,7 +1113,6 @@ export function CodeSidebarItemGroups({
                   : undefined
               }
             >
-              {ungroupedPlaceholder}
               <GroupContainer
                 block={block}
                 groups={groups}
@@ -1158,9 +1142,6 @@ export function CodeSidebarItemGroups({
             </SidebarGroupDropSurface>
           );
         })}
-        {blocks.every((block) => block.units[0]?.pinned === true) &&
-          pendingGroupId === null &&
-          placeholder}
         <div className="sr-only" role="status" aria-live="polite">
           {source
             ? `Moving ${source.kind === 'group' ? 'group' : movingLabel}. Use arrows to choose a destination, Space to drop, Escape to cancel.`

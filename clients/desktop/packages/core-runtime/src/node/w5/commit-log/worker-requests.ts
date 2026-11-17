@@ -1,9 +1,12 @@
-import { basename } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import { readWorkspaceIndex } from '../../workspace/read-formats';
 import { captureW5Files } from './capture';
 import {
   isW5CaptureRequest,
   isW5CaptureWorkspaceId,
+  w5CaptureFileComponents,
+  type W5CaptureRequest,
+  type W5CaptureResult,
   type W5ConfinedFileReaderSource,
 } from './capture-contract';
 import { workspaceCreationDiagnosticsSchema } from './reservation-diagnostics';
@@ -17,11 +20,12 @@ import {
   type W5ProcessFileLock,
   isTransientUnwrittenApplyFailure,
 } from './apply';
-import type {
-  W5CommitLog,
-  W5CommitRequest,
-  W5Resource,
-  W5ReceiptKey,
+import {
+  w5ResourceKey,
+  type W5CommitLog,
+  type W5CommitRequest,
+  type W5Resource,
+  type W5ReceiptKey,
 } from './commit-log';
 import {
   W5CommitLogError,
@@ -39,6 +43,11 @@ import type {
   W5CommitOutcome,
   W5RecoveryRetryOutcome,
 } from './worker-contract';
+import {
+  W5CommitLogLanes,
+  W5ReadLaneOverloadedError,
+  type W5WriteScope,
+} from './worker-lanes';
 
 /*
  * How the W5 commit log worker runs a request, apart from the thread it runs
@@ -48,6 +57,9 @@ import type {
 export const MALFORMED_REQUEST_MESSAGE =
   'The W5 commit log request is malformed';
 const UNEXPECTED_FAILURE_MESSAGE = 'The W5 commit log call failed unexpectedly';
+/** Captures a write overlapped, retried beside the writes before waiting them out. */
+const CAPTURE_ATTEMPTS = 3;
+const DEFAULT_READ_WAIT_MS = 10_000;
 
 /** A request this worker rejects before running it. */
 class W5CommitLogRequestError extends Error {
@@ -85,6 +97,9 @@ export function toW5CommitLogWorkerError(
   }
   if (error instanceof W5CommitLogRequestError) {
     return { kind: 'malformed', message: error.message };
+  }
+  if (error instanceof W5ReadLaneOverloadedError) {
+    return { kind: 'overloaded', message: error.message };
   }
   return { kind: 'failed', message: unexpectedFailureMessage(error) };
 }
@@ -181,6 +196,8 @@ function isCommitRequest(value: unknown): value is W5CommitRequest {
 }
 
 export class W5CommitLogRequestHandler {
+  private readonly lanes = new W5CommitLogLanes();
+
   constructor(
     private readonly log: W5CommitLog,
     private readonly data: W5CommitLogWorkerData,
@@ -193,6 +210,108 @@ export class W5CommitLogRequestHandler {
     private readonly confined?: W5ConfinedFileReaderSource,
     private readonly processLock?: W5ProcessFileLock,
   ) {}
+
+  /**
+   * What the worker's listen loop runs (CAN-5589): writes one at a time in
+   * arrival order, as every call ran before; `capture`, `revision` and
+   * `recoveryReport` beside them; manual recovery with no read in flight.
+   * A capture that a write to one of its files overlapped is taken again,
+   * then, past `CAPTURE_ATTEMPTS`, with no write running, so it never
+   * returns a file image and log evidence from either side of a commit.
+   */
+  dispatch(request: W5CommitLogRequest): Promise<unknown> {
+    switch (request.method) {
+      case 'capture':
+        return this.lanes.read(() => this.captureBesideWrites(request));
+      case 'revision':
+        return this.lanes.read(async () => {
+          const [first] = request.args;
+          // A revision is committed before its files are written; it is read
+          // only once the write advancing it has finished.
+          if (isResource(first))
+            await this.lanes.settled(w5ResourceKey(first), this.readWaitMs());
+          return this.run(request);
+        });
+      case 'recoveryReport':
+        return this.lanes.read(() => this.run(request));
+      case 'resolveRecovery':
+      case 'retryRecoveryRequiredCommit':
+      case 'abandonRecoveryRequiredCommit':
+        return this.lanes.exclusive(() => this.run(request));
+      default:
+        return this.lanes.write(
+          () => this.writeScope(request),
+          () => this.run(request),
+        );
+    }
+  }
+
+  private readWaitMs(): number {
+    return this.data.readWaitMs ?? DEFAULT_READ_WAIT_MS;
+  }
+
+  /** What a write can change: its own files and every pending commit's. */
+  private writeScope(request: W5CommitLogRequest): W5WriteScope {
+    const pending = this.log.listPendingCommits();
+    const files = new Set(
+      pending.flatMap((commit) =>
+        commit.files.map((file) => resolve(file.path)),
+      ),
+    );
+    const [first] = request.args;
+    const commit =
+      request.method === 'commit' && isCommitRequest(first) ? first : undefined;
+    for (const file of commit?.files ?? []) files.add(resolve(file.path));
+    return {
+      files,
+      // A pending commit's revisions advanced when it was committed.
+      advances:
+        pending.length > 0
+          ? 'any'
+          : new Set((commit?.advance ?? []).map(w5ResourceKey)),
+    };
+  }
+
+  private async captureBesideWrites(
+    request: W5CommitLogRequest,
+  ): Promise<W5CaptureResult> {
+    const [first] = request.args;
+    if (request.args.length !== 1 || !isW5CaptureRequest(first))
+      throw malformed();
+    for (let attempt = 0; attempt < CAPTURE_ATTEMPTS; attempt += 1) {
+      const captured = await this.lanes.observe(async (overlap) => {
+        const result = await this.capture(first);
+        const root = resolve(this.data.root);
+        const consistent =
+          // A commit still writing its files, or one a failure left so.
+          !result.log.files.some((row) => row.state === 'committed') &&
+          // A revision is committed before its files are written.
+          !overlap.advanced(Object.keys(result.log.revisions)) &&
+          !overlap.touched(
+            result.files.map((image) =>
+              join(root, ...w5CaptureFileComponents(image)),
+            ),
+          );
+        return { result, consistent };
+      });
+      if (captured.consistent) return captured.result;
+    }
+    return this.lanes.whileWritesIdle(
+      () => this.capture(first),
+      this.readWaitMs(),
+    );
+  }
+
+  private capture(request: W5CaptureRequest): Promise<W5CaptureResult> {
+    return captureW5Files(
+      this.log,
+      this.data.root,
+      request,
+      this.platform,
+      this.confined,
+      this.data.captureRoot,
+    );
+  }
 
   async run(request: W5CommitLogRequest): Promise<unknown> {
     const [first] = request.args;
@@ -207,14 +326,7 @@ export class W5CommitLogRequestHandler {
       case 'capture':
         if (request.args.length !== 1 || !isW5CaptureRequest(first))
           throw malformed();
-        return captureW5Files(
-          this.log,
-          this.data.root,
-          first,
-          this.platform,
-          this.confined,
-          this.data.captureRoot,
-        );
+        return this.capture(first);
       case 'snapshot':
         return this.log.snapshot();
       case 'revision':

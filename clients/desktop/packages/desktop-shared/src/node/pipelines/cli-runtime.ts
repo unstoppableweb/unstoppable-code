@@ -1049,6 +1049,11 @@ export function createCliExecutionRuntime(
           createCliAntigravityHost(request),
         );
       },
+      async preflight(signal) {
+        const { preflightCliAntigravity } =
+          await import('../antigravity/cli-host');
+        await preflightCliAntigravity(signal);
+      },
     },
     opencodePromptRunner: {
       runOpenCodePrompt: async (

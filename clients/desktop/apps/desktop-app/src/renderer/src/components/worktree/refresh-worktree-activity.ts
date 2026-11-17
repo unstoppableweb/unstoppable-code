@@ -6,7 +6,9 @@ export async function refreshWorktreeActivity(
   worktreeId: string,
 ): Promise<void> {
   try {
-    await requestChangedFilesRefresh(projectId, worktreeId);
+    await requestChangedFilesRefresh(projectId, worktreeId, {
+      kind: 'mutation',
+    });
   } catch {
     // Best-effort reload so the UI does not block on sidebar refresh failures.
   }

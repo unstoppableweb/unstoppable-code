@@ -29,10 +29,12 @@ import {
 import {
   getManifestRepoById,
   getProjectConfigFileCandidates,
-  readCanopyJson,
   validateCanopyJson,
 } from './canopy-json';
-import { readConductorJson } from './conductor-json';
+import {
+  readCachedCanopyJson,
+  readCachedConductorJson,
+} from './project-config-file-cache';
 import { recordMetadataRead } from '@canopy/desktop-shared/node/work-counters';
 import {
   readWorkspaceCanopyManifest,
@@ -60,7 +62,7 @@ export interface WorkspaceScriptResolutionPaths {
 }
 
 function conductorReader(path: string): ConductorScriptsReader {
-  return () => readConductorJson(path);
+  return () => readCachedConductorJson(path);
 }
 
 /** The workspace root checkout, through the `repo_shadows` baseline. */
@@ -81,7 +83,7 @@ export async function resolveProjectScripts(
   repoPathOverride?: string,
 ): Promise<ResolvedScriptMap> {
   const repoPath = repoPathOverride ?? project.repoPath;
-  const repoManifest = await readCanopyJson(repoPath);
+  const repoManifest = await readCachedCanopyJson(repoPath);
   return resolveProjectScriptMap({
     repoScripts: repoManifest?.scripts,
     localScripts: project.scripts,

@@ -1276,6 +1276,9 @@ export function registerWorkspaceHandlers(
       if (request.baseWorktreeId) {
         validateId(request.baseWorktreeId, 'baseWorktreeId');
       }
+      if (request.worktreeId !== undefined) {
+        validateId(request.worktreeId, 'worktreeId');
+      }
 
       const response = (
         await lifecycleCommands(event).createWorktree(
@@ -1287,6 +1290,7 @@ export function registerWorkspaceHandlers(
             baseBranch,
             baseWorktreeId: request.baseWorktreeId,
             sidebarItemGroupId: request.sidebarItemGroupId,
+            worktreeId: request.worktreeId,
           },
           () =>
             createWorktreeFromSelection({
@@ -1304,6 +1308,9 @@ export function registerWorkspaceHandlers(
               ),
               sidebarItemGroupId: request.sidebarItemGroupId,
               existingWorktreeIds: request.existingWorktreeIds,
+              ...(request.worktreeId !== undefined && {
+                claimedWorktreeId: request.worktreeId,
+              }),
               startPostCreateSetup: true,
               startWorkspacePostCreateSetup:
                 startWorkspaceWorktreePostCreateSetup,

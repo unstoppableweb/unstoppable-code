@@ -1,4 +1,5 @@
 import { Worker } from 'node:worker_threads';
+import type { McpSchemaInputClassification } from './schema-classification';
 
 const MAX_BYTES = 1024 * 1024;
 const MAX_NODES = 10_000;
@@ -10,6 +11,18 @@ export type OpenCodeSchemaValidator = (
   input: unknown,
   signal: AbortSignal,
 ) => Promise<boolean>;
+
+/**
+ * `unavailable`: cancelled, over its deadline or queue, input past the host
+ * bound, or the worker failed. Callers must refuse.
+ */
+export type McpSchemaInputCheck = McpSchemaInputClassification | 'unavailable';
+
+export type McpSchemaInputClassifier = (
+  schema: unknown,
+  input: unknown,
+  signal: AbortSignal,
+) => Promise<McpSchemaInputCheck>;
 
 /** Bound the host's serialization work before transferring untrusted JSON. */
 function boundedJson(value: unknown): string {
@@ -62,35 +75,66 @@ export function createOpenCodeSchemaValidator(
   workerPath: string,
   execution: { eval?: boolean; execArgv?: string[] } = {},
 ): OpenCodeSchemaValidator {
+  const classify = createMcpSchemaInputClassifier(workerPath, {}, execution);
+  return async (schema, input, signal) =>
+    (await classify(schema, input, signal)) === 'valid';
+}
+
+/**
+ * Same bounded worker, reporting why an input did not validate so a caller can
+ * tell an unenforceable schema from an invalid input. Each instance owns its
+ * own queue.
+ */
+export function createMcpSchemaInputClassifier(
+  workerPath: string,
+  options: {
+    /** Read PCRE-style identity escapes (`\_`, `\@`) as their literal character. */
+    readonly lenientPatterns?: boolean;
+  } = {},
+  execution: { eval?: boolean; execArgv?: string[] } = {},
+): McpSchemaInputClassifier {
   let tail: Promise<unknown> = Promise.resolve();
   let pending = 0;
   return async (schema, input, signal) => {
-    if (signal.aborted || pending >= MAX_PENDING) return false;
-    let payload: { schema: string; input: string };
+    if (signal.aborted || pending >= MAX_PENDING) return 'unavailable';
+    let boundedSchema: string;
+    let boundedInput: string;
     try {
-      payload = { schema: boundedJson(schema), input: boundedJson(input) };
+      boundedSchema = boundedJson(schema);
     } catch {
-      return false;
+      // A schema past the host bound cannot be enforced here.
+      return 'unsupported';
     }
+    try {
+      boundedInput = boundedJson(input);
+    } catch {
+      // Input past the bound is refused rather than left unchecked.
+      return 'unavailable';
+    }
+    const payload = {
+      schema: boundedSchema,
+      input: boundedInput,
+      ...(options.lenientPatterns ? { lenientPatterns: true } : {}),
+    };
     const deadline = AbortSignal.any([
       signal,
       AbortSignal.timeout(DEADLINE_MS),
     ]);
     pending++;
     let started = false;
-    const scheduled = tail.then(async () => {
+    const scheduled = tail.then(async (): Promise<McpSchemaInputCheck> => {
       try {
-        if (deadline.aborted) return false;
+        if (deadline.aborted) return 'unavailable';
         started = true;
         return await validateInWorker(workerPath, payload, deadline, execution);
       } finally {
         pending--;
       }
     });
-    tail = scheduled.catch(() => false);
+    tail = scheduled.catch(() => 'unavailable');
     let cancel = (): void => {};
-    const stopped = new Promise<false>((resolve) => {
-      cancel = (): void => resolve(false);
+    const stopped = new Promise<'unavailable'>((resolve) => {
+      cancel = (): void => resolve('unavailable');
       deadline.addEventListener('abort', cancel, { once: true });
       if (deadline.aborted) cancel();
     });
@@ -98,21 +142,32 @@ export function createOpenCodeSchemaValidator(
       const result = await Promise.race([scheduled, stopped]);
       // A running worker must exit before its slot or request is released.
       if (started) await scheduled;
-      return result && !deadline.aborted;
+      return deadline.aborted ? 'unavailable' : result;
     } catch {
-      return false;
+      return 'unavailable';
     } finally {
       deadline.removeEventListener('abort', cancel);
     }
   };
 }
 
+function isClassification(
+  value: unknown,
+): value is McpSchemaInputClassification {
+  return (
+    value === 'valid' ||
+    value === 'invalid' ||
+    value === 'unsupported' ||
+    value === 'error'
+  );
+}
+
 async function validateInWorker(
   entry: string,
-  payload: { schema: string; input: string },
+  payload: { schema: string; input: string; lenientPatterns?: boolean },
   signal: AbortSignal,
   execution: { eval?: boolean; execArgv?: string[] },
-): Promise<boolean> {
+): Promise<McpSchemaInputCheck> {
   const worker = new Worker(entry, {
     workerData: payload,
     execArgv: execution.execArgv ?? [],
@@ -121,13 +176,15 @@ async function validateInWorker(
   });
   let cancel = (): void => {};
   try {
-    return await new Promise<boolean>((resolve) => {
-      cancel = (): void => resolve(false);
+    return await new Promise<McpSchemaInputCheck>((resolve) => {
+      cancel = (): void => resolve('unavailable');
       signal.addEventListener('abort', cancel, { once: true });
       if (signal.aborted) cancel();
-      worker.once('message', (message: unknown) => resolve(message === true));
-      worker.once('error', () => resolve(false));
-      worker.once('exit', () => resolve(false));
+      worker.once('message', (message: unknown) =>
+        resolve(isClassification(message) ? message : 'unavailable'),
+      );
+      worker.once('error', () => resolve('unavailable'));
+      worker.once('exit', () => resolve('unavailable'));
     });
   } finally {
     signal.removeEventListener('abort', cancel);

@@ -1,6 +1,12 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import type { McpServer } from '@agentclientprotocol/sdk';
-import { CANOPY_INJECTED_TOOL_REGISTRY } from '@canopy/execution-engine/lib/canopy-injected-tools';
+import {
+  CANOPY_INJECTED_TOOL_REGISTRY,
+  CANOPY_INJECTED_TOOL_SURFACE_ALLOWLISTS,
+  isCodeGraphInjectedToolKey,
+  isLedgerInjectedToolKey,
+} from '@canopy/execution-engine/lib/canopy-injected-tools';
+import type { EffectiveCapabilityGrants } from '@canopy/desktop-shared/node/capabilities/effective-snapshot';
 import { cursorCanopyMcpServerNames } from '@canopy/desktop-shared/lib/cursor-mcp-tool-call';
 import type { ManagedDelegationSession } from '../agents/delegation/service';
 import type { AgentSessionOptions } from '../agents/types';
@@ -8,13 +14,38 @@ import type { ApprovalSessionHandle } from '../approvals/approval-service';
 import { authorizeCursorMcpTool } from '../cursor/tool-approval';
 import { getMcpHttpProxyService } from '../mcp/http-proxy-service';
 import { isCoworkWorkspace } from '../lib/workspace-registry';
+import {
+  buildCodeGraphToolPromptLines,
+  buildDeferredToolsGuidance,
+  buildLedgerPlanModeInstruction,
+} from '../canopy-tools/prompting';
+import type { LedgerChatToolsSession } from '../canopy-tools/ledger-tools-runtime';
 import { isAntigravityConnectionEnabled } from './connection';
 import { assertAntigravityHarnessEnabled } from './feature-flag';
 
 export interface AntigravityAppTools {
   servers: McpServer[];
   instructions: string;
+  /** What the route may list after every gate; the session adds its modes. */
+  grants: Pick<
+    EffectiveCapabilityGrants,
+    | 'toolSurface'
+    | 'appTools'
+    | 'codeGraph'
+    | 'feed'
+    | 'deferredTools'
+    | 'delegation'
+  >;
   close: () => void;
+}
+
+/**
+ * Names of the app-tool MCP servers a Google chat turn delivers. The native
+ * tool gate admits only these and selected extension servers, so the turn
+ * lists them from this same helper before the runtime opens.
+ */
+export function antigravityAppToolServerNames(): { main: string; ui: string } {
+  return cursorCanopyMcpServerNames();
 }
 
 /** Native MCP calls skip ACP permissions in 1.5.1. Gate the actual host effect. */
@@ -27,6 +58,12 @@ export async function openAntigravityAppTools(input: {
   stopTurn: () => void;
   onAwaitingUser: () => void;
   ownsSessionResources: () => boolean;
+  /** The session passed the code graph exposure gate (worktree chats only). */
+  codeGraphToolsAdvertised: boolean;
+  /** The chat allows deferred Search/Load; a Load restarts the turn. */
+  deferredToolsAllowed: boolean;
+  /** Feed tools the session opened once; null when its gate refused them. */
+  ledgerTools: LedgerChatToolsSession | null;
   delegation?: {
     session: ManagedDelegationSession;
     turnId: string;
@@ -38,7 +75,7 @@ export async function openAntigravityAppTools(input: {
   const signal = AbortSignal.any([input.signal, lifetime.signal]);
   signal.throwIfAborted();
   const proxy = getMcpHttpProxyService();
-  const names = cursorCanopyMcpServerNames();
+  const names = antigravityAppToolServerNames();
   const toolSurface = isCoworkWorkspace(options.projectId)
     ? 'antigravity-acp-standalone'
     : 'antigravity-acp';
@@ -54,8 +91,11 @@ export async function openAntigravityAppTools(input: {
     if (input.ownsSessionResources())
       proxy.unregisterCanopyWorktreeSessionRoute(input.sessionKey);
   };
-  const delegation =
-    toolSurface === 'antigravity-acp' ? input.delegation : undefined;
+  const worktree = toolSurface === 'antigravity-acp';
+  const delegation = worktree ? input.delegation : undefined;
+  // Cowork routes never list Feed or graph tools; the allowlist refuses them.
+  const codeGraph = worktree && input.codeGraphToolsAdvertised;
+  const ledgerTools = worktree ? input.ledgerTools : null;
   const authorize = async (
     tool: string,
     args: unknown,
@@ -101,7 +141,9 @@ export async function openAntigravityAppTools(input: {
       hookHandler: () => undefined,
       turnSignal: signal,
       toolSurface,
-      deferredToolsAllowed: false,
+      codeGraphToolsAdvertised: codeGraph,
+      deferredToolsAllowed: input.deferredToolsAllowed,
+      ...(ledgerTools ? { ledgerTools } : {}),
       autoArchiveAvailable: true,
       ...(delegation
         ? {
@@ -169,7 +211,37 @@ export async function openAntigravityAppTools(input: {
           headers: [{ name: 'Authorization', value: `Bearer ${token}` }],
         },
       ],
-      instructions: `Use the supplied ${names.main} MCP tools for app operations. SearchActions describes supported actions before DispatchAction. Use ${names.ui} AskUserQuestion when you need a user decision. Tool descriptions define the available scope and required arguments. Feed and code graph are not available in this integration yet.${delegation ? ' Use the supplied managed delegation tools to run tasks on models reported by ListDelegates. Antigravity child models are not available yet. Parent-selected skills, plugins, commands and MCP servers are not automatically inherited by children. Explicit child Agent selections use their own resolver and permissions.' : ' Agent delegation is not enabled for this chat.'}`,
+      grants: {
+        toolSurface,
+        appTools: CANOPY_INJECTED_TOOL_SURFACE_ALLOWLISTS[toolSurface].filter(
+          (key) =>
+            (codeGraph || !isCodeGraphInjectedToolKey(key)) &&
+            (ledgerTools !== null || !isLedgerInjectedToolKey(key)) &&
+            (input.deferredToolsAllowed ||
+              (key !== 'search_deferred_tools' &&
+                key !== 'load_deferred_tools')),
+        ),
+        codeGraph,
+        feed: ledgerTools !== null,
+        deferredTools: input.deferredToolsAllowed,
+        delegation: delegation !== undefined,
+      },
+      instructions: [
+        `Use the supplied ${names.main} MCP tools for app operations. SearchActions describes supported actions before DispatchAction. Use ${names.ui} AskUserQuestion when you need a user decision. Tool descriptions define the available scope and required arguments.`,
+        ...(codeGraph ? buildCodeGraphToolPromptLines('antigravity') : []),
+        ledgerTools?.systemPrompt(),
+        ledgerTools && input.planMode
+          ? buildLedgerPlanModeInstruction('antigravity')
+          : undefined,
+        input.deferredToolsAllowed
+          ? buildDeferredToolsGuidance('antigravity')
+          : undefined,
+        delegation
+          ? 'Use the supplied managed delegation tools to run tasks on models reported by ListDelegates. Antigravity child models are not available yet. Parent-selected skills, plugins, commands and MCP servers are not automatically inherited by children. Explicit child Agent selections use their own resolver and permissions.'
+          : 'Agent delegation is not enabled for this chat.',
+      ]
+        .filter(Boolean)
+        .join('\n'),
       close,
     };
   } catch (error) {

@@ -3448,6 +3448,7 @@ export class ObservabilityService {
     maxWait: ReturnType<typeof setTimeout> | null;
   } | null = null;
   private unsubscribeOpenCodeAccounts: (() => void) | null = null;
+  private unsubscribeAntigravityAccount: (() => void) | null = null;
   private copilotUsage: ProviderUsageSummary | null = null;
   private unsubscribeCopilotUsage: (() => void) | null = null;
   private unsubscribeAccountProxyResponses: (() => void) | null = null;
@@ -3641,6 +3642,11 @@ export class ObservabilityService {
           this.emit({ type: 'usage', usage: this.buildUsageOverview() });
       },
     );
+    this.unsubscribeAntigravityAccount =
+      this.host.antigravity?.onAccountChanged((): void => {
+        if (!this.disposing)
+          this.emit({ type: 'usage', usage: this.buildUsageOverview() });
+      }) ?? null;
     this.host.pricing.prewarm();
   }
 
@@ -8307,6 +8313,8 @@ export class ObservabilityService {
     this.unsubscribeCopilotUsage = null;
     this.unsubscribeOpenCodeAccounts?.();
     this.unsubscribeOpenCodeAccounts = null;
+    this.unsubscribeAntigravityAccount?.();
+    this.unsubscribeAntigravityAccount = null;
     this.unsubscribeAccountProxyResponses?.();
     this.unsubscribeAccountProxyResponses = null;
     this.unsubscribeAccountProxyInventory?.();
@@ -9103,6 +9111,16 @@ export class ObservabilityService {
     );
   }
 
+  /** The Antigravity plan label, only while its master gate is on. */
+  private antigravityAccountOverview(): Pick<
+    AgentUsageOverview,
+    'antigravityAccount'
+  > {
+    const host = this.host.antigravity;
+    const account = host?.isEnabled() ? host.peekAccount() : undefined;
+    return account ? { antigravityAccount: account } : {};
+  }
+
   private buildUsageOverview(): AgentUsageOverview {
     const accountSnapshots = pruneRetainedAccountSnapshots(
       Array.from(this.retainedAccountSnapshots.values()),
@@ -9111,6 +9129,7 @@ export class ObservabilityService {
     return {
       updatedAt: new Date().toISOString(),
       openCodeAccounts: this.host.openCode.peekAccounts(),
+      ...this.antigravityAccountOverview(),
       providers: [
         { ...this.usageProviders.claude },
         { ...this.usageProviders.codex },
@@ -10596,6 +10615,7 @@ export class ObservabilityService {
     const snapshot = this.loadSnapshot();
     // Native account labels are volatile and must never be restored from disk.
     delete snapshot.usage.openCodeAccounts;
+    delete snapshot.usage.antigravityAccount;
     // Rollout visibility affects renderer payloads, not retained account data.
     snapshot.usage.accountSnapshots = pruneRetainedAccountSnapshots(
       Array.from(this.retainedAccountSnapshots.values()),

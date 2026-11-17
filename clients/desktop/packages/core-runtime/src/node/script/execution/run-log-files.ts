@@ -33,7 +33,12 @@ export interface RunLogCoordinator {
     worktreeId: string,
     runKey: string,
   ) => Promise<void>;
-  withWriteChain: <T>(key: string, fn: () => Promise<T>) => Promise<T>;
+  /** `access` is `write` unless the section only reads the run logs. */
+  withWriteChain: <T>(
+    key: string,
+    fn: () => Promise<T>,
+    access?: RunLogAccess,
+  ) => Promise<T>;
   deleteWorktreeLogs: (
     projectId: string,
     worktreeId: string,
@@ -168,10 +173,14 @@ function getWorktreeWriteKeyPrefix(
  * Holds a worktree's log writes against writers in other processes
  * (CAN-5839). `work` runs while no other holder of the same worktree runs.
  */
+/** Whether a section changes the run logs or only reads them. */
+export type RunLogAccess = 'write' | 'read';
+
 export type RunLogExclusive = <T>(
   projectId: string,
   worktreeId: string,
   work: () => Promise<T>,
+  access: RunLogAccess,
 ) => Promise<T>;
 
 export interface RunLogCoordinatorOptions {
@@ -207,6 +216,7 @@ export function createRunLogCoordinator(
     projectId: string,
     worktreeId: string,
     work: () => Promise<T>,
+    access: RunLogAccess,
   ): Promise<T> {
     const exclusive = options.exclusive;
     if (!exclusive) return work();
@@ -219,7 +229,7 @@ export function createRunLogCoordinator(
     worktreeSections.set(key, current);
     await previous;
     try {
-      return await exclusive(projectId, worktreeId, work);
+      return await exclusive(projectId, worktreeId, work, access);
     } finally {
       release();
       if (worktreeSections.get(key) === current) worktreeSections.delete(key);
@@ -263,6 +273,7 @@ export function createRunLogCoordinator(
   async function withWriteChain<T>(
     key: string,
     fn: () => Promise<T>,
+    access: RunLogAccess = 'write',
   ): Promise<T> {
     const prev = writeChains.get(key) ?? Promise.resolve();
     let release: (() => void) | undefined;
@@ -274,7 +285,7 @@ export function createRunLogCoordinator(
     try {
       // Keys come from getWriteKey; workspace and worktree ids hold no NUL.
       const [projectId = '', worktreeId = ''] = key.split('\0');
-      return await inWorktreeSection(projectId, worktreeId, fn);
+      return await inWorktreeSection(projectId, worktreeId, fn, access);
     } finally {
       if (release) {
         release();
@@ -302,7 +313,7 @@ export function createRunLogCoordinator(
         }
       }
 
-      await inWorktreeSection(projectId, worktreeId, removeLogs);
+      await inWorktreeSection(projectId, worktreeId, removeLogs, 'write');
     } finally {
       deletingWorktreeLogKeys.delete(worktreeLogKey);
     }

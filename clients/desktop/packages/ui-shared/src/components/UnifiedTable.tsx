@@ -114,6 +114,8 @@ export interface UnifiedTableRow {
   viewDisabled?: boolean;
   /** Optional plugin contents, already resolved for the host's provider. */
   members?: { name: string; description: string; kind: string }[];
+  /** Test id for the row element, for a host's own kind of row. */
+  testId?: string;
 }
 
 export interface UnifiedTableSourceOption {
@@ -382,6 +384,7 @@ const UnifiedTableRowView = memo(function UnifiedTableRowView({
     <DataTableRow
       ref={measureRef}
       data-index={virtualIndex}
+      data-testid={row.testId}
       title={row.toggleReason}
     >
       <DataTableCell align="center">

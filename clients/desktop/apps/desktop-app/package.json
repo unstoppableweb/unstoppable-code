@@ -29,6 +29,7 @@
     "@canopy/ui-shared": "workspace:*",
     "@floating-ui/react": "^0.26.28",
     "@github/copilot-sdk": "1.0.15",
+    "@modelcontextprotocol/sdk": "1.32.2",
     "@streamparser/json": "0.0.26",
     "@tanstack/react-virtual": "^3.14.8",
     "@tanstack/virtual-core": "^3.17.8",

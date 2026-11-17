@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs';
 import {
   CodeGraphReadServiceError,
   createCodeGraphReadService,
+  type CodeGraphReadService,
   type CodeGraphReadServiceHost,
 } from '@canopy/code-graph/host/read-service';
 import { CodeGraphReadFailureError } from '@canopy/code-graph/host/read-failure';
@@ -29,6 +30,10 @@ import { getHeadCommitSha } from '../lib/git';
 import { getRepoShadowDir } from '../lib/repo-shadow';
 import { resolveWorkspaceReferenceRepoPath } from '../lib/workspace-reference-repo';
 import { getCodeGraphSourceBuildState } from './build-runner';
+import {
+  evaluateStorageWrite,
+  STORAGE_OWNERSHIP,
+} from '@canopy/core-runtime/storage';
 import { runCodeGraphWorkerRead } from './read-runner';
 
 // Composes the worker's code-graph read service for this process: worktree
@@ -113,7 +118,7 @@ const workspaceBases: NonNullable<
   };
 };
 
-export const desktopCodeGraphReadService = createCodeGraphReadService({
+const readService = createCodeGraphReadService({
   scheduler: { run: (input) => runCodeGraphWorkerRead(input) },
   dbPath: ({ workspaceId, worktreeId }) =>
     getWorktreeCodeGraphDbPath(workspaceId, worktreeId),
@@ -142,6 +147,30 @@ export const desktopCodeGraphReadService = createCodeGraphReadService({
   now: () => new Date(),
   workspaceBases,
 });
+
+/**
+ * A snapshot import replaces a worktree graph from a read utility process
+ * (CAN-6985). It is admitted while `worktree_code_graph` stays legacy and
+ * refused, before any graph work, once the daemon owns the store.
+ */
+export const desktopCodeGraphReadService: CodeGraphReadService = {
+  ...readService,
+  importSnapshot: (input) => {
+    const decision = evaluateStorageWrite(
+      'worktree_code_graph',
+      'utility_process',
+      STORAGE_OWNERSHIP,
+    );
+    if (!decision.allowed)
+      return Promise.reject(
+        new CodeGraphReadServiceError(
+          'failed-precondition',
+          "This worktree's code graph is written by the background service.",
+        ),
+      );
+    return readService.importSnapshot(input);
+  },
+};
 
 export const desktopCodeGraphReadWorker = createCodeGraphReadServiceWorker(
   desktopCodeGraphReadService,

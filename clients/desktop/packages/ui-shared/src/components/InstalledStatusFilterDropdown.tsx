@@ -17,6 +17,7 @@ import {
 } from './DropdownMenu';
 import { FloatingMenu } from './FloatingMenu';
 import { InstalledItemStatusIcon } from './InstalledItemStatusPicker';
+import { ItemStateMark, useItemStateMarks } from './ItemStateMark';
 import { PickerTrigger, PickerTriggerChevron } from './PickerMenu';
 
 /**
@@ -49,6 +50,19 @@ function FilterOptionGlyph({
 }: {
   readonly option: InstalledStatusFilterValue;
 }): JSX.Element {
+  const marks = useItemStateMarks();
+  if (marks)
+    return (
+      <span
+        aria-hidden="true"
+        data-filter-glyph={option}
+        className="inline-flex size-3.5 shrink-0 items-center justify-center"
+      >
+        <ItemStateMark
+          tone={option === 'update-available' ? 'update' : option}
+        />
+      </span>
+    );
   if (option !== 'update-available')
     return <InstalledItemStatusIcon status={option} />;
   return (

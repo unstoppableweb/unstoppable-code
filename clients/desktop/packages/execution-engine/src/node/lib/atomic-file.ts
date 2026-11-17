@@ -7,6 +7,7 @@ import {
   admittedStorageRowForPath,
   admittedStorageRowForWrite,
   isAdmittedStorageCandidate,
+  OWNERSHIP_OVERRIDE_NAMESPACE,
   type AdmittedStorageNamespace,
   type AdmittedWriterTarget,
 } from './admitted-storage-paths';
@@ -21,6 +22,7 @@ import {
   type ConfirmedFolders,
   type FolderChainPorts,
   type FolderIdentity,
+  type StorageOwnershipRow,
 } from '@canopy/core-runtime/storage';
 import {
   flushDirectory,
@@ -183,6 +185,24 @@ function assertAdmittedRow(
   }
 }
 
+/**
+ * The rows that decide an admitted write: the compiled ones, or the caller's
+ * for pipeline_definitions only. Any other namespace carrying its own rows
+ * is refused before anything is written.
+ */
+function admittedOwnership(
+  admitted: AdmittedWriterTarget,
+): readonly StorageOwnershipRow[] {
+  if (admitted.ownership === undefined) return STORAGE_OWNERSHIP;
+  if (admitted.namespace !== OWNERSHIP_OVERRIDE_NAMESPACE)
+    throw new StorageWriteRefusedError(
+      admitted.namespace,
+      admitted.writer,
+      'unadmitted_writer',
+    );
+  return admitted.ownership;
+}
+
 function outcomeUnknown(
   error: unknown,
   admitted: AdmittedWriterTarget | undefined,
@@ -260,7 +280,7 @@ export function writeFileAtomicallySync(
       admitted.namespace,
       admitted.writer,
       admitted.module,
-      STORAGE_OWNERSHIP,
+      admittedOwnership(admitted),
     );
   }
   const tempPath = temporarySiblingPath(targetPath);
@@ -324,7 +344,7 @@ export async function writeFileAtomically(
       admitted.namespace,
       admitted.writer,
       admitted.module,
-      STORAGE_OWNERSHIP,
+      admittedOwnership(admitted),
     );
     return installFile(targetPath, data, options);
   }

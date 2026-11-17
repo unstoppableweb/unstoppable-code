@@ -37,6 +37,10 @@ import { useStepBadges, useStepTense } from '../chat-look';
 import { StepBadge } from './StepBadge';
 import type { PortalChatToolFamily } from './tool-display-info';
 import type { AnsweredQuestionDisplay } from './AskUserQuestionCard';
+import {
+  isRequestSecretsToolName,
+  requestSecretsToolDisplay,
+} from './request-secrets-display';
 import { normalizeCommandReadToolBlock } from '@canopy/agent-transcript/lib/command-read-display';
 
 // ---------------------------------------------------------------------------
@@ -2759,6 +2763,10 @@ const PREDICATE_MATCHERS: ToolDisplayMatcher[] = [
   { match: isPipelineEditorToolName, render: renderPipelineEditorTool },
   { match: isAppActionToolName, render: renderAppActionTool },
   { match: isAskUserQuestionToolName, render: renderAskUserQuestion },
+  {
+    match: isRequestSecretsToolName,
+    render: (_parsed, input) => requestSecretsToolDisplay(input),
+  },
   { match: isGetScriptOutputToolName, render: renderGetScriptOutput },
   { match: isSetAutoArchiveToolName, render: renderSetAutoArchive },
   { match: isPlanToolName, render: renderPlanTool },

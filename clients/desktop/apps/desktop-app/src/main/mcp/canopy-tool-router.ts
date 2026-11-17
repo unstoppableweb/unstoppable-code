@@ -1,3 +1,5 @@
+import { requestSecrets } from '../agent-secrets/request-secrets';
+import { isAgentSecretRequestsEnabled } from '../agent-secrets/feature-gate';
 import { isWatchDelegatesCompatibilityName } from '@canopy/desktop-shared/node/delegation/watch-delegates-tombstone';
 import { randomUUID } from 'node:crypto';
 import { createShowVisualHost } from '../canopy-tools/show-visual-host';
@@ -24,6 +26,7 @@ import {
   type ChatModel,
   type ChatTabPluginSelections,
   type AgentProviderType,
+  type ApprovalMode,
   type McpQuestionAnswer,
 } from '@canopy/desktop-shared/types';
 import {
@@ -108,6 +111,14 @@ export interface CanopyWorktreeSessionRoute {
   chatId: string;
   assistantMode?: 'default' | 'app-advisor' | 'pipeline-editor';
   toolSurface?: CanopyInjectedToolSurface;
+  /**
+   * The session offers RequestSecrets on its UI server: a root local Claude
+   * chat started with the flag on. Delegates, pipelines and other providers
+   * leave it unset. The flag is re-checked on every listing and call.
+   */
+  secretRequests?: boolean;
+  /** The chat's live approval mode, for RequestSecrets' Full-access path. */
+  getApprovalMode?: () => ApprovalMode;
   cwd?: string;
   repoId?: string;
   sdkSessionId: string;
@@ -639,6 +650,13 @@ export class CanopyToolRouter {
     if (!canonicalKey) {
       return jsonRpcError(id, -32602, `Unknown ${BRAND.displayName} MCP tool`);
     }
+    // Unadvertised here: refuse at dispatch too, as for an unknown tool.
+    if (
+      canonicalKey === 'request_secrets' &&
+      (route.secretRequests !== true || !isAgentSecretRequestsEnabled())
+    ) {
+      return jsonRpcError(id, -32602, `Unknown ${BRAND.displayName} MCP tool`);
+    }
     if (
       (canonicalKey === 'show_visual' || canonicalKey === 'preview_visual') &&
       !chatVisualsEligible({
@@ -732,6 +750,7 @@ export class CanopyToolRouter {
         KEYED_BY_TOOL_CALL.has(args.action.type);
       const toolCallOptions: CanopyInjectedToolContext = {
         ...(canonicalKey !== 'ask_user_question' &&
+        canonicalKey !== 'request_secrets' &&
         canonicalKey !== 'set_base_branch' &&
         (typeof id === 'string' || typeof id === 'number')
           ? {
@@ -822,6 +841,37 @@ export class CanopyToolRouter {
         pluginSelections: route.pluginSelections,
         allowed: route.deferredToolsAllowed !== false,
       },
+      ...(route.secretRequests === true && askUserAllowed
+        ? {
+            requestSecrets: (input, options) =>
+              requestSecrets(
+                {
+                  scope: {
+                    projectId: route.projectId,
+                    worktreeId: route.worktreeId,
+                    chatId: route.chatId,
+                  },
+                  sessionKey: route.sessionKey,
+                  getWindow: () =>
+                    this.options.interfaceRequests.legacyWindow(),
+                  providerType: route.providerType ?? 'claude',
+                  getApprovalMode: route.getApprovalMode ?? (() => 'ask'),
+                  ...(route.model ? { model: route.model } : {}),
+                  ...(route.onAwaitingUser
+                    ? { onAwaitingUser: route.onAwaitingUser }
+                    : {}),
+                  ...(requestContext?.onAskUserRequestCreated
+                    ? {
+                        onRequestCreated:
+                          requestContext.onAskUserRequestCreated,
+                      }
+                    : {}),
+                },
+                input,
+                options,
+              ),
+          }
+        : {}),
       requestUserAnswers: (
         questions,
         options,

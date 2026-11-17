@@ -108,6 +108,11 @@ jest.mock('../../lib/model-policy-state', () => ({
   isOrgModelPolicyActiveForStoredAccount: (): Promise<boolean> =>
     Promise.resolve(false),
 }));
+// CAN-6701: sends judge an enforced gateway before saving; none is enforced
+// here.
+jest.mock('../../lib/model-gateway-turn', () => ({
+  assertTurnModelGatewayRoute: (): Promise<void> => Promise.resolve(),
+}));
 jest.mock('../../lib/chat-tabs-reader', () => ({
   readChatTabsFile: (
     ...args: Parameters<ReadChatTabsFile>

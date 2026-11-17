@@ -201,6 +201,11 @@ function admitCreation(
   delete lifecycle.receiptCaller;
   delete lifecycle.onKeyedReplay;
   validateId(workspaceId, 'workspaceId');
+  // A claim becomes a directory name: malformed is an input error, while a
+  // well-formed claim that is taken or misshapen falls back in the service.
+  if (lifecycle.claimedWorktreeId !== undefined) {
+    validateId(lifecycle.claimedWorktreeId, 'worktreeId');
+  }
   if (!isWritableScope(workspaceId)) {
     refuseWorktreeCreation('read-only-scope', READ_ONLY_SCOPE_ERROR);
   }
@@ -277,6 +282,9 @@ export async function createWorktreeFromSelection(
       // Undefined parameters are omitted from the fingerprint, so receipts
       // of callers that keep the timestamped default are unchanged.
       defaultBranchNaming: options.defaultBranchNaming,
+      // A retry of one attempt resends its key and claim; a replay returns
+      // the id the first call actually got, including a fallback id.
+      claimedWorktreeId: options.claimedWorktreeId,
     };
     return runKeyedW5Operation(
       {

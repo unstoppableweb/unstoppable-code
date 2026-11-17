@@ -1,6 +1,10 @@
 import { readCoworkFolderMissing } from '@canopy/protocol/canopy-core';
 import type { PortalCommandEnvelope } from '@canopy/desktop-shared/types';
 import type { PortalAdapterContext } from './types';
+import {
+  isModelGatewayRefusal,
+  ModelGatewayRefusedError,
+} from '../../lib/model-gateway-refusal';
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -55,6 +59,21 @@ export function failServiceError(
     context.fail(command, missing.code, missing.message, false, {
       coworkFolderMissing: missing,
     });
+    return;
+  }
+  // Refused before anything was saved, for a stable reason. The top-level
+  // code stays in the closed Portal set; the reason rides in `response`, so
+  // the web composer needs no sentence matching (CAN-6701).
+  if (isModelGatewayRefusal(error)) {
+    context.fail(command, 'invalid_payload', error.message, false, {
+      response: { code: error.code, message: error.message },
+    });
+    return;
+  }
+  // After saving, the session gate's refusal is a turn failure, mapped as it
+  // was before CAN-6701; it never carries the pre-save reason.
+  if (error instanceof ModelGatewayRefusedError) {
+    context.fail(command, 'execution_failed', error.message, false);
     return;
   }
   if (error instanceof Error) {

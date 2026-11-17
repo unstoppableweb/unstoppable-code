@@ -41,6 +41,7 @@ import {
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import { claudeModPluginId } from '@canopy/protocol/claude-mods';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
+import { useModelCatalogStore } from '@/stores/modelCatalogStore';
 import { brandText } from '@/lib/brand';
 import {
   applyCodexCompatDisabledToMarketplaceCaches,
@@ -176,14 +177,23 @@ export function PluginDetailView({
   const opencodeEnabled = useFeatureFlagsStore((state) =>
     state.isEnabled(CLIENT_FEATURE_FLAGS.canopyDesktopOpenCodeHarness.key),
   );
+  // Labs: listed only where Google models were discovered, as in the picker.
+  const antigravityFlag = useFeatureFlagsStore((state) =>
+    state.isEnabled(CLIENT_FEATURE_FLAGS.canopyDesktopAntigravityHarness.key),
+  );
+  const antigravityDiscovered = useModelCatalogStore(
+    (state) => (state.snapshot?.antigravity?.length ?? 0) > 0,
+  );
+  const antigravityEnabled = antigravityFlag && antigravityDiscovered;
   const harnesses = useMemo(
     () =>
       offeredPluginHarnesses({
         cursor: cursorEnabled,
         copilot: copilotEnabled,
         opencode: opencodeEnabled,
+        antigravity: antigravityEnabled,
       }),
-    [cursorEnabled, copilotEnabled, opencodeEnabled],
+    [cursorEnabled, copilotEnabled, opencodeEnabled, antigravityEnabled],
   );
   const autoInstallStarted = useRef(false);
   const onPluginUpdatedRef = useRef(onPluginUpdated);

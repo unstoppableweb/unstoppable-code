@@ -1,6 +1,7 @@
-import { basename, dirname, resolve } from 'node:path';
+import { basename, dirname, relative, resolve, sep } from 'node:path';
 import type {
   STORAGE_OWNERSHIP,
+  StorageOwnershipRow,
   StorageWriterPrincipal,
 } from '@canopy/core-runtime/storage';
 import {
@@ -21,7 +22,18 @@ export interface AdmittedWriterTarget {
   readonly namespace: AdmittedStorageNamespace;
   readonly writer: StorageWriterPrincipal;
   readonly module: string;
+  /**
+   * The rows that decide the write in place of the compiled ones (CAN-5092).
+   * Whoever passes them decides the write, so only trusted composition may:
+   * tests now, the daemon at the flip. check:daemon-writer-boundary refuses
+   * any other production source that sets them, and the writer refuses them
+   * for any namespace but pipeline_definitions.
+   */
+  readonly ownership?: readonly StorageOwnershipRow[];
 }
+
+/** The one namespace whose writes may carry their own ownership rows. */
+export const OWNERSHIP_OVERRIDE_NAMESPACE = 'pipeline_definitions';
 
 // Mirrors the rows' patterns in storage-ownership.yaml; a test compares them.
 const DATA_ROOT_FILES: ReadonlyMap<string, AdmittedStorageNamespace> = new Map([
@@ -35,7 +47,21 @@ const DATA_ROOT_FILES: ReadonlyMap<string, AdmittedStorageNamespace> = new Map([
   ['migrations.last-good.json', 'startup_migrations'],
   ['pipeline-plugin-preferences.json', 'pipeline_plugin_preferences'],
   ['pipeline-local-metadata.json', 'pipeline_local_metadata'],
+  ['plugins-cache.json', 'plugins_cache'],
+  ['plugin-cache-index.json', 'plugin_cache_index'],
 ]);
+
+function isPluginCachePath(target: string, dataRoot: string | null): boolean {
+  const parts = (
+    dataRoot === null ? fold(target) : relative(fold(dataRoot), fold(target))
+  ).split(sep);
+  const index = dataRoot === null ? parts.indexOf('plugin-cache') : 0;
+  return (
+    index >= 0 &&
+    parts[index] === 'plugin-cache' &&
+    parts[index + 1] !== 'codex-compatibility'
+  );
+}
 const PREFERENCES_BACKUP = /^preferences\.backup-.+\.json$/;
 const MIGRATIONS_DAMAGED = /^migrations\.damaged-.+\.json$/;
 const PIPELINE_PREFERENCES_DAMAGED =
@@ -50,6 +76,47 @@ const NATIVE_ARTIFACT_FILES = new Set([
 ]);
 const APPROVALS_FILE = 'approvals.json';
 const APPROVALS_ROOTS = ['workspaces', 'app-workspaces'];
+const TERMINAL_RECORD_FILE =
+  /^(terminal-state|terminal-presentation)\.json(?:\.damaged-[^/]+)?$/;
+
+function codeReviewRow(
+  target: string,
+  dataRoot: string | null,
+): AdmittedStorageNamespace | undefined {
+  const normalized = fold(target).replace(/\\/g, '/');
+  const root =
+    dataRoot === null
+      ? null
+      : fold(dataRoot).replace(/\\/g, '/').replace(/\/$/, '');
+  if (root !== null && !normalized.startsWith(`${root}/`)) return undefined;
+  const tail = root === null ? normalized : normalized.slice(root.length);
+  if (
+    root === null
+      ? /\/code-review-chats(?:\/.*)?$/.test(tail)
+      : /^\/code-review-chats(?:\/.*)?$/.test(tail)
+  )
+    return 'code_review_chats_legacy';
+  const prefix = root === null ? '(?:^|/)' : '^/';
+  if (
+    new RegExp(
+      `${prefix}(?:app-workspaces|workspaces)/code-review-chat/chats/registry\\.json$`,
+    ).test(tail)
+  )
+    return 'code_review_registry';
+  if (
+    new RegExp(
+      `${prefix}(?:app-workspaces|workspaces)/code-review-chat/chats$`,
+    ).test(tail)
+  )
+    return 'code_review_chats_dir';
+  if (
+    new RegExp(
+      `${prefix}(?:app-workspaces|workspaces)/[^/]+/worktree-data/[^/]+/code-review\\.json$`,
+    ).test(tail)
+  )
+    return 'code_review_state';
+  return undefined;
+}
 
 // macOS and Windows data roots are case-insensitive.
 const fold = (path: string): string => resolve(path).toLowerCase();
@@ -91,8 +158,11 @@ export function isAdmittedStorageCandidate(targetPath: string): boolean {
   const target = resolve(targetPath);
   const name = basename(target).toLowerCase();
   return (
+    codeReviewRow(target, null) !== undefined ||
     dataRootFile(name) !== undefined ||
+    isPluginCachePath(target, null) ||
     name === APPROVALS_FILE ||
+    TERMINAL_RECORD_FILE.test(name) ||
     name === GITHUB_CREDENTIAL_FENCE_FILE ||
     isNativeArtifactPath(target, null) ||
     name === 'vault' ||
@@ -117,6 +187,9 @@ export function admittedStorageRowForPath(
   const target = resolve(targetPath);
   const name = basename(target).toLowerCase();
   const parent = fold(dirname(target));
+  const review = codeReviewRow(target, dataRoot);
+  if (review !== undefined) return review;
+  if (isPluginCachePath(target, dataRoot)) return 'plugin_cache';
   const secureRoot =
     secureDataRoot === undefined && dataRoot === null ? null : secureDataRoot;
   if (isNativeArtifactPath(target, dataRoot))
@@ -151,6 +224,24 @@ export function admittedStorageRowForPath(
     return dataRoot === null || parent === fold(dataRoot)
       ? rootFile
       : undefined;
+  const terminalFile = TERMINAL_RECORD_FILE.exec(name);
+  if (terminalFile) {
+    const worktreeData = dirname(parent);
+    const workspace = dirname(worktreeData);
+    const containers = dirname(workspace);
+    const matches =
+      basename(worktreeData) === 'worktree-data' &&
+      (dataRoot === null
+        ? APPROVALS_ROOTS.includes(basename(containers))
+        : APPROVALS_ROOTS.some(
+            (folder) => containers === fold(resolve(dataRoot, folder)),
+          ));
+    return matches
+      ? terminalFile[1] === 'terminal-state'
+        ? 'terminal_state'
+        : 'terminal_presentation'
+      : undefined;
+  }
   if (name !== APPROVALS_FILE) return undefined;
   const container = dirname(parent);
   const matches =

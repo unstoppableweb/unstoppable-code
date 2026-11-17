@@ -528,7 +528,11 @@ export function recordW5Work(key: string, delta = 1): void {
 }
 
 /** Names the caller that metadata reads made inside `work` are counted under. */
-export type MetadataReadCaller = 'sidebar.project' | 'sidebar.worktree';
+export type MetadataReadCaller =
+  | 'sidebar.project'
+  | 'sidebar.worktree'
+  | 'worktree.effective'
+  | 'remote.projects-load';
 
 const metadataReadCaller = new AsyncLocalStorage<MetadataReadCaller>();
 

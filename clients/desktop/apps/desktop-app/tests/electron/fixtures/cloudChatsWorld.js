@@ -526,6 +526,15 @@ export function createCloudChatsWorld({ accountId, extraTasks = 0 }) {
     ],
     /** Every `core.chat.message.send` the desktop made, in order. */
     sends: [],
+    /**
+     * Every `core.chat.secretRequest.submit` the desktop made, in order
+     * (agent secret requests): the only call that may carry a value.
+     */
+    secretSubmits: [],
+    /** The secrets the chats' agents hold, as `core.chat.secret.list` lists them. */
+    secrets: [],
+    /** Set to refuse the next secret submission as a refused value. */
+    refuseNextSecretSubmit: false,
     /** Tasks archived through `core.chat.archive` (CAN-6511); the list drops them. */
     archived: new Set(),
     /** Each archived task's container revision, which a restore is fenced by. */
@@ -1319,6 +1328,108 @@ export function createCloudChatsWorld({ accountId, extraTasks = 0 }) {
           },
         });
       }
+      case 'core.chat.secretRequest.submit': {
+        const question = state.questions.find(
+          (each) =>
+            each.requestId === params.interactionId &&
+            each.questions[0]?.secretRequest !== undefined,
+        );
+        if (question === undefined)
+          return refuse(
+            'not_found',
+            'The secret request was not found.',
+            'core.chat.secretRequest.notFound',
+          );
+        const requested = question.questions[0].secretRequest.secrets;
+        // A spec's one-shot refusal, as Agentic Core refuses a value.
+        if (state.refuseNextSecretSubmit) {
+          state.refuseNextSecretSubmit = false;
+          return {
+            error: {
+              kind: 'invalid_argument',
+              message: 'Agentic Core refused a value.',
+              code: 'core.chat.secretRequest.invalid',
+              details: {
+                field: `values.${requested[0].name}`,
+                reason: 'too_long',
+              },
+              retry: { kind: 'never' },
+            },
+          };
+        }
+        const missing = requested.find(
+          (secret) =>
+            params.action === 'provide' &&
+            secret.required !== false &&
+            params.values?.[secret.name] === undefined,
+        );
+        if (missing !== undefined)
+          return {
+            error: {
+              kind: 'invalid_argument',
+              message: 'Agentic Core refused a value.',
+              code: 'core.chat.secretRequest.invalid',
+              details: {
+                field: `values.${missing.name}`,
+                reason: 'required_missing',
+              },
+              retry: { kind: 'never' },
+            },
+          };
+        state.secretSubmits.push(params);
+        state.questions = state.questions.filter((each) => each !== question);
+        const secrets = requested.map((secret) => ({
+          name: secret.name,
+          state:
+            params.action === 'provide' &&
+            params.values?.[secret.name] !== undefined
+              ? 'provided'
+              : 'skipped',
+        }));
+        for (const secret of secrets)
+          if (
+            secret.state === 'provided' &&
+            !state.secrets.some((held) => held.name === secret.name)
+          )
+            state.secrets.push({
+              name: secret.name,
+              createdAt: AT,
+              lastUsedAt: null,
+              expiresAt: '2026-11-18T09:00:00.000Z',
+            });
+        chatBatch(state.chats.get(question.chatId).worktreeId, [
+          {
+            type: 'pending_question.removed',
+            chatId: question.chatId,
+            requestId: question.requestId,
+          },
+        ]);
+        // Core then runs the turn on to its reply, as after an answer.
+        setTimeout(() => finishAnsweredTurn(question), 50);
+        return ok({
+          chatId: question.chatId,
+          interactionId: question.requestId,
+          status: params.action === 'provide' ? 'submitted' : 'rejected',
+          secrets,
+        });
+      }
+      case 'core.chat.secret.list':
+        return ok({ chatId: params.chatId, secrets: [...state.secrets] });
+      case 'core.chat.secret.revoke': {
+        const held = state.secrets.some(
+          (secret) => secret.name === params.name,
+        );
+        if (!held)
+          return refuse(
+            'not_found',
+            'The chat holds no such secret.',
+            'core.chat.secret.notFound',
+          );
+        state.secrets = state.secrets.filter(
+          (secret) => secret.name !== params.name,
+        );
+        return ok({ chatId: params.chatId, name: params.name, revoked: true });
+      }
       case 'core.chat.question.respond': {
         const question = state.questions.find(
           (each) => each.requestId === params.questionId,
@@ -1806,6 +1917,9 @@ export function createCloudChatsWorld({ accountId, extraTasks = 0 }) {
       'core.chat.message.send',
       'core.chat.send.receipt',
       'core.chat.question.respond',
+      'core.chat.secretRequest.submit',
+      'core.chat.secret.list',
+      'core.chat.secret.revoke',
       'core.chat.turn.cancel',
       'core.approval.request.list',
       'core.approval.request.respond',
@@ -2047,6 +2161,30 @@ export function createCloudChatsWorld({ accountId, extraTasks = 0 }) {
       });
     },
     raiseApproval,
+    /**
+     * Makes the seeded pending question an agent's secret request, as the
+     * web core projects a Core SECRET_REQUEST (agent secret requests).
+     */
+    askForSecrets: (secrets) => {
+      state.questions = state.questions.map((question) => ({
+        ...question,
+        questions: [
+          {
+            id: 'secrets',
+            header: 'Secrets',
+            question: 'The agent is asking for secrets. Update to respond.',
+            options: [],
+            secretRequest: {
+              reason: 'Deploy the demo to staging.',
+              agentName: 'Agent',
+              accessMode: 'cloud',
+              storage: 'encrypted',
+              secrets,
+            },
+          },
+        ],
+      }));
+    },
     replaceAgentTasks,
     startBackgroundAgent,
     /**

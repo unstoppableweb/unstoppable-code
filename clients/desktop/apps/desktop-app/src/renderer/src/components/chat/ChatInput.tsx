@@ -1,3 +1,5 @@
+import { resumeFailureUserIndex } from '@canopy/protocol/session-recovery';
+import { SessionResumeNotice } from '@canopy/ui-shared/components';
 import { chatModelRecoveryTarget } from '@/lib/composerModelRecoveryTarget';
 import type { ModelRecoveryFreshness } from '@/lib/modelRecoveryLease';
 import { creditNoticeVisibility } from '@canopy/ui-shared/lib';
@@ -109,6 +111,7 @@ import {
   type ComposerPendingQuestion,
   type ComposerQuestionDelivery,
 } from './useComposerQuestionPrompt';
+import { SecretRequestComposerPrompt } from './SecretRequestComposerPrompt';
 import { useAppAdvisorStore } from '@/stores/appAdvisorStore';
 import { useComposerQuestions } from './useComposerQuestions';
 import {
@@ -191,7 +194,11 @@ import { presentedCloudStop } from '@/stores/chat/cloud-stop';
 import { liveReplyKey } from '@/stores/chat/web-core/live-replies';
 import { useCloudSandboxState } from '@/stores/chat/web-core/sandbox-states';
 import { useWebCoreStartingTurnStore } from '@/stores/chat/web-core/starting-turns';
-import { loadWebCoreModels, webCoreChatId } from '@/stores/chat/web-core';
+import {
+  loadWebCoreModels,
+  reloadWebCoreModels,
+  webCoreChatId,
+} from '@/stores/chat/web-core';
 import { useWebCoreFastModeStore } from '@/stores/chat/web-core/fast-mode';
 import type { CodexSpeed } from '@canopy/protocol/automations';
 import { isBotProjectId } from '@canopy/protocol/chat-targets';
@@ -199,10 +206,16 @@ import {
   useWebCoreModelCatalogStore,
   webCoreModelLabel,
   webCoreModelList,
+  webCoreLockedAccess,
   webCoreModelOption,
   webCorePickerModels,
   webCoreThinkingLevels,
 } from '@/stores/chat/web-core/model-catalog';
+import {
+  CONTACT_ORG_ADMIN_COPY,
+  useUnlockModelsAction,
+} from '@/lib/openBillingPage';
+import { settingsActionErrorCopy } from '@canopy/ui-app/settings/errors';
 import { resolveComposerWorkflowGates } from './composer-workflow-gates';
 import {
   isChatAttachmentShortcutTarget,
@@ -239,7 +252,14 @@ import {
   withRetainedFileIndex,
 } from '@/stores/fileListStore';
 import { useScopeCapabilities } from '@/hooks/useScopeCapabilities';
+import { useStore } from 'zustand';
 import { useShallow } from 'zustand/react/shallow';
+import { cloudCoworkStore } from '@/cloud-chats/cloud-cowork-store';
+import {
+  cloudWorkspaceOwner,
+  navigationOwnsCloudWorkspace,
+} from '@/cloud-chats/cloud-unlock-owner';
+import { useWorkspaceContextStore } from '@/stores/workspaceContextStore';
 import {
   DEFAULT_APPROVAL_DEFAULTS,
   DEFAULT_MODEL,
@@ -367,7 +387,12 @@ import {
   resolveGatewayModelEntry,
   resolveOrgGatewayOrganizationId,
 } from '@canopy/execution-engine/lib/gateway-model-availability';
-import { personalGatewaySwitch } from '@/stores/chat/defaults';
+import {
+  nativeSendableModels,
+  personalGatewaySendableModels,
+  personalGatewaySwitch,
+} from '@/stores/chat/defaults';
+import { findEquivalentModel } from '@canopy/desktop-shared/lib/model-identity';
 import { useDesktopAiGatewayEntry } from '@/components/aiGateway/DesktopAiGatewayEntry';
 import { openPendingPlanExit } from '@/lib/plans/open-tracked-plan';
 import { PlanReadyPipelineModal } from './PlanReadyPipelineModal';
@@ -2400,12 +2425,29 @@ function ChatInputContent({
         : null,
     [composerWorktreeId, tabId, webCoreProjectId],
   );
+  // Why the host refused this chat's last send before saving it: the web
+  // core for a cloud chat, or main for a local one (CAN-6701, an enforced
+  // organization gateway). Either way the draft is back in the composer.
+  const composerRefusalTarget = useMemo(
+    () =>
+      sendRefusalTarget ??
+      (composerProjectId !== undefined &&
+      composerWorktreeId !== undefined &&
+      tabId
+        ? {
+            projectId: composerProjectId,
+            worktreeId: composerWorktreeId,
+            chatId: tabId,
+          }
+        : null),
+    [composerProjectId, composerWorktreeId, sendRefusalTarget, tabId],
+  );
   const sendRefusal = useChatStore((s) =>
-    sendRefusalTarget === null
+    composerRefusalTarget === null
       ? undefined
       : s.worktreeChats[
-          `${sendRefusalTarget.projectId}/${sendRefusalTarget.worktreeId}`
-        ]?.tabs.find((entry) => entry.id === sendRefusalTarget.chatId)
+          `${composerRefusalTarget.projectId}/${composerRefusalTarget.worktreeId}`
+        ]?.tabs.find((entry) => entry.id === composerRefusalTarget.chatId)
           ?.sendRefusal,
   );
   // A cloud chat's Stop: Stopping… until its turn ends, or why it couldn't
@@ -2442,11 +2484,25 @@ function ChatInputContent({
     if (webCoreProjectId !== undefined)
       void loadWebCoreModels(webCoreProjectId);
   }, [webCoreProjectId]);
+  // The unlock bills the navigation context, so a cloud chat lists its
+  // owner's locked models only when that context is the owner (CAN-6937).
+  const webCoreOwner = useStore(cloudCoworkStore, (state) =>
+    webCoreProjectId === undefined
+      ? undefined
+      : cloudWorkspaceOwner(state.projects, webCoreProjectId),
+  );
+  const navigationContext = useWorkspaceContextStore((state) =>
+    state.hydrated ? state.state.context : undefined,
+  );
+  const webCoreUnlockable = navigationOwnsCloudWorkspace(
+    webCoreOwner,
+    navigationContext,
+  );
   const webCoreModels = useWebCoreModelCatalogStore(
     useShallow((state) =>
       webCoreProjectId === undefined
         ? undefined
-        : webCoreModelList(state, webCoreProjectId),
+        : webCoreModelList(state, webCoreProjectId, webCoreUnlockable),
     ),
   );
   // A cloud chat the web core names no model for reads Model (CAN-6365).
@@ -2456,6 +2512,45 @@ function ChatInputContent({
         ? undefined
         : webCorePickerModels(webCoreModels, model),
     [model, webCoreModels],
+  );
+  // A model the owner's library keeps locked is listed locked, as on the web,
+  // and its action starts the same unlock a local chat's locked row does. It
+  // names no model, so nothing is selected or sent with one (CAN-6937).
+  const webCoreUnlockAccess = useWebCoreModelCatalogStore((state) =>
+    webCoreProjectId === undefined || !webCoreUnlockable
+      ? undefined
+      : webCoreLockedAccess(state, webCoreProjectId),
+  );
+  const unlockModels = useUnlockModelsAction(creditsScope);
+  // An unlock that couldn't open says so here, in the composer that started
+  // it, never as a toast.
+  const [cloudUnlockFailure, setCloudUnlockFailure] = useState<
+    'failed' | 'contact-admin' | null
+  >(null);
+  const webCoreModelLibrary = useMemo(
+    () =>
+      webCoreUnlockAccess === undefined || webCoreProjectId === undefined
+        ? undefined
+        : {
+            access: webCoreUnlockAccess,
+            onUnlock: (): void => {
+              setCloudUnlockFailure(null);
+              void unlockModels({ source: 'desktop' }).then(
+                (result) => {
+                  if (
+                    result.outcome === 'failed' ||
+                    result.outcome === 'contact-admin'
+                  )
+                    setCloudUnlockFailure(result.outcome);
+                  // Already unlocked: list the models as they now are.
+                  else if (result.outcome === 'unlocked')
+                    void reloadWebCoreModels(webCoreProjectId);
+                },
+                () => setCloudUnlockFailure('failed'),
+              );
+            },
+          },
+    [unlockModels, webCoreProjectId, webCoreUnlockAccess],
   );
   const webCoreLabel = useWebCoreModelCatalogStore((state) =>
     webCoreProjectId === undefined
@@ -2686,6 +2781,10 @@ function ChatInputContent({
   );
   const activeQuestion: ComposerPendingQuestion | undefined =
     appAdvisorPending ?? composerQuestions[0];
+  // A RequestSecrets call: its own form, never the question's answers.
+  const activeSecretRequest = appAdvisorPending
+    ? undefined
+    : composerQuestions[0]?.questions[0]?.secretRequest;
   const questionPrompt = useComposerQuestionPrompt(
     activeQuestion,
     onDeliveryChange,
@@ -4153,6 +4252,46 @@ function ChatInputContent({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [modelFactsVersion, laneFactsVersion],
   );
+  // Each source's own route for this chat's model under another spelling (a
+  // gateway slug for a native model, or a native id for a gateway slug), so
+  // its row can stay on the chat's model and dispatch that route. Its own
+  // memo, keyed on everything it reads, so nothing runs per render or
+  // keystroke; the gateway's model list is built only here. An Agent chat
+  // never matches: a plain route would drop the Agent's instructions, the
+  // same guard the credits switch has.
+  const hasBannerTarget = bannerTarget !== null;
+  const providerChoiceEquivalents = useMemo((): {
+    readonly gateway?: ChatModel;
+    readonly native: Partial<Record<'claude' | 'codex', ChatModel>>;
+  } => {
+    if (!hasBannerTarget || !modelForBilling || isAgentModel(modelForBilling)) {
+      return { native: {} };
+    }
+    const toCandidate = (id: ChatModel): { readonly id: ChatModel } => ({ id });
+    const gateway = findEquivalentModel(
+      modelForBilling,
+      personalGatewaySendableModels().map(toCandidate),
+    )?.id;
+    // A native model already runs on its own login (`runsTargetModel`);
+    // only a chat on a gateway route looks for a native equivalent.
+    const onGatewayRoute =
+      isGatewayOnlyModel(modelForBilling) ||
+      resolveGatewayModelEntry(modelForBilling)?.origin === 'org-gateway';
+    const native: Partial<Record<'claude' | 'codex', ChatModel>> = {};
+    if (onGatewayRoute) {
+      for (const provider of ['claude', 'codex'] as const) {
+        const match = findEquivalentModel(
+          modelForBilling,
+          nativeSendableModels(provider).map(toCandidate),
+        )?.id;
+        if (match !== undefined) native[provider] = match;
+      }
+    }
+    return { ...(gateway !== undefined ? { gateway } : {}), native };
+    // Re-derive when the catalogs, policy or lane facts change; React can't
+    // see them.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasBannerTarget, modelForBilling, modelFactsVersion, laneFactsVersion]);
   const providerChoiceContext = useMemo<
     DesktopProviderChoiceContext | undefined
   >(() => {
@@ -4220,10 +4359,28 @@ function ChatInputContent({
       providerChoiceGatewayModel !== undefined
         ? getProviderForModel(providerChoiceGatewayModel)
         : undefined;
+    // The gateway's route for this chat's model, judged for the provider
+    // that route runs on: a blocked one is dropped, and the row falls back
+    // to the default model with that model's blocked reason, as before.
+    const gatewayEquivalentCandidate = chatOnGateway
+      ? undefined
+      : providerChoiceEquivalents.gateway;
+    const gatewayEquivalentProvider =
+      gatewayEquivalentCandidate !== undefined
+        ? getProviderForModel(gatewayEquivalentCandidate)
+        : undefined;
+    const gatewayEquivalent =
+      gatewayEquivalentCandidate !== undefined &&
+      (gatewayEquivalentProvider === undefined ||
+        providerSwitchBlockedReason(gatewayEquivalentProvider) === undefined)
+        ? gatewayEquivalentCandidate
+        : undefined;
     const gatewayBlockedReason =
-      gatewaySwitchProvider !== undefined
-        ? providerSwitchBlockedReason(gatewaySwitchProvider)
-        : providerChoiceGatewaySwitch.unavailableReason;
+      gatewayEquivalent !== undefined
+        ? undefined
+        : gatewaySwitchProvider !== undefined
+          ? providerSwitchBlockedReason(gatewaySwitchProvider)
+          : providerChoiceGatewaySwitch.unavailableReason;
     const gatewaySources =
       providerChoiceGateway === null
         ? []
@@ -4235,6 +4392,9 @@ function ChatInputContent({
                 ? { switchModel: toChoiceModel(providerChoiceGatewayModel) }
                 : {}),
               chatOnGateway,
+              ...(gatewayEquivalent !== undefined
+                ? { equivalentModel: toChoiceModel(gatewayEquivalent) }
+                : {}),
               ...(gatewayBlockedReason !== undefined
                 ? { blockedReason: gatewayBlockedReason }
                 : {}),
@@ -4242,6 +4402,9 @@ function ChatInputContent({
           ];
     return {
       current: chatOnGateway ? 'gateway' : current,
+      ...(modelForBilling
+        ? { currentModel: toChoiceModel(modelForBilling) }
+        : {}),
       ...(providerChoiceGateway?.summary
         ? { gatewayName: providerChoiceGateway.summary.name }
         : {}),
@@ -4251,6 +4414,12 @@ function ChatInputContent({
           modelRunsNatively: !isGatewayOnlyModel(modelForBilling),
           availability: providerAvailability,
           blockedReasonFor: providerSwitchBlockedReason,
+          equivalentModelFor: (provider) => {
+            const equivalent = providerChoiceEquivalents.native[provider];
+            return equivalent !== undefined
+              ? toChoiceModel(equivalent)
+              : undefined;
+          },
           limited: accountUsageLimits(
             Object.values(usageLimitByChat),
             usageLimitProvider !== undefined
@@ -4308,12 +4477,28 @@ function ChatInputContent({
         if (row.source === 'gateway') {
           // The gateway pays for its own models: the switch carries no
           // billing choice, exactly as picking the model in the picker does.
-          return row.outcome.kind === 'switch-model'
-            ? handleRecoveryCommit(row.outcome.target.id)
-            : row.outcome.kind === 'same-model';
+          // A same-model row with a `route` runs the gateway's own id for
+          // the chat's model; the resolver sets `route` on every matched
+          // gateway row, even one under the chat's own id. Without a route
+          // the chat already runs on the gateway, so there is nothing to do.
+          if (row.outcome.kind === 'switch-model') {
+            return handleRecoveryCommit(row.outcome.target.id);
+          }
+          if (row.outcome.kind === 'same-model') {
+            return row.outcome.route !== undefined
+              ? handleRecoveryCommit(row.outcome.route.id)
+              : true;
+          }
+          return false;
         }
         if (row.outcome.kind === 'switch-model') {
           return handleRecoveryCommit(row.outcome.target.id, 'subscription');
+        }
+        if (
+          row.outcome.kind === 'same-model' &&
+          row.outcome.route !== undefined
+        ) {
+          return handleRecoveryCommit(row.outcome.route.id, 'subscription');
         }
         if (row.outcome.kind === 'same-model') {
           selectBillingFramework('subscription', bannerTarget);
@@ -4339,6 +4524,7 @@ function ChatInputContent({
     lockedProvider,
     modelForBilling,
     providerAvailability,
+    providerChoiceEquivalents,
     providerChoiceGateway,
     providerChoiceGatewaySwitch,
     providerChoiceModelDefaults,
@@ -7193,6 +7379,44 @@ function ChatInputContent({
     : shellDecoration;
   /* eslint-enable shadcn/require-static-classes */
 
+  const resumeFailedMessage = useChatStore((state) => {
+    if (!sessionChatTarget || effectiveProviderType !== 'antigravity')
+      return undefined;
+    const messages = state.worktreeChats[
+      `${sessionChatTarget.projectId}/${sessionChatTarget.worktreeId}`
+    ]?.tabs.find(
+      (candidate) => candidate.id === sessionChatTarget.chatId,
+    )?.messages;
+    if (!messages) return undefined;
+    const index = resumeFailureUserIndex(messages, (message) =>
+      message.blocks.flatMap((block) =>
+        block.type === 'text' ? [block.sessionResumeFailure] : [],
+      ),
+    );
+    return index === undefined ? undefined : messages[index];
+  });
+  const createResumeRecoveryChat = (): void => {
+    const target = targetOverride ?? selectedWorktree;
+    if (!target || !tab || !resumeFailedMessage || isStreaming) return;
+    const text = resumeFailedMessage.blocks
+      .flatMap((block) => (block.type === 'text' ? [block.text] : []))
+      .join('\n');
+    const id = crypto.randomUUID();
+    createTab({
+      ...target,
+      id,
+      model: tab.model,
+      modelExplicitlyChosen: true,
+      thinkingLevel: tab.thinkingLevel,
+      modelConfig: tab.modelConfig,
+      pluginSelections: tab.pluginSelections,
+      selectedRepoId: tab.selectedRepoId,
+    });
+    useChatStore
+      .getState()
+      .saveTabDraft(id, [{ type: 'paragraph', children: [{ text }] }]);
+  };
+
   const readOnlySessionActions = (
     <>
       <NoticeButton
@@ -7734,19 +7958,38 @@ function ChatInputContent({
         {webCoreProjectId !== undefined ? (
           <WebCoreModelCatalogNotice projectId={webCoreProjectId} />
         ) : null}
-        {/* A cloud send the web core refused: the draft is back above, and
-            this says why (CAN-6364), as the cloud chat page does. */}
+        {/* A send refused before it was saved: the draft is back above, and
+            this says why (CAN-6364 cloud, CAN-6701 local gateway refusal), as
+            the cloud chat page does. */}
         {!isEditingQueued &&
-        sendRefusalTarget !== null &&
+        composerRefusalTarget !== null &&
         sendRefusal !== undefined ? (
           <Notice
             errorSource="chat-input-send-refused"
             intent="destructive"
             data-testid="chat-input-send-refused"
-            onDismiss={(): void => dismissSendRefusal(sendRefusalTarget)}
+            onDismiss={(): void => dismissSendRefusal(composerRefusalTarget)}
             dismissLabel="Dismiss"
           >
             {composerRefusalNotice(sendRefusal)}
+          </Notice>
+        ) : null}
+        {/* A locked model's unlock that couldn't open (CAN-6937). */}
+        {!isEditingQueued &&
+        webCoreProjectId !== undefined &&
+        cloudUnlockFailure !== null ? (
+          <Notice
+            errorSource="chat-input-unlock-failed"
+            intent="destructive"
+            data-testid="chat-input-unlock-failed"
+            onDismiss={(): void => setCloudUnlockFailure(null)}
+            dismissLabel="Dismiss"
+          >
+            {cloudUnlockFailure === 'contact-admin'
+              ? CONTACT_ORG_ADMIN_COPY
+              : settingsActionErrorCopy(null, {
+                  action: 'open this payment page',
+                })}
           </Notice>
         ) : null}
         {/* A cloud Stop that couldn't name its turn: the turn may still run,
@@ -7760,6 +8003,14 @@ function ChatInputContent({
           >
             {"Couldn't stop the reply yet. Select Stop to try again."}
           </Notice>
+        ) : null}
+        {!isEditingQueued &&
+        resumeFailedMessage &&
+        (targetOverride ?? selectedWorktree) ? (
+          <SessionResumeNotice
+            onCreateChat={createResumeRecoveryChat}
+            disabled={isStreaming}
+          />
         ) : null}
         {!isEditingQueued && attachmentProblems.length > 0 ? (
           <Notice
@@ -8347,7 +8598,18 @@ function ChatInputContent({
           />
         )}
 
-        {questionPromptOpen ? (
+        {questionPromptOpen &&
+        activeQuestion !== undefined &&
+        activeSecretRequest !== undefined ? (
+          <SecretRequestComposerPrompt
+            requestId={activeQuestion.requestId}
+            request={activeSecretRequest}
+            chatId={composerQuestions[0]?.chatId ?? ''}
+            projectId={composerQuestions[0]?.projectId ?? ''}
+            onDeliveryChange={onDeliveryChange}
+            onClose={closeQuestionPrompt}
+          />
+        ) : questionPromptOpen ? (
           <QuestionPrompt
             prompt={questionPrompt.prompt}
             busy={questionPrompt.busy}
@@ -8411,6 +8673,9 @@ function ChatInputContent({
                     statusRow
                     brandDisplayName={brandText.appName}
                     catalog={webCorePickerRows}
+                    {...(webCoreModelLibrary === undefined
+                      ? {}
+                      : { modelLibrary: webCoreModelLibrary })}
                     {...(model === undefined ? {} : { currentModel: model })}
                     {...(webCoreLabel === undefined
                       ? {}

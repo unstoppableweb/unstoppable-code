@@ -52,6 +52,20 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_QUEUED_READ_TIMEOUT_MS = 30_000;
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 5_000;
 const DEFAULT_MAX_QUEUED_CALLS = 256;
+/** Reads sent to the worker at once, beside the one write (CAN-5589). */
+const DEFAULT_READ_CONCURRENCY = 8;
+/** Reads the worker runs beside writes; every other call is a write. */
+const READ_METHODS: ReadonlySet<W5CommitLogMethod> = new Set([
+  'capture',
+  'revision',
+  'recoveryReport',
+]);
+/** Writes the worker runs with no read in flight. */
+const EXCLUSIVE_METHODS: ReadonlySet<W5CommitLogMethod> = new Set([
+  'resolveRecovery',
+  'retryRecoveryRequiredCommit',
+  'abandonRecoveryRequiredCommit',
+]);
 // A worker blocked in a native SQLite call stops only once that call returns.
 const DEFAULT_WORKER_EXIT_WAIT_MS = 2_000;
 
@@ -84,8 +98,12 @@ export interface W5CommitLogHostOptions {
   warn?: (message: string, context: Record<string, unknown>) => void;
   /** Bounds the wait for the in-flight request during shutdown. */
   shutdownTimeoutMs?: number;
-  /** Calls allowed to wait for their turn before new calls are refused. */
+  /** Writes allowed to wait for their turn before new writes are refused. */
   maxQueuedCalls?: number;
+  /** Reads allowed to wait for their turn before new reads are refused. */
+  maxQueuedReads?: number;
+  /** Reads sent to the worker at once, beside the one write. */
+  readConcurrency?: number;
   /** Bounds each wait for stopped workers to exit. */
   workerExitWaitMs?: number;
   /**
@@ -151,6 +169,14 @@ function toCallError(error: W5CommitLogWorkerError): W5CommitLogCallError {
       return new W5CommitLogHostError('malformed', error.message);
     case 'failed':
       return new W5CommitLogHostError('outcome-unknown', error.message);
+    // A read that waited out its bound for writes to settle: not sent to
+    // its work, so retryable, as a queued wait that expired (CAN-5577).
+    case 'overloaded':
+      return new W5CommitLogHostError(
+        'unavailable',
+        error.message,
+        'queued-wait',
+      );
   }
 }
 
@@ -225,8 +251,22 @@ function dataRootOption(
   return { dataRoot };
 }
 
+/**
+ * The longest a read waits in the worker for writes to settle: within the
+ * queued-read bound, and well within the request bound, so a waiting read
+ * refuses as overloaded rather than retiring the worker.
+ */
+function readWaitBound(options: W5CommitLogHostOptions): number {
+  const request = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+  const queued = options.queuedReadTimeoutMs ?? DEFAULT_QUEUED_READ_TIMEOUT_MS;
+  return Math.max(1, Math.min(queued, request / 2));
+}
+
 interface PendingCall {
   readonly request: W5CommitLogRequest;
+  readonly lane: 'read' | 'write';
+  /** Bounds the call from send to response. */
+  timer: ReturnType<typeof setTimeout> | undefined;
   readonly resolve: (result: unknown) => void;
   readonly reject: (error: W5CommitLogCallError) => void;
   /** A capture that already replaced a worker that had no capture root. */
@@ -242,7 +282,11 @@ interface WorkerSession {
   ready: boolean;
   /** Reported a capture root at startup. */
   anchored: boolean;
-  active: PendingCall | undefined;
+  /** The one write in flight. */
+  write: PendingCall | undefined;
+  /** Reads in flight beside it, by request id. */
+  readonly reads: Map<number, PendingCall>;
+  /** Bounds the worker's startup. */
   timer: ReturnType<typeof setTimeout> | undefined;
   readonly idleWaiters: Array<() => void>;
 }
@@ -250,6 +294,9 @@ interface WorkerSession {
 /**
  * Owns the lazily started worker thread that holds the W5 commit log's only
  * connection, so synchronous SQLite stays off the host's event loop (CAN-3805).
+ * Writes go to it one at a time in call order; reads go beside them, up to
+ * `readConcurrency` at once, each lane with its own queue and cap
+ * (CAN-5589). A host with request admission sends every call one at a time.
  * Nothing starts until the first call; the worker then opens the log and runs
  * launch recovery before it answers. There is no fallback to the main thread:
  * when the worker is unavailable, calls fail with a typed error, and the next
@@ -268,6 +315,8 @@ export class W5CommitLogHost implements W5CommitLogHostPort {
   ) => void;
   private readonly shutdownTimeoutMs: number;
   private readonly maxQueuedCalls: number;
+  private readonly maxQueuedReads: number;
+  private readonly readConcurrency: number;
   private readonly workerExitWaitMs: number;
   private readonly admission: (() => Promise<void>) | undefined;
   private readonly requestAdmission:
@@ -275,7 +324,8 @@ export class W5CommitLogHost implements W5CommitLogHostPort {
     | undefined;
   private checkingRequest = false;
   private readonly snapshotOnly: boolean;
-  private readonly queue: PendingCall[] = [];
+  private readonly writeQueue: PendingCall[] = [];
+  private readonly readQueue: PendingCall[] = [];
   /** Settles when a started worker exits; removed once it has. */
   private readonly runningWorkers = new Set<Promise<void>>();
   private session: WorkerSession | undefined;
@@ -293,6 +343,7 @@ export class W5CommitLogHost implements W5CommitLogHostPort {
     this.workerData = {
       dbPath: options.dbPath,
       root: options.root,
+      readWaitMs: readWaitBound(options),
       ...dataRootOption(options),
       ...(options.healCleanConflictOperations !== undefined && {
         healCleanConflictOperations: options.healCleanConflictOperations,
@@ -331,6 +382,16 @@ export class W5CommitLogHost implements W5CommitLogHostPort {
       options.maxQueuedCalls,
       DEFAULT_MAX_QUEUED_CALLS,
       'maxQueuedCalls',
+    );
+    this.maxQueuedReads = positiveOption(
+      options.maxQueuedReads,
+      this.maxQueuedCalls,
+      'maxQueuedReads',
+    );
+    this.readConcurrency = positiveOption(
+      options.readConcurrency,
+      DEFAULT_READ_CONCURRENCY,
+      'readConcurrency',
     );
     this.workerExitWaitMs = positiveOption(
       options.workerExitWaitMs,
@@ -542,7 +603,14 @@ export class W5CommitLogHost implements W5CommitLogHostPort {
     if (this.closing) {
       return Promise.reject(unavailable('The W5 commit log is shut down'));
     }
-    if (this.queue.length >= this.maxQueuedCalls) {
+    // A host that admits each request first keeps one lane, as before.
+    const lane =
+      READ_METHODS.has(method) && !this.requestAdmission ? 'read' : 'write';
+    const queue = lane === 'read' ? this.readQueue : this.writeQueue;
+    if (
+      queue.length >=
+      (lane === 'read' ? this.maxQueuedReads : this.maxQueuedCalls)
+    ) {
       return Promise.reject(
         new W5CommitLogHostError(
           'unavailable',
@@ -560,13 +628,15 @@ export class W5CommitLogHost implements W5CommitLogHostPort {
     return new Promise<unknown>((resolve, reject) => {
       const call: PendingCall = {
         request,
+        lane,
+        timer: undefined,
         resolve,
         reject,
         reanchored: false,
         queuedTimer: undefined,
         queuedDeadline: undefined,
       };
-      this.queue.push(call);
+      queue.push(call);
       this.armQueuedRead(call);
       this.pump();
     });
@@ -576,12 +646,7 @@ export class W5CommitLogHost implements W5CommitLogHostPort {
     const method = call.request.method;
     // Only these reads have an admission/queue deadline. Durable writes keep
     // their existing wait policy until sent or refused by the host lifecycle.
-    if (
-      method !== 'capture' &&
-      method !== 'revision' &&
-      method !== 'recoveryReport'
-    )
-      return;
+    if (!READ_METHODS.has(method)) return;
     call.queuedDeadline = performance.now() + this.queuedReadTimeoutMs;
     call.queuedTimer = setTimeout(
       (): void => this.expireQueuedRead(call),
@@ -591,9 +656,10 @@ export class W5CommitLogHost implements W5CommitLogHostPort {
   }
 
   private expireQueuedRead(call: PendingCall): void {
-    const index = this.queue.indexOf(call);
+    const queue = call.lane === 'read' ? this.readQueue : this.writeQueue;
+    const index = queue.indexOf(call);
     if (index === -1) return;
-    this.queue.splice(index, 1);
+    queue.splice(index, 1);
     this.clearQueuedTimer(call);
     call.reject(
       new W5CommitLogHostError(
@@ -609,11 +675,15 @@ export class W5CommitLogHost implements W5CommitLogHostPort {
     call.queuedTimer = undefined;
   }
 
+  private get queuedCalls(): number {
+    return this.writeQueue.length + this.readQueue.length;
+  }
+
   private async stop(): Promise<void> {
     this.rejectQueued(unavailable('The W5 commit log is shutting down'));
     const session = this.session;
     if (session) {
-      if (session.active) {
+      if (!isIdle(session)) {
         await waitAtMost(this.whenIdle(session), this.shutdownTimeoutMs);
       }
       this.fail(
@@ -625,34 +695,78 @@ export class W5CommitLogHost implements W5CommitLogHostPort {
   }
 
   private pump(): void {
-    if (this.checkingRequest) return;
-    while (!this.closing && this.queue.length > 0) {
-      const session = this.session;
-      if (!session) {
-        if (!this.launching) void this.launch();
-        return;
-      }
-      if (!session.ready || session.active) return;
-      const next = this.queue[0];
+    if (this.checkingRequest || this.closing || this.queuedCalls === 0) return;
+    const session = this.session;
+    if (!session) {
+      if (!this.launching) void this.launch();
+      return;
+    }
+    if (!session.ready) return;
+    this.pumpWrites(session);
+    if (this.session === session && !this.checkingRequest)
+      this.pumpReads(session);
+  }
+
+  private pumpWrites(session: WorkerSession): void {
+    while (!this.closing && this.session === session && !session.write) {
+      const next = this.writeQueue[0];
+      if (!next) return;
       // Worker I/O can run after a deadline but before its timer callback.
       if (
-        next?.queuedDeadline !== undefined &&
+        next.queuedDeadline !== undefined &&
         performance.now() >= next.queuedDeadline
       ) {
         this.expireQueuedRead(next);
         continue;
       }
-      if (next && this.needsAnchor(session, next)) {
+      // Manual recovery runs with no read in flight.
+      if (EXCLUSIVE_METHODS.has(next.request.method) && session.reads.size > 0)
+        return;
+      if (this.needsAnchor(session, next)) {
+        if (!isIdle(session)) return;
         next.reanchored = true;
         this.replaceIdle(session);
-        continue;
+        this.pump();
+        return;
       }
-      if (next && this.requestAdmission) {
+      if (this.requestAdmission) {
         void this.admitRequest(session, next, this.requestAdmission);
         return;
       }
-      const call = this.queue.shift();
-      if (!call || this.send(session, call)) return;
+      this.writeQueue.shift();
+      this.send(session, next);
+    }
+  }
+
+  private pumpReads(session: WorkerSession): void {
+    // Reads wait while manual recovery waits for, or runs with, none in flight.
+    const exclusive = (call: PendingCall | undefined): boolean =>
+      call !== undefined && EXCLUSIVE_METHODS.has(call.request.method);
+    while (
+      !this.closing &&
+      this.session === session &&
+      session.reads.size < this.readConcurrency &&
+      !exclusive(session.write) &&
+      !exclusive(this.writeQueue[0])
+    ) {
+      const next = this.readQueue[0];
+      if (!next) return;
+      if (
+        next.queuedDeadline !== undefined &&
+        performance.now() >= next.queuedDeadline
+      ) {
+        this.expireQueuedRead(next);
+        continue;
+      }
+      if (this.needsAnchor(session, next)) {
+        if (!isIdle(session)) return;
+        next.reanchored = true;
+        this.replaceIdle(session);
+        this.pump();
+        return;
+      }
+      this.readQueue.shift();
+      this.send(session, next);
     }
   }
 
@@ -665,7 +779,11 @@ export class W5CommitLogHost implements W5CommitLogHostPort {
     try {
       const admitted = await isAdmitted(() => admission(call.request));
       // Shutdown, failure or a queued deadline may retire this call while checking.
-      if (this.closing || this.session !== session || this.queue[0] !== call)
+      if (
+        this.closing ||
+        this.session !== session ||
+        this.writeQueue[0] !== call
+      )
         return;
       if (
         call.queuedDeadline !== undefined &&
@@ -674,7 +792,7 @@ export class W5CommitLogHost implements W5CommitLogHostPort {
         this.expireQueuedRead(call);
         return;
       }
-      this.queue.shift();
+      this.writeQueue.shift();
       if (admitted) this.send(session, call);
       else {
         this.clearQueuedTimer(call);
@@ -722,7 +840,7 @@ export class W5CommitLogHost implements W5CommitLogHostPort {
     } finally {
       this.launching = false;
     }
-    if (this.closing || this.session || this.queue.length === 0) return;
+    if (this.closing || this.session || this.queuedCalls === 0) return;
     if (!admitted) {
       this.rejectQueued(
         unavailable('The W5 commit log is not admitted in this process'),
@@ -765,7 +883,8 @@ export class W5CommitLogHost implements W5CommitLogHostPort {
       number: this.started,
       ready: false,
       anchored: false,
-      active: undefined,
+      write: undefined,
+      reads: new Map(),
       timer: undefined,
       idleWaiters: [],
     };
@@ -794,34 +913,44 @@ export class W5CommitLogHost implements W5CommitLogHostPort {
       this.fail(session, outcomeUnknown('The W5 commit log stopped'));
       for (const listener of this.exitListeners) listener();
     });
-    this.arm(session, this.startupTimeoutMs, 'The W5 commit log did not start');
+    this.arm(session, undefined);
   }
 
-  private send(session: WorkerSession, call: PendingCall): boolean {
+  private send(session: WorkerSession, call: PendingCall): void {
     this.clearQueuedTimer(call);
-    session.active = call;
-    this.arm(
-      session,
-      this.requestTimeoutMs,
-      'The W5 commit log did not answer',
-    );
+    if (call.lane === 'read') session.reads.set(call.request.id, call);
+    else session.write = call;
+    this.arm(session, call);
     try {
       session.worker.postMessage(call.request);
-      return true;
     } catch {
       // A request that cannot be cloned never reaches the worker, so it
       // changed nothing and the worker stays usable for the calls behind it.
-      this.clearTimer(session);
-      session.active = undefined;
+      this.settle(session, call);
       call.reject(
         new W5CommitLogHostError(
           'malformed',
           'The W5 commit log request could not be sent',
         ),
       );
-      this.notifyIdle(session);
-      return false;
+      if (isIdle(session)) this.notifyIdle(session);
     }
+  }
+
+  /** Takes a sent call off the session and stops its timer. */
+  private settle(session: WorkerSession, call: PendingCall): void {
+    if (call.timer) clearTimeout(call.timer);
+    call.timer = undefined;
+    if (session.write === call) session.write = undefined;
+    session.reads.delete(call.request.id);
+  }
+
+  private inFlight(
+    session: WorkerSession,
+    id: number,
+  ): PendingCall | undefined {
+    if (session.write?.request.id === id) return session.write;
+    return session.reads.get(id);
   }
 
   private receive(session: WorkerSession, message: unknown): void {
@@ -830,12 +959,10 @@ export class W5CommitLogHost implements W5CommitLogHostPort {
       this.receiveStartup(session, message);
       return;
     }
-    const call = session.active;
-    if (
-      !call ||
-      !isW5CommitLogResponse(message) ||
-      message.id !== call.request.id
-    ) {
+    const call = isW5CommitLogResponse(message)
+      ? this.inFlight(session, message.id)
+      : undefined;
+    if (!call || !isW5CommitLogResponse(message)) {
       this.fail(
         session,
         outcomeUnknown('The W5 commit log sent an unexpected message'),
@@ -848,14 +975,13 @@ export class W5CommitLogHost implements W5CommitLogHostPort {
       this.fail(session, toCallError(message.error));
       return;
     }
-    session.active = undefined;
-    this.clearTimer(session);
+    this.settle(session, call);
     if (message.ok) {
       call.resolve(message.result);
     } else {
       call.reject(toCallError(message.error));
     }
-    this.notifyIdle(session);
+    if (isIdle(session)) this.notifyIdle(session);
     this.pump();
   }
 
@@ -893,8 +1019,9 @@ export class W5CommitLogHost implements W5CommitLogHostPort {
   }
 
   /**
-   * Retires the session: rejects its in-flight call with `sentError` and every
-   * waiting call with `queuedError` (by default `unavailable`, since they were
+   * Retires the session: rejects its in-flight write with `sentError`, and
+   * its in-flight reads and every waiting call with `queuedError` (by
+   * default `unavailable`: a read changes nothing, and a waiting call was
    * never sent), then terminates the worker, which releases the log's lock.
    * Events from a retired worker are ignored.
    */
@@ -906,50 +1033,59 @@ export class W5CommitLogHost implements W5CommitLogHostPort {
     if (this.session !== session) return;
     this.session = undefined;
     this.clearTimer(session);
-    const active = session.active;
-    session.active = undefined;
-    active?.reject(sentError);
+    const write = session.write;
+    const reads = [...session.reads.values()];
+    if (write) this.settle(session, write);
+    for (const read of reads) this.settle(session, read);
+    write?.reject(sentError);
+    for (const read of reads) read.reject(queuedError);
     this.rejectQueued(queuedError);
     this.notifyIdle(session);
     void session.worker.terminate().catch((): undefined => undefined);
   }
 
-  private arm(
-    session: WorkerSession,
-    timeoutMs: number,
-    message: string,
-  ): void {
-    this.clearTimer(session);
+  /**
+   * Bounds one sent call, or with none the worker's startup; past it the
+   * worker is retired.
+   */
+  private arm(session: WorkerSession, call: PendingCall | undefined): void {
     const startedAt = performance.now();
-    session.timer = setTimeout((): void => {
-      if (this.session !== session) return;
-      const method = session.active?.request.method;
-      if (method === undefined) {
-        this.fail(session, outcomeUnknown(message));
-        return;
-      }
-      const context = {
-        method,
-        elapsedMs: Math.round(performance.now() - startedAt),
-        queueDepth: this.queue.length,
-        workerNumber: session.number,
-      };
-      try {
-        this.warn('W5 commit log request timed out', context);
-      } catch {
-        // A logging failure must not prevent timeout settlement or retirement.
-      }
-      this.fail(
-        session,
-        outcomeUnknown(
-          `${message}: ${method}, elapsed ${context.elapsedMs} ms, queue depth ${context.queueDepth}, worker ${context.workerNumber}`,
-        ),
-        unavailable(
-          `The W5 commit log worker timed out running ${method}; this call was not sent`,
-        ),
-      );
-    }, timeoutMs);
-    session.timer.unref();
+    // The call's bound, or with none the worker's startup bound.
+    const slot: { timer: ReturnType<typeof setTimeout> | undefined } =
+      call ?? session;
+    slot.timer = setTimeout(
+      (): void => {
+        if (this.session !== session) return;
+        if (call === undefined) {
+          this.fail(session, outcomeUnknown('The W5 commit log did not start'));
+          return;
+        }
+        if (this.inFlight(session, call.request.id) !== call) return;
+        const method = call.request.method;
+        const context = {
+          method,
+          elapsedMs: Math.round(performance.now() - startedAt),
+          queueDepth: this.queuedCalls,
+          workerNumber: session.number,
+        };
+        try {
+          this.warn('W5 commit log request timed out', context);
+        } catch {
+          // A logging failure must not prevent timeout settlement or retirement.
+        }
+        this.fail(
+          session,
+          outcomeUnknown(
+            `The W5 commit log did not answer: ${method}, elapsed ${context.elapsedMs} ms, queue depth ${context.queueDepth}, worker ${context.workerNumber}`,
+          ),
+          unavailable(
+            `The W5 commit log worker timed out running ${method}; this call was not sent`,
+          ),
+        );
+      },
+      call === undefined ? this.startupTimeoutMs : this.requestTimeoutMs,
+    );
+    slot.timer.unref();
   }
 
   private clearTimer(session: WorkerSession): void {
@@ -958,14 +1094,17 @@ export class W5CommitLogHost implements W5CommitLogHostPort {
   }
 
   private rejectQueued(error: W5CommitLogCallError): void {
-    for (const call of this.queue.splice(0)) {
+    for (const call of [
+      ...this.writeQueue.splice(0),
+      ...this.readQueue.splice(0),
+    ]) {
       this.clearQueuedTimer(call);
       call.reject(error);
     }
   }
 
   private whenIdle(session: WorkerSession): Promise<void> {
-    if (!session.active) return Promise.resolve();
+    if (isIdle(session)) return Promise.resolve();
     return new Promise<void>((resolve) => {
       session.idleWaiters.push(resolve);
     });
@@ -978,4 +1117,8 @@ export class W5CommitLogHost implements W5CommitLogHostPort {
   private waitForWorkerExits(): Promise<void> {
     return waitAtMost(Promise.all(this.runningWorkers), this.workerExitWaitMs);
   }
+}
+
+function isIdle(session: WorkerSession): boolean {
+  return session.write === undefined && session.reads.size === 0;
 }

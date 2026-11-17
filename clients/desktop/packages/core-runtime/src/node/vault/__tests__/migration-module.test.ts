@@ -1416,3 +1416,17 @@ describe('P2 resumable protocol over P1 durable storage (inert)', () => {
     ).toContain("'copilot-account'");
   });
 });
+
+it('P7 preflight shares presentation/expiry/reentrancy admission without consuming release', () => {
+  const f = registryFixture();
+  const p = presentation(f.offer, f.channel);
+  expect(f.registry.preflight(f.offer.sessionId, p).accepted).toBe(true);
+  expect(f.registry.preflight(f.offer.sessionId, p).accepted).toBe(true);
+  expect(f.registry.get(f.offer.sessionId)).toMatchObject({
+    state: 'issued',
+    released: false,
+  });
+  f.reenter(() => f.registry.reportAmbiguity('preflight-reentrancy'));
+  expect(f.registry.preflight(f.offer.sessionId, p).accepted).toBe(false);
+  expect(f.registry.get(f.offer.sessionId)?.released).toBe(false);
+});

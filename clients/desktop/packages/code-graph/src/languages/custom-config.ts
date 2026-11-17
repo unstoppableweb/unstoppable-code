@@ -109,6 +109,7 @@ export type CodeGraphCustomLanguageFileRead =
 
 interface CodeGraphCustomLanguageInputCapture {
   fingerprint: CodeGraphCustomLanguageFingerprint;
+  canonicalConfigPath: string;
   configRead: CodeGraphCustomLanguageFileRead;
   fileReads: ReadonlyMap<string, CodeGraphCustomLanguageFileRead>;
 }
@@ -204,12 +205,10 @@ async function captureCustomLanguageInputs(
   const realWorktreeRoot = await fs
     .realpath(worktreeRootPath)
     .catch(() => path.resolve(worktreeRootPath));
+  const canonicalConfigPath = customLanguagesConfigPath(realWorktreeRoot);
   const configRead = await readBoundedCodeGraphCustomLanguageFile(
     configPath,
-    path.join(
-      realWorktreeRoot,
-      ...CODE_GRAPH_CUSTOM_LANGUAGES_CONFIG_RELATIVE_PATH.split('/'),
-    ),
+    canonicalConfigPath,
     CODE_GRAPH_CUSTOM_LANGUAGES_CONFIG_MAX_BYTES,
   );
   if (configRead.kind === 'absent') {
@@ -218,6 +217,7 @@ async function captureCustomLanguageInputs(
         value: CODE_GRAPH_NO_CUSTOM_LANGUAGES_FINGERPRINT,
         configPresent: false,
       },
+      canonicalConfigPath,
       configRead,
       fileReads: new Map(),
     };
@@ -228,6 +228,7 @@ async function captureCustomLanguageInputs(
     hash.update(configRead.marker);
     return {
       fingerprint: { value: hash.digest('hex'), configPresent: true },
+      canonicalConfigPath,
       configRead,
       fileReads: new Map(),
     };
@@ -241,6 +242,7 @@ async function captureCustomLanguageInputs(
     hash.update('\0config:statically-invalid');
     return {
       fingerprint: { value: hash.digest('hex'), configPresent: true },
+      canonicalConfigPath,
       configRead,
       fileReads: new Map(),
     };
@@ -302,6 +304,7 @@ async function captureCustomLanguageInputs(
   }
   return {
     fingerprint: { value: hash.digest('hex'), configPresent: true },
+    canonicalConfigPath,
     configRead,
     fileReads: capturedReads,
   };
@@ -655,7 +658,9 @@ export async function resolveCustomLanguages(input: {
     };
   }
 
-  const configDir = path.dirname(input.configPath);
+  // Reuse the path checked during capture so aliases produce identical grammar
+  // metadata and diagnostics without another filesystem read.
+  const configDir = path.dirname(capture.canonicalConfigPath);
   const { entries, diagnostics } = validateCustomLanguageEntries(
     parsed.rawEntries,
   );

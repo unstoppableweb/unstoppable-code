@@ -86,9 +86,9 @@ import {
   useArchivedContainersStore,
 } from './archivedContainersStore';
 import {
-  requestLoadedChangedFilesRefresh,
   requestChangedFilesRefresh,
   clearWorktreeActivity,
+  reconcileChangedFilesAfterStats,
 } from './changedFilesRefreshRuntime';
 import { useFileListStore } from './fileListStore';
 import { shareUnchangedProjects } from './projects-structural-sharing';
@@ -141,6 +141,7 @@ import {
 } from '@/lib/scriptDescriptors';
 import { getWorkspaceDisplayName } from '@/lib/workspaceDisplayName';
 import { registerCoworkWorkspaceIds } from '@/lib/cowork-registry';
+import { isWebCoreScope } from '@/lib/chat-authority';
 import { resolveSidebarSortMode } from '@/lib/sidebar-ordering';
 import {
   assertWorktreeRemovalAdmitted,
@@ -435,6 +436,8 @@ interface WorktreeFailure extends InlineFailure {
 
 export interface ProjectsState {
   projects: SidebarItem[];
+  /** Counts successful project loads, so on-demand reads can follow them. */
+  projectsLoadCount: number;
   isLoading: boolean;
   hasHydratedProjects: boolean;
   /** Whether the latest inventory read succeeded; includes silent refreshes. */
@@ -596,6 +599,11 @@ export interface ProjectsState {
   requestBranchRename: (projectId: string, worktreeId: string) => void;
   clearBranchRenameRequest: () => void;
   /** Required refreshes reject on failure; ordinary hydration preserves its retry behavior. */
+  /** CAN-6933: reads these worktrees' own scripts and hooks into the store. */
+  ensureWorktreeEffective: (
+    projectId: string,
+    worktreeIds: readonly string[],
+  ) => Promise<boolean>;
   loadProjects: (options?: {
     silent?: boolean;
     requireSuccess?: boolean;
@@ -1510,6 +1518,123 @@ function createProjectLoadWarningKey(warning: SidebarItemsLoadWarning): string {
   ]);
 }
 
+const worktreeEffectiveReads = new Map<
+  string,
+  Promise<Record<string, WorktreeEffectiveOverrides>>
+>();
+
+/**
+ * CAN-6933: each worktree's own scripts and hooks, read on demand. Concurrent
+ * reads for the same worktrees share one request.
+ */
+function readWorktreeEffective(
+  projectId: string,
+  worktreeIds: readonly string[],
+): Promise<Record<string, WorktreeEffectiveOverrides>> {
+  // A cloud task's checkout lives in its sandbox; main has none to read, and
+  // a cloud id must never reach it.
+  const local = worktreeIds.filter((id) => !isWebCoreScope(id));
+  if (isWebCoreScope(projectId) || local.length === 0)
+    return Promise.resolve({});
+  if (window.api.remoteControl?.getContext().mode === 'remote')
+    return tunneledWorktreeEffective(projectId, local);
+  const key = `${projectId}\0${[...local].sort().join('\0')}`;
+  const pending = worktreeEffectiveReads.get(key);
+  if (pending) return pending;
+  const read = window.api
+    .getWorktreeEffective({ projectId, worktreeIds: local })
+    .finally(() => worktreeEffectiveReads.delete(key));
+  worktreeEffectiveReads.set(key, read);
+  return read;
+}
+
+/**
+ * A window showing another computer can't use the local read: that computer
+ * resolves each worktree's own scripts into the tunneled projects:load it
+ * answered last, and resolves the command again when the script runs. A
+ * worktree without an entry there gets none, so Launch refuses it rather
+ * than using the project's.
+ */
+function tunneledWorktreeEffective(
+  projectId: string,
+  worktreeIds: readonly string[],
+): Promise<Record<string, WorktreeEffectiveOverrides>> {
+  const project = useProjectsStore
+    .getState()
+    .projects.find((candidate) => candidate.id === projectId);
+  const loaded =
+    project && project.type !== 'cowork'
+      ? project.worktreeEffective
+      : undefined;
+  const entries = worktreeIds.flatMap((id) => {
+    const entry = loaded?.[id];
+    return entry ? [[id, entry] as const] : [];
+  });
+  return Promise.resolve(Object.fromEntries(entries));
+}
+
+/** A failed read is recorded; callers treat it as unread, never as empty. */
+function recordWorktreeEffectiveFailure(error: unknown): null {
+  reportClientAppError(error);
+  return null;
+}
+
+export const WORKTREE_SCRIPTS_UNREADABLE =
+  "Couldn't read this worktree's scripts. Try again.";
+
+/**
+ * `item` with `worktreeId`'s entry read now, for running its scripts. A
+ * worktree with no entry of its own uses the project's scripts, as before.
+ * A failed read throws instead: running the project's scripts, or none, in
+ * place of the worktree's own would run the wrong teardown or skip it.
+ */
+async function withFreshWorktreeEffective<T extends SidebarItem>(
+  item: T,
+  worktreeId: string,
+): Promise<T> {
+  if (item.type === 'cowork') return item;
+  let read: Record<string, WorktreeEffectiveOverrides>;
+  try {
+    read = await readWorktreeEffective(item.id, [worktreeId]);
+  } catch (error) {
+    recordWorktreeEffectiveFailure(error);
+    throw new Error(WORKTREE_SCRIPTS_UNREADABLE);
+  }
+  const entry = read[worktreeId];
+  if (!entry) return item;
+  return {
+    ...item,
+    worktreeEffective: {
+      ...(item.worktreeEffective ?? {}),
+      [worktreeId]: entry,
+    },
+  };
+}
+
+/**
+ * A local load carries no per-worktree entries; keep the ones already read
+ * for worktrees that are still listed.
+ */
+function carryWorktreeEffective(
+  loaded: SidebarItem[],
+  previous: SidebarItem[],
+): SidebarItem[] {
+  const previousById = new Map(previous.map((item) => [item.id, item]));
+  return loaded.map((item) => {
+    if (item.type === 'cowork' || item.worktreeEffective) return item;
+    const before = previousById.get(item.id);
+    if (!before || before.type === 'cowork' || !before.worktreeEffective)
+      return item;
+    const listed = new Set(item.worktrees.map((worktree) => worktree.id));
+    const kept = Object.fromEntries(
+      Object.entries(before.worktreeEffective).filter(([id]) => listed.has(id)),
+    );
+    return Object.keys(kept).length > 0
+      ? { ...item, worktreeEffective: kept }
+      : item;
+  });
+}
+
 function mergeLoadedProjectsWithLastGoodState(
   loadedProjects: SidebarItem[],
   previousProjects: SidebarItem[],
@@ -2025,6 +2150,12 @@ type CreatedWorktreeRegistration = {
 
 export interface CreateWorktreeOptions {
   sidebarItemGroupId?: string;
+  /**
+   * A client-claimed worktree id. Main honors it when free and generator-shaped
+   * for its mode, and otherwise names the worktree; the created id is
+   * authoritative.
+   */
+  worktreeId?: string;
   baseWorktreeId?: string;
   baseBranch?: string;
   select?: boolean;
@@ -2419,7 +2550,6 @@ function applyWorktreeBranchChangedEvent(
     event.projectId,
     event.worktreeId,
   );
-  void requestLoadedChangedFilesRefresh(event.projectId, event.worktreeId);
   void useGitHubStore
     .getState()
     .requestFastRefresh(event.projectId, event.worktreeId);
@@ -2875,7 +3005,28 @@ function getSettledWorkspaceLifecycleFailure(
   return null;
 }
 
-async function runWorkspaceLifecycle(options: {
+const pendingWorkspaceLifecycles = new Set<string>();
+
+/**
+ * One lifecycle run at a time per worktree: the worktree's scripts are read
+ * before any script records its run, so a second Run in that window is
+ * refused as already running.
+ */
+async function runWorkspaceLifecycle(
+  options: Parameters<typeof runWorkspaceLifecycleScripts>[0],
+): Promise<void> {
+  const key = `${options.workspaceId}/${options.worktreeId}/${options.lifecycle}`;
+  if (pendingWorkspaceLifecycles.has(key))
+    throw new Error(options.alreadyRunningMessage);
+  pendingWorkspaceLifecycles.add(key);
+  try {
+    await runWorkspaceLifecycleScripts(options);
+  } finally {
+    pendingWorkspaceLifecycles.delete(key);
+  }
+}
+
+async function runWorkspaceLifecycleScripts(options: {
   item: MultiRepoSidebarItem;
   workspaceId: string;
   worktreeId: string;
@@ -2895,10 +3046,13 @@ async function runWorkspaceLifecycle(options: {
     throw new Error(options.alreadyRunningMessage);
   }
 
-  const worktreeEffective =
-    options.item.worktreeEffective?.[options.worktreeId];
+  const item = await withFreshWorktreeEffective(
+    options.item,
+    options.worktreeId,
+  );
+  const worktreeEffective = item.worktreeEffective?.[options.worktreeId];
   const rootScripts = getDisplayScripts(
-    options.item.effectiveScripts,
+    item.effectiveScripts,
     worktreeEffective?.effectiveScripts,
   );
 
@@ -2930,7 +3084,7 @@ async function runWorkspaceLifecycle(options: {
   const childRuns: Array<
     Promise<{ repo: WorkspaceRepoData; response: ScriptRunResponse }>
   > = [];
-  for (const repo of options.item.repos) {
+  for (const repo of item.repos) {
     const repoScripts = getDisplayScripts(
       repo.effectiveScripts,
       worktreeEffective?.repos?.[repo.id]?.effectiveScripts,
@@ -3089,11 +3243,11 @@ function refreshRestoredWorktreeActivity(
   projectId: string,
   worktreeId: string,
 ): void {
-  void requestChangedFilesRefresh(projectId, worktreeId).catch(
-    (error: unknown) => {
-      reportClientAppError(error);
-    },
-  );
+  void requestChangedFilesRefresh(projectId, worktreeId, {
+    kind: 'mutation',
+  }).catch((error: unknown) => {
+    reportClientAppError(error);
+  });
 }
 
 /**
@@ -4409,14 +4563,6 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
           pendingWorktreeKeys: new Set(),
           mergeKeys,
         });
-        await Promise.all(
-          refreshableWorktrees.map((worktree) =>
-            requestLoadedChangedFilesRefresh(
-              worktree.projectId,
-              worktree.worktreeId,
-            ),
-          ),
-        );
         return hasFreshStatusForEveryWorktree;
       } catch (error) {
         // eslint-disable-next-line no-console
@@ -4431,8 +4577,10 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
     worktrees: RefreshableWorktreeRef[],
     options?: { skipFetch?: boolean },
   ): Promise<boolean> => {
-    const refresh = targetedDiffStatsRefreshTail.then(() =>
-      runTargetedDiffStatsRefresh(worktrees, options),
+    const refresh = reconcileChangedFilesAfterStats(worktrees, () =>
+      targetedDiffStatsRefreshTail.then(() =>
+        runTargetedDiffStatsRefresh(worktrees, options),
+      ),
     );
     targetedDiffStatsRefreshTail = refresh.then(
       () => undefined,
@@ -4443,6 +4591,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
 
   return {
     projects: [],
+    projectsLoadCount: 0,
     isLoading: false,
     hasHydratedProjects: false,
     projectInventoryStatus: 'unhydrated',
@@ -4908,6 +5057,28 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
       set({ branchInfoRequest: null });
     },
 
+    ensureWorktreeEffective: async (projectId, worktreeIds) => {
+      if (worktreeIds.length === 0) return true;
+      const read = await readWorktreeEffective(projectId, worktreeIds).catch(
+        recordWorktreeEffectiveFailure,
+      );
+      if (!read) return false;
+      if (Object.keys(read).length === 0) return true;
+      set({
+        projects: get().projects.map((project) =>
+          project.id !== projectId || project.type === 'cowork'
+            ? project
+            : {
+                ...project,
+                worktreeEffective: {
+                  ...(project.worktreeEffective ?? {}),
+                  ...read,
+                },
+              },
+        ),
+      });
+      return true;
+    },
     loadProjects: (options) => {
       const generation = ++projectsLoadGeneration;
       const inventoryStartedAt = Date.now();
@@ -4986,10 +5157,13 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
             return;
           }
           const loadWarnings = file.warnings ?? [];
-          const loadedProjects = mergeLoadedProjectsWithLastGoodState(
-            file.items,
+          const loadedProjects = carryWorktreeEffective(
+            mergeLoadedProjectsWithLastGoodState(
+              file.items,
+              get().projects,
+              loadWarnings,
+            ),
             get().projects,
-            loadWarnings,
           );
           const visibleItems = filterVisibleWorkspaceItems(
             filterArchiveSuppressedWorktrees(
@@ -5022,6 +5196,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
 
           set({
             projects: shareUnchangedProjects(get().projects, normalized),
+            projectsLoadCount: get().projectsLoadCount + 1,
             isLoading: false,
             hasHydratedProjects: true,
             projectInventoryStatus: 'ready',
@@ -5522,19 +5697,27 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
               options,
             );
           } else {
+            const teardownItem = await withFreshWorktreeEffective(
+              item,
+              worktreeId,
+            );
             const hasTeardown =
-              item.type === 'single-repo'
+              teardownItem.type === 'single-repo'
                 ? Boolean(
                     getScriptCommand(
                       getSingleRepoDisplayScripts(
-                        item,
+                        teardownItem,
                         worktreeId,
                         get().appliedProjectWorktreeScripts,
                       ),
                       'teardown',
                     ),
                   )
-                : hasWorkspaceLifecycleScripts(item, worktreeId, 'teardown');
+                : hasWorkspaceLifecycleScripts(
+                    teardownItem,
+                    worktreeId,
+                    'teardown',
+                  );
 
             await stopRunningScripts(projectId, worktreeId);
             await stopRunningHooks(projectId, worktreeId);
@@ -5545,7 +5728,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
               set({ tearingDownWorktrees: next });
               try {
                 await runTeardown(
-                  item,
+                  teardownItem,
                   projectId,
                   worktreeId,
                   get().appliedProjectWorktreeScripts,
@@ -6076,11 +6259,8 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
       // funnel the main-process retargeter uses.
       // Reconcile the changed worktree immediately. Both stats and a visible
       // changed-files list depend on the persisted base branch, so start their
-      // targeted reads together once the save has made that base authoritative.
-      await Promise.all([
-        get().refreshWorktreeDiffStatsFromRemote(projectId, worktreeId),
-        requestLoadedChangedFilesRefresh(projectId, worktreeId),
-      ]);
+      // reconciliation once the save has made that base authoritative.
+      await get().refreshWorktreeDiffStatsFromRemote(projectId, worktreeId);
     },
 
     setWorktreeLastKnownPrStatus: (projectId, worktreeId, status): void => {

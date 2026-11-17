@@ -1,4 +1,13 @@
 import { readFile } from 'node:fs/promises';
+import {
+  buildCondenserModelRequest,
+  clipCondenserText,
+  DEFAULT_CONDENSER_SCHEMA_TEXT,
+  HOST_HELPER_MODEL_RESULT_ENV,
+  parseCondenseMaxChars,
+  parseCondenseStrategy,
+  parseHostHelperModelResult,
+} from '@canopy/execution-engine/builtin-actions/_lib/host-helper-model';
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { query as claudeQuery } from '@anthropic-ai/claude-agent-sdk';
 import { withClaudeSessionStartupTimeout } from '../_lib/agent-session-startup';
@@ -21,12 +30,6 @@ import {
   redactNormalizedText,
 } from '@canopy/execution-engine/builtin-actions/agent-prompt/logic';
 
-type CondenseStrategy =
-  | 'key-outputs'
-  | 'recent-events'
-  | 'llm-summary'
-  | 'structured-summary';
-
 async function resolveText(
   text: string | undefined,
   textFile: string | undefined,
@@ -40,36 +43,6 @@ async function resolveText(
     throw new Error('condenser requires a non-empty text or text_file');
   }
   return resolved;
-}
-
-function parseStrategy(raw: string | undefined): CondenseStrategy {
-  const trimmed = raw?.trim() ?? '';
-  switch (trimmed || 'key-outputs') {
-    case 'key-outputs':
-    case 'recent-events':
-    case 'llm-summary':
-    case 'structured-summary':
-      return (trimmed || 'key-outputs') as CondenseStrategy;
-    default:
-      throw new Error(
-        'strategy must be one of: key-outputs, recent-events, llm-summary, structured-summary',
-      );
-  }
-}
-
-function parseMaxChars(raw: string | undefined): number {
-  if (!raw || raw.trim().length === 0) {
-    return 4000;
-  }
-  const parsed = Number(raw);
-  if (!Number.isInteger(parsed) || parsed <= 0) {
-    throw new Error('max_chars must be a positive integer');
-  }
-  return parsed;
-}
-
-function clip(text: string, maxChars: number): string {
-  return text.length <= maxChars ? text : `${text.slice(0, maxChars)}\n...`;
 }
 
 // Deliberately does NOT clip here — the caller must redact the FULL
@@ -96,6 +69,7 @@ function filterRecentEventLines(text: string): string {
 
 async function summarizeWithClaude(
   text: string,
+  maxChars: number,
   env: NodeJS.ProcessEnv,
   structured: boolean,
   secretValues: readonly string[],
@@ -106,8 +80,7 @@ async function summarizeWithClaude(
 }> {
   const schema = structured
     ? parseStructuredSchema(
-        env.INPUT_STRUCTURED_OUTPUT_SCHEMA ??
-          '{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"]}',
+        env.INPUT_STRUCTURED_OUTPUT_SCHEMA ?? DEFAULT_CONDENSER_SCHEMA_TEXT,
       )
     : undefined;
   const requestedMaxTurns = parseMaxTurns(env.INPUT_MAX_TURNS);
@@ -116,49 +89,64 @@ async function summarizeWithClaude(
     ? Math.max(requestedMaxTurns, 2)
     : requestedMaxTurns;
 
-  const prompt = structured
-    ? [
-        'Summarize the following context into a structured compact form.',
-        '',
-        text,
-      ].join('\n')
-    : [
-        'Summarize the following context into a concise compact summary.',
-        '',
-        text,
-      ].join('\n');
-
-  const queryResult = claudeQuery({
-    prompt,
-    options: buildQueryOptions({
-      cwd: process.cwd(),
-      maxTurns: effectiveMaxTurns,
-      model: env.INPUT_MODEL,
-      permissionPreset,
-      systemPrompt: env.INPUT_SYSTEM_PROMPT,
-      schema,
-    }),
-  });
-
   const events: SDKMessage[] = [];
-  for await (const event of withClaudeSessionStartupTimeout(
-    queryResult,
-    env,
-    'condenser',
-  )) {
-    // Redacted BEFORE `JSON.stringify`, not after — see
-    // `createTranscriptCapture`'s doc comment (`_lib/agent-transcript.ts`)
-    // for why a multi-line secret echoed verbatim needs this instead of a
-    // string-based redaction pass over the already-serialized text.
-    const redactedEvent =
-      secretValues.length === 0
-        ? event
-        : redactStructuredValue(event, secretValues);
-    process.stdout.write(`${JSON.stringify(redactedEvent)}\n`);
-    events.push(event);
-  }
+  let result: { rawText: string; structured?: unknown };
+  const hostResultFile = getBrandEnv(env, HOST_HELPER_MODEL_RESULT_ENV);
+  if (hostResultFile) {
+    // The host already ran this step's model turn on its own harness and
+    // wrote the redacted transcript to the step log (CAN-6702).
+    const hostResult = parseHostHelperModelResult(
+      await readFile(hostResultFile, 'utf8'),
+    );
+    // As on the Claude path, a structured summary needs structured output.
+    const hostStructured = hostResult.structured;
+    if (
+      schema !== undefined &&
+      (typeof hostStructured !== 'object' ||
+        hostStructured === null ||
+        Array.isArray(hostStructured))
+    )
+      throw new Error('condenser did not receive structured output.');
+    result = {
+      rawText: hostResult.rawText,
+      ...(schema !== undefined ? { structured: hostStructured } : {}),
+    };
+  } else {
+    const { prompt } = buildCondenserModelRequest({
+      text,
+      maxChars,
+      structured,
+    });
+    const queryResult = claudeQuery({
+      prompt,
+      options: buildQueryOptions({
+        cwd: process.cwd(),
+        maxTurns: effectiveMaxTurns,
+        model: env.INPUT_MODEL,
+        permissionPreset,
+        systemPrompt: env.INPUT_SYSTEM_PROMPT,
+        schema,
+      }),
+    });
 
-  const result = extractFinalResult(events, schema !== undefined);
+    for await (const event of withClaudeSessionStartupTimeout(
+      queryResult,
+      env,
+      'condenser',
+    )) {
+      // Redacted BEFORE `JSON.stringify`, not after — see
+      // `createTranscriptCapture`'s doc comment (`_lib/agent-transcript.ts`)
+      // for why a multi-line secret echoed verbatim needs this instead of a
+      // string-based redaction pass over the already-serialized text.
+      const redactedEvent =
+        secretValues.length === 0
+          ? event
+          : redactStructuredValue(event, secretValues);
+      process.stdout.write(`${JSON.stringify(redactedEvent)}\n`);
+      events.push(event);
+    }
+    result = extractFinalResult(events, schema !== undefined);
+  }
   if (result.structured !== undefined) {
     return {
       // Redacted structurally (walks actual object leaves) BEFORE
@@ -202,8 +190,8 @@ export async function runCondenserAction(
 ): Promise<void> {
   await runWithActionEnvironment(env, async (): Promise<void> => {
     const text = await resolveText(env.INPUT_TEXT, env.INPUT_TEXT_FILE);
-    const strategy = parseStrategy(env.INPUT_STRATEGY);
-    const maxChars = parseMaxChars(env.INPUT_MAX_CHARS);
+    const strategy = parseCondenseStrategy(env.INPUT_STRATEGY);
+    const maxChars = parseCondenseMaxChars(env.INPUT_MAX_CHARS);
     const secretValues = parseAgentSecretValuesEnv(
       getBrandEnv(env, 'AGENT_SECRET_VALUES'),
     );
@@ -235,7 +223,7 @@ export async function runCondenserAction(
       //  internal newline never matched the pre-filter raw pass, but the
       //  trimmed, reassembled text can equal it exactly) — leaking it
       //  verbatim unless something redacts the FILTERED result too.
-      // 3. That second pass must ALSO run before `clip()` truncates to
+      // 3. That second pass must ALSO run before `clipCondenserText()` truncates to
       //  `max_chars` — the same clip-before-redact ordering hazard
       //  `llm-summary` below already guards against. `max_chars` is a
       //  user-settable pipeline input, so hitting the boundary mid-secret
@@ -262,18 +250,19 @@ export async function runCondenserAction(
         filtered,
         secretValues,
       );
-      summary = clip(redactedFiltered, maxChars);
+      summary = clipCondenserText(redactedFiltered, maxChars);
       // `clip` appends a literal `\n...` when it truncates — strip that (a
       // bare `\r` too, in case a future change to `redactNormalizedText`
       // ever stops guaranteeing single-line input here), since
       // `setOutput` requires a single-line value.
-      normalizedSummary = clip(redactedNormalizedFiltered, maxChars).replace(
-        /[\r\n]+/g,
-        ' ',
-      );
+      normalizedSummary = clipCondenserText(
+        redactedNormalizedFiltered,
+        maxChars,
+      ).replace(/[\r\n]+/g, ' ');
     } else {
       const result = await summarizeWithClaude(
-        clip(text, Math.max(maxChars * 2, maxChars)),
+        text,
+        maxChars,
         env,
         isStructured,
         secretValues,
@@ -291,7 +280,7 @@ export async function runCondenserAction(
       const redactedNormalizedFull = isStructured
         ? result.normalizedSummary
         : redactNormalizedText(result.normalizedSummary, secretValues);
-      summary = clip(redactedFull, maxChars);
+      summary = clipCondenserText(redactedFull, maxChars);
       // `clip` appends a literal `\n...` when it truncates — strip that (a
       // bare `\r` too) rather than running a blanket `normalizeSingleLine`
       // pass here: for `structured-summary`, `redactedNormalizedFull` is
@@ -303,10 +292,10 @@ export async function runCondenserAction(
       // single-line value; `redactNormalizedText`/`JSON.stringify` already
       // keep `redactedNormalizedFull` itself free of real newlines, so
       // `clip`'s own marker is the only one this needs to catch.
-      normalizedSummary = clip(redactedNormalizedFull, maxChars).replace(
-        /[\r\n]+/g,
-        ' ',
-      );
+      normalizedSummary = clipCondenserText(
+        redactedNormalizedFull,
+        maxChars,
+      ).replace(/[\r\n]+/g, ' ');
     }
 
     // Every strategy above now produces an ALREADY fully redacted `summary`/

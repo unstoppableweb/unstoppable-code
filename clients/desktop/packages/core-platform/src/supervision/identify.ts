@@ -97,18 +97,29 @@ export function createProcessIdentifier(
     validatePid(pid);
     const before = await inspect({ pid, signal });
     if (before.state !== 'running') return before;
+    // A process that exits between the reads is a zombie until reaped: its
+    // details are gone while kill(pid, 0) still finds it (CAN-7026). The
+    // inspector reads a zombie as absent, so ask it again before reporting
+    // the read as unverifiable.
+    const exitedSince = async (): Promise<PlatformProcessIdentity | null> => {
+      const now = await inspect({ pid, signal });
+      return now.state === 'absent' ? now : null;
+    };
     let found: Details | string;
     try {
       found = await details(pid, signal);
     } catch (error) {
       signal?.throwIfAborted();
+      const exited = await exitedSince();
+      if (exited) return exited;
       return processPresent(pid, ops)
         ? unverifiable(
             `process query failed (${errorCode(error) ?? 'unknown'})`,
           )
         : { state: 'absent' };
     }
-    if (typeof found === 'string') return unverifiable(found);
+    if (typeof found === 'string')
+      return (await exitedSince()) ?? unverifiable(found);
     const after = await inspect({ pid, signal });
     if (after.state !== 'running') return after;
     if (after.startIdentity !== before.startIdentity)

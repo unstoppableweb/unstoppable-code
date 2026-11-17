@@ -128,7 +128,9 @@ export function useOpenFileDiffTarget(
     let retryDelay = CHANGED_FILES_RETRY_INITIAL_MS;
 
     const refresh = (): void => {
-      void requestChangedFilesRefresh(projectId, worktreeId)
+      void requestChangedFilesRefresh(projectId, worktreeId, {
+        kind: 'automatic',
+      })
         .then((files) => {
           if (cancelled) {
             return;

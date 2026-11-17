@@ -4,6 +4,7 @@ import type {
 } from '@canopy/protocol/canopy-core';
 import { W5CommitRefusedError } from '@canopy/desktop-shared/node/w5-commit-log/errors';
 import { logMainProcessWarn } from './main-process-logging';
+import { finishCompletedTurnDiffCleanup } from './archive-turn-diff-cleanup';
 import { destructiveFailureCode } from './destructive-failure-context';
 import { BrowserRetirementTimeoutError } from './browser-retirement-deadline';
 import { serializeWorkspaceMutation } from './chat-project-operation-queue';
@@ -94,6 +95,29 @@ export function finishWorktreeRecovery(
     try {
       // Retirement and runtime-preparation cancellation cannot be rolled back.
       await readAdmittedFinishOperation(request);
+      // A removed archive's app-owned diff refs need no retained manifest or live teardown.
+      const diagnosis = await listWorktreeRecovery({
+        workspaceId: request.workspaceId,
+        operationId: request.operationId,
+      });
+      if (
+        diagnosis.entries[0]?.diagnosis?.check === 'completed-turn-diff-cleanup'
+      ) {
+        return await withArchivedWorkspaceOperationLock(
+          request.workspaceId,
+          async () => {
+            const operation = await readAdmittedFinishOperation(request);
+            executionStarted = true;
+            await finishCompletedTurnDiffCleanup(operation);
+            return {
+              status: 'finished',
+              operationId: request.operationId,
+              cleanupRequired: false,
+              gitCleanupPending: false,
+            };
+          },
+        );
+      }
       return await runWithWorktreeArchiveDeletionLifecycle(
         request.workspaceId,
         worktreeId,

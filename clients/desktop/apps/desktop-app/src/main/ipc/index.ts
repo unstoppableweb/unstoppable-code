@@ -67,6 +67,7 @@ import { registerDetectedPlansHandlers } from './detected-plans';
 import { registerCodeReviewHandlers } from './code-review';
 import { registerPlanFileVisibilityHandlers } from './plan-file-visibility';
 import { registerApprovalHandlers } from './approvals';
+import { registerSecretRequestHandlers } from './secret-requests';
 import { registerCopilotConnectionHandlers } from './copilot-connection';
 import { registerOpenCodeConnectionHandlers } from './opencode-connection';
 import { registerAccountProxyHandlers } from './account-proxy';
@@ -308,6 +309,7 @@ export function registerAllIpcHandlers(
   registerCodeReviewHandlers(getMainWindow);
   registerPlanFileVisibilityHandlers();
   registerApprovalHandlers();
+  registerSecretRequestHandlers();
   registerCursorApprovalCheckHandlers();
   registerCursorConnectionHandlers();
   registerCopilotConnectionHandlers();

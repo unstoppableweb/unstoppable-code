@@ -465,6 +465,40 @@ export function getHydratedModelHarnessAssignment(
   return assignment ? copyAssignment(assignment) : undefined;
 }
 
+/** A harness that runs only on the user's own provider account. */
+export type NativeOnlyHarness =
+  | 'cursor'
+  | 'copilot'
+  | 'opencode'
+  | 'antigravity';
+
+/**
+ * Whether a harness runs only on the user's own provider account. These never
+ * pass through AI Credits or gateway routing.
+ */
+export function isNativeOnlyHarness(
+  harness: ModelHarness | undefined,
+): harness is NativeOnlyHarness {
+  return (
+    harness === 'cursor' ||
+    harness === 'copilot' ||
+    harness === 'opencode' ||
+    harness === 'antigravity'
+  );
+}
+
+/** Whether a model source runs only on the user's own provider account. */
+export function isNativeOnlyModelSource(
+  source: ModelHarnessSource | undefined,
+): boolean {
+  return (
+    source === 'cursor-managed' ||
+    source === 'copilot-managed' ||
+    source === 'opencode-managed' ||
+    source === 'antigravity-managed'
+  );
+}
+
 /**
  * Reject a Cursor harness on a dispatch path that cannot run it.
  *

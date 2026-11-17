@@ -21,6 +21,8 @@ import {
   retainProjectRepositoryRepoPaths,
 } from './project-repository-identity-cache';
 import { getSplitPrRuntimeProjection } from './split-pr-runtime-projection';
+import { isWorktreePostCreateSetupActive } from './worktree-setup-runtime-projection';
+import { getWorktreeIdClaimPrefix } from '../lib/animals';
 import { isSplitLocked } from './split-lock-service';
 import {
   applyBranchDisplayMappings,
@@ -118,20 +120,26 @@ function readString(
 
 /**
  * Map the persisted `WorktreeData.setupPhase` (which is two-state:
- * `'git-pending' | 'git-ready'` or absent) to the portal's richer four-
- * state vocabulary. Running setup / teardown live in runtime-only state on
- * the desktop and are not reflected in `WorktreeData`; the portal field
- * therefore stays `'idle'` for ready worktrees and `'git-pending'` for
- * worktrees mid-Phase-A creation. The richer `running-setup` /
- * `running-teardown` values are emitted from runtime callers that wire the
- * Portal-side event stream later; this projection only covers the
- * persisted persisted-state subset.
+ * `'git-pending' | 'git-ready'` or absent) plus the post-create setup
+ * runtime projection to the portal's four-state vocabulary. The persisted
+ * `git-pending` covers reservation through Git readiness; the runtime
+ * projection covers Git readiness until the post-create setup settles, so a
+ * desktop-created worktree projects `running-setup` with no idle gap.
+ * `running-teardown` is not projected here.
  */
 function projectSetupPhase(
   setupPhase: WorktreeData['setupPhase'],
+  postCreateSetupActive: boolean,
 ): 'idle' | 'git-pending' | 'running-setup' | 'running-teardown' | undefined {
   if (setupPhase === 'git-pending') return 'git-pending';
+  if (postCreateSetupActive) return 'running-setup';
   return undefined;
+}
+
+function withSetupPhase(setupPhase: ReturnType<typeof projectSetupPhase>): {
+  setupPhase?: NonNullable<ReturnType<typeof projectSetupPhase>>;
+} {
+  return setupPhase === undefined ? {} : { setupPhase };
 }
 
 function projectHealthIssue(
@@ -288,9 +296,15 @@ export function projectWorktreeSnapshot(input: {
     ),
     ...getSplitPrRuntimeProjection(input.workspaceLocalId, input.worktree.id),
     splitPrLocked: isSplitLocked(input.workspaceLocalId, input.worktree.id),
-    ...(projectSetupPhase(input.worktree.setupPhase)
-      ? { setupPhase: projectSetupPhase(input.worktree.setupPhase) }
-      : {}),
+    ...withSetupPhase(
+      projectSetupPhase(
+        input.worktree.setupPhase,
+        isWorktreePostCreateSetupActive(
+          input.workspaceLocalId,
+          input.worktree.id,
+        ),
+      ),
+    ),
     // TODO: wire isDiscovering when discovery activity becomes observable
     // outside the renderer.
   };
@@ -546,6 +560,8 @@ export async function listWorkspacePortalEntities(
         rootPath: item.repoPath,
         type: 'single-repo',
         layout: 'tree',
+        // Present, even as '', means this host honors claimed worktree ids.
+        worktreeIdClaimPrefix: getWorktreeIdClaimPrefix(),
         color: item.color,
         ...(avatarUrl === undefined ? {} : { avatarUrl }),
         ...(repositoryIdentity === undefined ? {} : { repositoryIdentity }),
@@ -623,6 +639,8 @@ export async function listWorkspacePortalEntities(
             : undefined,
         type: 'multi-repo',
         layout: 'tree',
+        // Present, even as '', means this host honors claimed worktree ids.
+        worktreeIdClaimPrefix: getWorktreeIdClaimPrefix(),
         color: item.color,
         ...(repositoryIdentity === undefined ? {} : { repositoryIdentity }),
         order: item.order,

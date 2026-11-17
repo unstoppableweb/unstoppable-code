@@ -106,6 +106,12 @@ export interface CoreWorktreeCreateRequest {
   readonly baseWorktreeId?: string;
   readonly includedRepositoryIds?: readonly string[];
   readonly sidebarItemGroupId?: string;
+  /**
+   * The caller's claimed worktree id. The host honors it when it is free and
+   * has the host's generated-id shape, and otherwise names the worktree; the
+   * result's `worktreeId` is authoritative.
+   */
+  readonly worktreeId?: string;
 }
 
 export interface CoreWorkspaceCreated {
@@ -428,16 +434,14 @@ function worktreeRequest(
       fields,
       'An exact base commit or a target is unavailable on this host.',
     );
-  // The web core's REST fields (CAN-6114): this host names its own worktree
-  // and starts no chat with it.
-  const web = (['worktreeId', 'firstChat', 'firstMessage'] as const).filter(
+  // The web core's first-chat REST fields (CAN-6114): this host starts no
+  // chat with the worktree. A claimed `worktreeId` is served: the host honors
+  // it when free and otherwise names the worktree itself.
+  const web = (['firstChat', 'firstMessage'] as const).filter(
     (field) => params[field] !== undefined,
   );
   if (web.length > 0)
-    return unserved(
-      web,
-      'A first chat or a caller-named worktree is unavailable on this host.',
-    );
+    return unserved(web, 'A first chat is unavailable on this host.');
   return {
     kind: 'worktree',
     workspaceId: params.workspaceId,
@@ -458,6 +462,7 @@ function worktreeRequest(
     ...(params.sidebarItemGroupId !== undefined && {
       sidebarItemGroupId: params.sidebarItemGroupId,
     }),
+    ...(params.worktreeId !== undefined && { worktreeId: params.worktreeId }),
   };
 }
 

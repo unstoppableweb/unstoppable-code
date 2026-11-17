@@ -152,6 +152,34 @@ export type WorktreeSetupPhase =
    */
   | 'creating';
 
+/**
+ * Whether `phase` is the local worktree setup lifecycle: the Git checkout
+ * (`git-pending`) through the post-create setup (`running-setup`). The row
+ * presents both as "Running setup…", so a new worktree keeps one look from
+ * the click until its setup settles (CAN-6957). `creating` (a cloud task)
+ * keeps its own words; teardown and archive are not setup.
+ */
+export function isSetupLifecyclePhase(
+  phase: WorktreeSetupPhase | undefined,
+): phase is 'git-pending' | 'running-setup' {
+  return phase === 'git-pending' || phase === 'running-setup';
+}
+
+/**
+ * A failed checkout keeps its `git-pending` reservation and records a broken
+ * health issue; main never records one for a checkout still in progress. That
+ * issue outranks the setup look, so a broken worktree never reads as running
+ * setup indefinitely.
+ */
+function presentedSetupPhase(
+  setupPhase: WorktreeSetupPhase | undefined,
+  healthIssue: WorktreeRowHealthIssue | undefined,
+): WorktreeSetupPhase | undefined {
+  return setupPhase === 'git-pending' && healthIssue?.status === 'broken'
+    ? undefined
+    : setupPhase;
+}
+
 /** A cloud task the web core refused to create, and how to try again. */
 export interface WorktreeCreationFailure {
   /** Why the task does not exist, as the web core said. */
@@ -704,10 +732,9 @@ export function WorktreeRowPrimaryIndicator({
   testIdSuffix?: string;
 }): JSX.Element {
   const isCreating = setupPhase === 'creating';
-  const isRunningSetup = setupPhase === 'running-setup' || isCreating;
+  const isRunningSetup = isSetupLifecyclePhase(setupPhase) || isCreating;
   const isArchiving = setupPhase === 'running-archive';
   const isTearingDown = setupPhase === 'running-teardown' || isArchiving;
-  const isPendingGitSetup = setupPhase === 'git-pending';
   const statusTitle = isTearingDown
     ? isArchiving
       ? 'Archiving worktree…'
@@ -716,9 +743,7 @@ export function WorktreeRowPrimaryIndicator({
       ? isCreating
         ? 'Creating task…'
         : 'Running setup…'
-      : isPendingGitSetup
-        ? 'Setting up worktree (git operations in progress)'
-        : null;
+      : null;
   if (statusTitle) {
     if (layout === 'classic') {
       return withStatusTooltip(
@@ -1742,7 +1767,7 @@ function WorktreeRowImpl(
     hasScheduledMessages: hasScheduledMessagesProp = false,
     healthIssue,
     hasMismatch = false,
-    setupPhase,
+    setupPhase: setupPhaseProp,
     creationFailure,
     queuedRemoval,
     lastKnownPrStatus,
@@ -1884,19 +1909,17 @@ function WorktreeRowImpl(
     focusedStatus && splitStatusProp === 'done' ? undefined : splitStatusProp;
   const hasIdleWatcherChats = focusedStatus ? false : hasIdleWatcherChatsProp;
   const hasScheduledMessages = focusedStatus ? false : hasScheduledMessagesProp;
-  const isPendingGitSetup = setupPhase === 'git-pending';
+  const setupPhase = presentedSetupPhase(setupPhaseProp, healthIssue);
   // A task still being created reads as setup, in its own words (CAN-6098).
   const isCreating = setupPhase === 'creating';
-  const isRunningSetup = setupPhase === 'running-setup' || isCreating;
+  // Git checkout through post-create setup reads as one state (CAN-6957).
+  const isRunningSetup = isSetupLifecyclePhase(setupPhase) || isCreating;
   const setupLabel = isCreating ? 'Creating task' : 'Running setup';
   const isArchiving = setupPhase === 'running-archive';
   const isTearingDown = setupPhase === 'running-teardown' || isArchiving;
   // Waiting, not working: read still, with no loader.
   const queuedRemovalLabel =
-    queuedRemoval === undefined ||
-    isTearingDown ||
-    isRunningSetup ||
-    isPendingGitSetup
+    queuedRemoval === undefined || isTearingDown || isRunningSetup
       ? null
       : queuedRemoval === 'archive'
         ? 'Queued for archiving'
@@ -1908,9 +1931,7 @@ function WorktreeRowImpl(
   // indicator authoritative until creation finishes, then surface real health
   // failures if the worktree remains broken.
   const showHealthWarning =
-    !isPendingGitSetup &&
-    !isRunningSetup &&
-    (hasMismatch || healthIssue?.status === 'broken');
+    !isRunningSetup && (hasMismatch || healthIssue?.status === 'broken');
   const actionChipRestingPadding =
     actionChipButtonCount <= 1
       ? 'pr-8'
@@ -2196,7 +2217,7 @@ function WorktreeRowImpl(
       (prCreatingSlot ?? (
         <OperationalStatusLoader label="Creating pull request" />
       ))
-    ) : isRunningSetup || isTearingDown || isPendingGitSetup ? (
+    ) : isRunningSetup || isTearingDown ? (
       <WorktreeRowPrimaryIndicator
         testIdSuffix={testIdSuffix}
         uiStatus={uiStatus}
@@ -2311,7 +2332,6 @@ function WorktreeRowImpl(
     [
       [isTearingDown, isArchiving ? 'Archiving' : 'Running teardown'],
       [isRunningSetup, setupLabel],
-      [isPendingGitSetup, 'Setting up'],
       [hasPendingQuestion && !isDone, 'Question waiting'],
       [hasPendingToolApproval && !isDone, 'Approval needed'],
       [isStreaming, 'Working'],
@@ -2627,8 +2647,7 @@ function WorktreeRowImpl(
     // Setup-phase loaders keep priority: while the worktree itself is being
     // created or torn down, chat states cannot meaningfully exist yet, so
     // the lifecycle spinner is the only trailing indicator.
-    const classicHasSetupLoader =
-      isPendingGitSetup || isRunningSetup || isTearingDown;
+    const classicHasSetupLoader = isRunningSetup || isTearingDown;
     // The live spinner covers chat streaming AND generic non-pipeline working
     // (portal `busy` / `isRunningRun`): the pipeline glyph below is reserved
     // for an actually running pipeline. Done does not mute it — a completed
@@ -2708,6 +2727,12 @@ function WorktreeRowImpl(
     // graph > done check. Done is the final fallback — the checkmark only
     // shows when no other subject is active. The promoted subject's
     // subtitle badge is suppressed; overlapping lower subjects keep theirs.
+    // The setup lifecycle (Git checkout through setup, not a cloud task's
+    // creation or teardown) promotes the rocket, so a new worktree shows the
+    // final setup row from the click (CAN-6957). The focused status model
+    // keeps no rocket; only its text unifies.
+    const classicSetupRocket =
+      !focusedStatus && !isTearingDown && isSetupLifecyclePhase(setupPhase);
     const classicLeadingFallback:
       | 'split'
       | 'watchers'
@@ -2730,7 +2755,7 @@ function WorktreeRowImpl(
             ? 'watchers'
             : hasScheduledMessages
               ? 'scheduled'
-              : scriptStatus === 'running'
+              : scriptStatus === 'running' || classicSetupRocket
                 ? 'script'
                 : hookStatus === 'running'
                   ? 'hook'
@@ -2760,9 +2785,7 @@ function WorktreeRowImpl(
         : 'Deleting worktree…'
       : isRunningSetup
         ? `${setupLabel}…`
-        : isPendingGitSetup
-          ? 'Setting up worktree (git operations in progress)'
-          : null;
+        : null;
     // Right-side status: the working spinner and the attention dot render
     // at the end of the label line (inside the hover-padding reserve, so
     // they shift left with the title when the action chips appear and their
@@ -3045,7 +3068,6 @@ function WorktreeRowImpl(
       splitStatusMessage ||
       isTearingDown ||
       isRunningSetup ||
-      isPendingGitSetup ||
       creationFailure !== undefined ||
       queuedRemovalLabel !== null ||
       (!focusedStatus &&
@@ -3110,16 +3132,14 @@ function WorktreeRowImpl(
             }
           : isRunningSetup
             ? { text: `${setupLabel}…`, shimmer: true }
-            : isPendingGitSetup
-              ? { text: 'Setting up…', shimmer: true }
-              : queuedRemovalLabel
-                ? { text: queuedRemovalLabel, shimmer: false }
-                : splitStatusMessage
-                  ? {
-                      text: splitStatusMessage,
-                      shimmer: splitStatus === 'active',
-                    }
-                  : null;
+            : queuedRemovalLabel
+              ? { text: queuedRemovalLabel, shimmer: false }
+              : splitStatusMessage
+                ? {
+                    text: splitStatusMessage,
+                    shimmer: splitStatus === 'active',
+                  }
+                : null;
     return (
       <div
         ref={ref}
@@ -3293,14 +3313,21 @@ function WorktreeRowImpl(
               {classicDragOverlay}
             </RowStatusBadge>
           ) : classicLeadingFallback === 'script' ? (
+            // With no script running yet (Git checkout, or a project with no
+            // setup script), the rocket names the setup and explains itself
+            // in the shared tooltip instead of opening an empty script popover.
             <RowStatusBadge
-              label={scriptStatusAriaLabel()}
+              label={
+                scriptStatus === 'running'
+                  ? scriptStatusAriaLabel()
+                  : setupLabel
+              }
               className={CLASSIC_LEADING_GLYPH_CLASS}
               testId={withTestIdSuffix(
                 'worktree-row-script-badge',
                 testIdSuffix,
               )}
-              {...scriptBadge}
+              {...(scriptStatus === 'running' ? scriptBadge : {})}
             >
               <span
                 className={`inline-flex h-4 w-4 items-center justify-center ${OPERATIONAL_STATUS_COLORS.active.foreground}`}
@@ -3910,47 +3937,34 @@ function WorktreeRowImpl(
                         <span>{queuedRemovalLabel}</span>
                       </>
                     )}
-                    {!isRunningSetup && !isTearingDown && isPendingGitSetup && (
+                    {!isRunningSetup && !isTearingDown && (
                       <>
-                        <span className="px-1" aria-hidden="true">
-                          ·
-                        </span>
-                        {withStatusTooltip(
-                          'Setting up worktree (git operations in progress)',
-                          <span>Setting up…</span>,
+                        {isDone && !focusedStatus && (
+                          <>
+                            <span className="px-1" aria-hidden="true">
+                              ·
+                            </span>
+                            <span
+                              className={
+                                focusedStatus
+                                  ? ''
+                                  : STATUS_GLYPHS[
+                                      lastKnownPrStatus?.state === 'merged'
+                                        ? 'merged'
+                                        : 'done'
+                                    ].ink
+                              }
+                            >
+                              {doneLabel}
+                            </span>
+                          </>
                         )}
-                      </>
-                    )}
-                    {!isRunningSetup &&
-                      !isTearingDown &&
-                      !isPendingGitSetup && (
-                        <>
-                          {isDone && !focusedStatus && (
-                            <>
-                              <span className="px-1" aria-hidden="true">
-                                ·
-                              </span>
-                              <span
-                                className={
-                                  focusedStatus
-                                    ? ''
-                                    : STATUS_GLYPHS[
-                                        lastKnownPrStatus?.state === 'merged'
-                                          ? 'merged'
-                                          : 'done'
-                                      ].ink
-                                }
-                              >
-                                {doneLabel}
-                              </span>
-                            </>
-                          )}
-                          {classicPrMetadata && !focusedStatus && (
-                            <>
-                              <span className="px-1" aria-hidden="true">
-                                ·
-                              </span>
-                              {/* The merge spinner shares one flex line with the PR
+                        {classicPrMetadata && !focusedStatus && (
+                          <>
+                            <span className="px-1" aria-hidden="true">
+                              ·
+                            </span>
+                            {/* The merge spinner shares one flex line with the PR
                             label so it is cross-axis centered against the
                             text. Left as a standalone inline box it would
                             instead baseline-align, and LoadingSpinner's
@@ -3958,42 +3972,42 @@ function WorktreeRowImpl(
                             of dots, dropping the spinner ~7px below the label.
                             The `Creating` indicator below already groups this
                             way, which is why only merging looked low. */}
-                              <span className="inline-flex h-4 items-center gap-1 align-bottom">
-                                {classicPrMetadata}
-                                {prMergingSlot !== undefined &&
-                                  showPrBadge &&
-                                  prMergingSlot}
-                              </span>
-                            </>
-                          )}
-                          {!focusedStatus &&
-                            !isDone &&
-                            !showPrBadge &&
-                            isCreatingPr && (
-                              <>
-                                <span className="px-1" aria-hidden="true">
-                                  ·
-                                </span>
-                                <span className="inline-flex items-center gap-2 fg-secondary">
-                                  <span>PR</span>
-                                  <span className="inline-flex shrink-0 items-center">
-                                    {prCreatingSlot ?? <LoadingSpinner />}
-                                  </span>
-                                </span>
-                              </>
-                            )}
-                          {isDiscovering && (
+                            <span className="inline-flex h-4 items-center gap-1 align-bottom">
+                              {classicPrMetadata}
+                              {prMergingSlot !== undefined &&
+                                showPrBadge &&
+                                prMergingSlot}
+                            </span>
+                          </>
+                        )}
+                        {!focusedStatus &&
+                          !isDone &&
+                          !showPrBadge &&
+                          isCreatingPr && (
                             <>
                               <span className="px-1" aria-hidden="true">
                                 ·
                               </span>
-                              <span className="fg-secondary">
-                                Discovering environment…
+                              <span className="inline-flex items-center gap-2 fg-secondary">
+                                <span>PR</span>
+                                <span className="inline-flex shrink-0 items-center">
+                                  {prCreatingSlot ?? <LoadingSpinner />}
+                                </span>
                               </span>
                             </>
                           )}
-                        </>
-                      )}
+                        {isDiscovering && (
+                          <>
+                            <span className="px-1" aria-hidden="true">
+                              ·
+                            </span>
+                            <span className="fg-secondary">
+                              Discovering environment…
+                            </span>
+                          </>
+                        )}
+                      </>
+                    )}
                   </>
                 )}
               </span>
@@ -4300,15 +4314,17 @@ function WorktreeRowPreviewIndicators({
     add('plan', 'Review plan', <PlanMapIcon size="sm" />);
   else if (row.uiStatus === 'planning' && row.pipelineStatus !== 'paused')
     add('planning', 'Planning', <PlanMapIcon size="sm" />);
-  if (row.setupPhase && row.setupPhase !== 'idle') {
+  const setupPhase = presentedSetupPhase(row.setupPhase, row.healthIssue);
+  if (setupPhase && setupPhase !== 'idle') {
     const labels: Record<Exclude<WorktreeSetupPhase, 'idle'>, string> = {
-      'git-pending': 'Setting up',
+      // One setup state from Git checkout through setup (CAN-6957).
+      'git-pending': 'Running setup',
       'running-setup': 'Running setup',
       'running-teardown': 'Running teardown',
       'running-archive': 'Archiving',
       creating: 'Creating task',
     };
-    add('setup', labels[row.setupPhase], <TimeFliesIcon size={14} />);
+    add('setup', labels[setupPhase], <TimeFliesIcon size={14} />);
   } else if (row.hasMismatch || row.healthIssue) {
     add(
       'health',

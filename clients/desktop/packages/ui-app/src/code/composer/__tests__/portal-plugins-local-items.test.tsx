@@ -102,11 +102,66 @@ describe('this computer’s items in the cloud picker (CAN-6176)', () => {
         onAdd: () => Promise.resolve(null),
       },
     });
+    // They share the catalog's table, whose rows sort by name.
     const items = byTestId('portal-plugins-local-item');
-    expect(items.map((item) => item.textContent)).toEqual([
-      'notesSkillAdd to cloud',
-      'toolsPluginUpdate in cloud',
+    expect(
+      items.map((item) => [
+        item.textContent?.includes('notes')
+          ? 'notes'
+          : item.textContent?.includes('tools')
+            ? 'tools'
+            : null,
+        item.querySelector('[data-testid="portal-plugins-local-add"]')
+          ?.textContent,
+      ]),
+    ).toEqual([
+      ['notes', 'Add to cloud'],
+      ['tools', 'Update in cloud'],
     ]);
+  });
+
+  it("finds them with the table's name search, as it finds the catalog's", () => {
+    render({
+      localItems: {
+        items: [
+          {
+            key: 'skill:custom/notes',
+            name: 'notes',
+            kind: 'skill',
+            replacing: false,
+          },
+          {
+            key: 'skill:custom/release-notes',
+            name: 'release-notes',
+            kind: 'skill',
+            replacing: false,
+          },
+          {
+            key: 'plugin:local/tools',
+            name: 'tools',
+            kind: 'plugin',
+            replacing: false,
+          },
+        ],
+        onAdd: () => Promise.resolve(null),
+      },
+    });
+    const search = document.querySelector<HTMLInputElement>(
+      'input[aria-label="Search by name"]',
+    );
+    if (!search) throw new Error('Missing name search');
+    act(() => {
+      // The native setter, so React sees the change as typing would.
+      Reflect.set(HTMLInputElement.prototype, 'value', 'release', search);
+      search.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(
+      byTestId('portal-plugins-local-item').map(
+        (item) =>
+          item.querySelector('[data-testid="portal-plugins-local-add"]') !==
+            null && item.textContent?.includes('release-notes'),
+      ),
+    ).toEqual([true]);
   });
 
   it('offers nothing without the seam, or with no items', () => {

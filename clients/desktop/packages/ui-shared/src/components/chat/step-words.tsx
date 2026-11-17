@@ -14,9 +14,11 @@ import {
 } from '../../icons';
 import {
   DocumentPencilIcon,
+  KeyIcon,
   LightbulbIcon,
   PlanModeIcon,
 } from '../../icons/AppIcons';
+import { isRequestSecretsToolName } from './request-secrets-display';
 
 /** The kinds of agent step a plain-words summary counts. */
 export type StepKind =
@@ -31,6 +33,7 @@ export type StepKind =
   | 'tasks'
   | 'agent'
   | 'question'
+  | 'secrets'
   | 'other';
 
 /** A plan write whose result does not establish successful execution. */
@@ -66,6 +69,7 @@ const STEP_PHRASES: Record<StepPhraseKind, (count: number) => string> = {
   tasks: (count) => `updated the task list${timesSuffix(count)}`,
   agent: (count) => `ran ${countOf(count, 'agent', 'agents')}`,
   question: (count) => `asked ${countOf(count, 'question', 'questions')}`,
+  secrets: (count) => `requested secrets${timesSuffix(count)}`,
   other: (count) => `used ${countOf(count, 'tool', 'tools')}`,
 };
 
@@ -103,6 +107,7 @@ const STEP_KIND_PHRASES: Record<StepPhraseKind, (count: number) => string> = {
   tasks: () => 'updated the task list',
   agent: (count) => oneOrMany(count, 'ran an agent', 'ran agents'),
   question: (count) => oneOrMany(count, 'asked a question', 'asked questions'),
+  secrets: () => 'requested secrets',
   other: (count) => oneOrMany(count, 'used a tool', 'used tools'),
 };
 
@@ -168,6 +173,7 @@ export function stepKindOfToolCall({
   readonly input: unknown;
 }): StepKind {
   if (isPlanFileWrite(toolName, input)) return 'plan';
+  if (isRequestSecretsToolName(toolName)) return 'secrets';
   return stepKindOfToolFamily(family);
 }
 
@@ -196,6 +202,8 @@ export function stepKindIcon(kind: StepKind): JSX.Element {
       return <AgentIcon />;
     case 'question':
       return <QuestionMarkIcon />;
+    case 'secrets':
+      return <KeyIcon />;
     default:
       return <WrenchIcon />;
   }

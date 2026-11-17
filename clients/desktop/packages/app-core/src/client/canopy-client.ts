@@ -504,6 +504,16 @@ export type WorktreeCreateResult =
   | { readonly status: 'pending' };
 
 /**
+ * Options for a sidebar worktree create. `worktreeId` is a client-claimed id,
+ * sent only when the workspace publishes `worktreeIdClaimPrefix`; the host
+ * honors it when free and otherwise names the worktree itself, so the
+ * result's `worktreeId` is authoritative.
+ */
+export interface WorktreeCreateOptions {
+  readonly worktreeId?: string;
+}
+
+/**
  * Map of command name → `{ args; result }`. Commands are imperative mutations
  * (send message, stop turn, persist tabs, end session). Seeded with session
  * end; feature slices extend this map here.

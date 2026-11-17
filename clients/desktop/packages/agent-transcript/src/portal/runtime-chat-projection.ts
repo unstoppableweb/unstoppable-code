@@ -1,3 +1,4 @@
+import { readSessionResumeFailure } from '@canopy/protocol/session-recovery';
 /**
  * Live projection of raw desktop provider events (`chat:event` payloads) into
  * canonical whole Portal messages. Browser-safe: Electron main, the desktop
@@ -747,6 +748,17 @@ export function runtimeChatEventToPortalMessage(
         },
       },
     ];
+  }
+  const sessionResumeFailure = readSessionResumeFailure(
+    input.data.canopy_session_recovery,
+  );
+  if (
+    (type === 'result' || type === 'error') &&
+    status === 'failed' &&
+    sessionResumeFailure
+  ) {
+    projected.text = '';
+    projected.parts = [{ kind: 'text', data: { text, sessionResumeFailure } }];
   }
   const refusedUserMessageId = input.data.canopy_turn_user_message_id;
   if (

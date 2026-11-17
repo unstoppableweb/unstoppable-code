@@ -30,6 +30,8 @@ import {
 } from '@canopy/protocol/portal';
 import type { TranscriptContentField } from '@canopy/protocol/canopy-core/core';
 import {
+  isRequestSecretsToolName,
+  RequestSecretsRowLabel,
   Markdown,
   ErrorBanner,
   ClaudeAiCreditsFallbackErrorNotice,
@@ -871,8 +873,19 @@ function ChatPartContent({
         part.toolFamily,
         toolScope,
       );
-      const { label } = getToolDisplayInfo(toolName, input, toolScope);
+      const { label: derivedLabel } = getToolDisplayInfo(
+        toolName,
+        input,
+        toolScope,
+      );
       const result = readToolResult(data);
+      // A settled RequestSecrets row reads its result: "Provided 3 of 4".
+      const label =
+        result?.kind === 'text' && isRequestSecretsToolName(toolName) ? (
+          <RequestSecretsRowLabel input={input} resultText={result.content} />
+        ) : (
+          derivedLabel
+        );
       const rawResult = data['result'];
       const identity = isRecord(rawResult)
         ? rowFieldIdentity(rawResult.outputLocator)

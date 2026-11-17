@@ -31,20 +31,37 @@ export function relayRetryFor(
     : retry;
 }
 
+/** A refused secret submission's field: an env-name shaped value key or a top-level field. */
+const SECRET_REFUSAL_FIELD =
+  /^(?:values\.[A-Z_][A-Z0-9_]{0,63}|values|action|submissionId|body)$/;
+/** Agentic Core's reason codes for a refused secret submission. */
+const SECRET_REFUSAL_REASON = /^[a-z][a-z_]{0,63}$/;
+
 /**
- * The one part of an error's `details` that crosses the relay to the
- * renderer: that a cloud chat's sandbox is not awake (CAN-6543). Only
- * enumerated values and a boolean, each checked against the protocol's
- * constants: `reason` must be the sleeping reason or nothing passes, and an
- * invalid `wakeAllowed` or `cloudCode` is dropped, not coerced. Every other
- * key stays behind. Main and the preload both apply it.
+ * The parts of an error's `details` that cross the relay to the renderer:
+ * that a cloud chat's sandbox is not awake (CAN-6543), and which field of a
+ * cloud secret submission Agentic Core refused and why (agent secret
+ * requests), so the form can say which value to fix. Only enumerated values,
+ * a boolean and pattern-checked names: `reason` must be the sleeping reason,
+ * or `field` an env-name shaped key with a snake_case reason code, which can
+ * never hold a value; an invalid `wakeAllowed` or `cloudCode` is dropped,
+ * not coerced. Every other key stays behind. Main and the preload both apply
+ * it.
  */
 export function relayableErrorDetails(
   details: unknown,
 ): CanopyErrorPayload['details'] | undefined {
   if (typeof details !== 'object' || details === null) return undefined;
-  if (Reflect.get(details, 'reason') !== CLOUD_SANDBOX_SLEEPING_REASON)
-    return undefined;
+  const field: unknown = Reflect.get(details, 'field');
+  const reason: unknown = Reflect.get(details, 'reason');
+  if (
+    typeof field === 'string' &&
+    typeof reason === 'string' &&
+    SECRET_REFUSAL_FIELD.test(field) &&
+    SECRET_REFUSAL_REASON.test(reason)
+  )
+    return { field, reason };
+  if (reason !== CLOUD_SANDBOX_SLEEPING_REASON) return undefined;
   const wakeAllowed: unknown = Reflect.get(details, 'wakeAllowed');
   const cloudCode: unknown = Reflect.get(details, 'cloudCode');
   return {

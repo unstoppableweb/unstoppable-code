@@ -1,7 +1,7 @@
 // The desktop composition of observability's host ports (CAN-4136). The
 // service takes everything Electron- or main-specific through this host, so
 // it imports no instrumentation entry or main-local adapter itself. Provider
-// account usage (Claude, Codex, Cursor, Copilot and OpenCode reads, feature
+// account usage (Claude, Codex, Cursor, Copilot, OpenCode and Antigravity reads, feature
 // flags and the account proxy) stays desktop-fed until CAN-4180.
 import type { ObservabilityHostServices } from '@canopy/core-runtime/observability';
 import {
@@ -27,6 +27,11 @@ import { readCopilotUsageSummary } from '../copilot/account-usage';
 import { isCopilotHarnessEnabled } from '../copilot/feature-flag';
 import { onCopilotUsageChanged } from '../copilot/usage-events';
 import { readCursorAccountUsage } from '../cursor/account-usage';
+import {
+  onAntigravityAccountChanged,
+  peekAntigravityAccount,
+} from '../antigravity/account';
+import { isAntigravityHarnessEnabled } from '../antigravity/feature-flag';
 import { isCursorHarnessEnabled } from '../cursor/feature-flag';
 import { getFeatureFlagService } from '../feature-flags';
 import { getLastDailyCreditGrantStatus } from '../lib/daily-credit-grant-telemetry';
@@ -68,6 +73,12 @@ export interface DesktopObservabilityHost extends ObservabilityHostServices {
   openCode: {
     peekAccounts: typeof peekOpenCodeAccounts;
     onAccountsChanged: typeof onOpenCodeAccountsChanged;
+  };
+  /** Cached discovery metadata only; reading never launches the runtime. */
+  antigravity?: {
+    isEnabled: typeof isAntigravityHarnessEnabled;
+    peekAccount: typeof peekAntigravityAccount;
+    onAccountChanged: typeof onAntigravityAccountChanged;
   };
   onFeatureFlagsChanged(listener: () => void): () => void;
   accountProxy: {
@@ -129,6 +140,11 @@ export function createDesktopObservabilityHost(): DesktopObservabilityHost {
     openCode: {
       peekAccounts: () => peekOpenCodeAccounts(),
       onAccountsChanged: (...args) => onOpenCodeAccountsChanged(...args),
+    },
+    antigravity: {
+      isEnabled: () => isAntigravityHarnessEnabled(),
+      peekAccount: () => peekAntigravityAccount(),
+      onAccountChanged: (...args) => onAntigravityAccountChanged(...args),
     },
     onFeatureFlagsChanged: (listener) =>
       getFeatureFlagService().onSnapshotChanged(listener),

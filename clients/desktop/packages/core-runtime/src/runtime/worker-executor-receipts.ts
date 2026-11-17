@@ -8,7 +8,10 @@ import {
 } from '@canopy/protocol/canopy-core';
 
 import { translateCanopyHandlerError } from './dispatcher';
-import { canopyInvalidHandlerResultError } from './errors';
+import {
+  CanopyOperationError,
+  canopyInvalidHandlerResultError,
+} from './errors';
 import type { CanopyHandlerContext } from './types';
 
 /**
@@ -52,17 +55,95 @@ interface Entry {
   /** Resolves when the handler settles; the receipt is final from then on. */
   readonly settled: Promise<void>;
   receipt: WorkerExecutorReceipt;
+  /** Set only for a replayed operation: the first request's parameters. */
+  readonly fingerprint?: string;
+  /** A replayed operation's full completed result, whatever its size. */
+  replayResult?: { readonly value: unknown; readonly size: number };
 }
 
 /** Settled receipts the core has not released yet, beyond which the oldest go. */
 export const WORKER_EXECUTOR_RECEIPTS_MAX = 4_096;
 
+/**
+ * Keys a replayed operation may accept in one worker run. Every accepted key
+ * is remembered for the run, by digest once its receipt is gone, so a late
+ * repeat is refused instead of run again; past the bound, new keys are
+ * refused instead of letting an old one become runnable.
+ */
+export const WORKER_EXECUTOR_REPLAYED_KEYS_MAX = 1_048_576;
+
+/**
+ * Serialized size, in UTF-16 code units, of the full results replayed
+ * operations keep for replay, whatever the receipt's bounded copy holds.
+ * Past it the oldest settled receipts are forgotten, and their keys refused.
+ */
+export const WORKER_EXECUTOR_REPLAY_RESULTS_MAX = 64 * 1024 * 1024;
+
+/**
+ * Keyed instructions whose repeated key replays the first request's
+ * settlement instead of running again (CAN-4733), the digest that binds a
+ * key to its parameters (it never sees `_meta`), and the short digest a key
+ * is remembered by once its receipt is gone.
+ */
+export interface WorkerExecutorReplay {
+  readonly operations: ReadonlySet<string>;
+  fingerprint(params: unknown): string;
+  keyDigest(key: string): string;
+}
+
+/** Why a key was refused rather than run or replayed. */
+export type WorkerExecutorReplayRefusal =
+  | 'key-reused'
+  | 'not-retained'
+  | 'keys-exhausted';
+
+const REFUSALS: Record<
+  WorkerExecutorReplayRefusal,
+  Pick<CanopyErrorPayload, 'kind' | 'message'>
+> = {
+  'key-reused': {
+    kind: 'conflict',
+    message: 'This idempotency key was already used for a different request.',
+  },
+  'not-retained': {
+    kind: 'failed_precondition',
+    message:
+      'The outcome of the request with this idempotency key is no longer kept.',
+  },
+  'keys-exhausted': {
+    kind: 'resource_exhausted',
+    message:
+      'This worker accepts no more keyed requests of this kind until it restarts.',
+  },
+};
+
+function replayRefusal(
+  reason: WorkerExecutorReplayRefusal,
+): CanopyOperationError {
+  return new CanopyOperationError({
+    ...REFUSALS[reason],
+    details: { receipt: reason },
+    retry: { kind: 'never' },
+  });
+}
+
+function withoutMeta(params: unknown): unknown {
+  if (typeof params !== 'object' || params === null || Array.isArray(params))
+    return params;
+  return Object.fromEntries(
+    Object.entries(params).filter(([name]) => name !== '_meta'),
+  );
+}
+
 export interface WorkerExecutorReceipts {
   /**
    * Wraps the worker's instruction handlers. A keyed request is recorded
    * under its caller, operation and idempotency key before its handler runs.
-   * Recording changes nothing about how the request runs: a repeated key
-   * reaches its handler as before, and only the first is recorded.
+   * For most operations a repeated key reaches its handler as before, and
+   * only the first is recorded. For a replayed operation a repeated key
+   * never runs the handler again: it waits for and returns the first
+   * request's settlement, and is refused when its parameters differ or that
+   * settlement is no longer kept.
    */
   wrap<H extends Readonly<Record<string, InstructionHandler>>>(
     handlers: H,
@@ -95,12 +176,69 @@ const keyOf = (principalId: string, operation: string, key: string): string =>
  */
 export function createWorkerExecutorReceipts(
   definitions: CanopyInstructionDefinitionMap,
-  options: { max?: number } = {},
+  options: {
+    max?: number;
+    replay?: WorkerExecutorReplay;
+    maxReplayedKeys?: number;
+    maxReplayResults?: number;
+  } = {},
 ): WorkerExecutorReceipts {
   const max = options.max ?? WORKER_EXECUTOR_RECEIPTS_MAX;
+  const maxReplayedKeys =
+    options.maxReplayedKeys ?? WORKER_EXECUTOR_REPLAYED_KEYS_MAX;
+  const maxReplayResults =
+    options.maxReplayResults ?? WORKER_EXECUTOR_REPLAY_RESULTS_MAX;
+  // Kept replay results' total size, against `maxReplayResults`.
+  let replayResultsSize = 0;
+  const { replay } = options;
   const entries = new Map<string, Entry>();
   // Settlement order, for eviction past the bound.
   const settledOrder = new Set<string>();
+  // Replayed keys whose receipt is gone, by digest; never evicted.
+  const forgotten = new Set<string>();
+  // Replayed keys accepted this run; bounds `forgotten`.
+  let replayedKeys = 0;
+  const digestOf = (id: string): string => (replay ? replay.keyDigest(id) : id);
+  const forget = (id: string): void => {
+    const entry = entries.get(id);
+    entries.delete(id);
+    settledOrder.delete(id);
+    if (entry?.replayResult) replayResultsSize -= entry.replayResult.size;
+    if (entry?.fingerprint !== undefined) forgotten.add(digestOf(id));
+  };
+  const replayed = async (
+    entry: Entry,
+    signal: AbortSignal,
+  ): Promise<unknown> => {
+    if (entry.receipt.state === 'running') {
+      signal.throwIfAborted();
+      await new Promise<void>((resolve, reject) => {
+        const onAbort = (): void =>
+          reject(
+            new CanopyOperationError({
+              kind: 'cancelled',
+              message:
+                'The request stopped waiting for the earlier request with its idempotency key.',
+              retry: { kind: 'same_idempotency_key' },
+            }),
+          );
+        signal.addEventListener('abort', onAbort, { once: true });
+        void entry.settled.then(() => {
+          signal.removeEventListener('abort', onAbort);
+          resolve();
+        });
+      });
+    }
+    const { receipt } = entry;
+    if (receipt.state === 'failed')
+      throw new CanopyOperationError({
+        ...receipt.error,
+        retry: { kind: 'never' },
+      });
+    if (receipt.state === 'completed' && entry.replayResult)
+      return entry.replayResult.value;
+    throw replayRefusal('not-retained');
+  };
   const run = (
     name: string,
     handler: InstructionHandler,
@@ -112,23 +250,44 @@ export function createWorkerExecutorReceipts(
     if (key === undefined || definition === undefined)
       return handler(params, context);
     const id = keyOf(context.caller.principalId, name, key);
-    if (entries.has(id)) return handler(params, context);
+    const fingerprint = replay?.operations.has(name)
+      ? replay.fingerprint(withoutMeta(params))
+      : undefined;
+    const existing = entries.get(id);
+    if (fingerprint !== undefined) {
+      if (existing)
+        return existing.fingerprint === fingerprint
+          ? replayed(existing, context.signal)
+          : Promise.reject(replayRefusal('key-reused'));
+      if (forgotten.has(digestOf(id)))
+        return Promise.reject(replayRefusal('not-retained'));
+      if (replayedKeys >= maxReplayedKeys)
+        return Promise.reject(replayRefusal('keys-exhausted'));
+      replayedKeys += 1;
+    } else if (existing) return handler(params, context);
     let markSettled: () => void = () => undefined;
     const entry: Entry = {
       settled: new Promise<void>((resolve) => {
         markSettled = resolve;
       }),
       receipt: { state: 'running' },
+      ...(fingerprint !== undefined && { fingerprint }),
     };
     entries.set(id, entry);
-    const settle = (receipt: WorkerExecutorReceipt): void => {
+    const settle = (
+      receipt: WorkerExecutorReceipt,
+      replayResult?: { value: unknown; size: number },
+    ): void => {
       entry.receipt = receipt;
+      if (replayResult) {
+        entry.replayResult = replayResult;
+        replayResultsSize += replayResult.size;
+      }
       settledOrder.add(id);
-      while (settledOrder.size > max) {
+      while (settledOrder.size > max || replayResultsSize > maxReplayResults) {
         const oldest = settledOrder.values().next().value;
         if (oldest === undefined) break;
-        settledOrder.delete(oldest);
-        entries.delete(oldest);
+        forget(oldest);
       }
       markSettled();
     };
@@ -143,12 +302,19 @@ export function createWorkerExecutorReceipts(
               error: canopyInvalidHandlerResultError().payload,
             });
           else {
-            // The work completed either way; only a bounded result is kept.
+            // The work completed either way; only a bounded result is kept,
+            // except that replay keeps the full result for its repeats.
             const json = CanopyJsonValueSchema.safeParse(parsed.data);
             settle(
               json.success
                 ? { state: 'completed', result: json.data }
                 : { state: 'completed' },
+              fingerprint === undefined
+                ? undefined
+                : {
+                    value: parsed.data,
+                    size: JSON.stringify(parsed.data)?.length ?? 0,
+                  },
             );
           }
           return raw;
@@ -201,8 +367,7 @@ export function createWorkerExecutorReceipts(
       const id = keyOf(principalId, operation, idempotencyKey);
       const entry = entries.get(id);
       if (!entry || entry.receipt.state === 'running') return;
-      entries.delete(id);
-      settledOrder.delete(id);
+      forget(id);
     },
   };
 }

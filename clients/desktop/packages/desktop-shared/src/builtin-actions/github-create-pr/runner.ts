@@ -13,7 +13,26 @@ import {
   hasUnpushedCommits,
   pushBranch,
 } from '@canopy/desktop-shared/lib/git';
-import { generatePrContentWithUsage } from '@canopy/desktop-shared/lib/github-pr-generator';
+import {
+  buildPrContentModelRequest,
+  generatePrContentWithUsage,
+  parsePrContentModelResult,
+} from '@canopy/desktop-shared/lib/github-pr-generator';
+import {
+  assertPushableTarget,
+  hostHelperRequestDigest,
+  pushCheckedCommit,
+  remoteBranchTip,
+  repoTarget,
+  sameTarget,
+  type RepoTarget,
+  readHostHelperBatchMode,
+  recordPreparedTarget,
+  requireHostHelperBatchResult,
+  requirePreparedTarget,
+  writeHostHelperBatchRequests,
+  type HostHelperBatchMode,
+} from '../_lib/host-helper-batch';
 import { localMemoryEnabledFromEnv } from '@canopy/execution-engine/node/lib/native-memory';
 import {
   type PrInstructionMode,
@@ -297,29 +316,38 @@ async function runGh(args: string[], cwd: string): Promise<string> {
   return result.stdout.trim();
 }
 
+/** `--repo` for a gh call pinned to a captured repository (CAN-6702). */
+function ghRepoArgs(ghRepo: string | undefined): string[] {
+  return ghRepo ? ['--repo', ghRepo] : [];
+}
+
 async function findExistingPullRequest(
   repoPath: string,
   branchName: string,
+  ghRepo?: string,
 ): Promise<PullRequestRecord | null> {
-  return findPullRequest(repoPath, branchName, 'open');
+  return findPullRequest(repoPath, branchName, 'open', ghRepo);
 }
 
 async function findClosedPullRequest(
   repoPath: string,
   branchName: string,
+  ghRepo?: string,
 ): Promise<PullRequestRecord | null> {
-  return findPullRequest(repoPath, branchName, 'closed');
+  return findPullRequest(repoPath, branchName, 'closed', ghRepo);
 }
 
 async function findPullRequest(
   repoPath: string,
   branchName: string,
   state: 'open' | 'closed' | 'merged',
+  ghRepo?: string,
 ): Promise<PullRequestRecord | null> {
   const raw = await runGh(
     [
       'pr',
       'list',
+      ...ghRepoArgs(ghRepo),
       '--head',
       branchName,
       '--state',
@@ -420,8 +448,9 @@ async function createPullRequestViaApi(
   title: string,
   body: string,
   requestFile: string,
+  ghRepo?: string,
 ): Promise<PullRequestRecord> {
-  const nameWithOwner = await getRepoNameWithOwner(repoPath);
+  const nameWithOwner = ghRepo ?? (await getRepoNameWithOwner(repoPath));
   await writeFile(
     requestFile,
     `${JSON.stringify({ title, head: branchName, base: baseBranch, body })}\n`,
@@ -481,6 +510,7 @@ async function createPullRequest(
   baseBranch: string,
   title: string,
   body: string,
+  ghRepo?: string,
 ): Promise<{
   record: PullRequestRecord | null;
   bodyFile: string;
@@ -499,6 +529,7 @@ async function createPullRequest(
         [
           'pr',
           'create',
+          ...ghRepoArgs(ghRepo),
           '--base',
           baseBranch,
           '--head',
@@ -511,12 +542,18 @@ async function createPullRequest(
         repoPath,
       );
       const createdUrl = parseCreatedPrUrl(raw);
-      const record = await findExistingPullRequest(repoPath, branchName);
+      const record = await findExistingPullRequest(
+        repoPath,
+        branchName,
+        ghRepo,
+      );
       return { record, bodyFile: '', createdUrl, wasExisting: false };
     } catch (error) {
-      const openPr = await findExistingPullRequest(repoPath, branchName).catch(
-        () => null,
-      );
+      const openPr = await findExistingPullRequest(
+        repoPath,
+        branchName,
+        ghRepo,
+      ).catch(() => null);
       if (openPr) {
         return {
           record: openPr,
@@ -526,12 +563,14 @@ async function createPullRequest(
         };
       }
 
-      const closedPr = await findClosedPullRequest(repoPath, branchName).catch(
-        () => null,
-      );
+      const closedPr = await findClosedPullRequest(
+        repoPath,
+        branchName,
+        ghRepo,
+      ).catch(() => null);
       const mergedPr =
         closedPr ??
-        (await findPullRequest(repoPath, branchName, 'merged').catch(
+        (await findPullRequest(repoPath, branchName, 'merged', ghRepo).catch(
           () => null,
         ));
       if (!mergedPr) {
@@ -545,6 +584,7 @@ async function createPullRequest(
         title,
         body,
         requestFile,
+        ghRepo,
       );
       return {
         record: createdRecord,
@@ -610,6 +650,59 @@ function renderSummary(results: CreatePrRepoResult[]): string {
   ].join('\n');
 }
 
+/**
+ * Refuses when HEAD, the branch or origin's push URL is no longer what a
+ * host-run turn was built from.
+ */
+async function assertTargetUnchanged(
+  repoPath: string,
+  target: RepoTarget,
+  next: 'pushed' | 'created',
+): Promise<void> {
+  if (!sameTarget(await repoTarget(repoPath), target))
+    throw new Error(
+      next === 'pushed'
+        ? 'The branch or its push destination changed after the pull request text was written, so nothing was pushed or created. Run the step again.'
+        : 'The branch or its push destination changed after the pull request text was written, so the pull request was not created. Run the step again.',
+    );
+}
+
+/** The `owner/name` in a remote URL, or null when it has none. */
+function ownerRepoFromUrl(url: string): string | null {
+  const match = /[:/]([^/:]+)\/([^/]+?)(?:\.git)?\/?$/.exec(url.trim());
+  return match ? `${match[1] ?? ''}/${match[2] ?? ''}`.toLowerCase() : null;
+}
+
+/**
+ * Refuses when gh would act on another repository than origin names, so the
+ * pull request cannot open somewhere the push did not go. origin's configured
+ * fetch URL and every effective push URL of the target (after `pushurl` and
+ * `insteadOf`/`pushInsteadOf` rewriting, which is what git pushes to) must all
+ * name gh's repository: a push URL alone could send the commit to another
+ * repository before the pull request is created against this one. The URLs
+ * are read without their credentials and never logged.
+ */
+async function assertOriginIsGhRepo(
+  repoPath: string,
+  ghRepo: string,
+  target: RepoTarget,
+): Promise<void> {
+  const configured = (
+    await execFileAsync('git', ['config', '--get', 'remote.origin.url'], {
+      cwd: repoPath,
+      encoding: 'utf8',
+    }).catch(() => ({ stdout: '' }))
+  ).stdout;
+  const expected = ghRepo.toLowerCase();
+  if (
+    ownerRepoFromUrl(configured) !== expected ||
+    target.pushUrls.some((url) => ownerRepoFromUrl(url) !== expected)
+  )
+    throw new Error(
+      'origin, or the URL it pushes to, does not name the GitHub repository gh would use, so a host-run helper cannot prove where the push would go or where the pull request would open. Nothing was pushed or created for it.',
+    );
+}
+
 async function ensureBranchIsPushed(repoPath: string): Promise<void> {
   const hasTracking = await hasRemoteTrackingBranch(repoPath);
   const needsPush = hasTracking ? await hasUnpushedCommits(repoPath) : true; // No upstream: always push to ensure origin is current
@@ -623,7 +716,8 @@ async function processRepo(
   repo: DiscoveredRepo,
   config: CreatePrConfig,
   secretValues: readonly string[],
-): Promise<CreatePrRepoResult> {
+  mode: HostHelperBatchMode,
+): Promise<CreatePrRepoResult | null> {
   let branchName = '';
   let baseBranch = '';
   let bodyFile = '';
@@ -667,7 +761,36 @@ async function processRepo(
 
     const existingPr = await findExistingPullRequest(repo.repoPath, branchName);
     if (existingPr) {
-      await ensureBranchIsPushed(repo.repoPath);
+      if (mode.kind === 'inline') {
+        await ensureBranchIsPushed(repo.repoPath);
+      } else {
+        // A branch with a pull request needs no model turn, but its push is
+        // still a host-run push: prepare records where it would go, and
+        // apply pushes exactly that commit there only while HEAD, the
+        // branch and the push URL are unchanged. A branch switched during
+        // the turns has no prepared target and is refused (CAN-6702).
+        const target = await repoTarget(repo.repoPath);
+        assertPushableTarget(target);
+        await assertOriginIsGhRepo(
+          repo.repoPath,
+          await getRepoNameWithOwner(repo.repoPath),
+          target,
+        );
+        if (mode.kind === 'prepare') {
+          recordPreparedTarget(mode, repo.repoPath, target);
+          return null;
+        }
+        requirePreparedTarget(mode, repo.repoPath, target);
+        // As `ensureBranchIsPushed`: a branch origin already has, or is
+        // ahead of, is left alone rather than pushed non-fast-forward.
+        const hasTracking = await hasRemoteTrackingBranch(repo.repoPath);
+        if (!hasTracking || (await hasUnpushedCommits(repo.repoPath)))
+          await pushCheckedCommit({
+            repoPath: repo.repoPath,
+            target,
+            commit: target.head,
+          });
+      }
       return {
         repoId: repo.repoId,
         repoName: repo.repoName,
@@ -708,28 +831,78 @@ async function processRepo(
       };
     }
 
-    await ensureBranchIsPushed(repo.repoPath);
-
-    const generated = await generatePrContentWithUsage({
-      repoPath: repo.repoPath,
-      branchName,
-      baseBranch,
-      diff,
-      commitLog,
-      model: config.model,
-      thinkingLevel: config.thinkingLevel,
-      // Builtin actions are plain Node subprocesses: the desktop step runner
-      // projects the opt-in local memory preference into the branded
-      // `PREF_LOCAL_MEMORY_ENABLED` env var; absent (CLI-native runs) means
-      // OFF, keeping provider-native memory defaults (CAN-1969).
-      localMemoryEnabled: localMemoryEnabledFromEnv(),
-      instructions: config.instructions,
-      instructionMode: config.instructionMode,
-    });
-    if (generated.source !== 'model') {
-      throw new Error(
-        'PR content generation returned fallback content instead of model output.',
+    let content: { title: string; body: string };
+    // Host-run turn: where the request was built from (HEAD, branch, push
+    // URL and GitHub repository), checked again right before the push and
+    // before the pull request is created.
+    let checked: { target: RepoTarget; ghRepo: string } | undefined;
+    if (mode.kind === 'inline') {
+      await ensureBranchIsPushed(repo.repoPath);
+      const generated = await generatePrContentWithUsage({
+        repoPath: repo.repoPath,
+        branchName,
+        baseBranch,
+        diff,
+        commitLog,
+        model: config.model,
+        thinkingLevel: config.thinkingLevel,
+        // Builtin actions are plain Node subprocesses: the desktop step
+        // runner projects the opt-in local memory preference into the
+        // branded `PREF_LOCAL_MEMORY_ENABLED` env var; absent (CLI-native
+        // runs) means OFF, keeping provider-native memory defaults
+        // (CAN-1969).
+        localMemoryEnabled: localMemoryEnabledFromEnv(),
+        instructions: config.instructions,
+        instructionMode: config.instructionMode,
+      });
+      if (generated.source !== 'model') {
+        throw new Error(
+          'PR content generation returned fallback content instead of model output.',
+        );
+      }
+      content = generated.content;
+    } else {
+      // On a host-run harness the request is rebuilt from the current state.
+      // Apply looks up the host's result before it pushes, so a repository
+      // that changed since prepare is refused with nothing pushed (CAN-6702).
+      const request = await buildPrContentModelRequest({
+        repoPath: repo.repoPath,
+        branchName,
+        baseBranch,
+        diff,
+        commitLog,
+        instructions: config.instructions,
+        instructionMode: config.instructionMode,
+      });
+      const target = await repoTarget(repo.repoPath);
+      assertPushableTarget(target);
+      const ghRepo = await getRepoNameWithOwner(repo.repoPath);
+      await assertOriginIsGhRepo(repo.repoPath, ghRepo, target);
+      checked = { target, ghRepo };
+      const digest = hostHelperRequestDigest(
+        repo.repoPath,
+        request,
+        JSON.stringify([target, ghRepo]),
       );
+      if (mode.kind === 'prepare') {
+        mode.requests.push({ digest, ...request });
+        return null;
+      }
+      const parsed = parsePrContentModelResult(
+        requireHostHelperBatchResult(mode, digest).structured,
+      );
+      if (parsed === null)
+        throw new Error(
+          'The model did not return a pull request title and body.',
+        );
+      await assertTargetUnchanged(repo.repoPath, target, 'pushed');
+      // Exactly the checked commit, to the checked branch.
+      await pushCheckedCommit({
+        repoPath: repo.repoPath,
+        target,
+        commit: target.head,
+      });
+      content = parsed;
     }
 
     // Redacted BEFORE they become the actual PR title/body posted to
@@ -747,24 +920,34 @@ async function processRepo(
     // code fences) a PR body legitimately contains. This comment used to say
     // the body stayed on plain `redactValues` as a deliberate tradeoff; that
     // tradeoff no longer exists and the sentence outlived it.
-    const redactedTitle = redactNormalizedText(
-      generated.content.title,
-      secretValues,
-    );
+    const redactedTitle = redactNormalizedText(content.title, secretValues);
     // The body is posted to a possibly-public PR, so this is the site where a
     // reflowed value costs the most. Formatting-preserving normalized matching
     // gives the same strength as the inline title without flattening the body.
     const redactedBody = redactNormalizedPreservingFormat(
-      generated.content.body,
+      content.body,
       secretValues,
     );
 
+    if (checked) {
+      await assertTargetUnchanged(repo.repoPath, checked.target, 'created');
+      // The pull request opens on origin's branch, so that must be the
+      // checked commit too.
+      if (
+        (await remoteBranchTip(repo.repoPath, checked.target.branch)) !==
+        checked.target.head
+      )
+        throw new Error(
+          "origin's branch is not the commit the pull request text was written for, so the pull request was not created. Run the step again.",
+        );
+    }
     const created = await createPullRequest(
       repo.repoPath,
       branchName,
       baseBranch,
       redactedTitle,
       redactedBody,
+      checked?.ghRepo,
     );
     bodyFile = created.bodyFile;
 
@@ -784,6 +967,9 @@ async function processRepo(
       error: '',
     };
   } catch (error) {
+    // A repository that cannot be read yet records no request; apply reads
+    // it again and reports the failure.
+    if (mode.kind === 'prepare') return null;
     const message = describeGhError(error, secretValues);
     return {
       repoId: repo.repoId,
@@ -830,8 +1016,17 @@ export async function runGitHubCreatePrAction(
       getBrandEnv(env, 'AGENT_SECRET_VALUES'),
     );
 
+    const mode = readHostHelperBatchMode(env);
+
     for (const repo of repos) {
-      results.push(await processRepo(repo, config, secretValues));
+      const result = await processRepo(repo, config, secretValues, mode);
+      if (result) results.push(result);
+    }
+    // A preparing run only hands its requests to the host; it reports no
+    // outputs, and the step's outputs come from the apply run.
+    if (mode.kind === 'prepare') {
+      writeHostHelperBatchRequests(mode);
+      return;
     }
 
     const createdCount = results.filter(

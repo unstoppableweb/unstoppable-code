@@ -1,0 +1,255 @@
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+
+exports[`conditional reads and rate limits pauses a bucket at its primary limit and reports the quota 1`] = `
+{
+  "diagnostics": {
+    "pausedUntil": {
+      "core": "2026-11-16T11:00:01.000Z",
+    },
+    "quota": [
+      {
+        "limit": 5000,
+        "remaining": 0,
+        "resetAt": "2026-11-16T11:00:00.000Z",
+        "resource": "core",
+      },
+    ],
+    "spend": {
+      "entries": [
+        {
+          "caller": "unlabeled",
+          "notModified": 0,
+          "priority": "background",
+          "requests": 1,
+          "resource": "core",
+        },
+      ],
+      "windowStartedAt": "2026-11-16T10:00:00.000Z",
+    },
+  },
+  "exhausted": {
+    "error": "rate_limited",
+    "retriable": true,
+  },
+  "refused": {
+    "error": "rate_limited",
+    "retriable": true,
+  },
+  "states": [
+    {
+      "kind": "primary",
+      "resource": "core",
+      "retryAfterSeconds": 3601,
+      "retryAt": "2026-11-16T11:00:01.000Z",
+      "snapshot": {
+        "limit": 5000,
+        "remaining": 0,
+        "resetAt": "2026-11-16T11:00:00.000Z",
+        "resource": "core",
+      },
+    },
+  ],
+}
+`;
+
+exports[`conditional reads and rate limits reuses a cached body on 304 and reports it unchanged 1`] = `
+{
+  "first": {
+    "data": {
+      "title": "Feature",
+    },
+    "kind": "read",
+    "status": 200,
+  },
+  "second": {
+    "changed": false,
+    "data": {
+      "title": "Feature",
+    },
+    "kind": "read",
+    "status": 304,
+  },
+  "seenConditionalHeaders": [
+    "",
+    "if-none-match="v1"",
+  ],
+}
+`;
+
+exports[`credentials and lifecycle builds one client per credential generation and refuses without a token 1`] = `
+{
+  "generationAdvanced": true,
+  "octokitBuilds": [
+    "with-token",
+    "with-token",
+    "with-token",
+  ],
+  "refused": {
+    "error": "not_authenticated",
+    "retriable": false,
+  },
+  "tokenReads": [
+    "read",
+    "invalidate",
+    "none",
+    "read",
+  ],
+}
+`;
+
+exports[`credentials and lifecycle reissues in-flight work on credential reset and shuts down once 1`] = `
+{
+  "afterReset": {
+    "changed": true,
+    "kind": "read",
+    "status": 200,
+  },
+  "afterShutdown": {
+    "error": "shutdown",
+    "retriable": false,
+  },
+  "attemptsAfterReset": 2,
+  "attemptsBeforeReset": 1,
+  "queuedAtShutdown": {
+    "error": "shutdown",
+    "retriable": false,
+  },
+  "tokenReads": [
+    "read",
+    "invalidate",
+    "read",
+  ],
+}
+`;
+
+exports[`per-credential separation keeps conditional cache entries and quota apart per caller-selected credential 1`] = `
+{
+  "octokitBuilds": [
+    "with-token",
+    "with-token",
+    "with-token",
+    "with-token",
+  ],
+  "quota": {
+    "callerA": 2999,
+    "callerB": 2000,
+    "default": 3999,
+    "unknownCaller": null,
+  },
+  "seen": [
+    "default-1 no-conditional",
+    "caller-a-1 no-conditional",
+    "caller-b-1 no-conditional",
+    "default-2 if-none-match",
+    "caller-a-2 if-none-match",
+  ],
+  "tokenReads": [
+    "read",
+  ],
+}
+`;
+
+exports[`retries retries safe operations on server and network failures only 1`] = `
+{
+  "safeMutationServerError": {
+    "attempts": 4,
+    "result": {
+      "error": "server_error",
+      "retriable": true,
+    },
+  },
+  "safeReadNetworkError": {
+    "attempts": 4,
+    "result": {
+      "error": "network",
+      "retriable": true,
+    },
+  },
+  "safeReadNotFound": {
+    "attempts": 1,
+    "result": {
+      "error": "not_found",
+      "retriable": false,
+    },
+  },
+  "safeReadServerError": {
+    "attempts": 4,
+    "result": {
+      "error": "server_error",
+      "retriable": true,
+    },
+  },
+  "unsafeMutationServerError": {
+    "attempts": 1,
+    "result": {
+      "error": "server_error",
+      "retriable": true,
+    },
+  },
+}
+`;
+
+exports[`scheduling serves interactive requests first without starving background reads 1`] = `
+[
+  "fill-0",
+  "interactive-0",
+  "interactive-1",
+  "interactive-2",
+  "interactive-3",
+  "interactive-4",
+  "fill-1",
+  "interactive-5",
+  "interactive-6",
+  "interactive-7",
+  "fill-2",
+  "fill-3",
+  "fill-4",
+  "fill-5",
+  "fill-6",
+  "fill-7",
+  "background-0",
+  "background-1",
+  "background-2",
+  "background-3",
+]
+`;
+
+exports[`scheduling shares one in-flight conditional read per resource key, and only those 1`] = `
+{
+  "plainCalls": 2,
+  "separate": [
+    {
+      "n": 2,
+    },
+    {
+      "n": 3,
+    },
+  ],
+  "shared": [
+    {
+      "n": 1,
+    },
+    {
+      "n": 1,
+    },
+  ],
+  "sharedCalls": 1,
+}
+`;
+
+exports[`scheduling starts at most eight reads per second and spaces mutations a second apart 1`] = `
+[
+  "read-0@0",
+  "mutation-a@0",
+  "mutation-b@1000",
+  "read-1@1000",
+  "read-2@1000",
+  "read-3@1000",
+  "read-4@1000",
+  "read-5@1000",
+  "read-6@1000",
+  "read-7@1000",
+  "read-8@1000",
+  "read-9@2000",
+]
+`;

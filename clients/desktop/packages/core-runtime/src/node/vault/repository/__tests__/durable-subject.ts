@@ -55,6 +55,8 @@ function routedStore(
     setIntentRunning: (sequence, running) =>
       store.setIntentRunning(sequence, running),
     isIntentRunning: (sequence) => store.isIntentRunning(sequence),
+    readCopilotAuthority: () => store.readCopilotAuthority(),
+    writeCopilotAuthority: (update) => store.writeCopilotAuthority(update),
     readMigrationJournal: () => store.readMigrationJournal(),
     writeMigrationJournal: (update) => store.writeMigrationJournal(update),
     commitEntry: (sequence, draft) =>

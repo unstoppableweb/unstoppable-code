@@ -49,6 +49,8 @@ import { getOpenCodeConnectionGeneration } from '../../opencode/connection';
 import { createOpenCodeDelegationRunner } from './opencode-runner';
 import { getCopilotAccountGeneration } from '../../copilot/connection';
 import { createCopilotDelegationRunner } from './copilot-runner';
+import { createAntigravityDelegationRunner } from './antigravity-runner';
+import { getAntigravityConnectionGeneration } from '../../antigravity/connection-generation';
 import { createCursorDelegationRunner } from './cursor-runner';
 import { getCursorAccountGeneration } from '../../cursor/connection';
 import type { LocalDelegationContext } from '@canopy/desktop-shared/node/delegation/local-runner';
@@ -1183,13 +1185,15 @@ async function actorFor(
       admissionCurrent: (signal, harness): boolean =>
         brokerRef.current?.admissionCurrent(signal, harness) ?? false,
       authGeneration: (provider): number =>
-        provider === 'opencode'
-          ? getOpenCodeConnectionGeneration()
-          : provider === 'copilot'
-            ? getCopilotAccountGeneration()
-            : provider === 'cursor'
-              ? getCursorAccountGeneration()
-              : getProviderAuthGeneration(provider),
+        provider === 'antigravity'
+          ? getAntigravityConnectionGeneration()
+          : provider === 'opencode'
+            ? getOpenCodeConnectionGeneration()
+            : provider === 'copilot'
+              ? getCopilotAccountGeneration()
+              : provider === 'cursor'
+                ? getCursorAccountGeneration()
+                : getProviderAuthGeneration(provider),
       owner: (parent): AgentSessionOptions | undefined =>
         rootFor(parent)?.options(),
       capabilityContext: (
@@ -1420,6 +1424,23 @@ async function actorFor(
           ledger: childLedger,
           transcriptPort,
           prepare: (context) => runtime.prepareOpenCode(context),
+          reportError,
+        }),
+      ),
+    });
+    // Registered so retained Google delegates resolve to one runner. Route
+    // capture refuses new Google children until their native discovery
+    // boundary is qualified (antigravityChildAdmission).
+    registry.register({
+      apiVersion: 1,
+      registrationId: 'local-delegation-antigravity-v1',
+      adapter: withSubagentWorkerRuns(
+        createAntigravityDelegationRunner({
+          available: runtime.available,
+          delegation: childDelegation,
+          ledger: childLedger,
+          transcriptPort,
+          prepare: (context) => runtime.prepareAntigravity(context),
           reportError,
         }),
       ),

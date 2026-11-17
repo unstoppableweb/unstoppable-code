@@ -1,4 +1,4 @@
-import { OpenCodeAccountCard } from '@canopy/ui-shared';
+import { AntigravityAccountCard, OpenCodeAccountCard } from '@canopy/ui-shared';
 import { getCursorSettingsSection } from '@/lib/cursor-settings';
 import { getCopilotSettingsSection } from '@/lib/copilot-settings';
 import { getOpenCodeSettingsSection } from '@/lib/opencode-settings';
@@ -651,8 +651,22 @@ export function ProviderUsageCards({
         />
       ))}
       <OpenCodeUsageSection usage={usage} />
+      <AntigravityUsageSection usage={usage} />
     </>
   );
+}
+
+/** Host gate around the shared Antigravity plan group. */
+export function AntigravityUsageSection({
+  usage,
+}: {
+  usage: AgentUsageOverview;
+}): JSX.Element | null {
+  const enabled = useFeatureFlagsStore((state) =>
+    state.isEnabled(CLIENT_FEATURE_FLAGS.canopyDesktopAntigravityHarness.key),
+  );
+  if (!enabled || !usage.antigravityAccount) return null;
+  return <AntigravityAccountCard snapshot={usage.antigravityAccount} />;
 }
 
 /** Host gate around the shared OpenCode account group. */

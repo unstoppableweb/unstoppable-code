@@ -3,7 +3,11 @@ description: Detect existing pull requests across the workspace and create missi
 scope: worktree
 inputs:
   pr_model:
-    description: Optional PR-generation model override. Falls back to {{BRAND_ENV_PREFIX}}_PREF_PR_GENERATION_MODEL and then Sonnet.
+    description: >
+      Optional PR-generation model override. Falls back to
+      {{BRAND_ENV_PREFIX}}_PREF_PR_GENERATION_MODEL and then Sonnet. Codex,
+      Cursor, Copilot, OpenCode and Google models run one read-only turn per
+      repository on the host runner before anything is pushed or created.
     required: false
   pr_thinking_level:
     description: >

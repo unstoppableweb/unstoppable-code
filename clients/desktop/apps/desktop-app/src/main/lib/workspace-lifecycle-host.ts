@@ -927,6 +927,9 @@ export const desktopWorkspaceLifecycleHost: CoreWorkspaceLifecycleHost = {
         ...(request.sidebarItemGroupId !== undefined && {
           sidebarItemGroupId: request.sidebarItemGroupId,
         }),
+        ...(request.worktreeId !== undefined && {
+          claimedWorktreeId: request.worktreeId,
+        }),
         idempotencyKey: call.idempotencyKey,
         receiptCaller: receiptCaller(call, 'worktree-create'),
         onKeyedReplay: () => {

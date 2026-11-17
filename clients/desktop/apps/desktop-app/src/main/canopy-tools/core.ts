@@ -95,7 +95,12 @@ import {
 import { classifyGitHubIntegrationAuthFailure } from '@canopy/execution-engine/agent-failures';
 import { buildChatSessionKey } from '../agents/session-key';
 import { recordPendingInjectedToolAuthFailure } from '../mcp/pending-auth-failures';
-import { invalidAgentActionArguments as invalidArguments } from '@canopy/agent-actions';
+import {
+  invalidAgentActionArguments as invalidArguments,
+  requestSecretsInputSchema,
+  type RequestSecretsInput,
+  type RequestSecretsResult,
+} from '@canopy/agent-actions';
 import { executeDesktopAgentActionTool } from '../agent-actions/desktop-surface';
 import { worktreeWatcherDestination } from '../agent-actions/desktop-watcher-port';
 import { isChatVisualsEnabled } from '../lib/chat-visuals-feature-flag';
@@ -153,6 +158,15 @@ export interface CanopyInjectedToolRuntime {
     questions: McpQuestion[],
     options?: { toolUseId?: string; signal?: AbortSignal },
   ): Promise<McpQuestionAnswer[]>;
+  /**
+   * Present only for a root local chat that offers RequestSecrets (flag on,
+   * not terminal mode, a delegate or a subagent). Shows the secret request
+   * form and resolves names and states, never values.
+   */
+  requestSecrets?: (
+    input: RequestSecretsInput,
+    options: { toolUseId?: string; signal?: AbortSignal },
+  ) => Promise<RequestSecretsResult>;
   loadScriptOutput(
     request: GetScriptOutputInput,
   ): Promise<ScriptOutputSnapshot>;
@@ -337,6 +351,7 @@ async function runCanopyInjectedTool(
         }),
       };
     case 'request_secrets':
+      return executeRequestSecrets(rawArgs, runtime, context);
     case 'run_with_secrets':
     case 'write_secrets_file':
       // Registered contracts only: no surface offers these tools and no
@@ -576,6 +591,47 @@ async function executeAskUserQuestion(
       text: 'User dismissed the question.',
       isError: true,
     };
+  }
+}
+
+const SECRET_REQUESTS_UNAVAILABLE: CanopyInjectedToolTextResult = {
+  isError: true,
+  text: JSON.stringify({
+    ok: false,
+    error: {
+      code: 'capability_unavailable',
+      message: 'Secret requests are unavailable in this session.',
+      retryable: false,
+    },
+  }),
+};
+
+async function executeRequestSecrets(
+  rawArgs: unknown,
+  runtime: CanopyInjectedToolRuntime,
+  context?: CanopyInjectedToolContext,
+): Promise<CanopyInjectedToolTextResult> {
+  if (!runtime.requestSecrets) return SECRET_REQUESTS_UNAVAILABLE;
+  const parsed = requestSecretsInputSchema.safeParse(rawArgs);
+  if (!parsed.success) {
+    // Names and limits only: the arguments never carry a value to echo.
+    return {
+      isError: true,
+      text: `Invalid RequestSecrets arguments: ${parsed.error.issues
+        .map((issue) => `${issue.path.join('.') || 'input'}: ${issue.message}`)
+        .join('; ')}`,
+    };
+  }
+  try {
+    const result = await runtime.requestSecrets(parsed.data, {
+      ...(context?.toolUseId ? { toolUseId: context.toolUseId } : {}),
+      ...(context?.signal ? { signal: context.signal } : {}),
+    });
+    return { text: JSON.stringify(result) };
+  } catch (error) {
+    if (error instanceof Error && error.message === 'Window not available')
+      return { text: 'Window not available', isError: true };
+    return SECRET_REQUESTS_UNAVAILABLE;
   }
 }
 

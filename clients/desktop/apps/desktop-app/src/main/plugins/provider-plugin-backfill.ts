@@ -1,3 +1,4 @@
+import { runSerializedPluginMutation } from './plugin-mutation-queue';
 import * as fs from 'fs';
 import * as path from 'path';
 import type {
@@ -238,8 +239,6 @@ function deferred(
   };
 }
 
-const inFlight = new Map<PluginProvider, Promise<unknown>>();
-
 /**
  * Backfill `provider` for the account `fingerprint` identifies. Once the run
  * is recorded, a repeat observation of the same account, including every app
@@ -252,16 +251,9 @@ export async function runProviderPluginBackfill(
   fingerprint: string,
   deps: ProviderPluginBackfillDependencies,
 ): Promise<ProviderPluginBackfillReport> {
-  const previous = inFlight.get(provider) ?? Promise.resolve();
-  const run = previous
-    .catch(() => undefined)
-    .then(() => backfillProvider(provider, fingerprint, deps));
-  inFlight.set(provider, run);
-  try {
-    return await run;
-  } finally {
-    if (inFlight.get(provider) === run) inFlight.delete(provider);
-  }
+  return runSerializedPluginMutation(() =>
+    backfillProvider(provider, fingerprint, deps),
+  );
 }
 
 async function backfillProvider(

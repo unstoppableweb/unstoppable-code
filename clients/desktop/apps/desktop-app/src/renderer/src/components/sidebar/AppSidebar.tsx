@@ -66,6 +66,7 @@ import {
 import { CustomizeSidebarModal } from './CustomizeSidebarModal';
 import type { NavigationPage } from '@/stores/navigationStore';
 import { useNavigationStore } from '@/stores/navigationStore';
+import { publishRecoveryShellSnapshot } from '@/stores/recoveryShellSnapshotStore';
 import { useAppAdvisorStore } from '@/stores/appAdvisorStore';
 import { ORCHESTRATOR_PAGE_EXPERIMENT_ID } from '@/lib/orchestratorPageExperiment';
 import {
@@ -3609,6 +3610,7 @@ export function AppSidebar({
                                 header and after the Chats section, exactly
                                 where the legacy section put it. */}
                               <DesktopSharedSidebarHost
+                                onSnapshot={publishRecoveryShellSnapshot}
                                 worktreeDiffStatsStyle={worktreeDiffStatsStyle}
                               />
                             </Suspense>

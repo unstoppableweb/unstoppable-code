@@ -1,5 +1,7 @@
 'use client';
 
+import { ItemStateMarksProvider } from '@canopy/ui-shared/components';
+
 import {
   createContext,
   useCallback,
@@ -209,7 +211,9 @@ export function CustomizeDiscoveryProvider({
   );
   return (
     <CustomizeDiscoveryContext.Provider value={value}>
-      {children}
+      <ItemStateMarksProvider enabled={enabled}>
+        {children}
+      </ItemStateMarksProvider>
     </CustomizeDiscoveryContext.Provider>
   );
 }

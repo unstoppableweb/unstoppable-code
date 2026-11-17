@@ -103,7 +103,9 @@ async function revalidateCatalog(
           ? 'ollama'
           : payload.providerType === 'opencode'
             ? 'opencode'
-            : 'claude';
+            : payload.providerType === 'antigravity'
+              ? 'antigravity'
+              : 'claude';
   const catalog = await buildDeferredToolsCatalog({
     provider,
     pluginSelections: undefined,

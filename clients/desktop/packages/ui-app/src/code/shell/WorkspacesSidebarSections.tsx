@@ -2,6 +2,10 @@
 
 import { ControlButton } from '@canopy/ui-shared/components';
 import {
+  requestArchiveRecoveryReview,
+  useArchiveRecoveryWorkspaceIds,
+} from '@canopy/app-state';
+import {
   SidebarArchivedRow,
   SidebarGroupStrip,
 } from '@canopy/ui-shared/components';
@@ -20,6 +24,8 @@ import {
   SidebarDropLine,
   SidebarNestingRail,
   Button,
+  DropdownMenuItem,
+  DropdownMenuItemIcon,
   Dot,
   SidebarItemGroupHeader,
   sidebarItemGroupColor,
@@ -61,6 +67,7 @@ import {
 } from './sortable-state-context';
 import type {
   CanopyCapabilities,
+  WorktreeCreateOptions,
   WorktreeCreateResult,
   WorktreeRemovalCapability,
 } from '@canopy/app-core';
@@ -73,8 +80,6 @@ import {
   WorkspaceSectionHeader,
   type WorkspaceSectionHeaderContextAction,
   workspaceChildUnitLabel,
-  SIDEBAR_ROW_GRID_CLASSNAME,
-  SIDEBAR_ROW_LEADING_SLOT_CLASSNAME,
   SIDEBAR_ROW_TEXT_INSET_CLASSNAME,
   SidebarToggleRow,
   WorktreeRow,
@@ -105,14 +110,21 @@ import {
   WorkspaceStickyPins,
 } from './sidebar';
 import {
+  type PendingWorktreeCreate,
   type WorkspaceSectionsSnapshot,
   type WorktreeRuntimeProjection,
-  newWorktreeIdsAfterSnapshot,
+  claimPendingWorktreeId,
+  isPendingCreateRow,
+  mergePendingCreateRows,
   partitionWorkspaces,
   partitionWorktrees,
-  pendingWorkspaceIdsAfterSnapshot,
+  pendingCreateBackstop,
+  pendingCreateDeadline,
+  pendingCreateRowId,
+  pendingCreateTarget,
   projectWorktreeRuntime,
   rollUpPendingQuestionWorktreeKeys,
+  withPendingGroupMember,
   workspaceWorktreeIds,
   worktreeRowKey,
 } from './workspace-sections-model';
@@ -1176,10 +1188,18 @@ export interface WorkspacesSidebarSectionsProps {
     readonly worktreeLocalId: string;
   } | null;
   readonly onCreationError?: (workspaceLocalId: string, error: unknown) => void;
+  /**
+   * `options.worktreeId` is the surface's claimed id, sent only for a
+   * workspace that publishes `worktreeIdClaimPrefix`. The result's
+   * `worktreeId` is authoritative either way. `undefined` means the host
+   * started no create (a navigation-only rail hands off to another page),
+   * so the pending row is dropped at once.
+   */
   readonly onCreateWorktree: (
     workspaceLocalId: string,
     sidebarItemGroupId?: string,
-  ) => Promise<WorktreeCreateResult>;
+    options?: WorktreeCreateOptions,
+  ) => Promise<WorktreeCreateResult | undefined>;
   /**
    * The host wires worktree creation (it supplies `onCreateWorktree`). Not
    * sufficient on its own: each project's `+` also needs that project's own
@@ -1268,12 +1288,14 @@ function WorkspaceDropIndicator({
 }
 
 const NO_PENDING_PROJECTS: readonly SidebarPendingProject[] = [];
+const NO_PENDING_CREATES: ReadonlyMap<string, PendingWorktreeCreate> =
+  new Map();
 
 export function WorkspacesSidebarSections({
   state,
   capabilities,
   capabilitiesFor,
-  selected,
+  selected: hostSelected,
   onSelectWorkspace,
   workspaceNameTogglesCollapse,
   onSelectWorktree,
@@ -1356,6 +1378,7 @@ export function WorkspacesSidebarSections({
   getBranchGrouping,
   testIds,
 }: WorkspacesSidebarSectionsProps): JSX.Element | null {
+  const recoveryWorkspaceIds = useArchiveRecoveryWorkspaceIds();
   // A waiting question is carried per chat on the wire; the row dot is per
   // worktree. Keyed on the summaries array so a snapshot that did not change
   // them keeps the set (and every row's projection) stable.
@@ -1363,7 +1386,6 @@ export function WorkspacesSidebarSections({
     () => rollUpPendingQuestionWorktreeKeys(state.chatSummaries),
     [state.chatSummaries],
   );
-  const pendingGroupByWorkspaceRef = useRef(new Map<string, string>());
   // Per workspace: opens its group list's editor from the selected row's
   // pinned copy, whose menu is built here rather than by the list.
   const itemGroupEditorsRef = useRef(
@@ -1383,17 +1405,21 @@ export function WorkspacesSidebarSections({
   const [archivedLoadStates, setArchivedLoadStates] = useState<
     Record<string, 'loading' | 'settled'>
   >({});
-  const [pendingBaselines, setPendingBaselines] = useState<
-    ReadonlyMap<string, ReadonlySet<string>>
-  >(new Map());
+  // One pending create per workspace, rendered as a synthetic row through the
+  // real row pipeline until the host lists the created worktree.
+  const [pendingCreates, setPendingCreates] =
+    useState<ReadonlyMap<string, PendingWorktreeCreate>>(NO_PENDING_CREATES);
+  // Bumped when a pending create's deadline passes, to re-run the release.
+  const [pendingCreateClock, setPendingCreateClock] = useState(0);
+  const pendingCreateCounter = useRef(0);
   // A create may select at registration, before persistence or its snapshot
   // finishes. Never let a late receipt overwrite newer navigation, including
   // away-and-back to the same target. Count committed structural changes only.
-  const selectionKey = selected
+  const selectionKey = hostSelected
     ? JSON.stringify([
-        selected.kind,
-        selected.workspaceLocalId,
-        selected.kind === 'worktree' ? selected.worktreeLocalId : null,
+        hostSelected.kind,
+        hostSelected.workspaceLocalId,
+        hostSelected.kind === 'worktree' ? hostSelected.worktreeLocalId : null,
       ])
     : null;
   const selectionRevision = useRef({ key: selectionKey, revision: 0 });
@@ -1418,8 +1444,40 @@ export function WorkspacesSidebarSections({
   const pendingRevealTargetRef = useRef(pendingRevealTarget);
   onWorktreeRowElementRef.current = onWorktreeRowElement;
   pendingRevealTargetRef.current = pendingRevealTarget;
+  // While its attempt still owns navigation (no selection change since the
+  // click), the latest pending row renders selected and every other row
+  // unselected. Navigating elsewhere drops the override.
+  let pendingSelection: WorkspacesSidebarSelection = null;
+  let pendingSelectionStartedAt = -Infinity;
+  for (const [workspaceLocalId, entry] of pendingCreates) {
+    if (
+      entry.selectionKey !== selectionKey ||
+      entry.attempt.selectionRevision !== selectionRevision.current.revision ||
+      entry.startedAtMs < pendingSelectionStartedAt
+    ) {
+      continue;
+    }
+    pendingSelectionStartedAt = entry.startedAtMs;
+    pendingSelection = {
+      kind: 'worktree',
+      workspaceLocalId,
+      worktreeLocalId: pendingCreateRowId(entry),
+    };
+  }
+  const selected = pendingSelection ?? hostSelected;
   const workspaces = state.workspaces;
-  const worktrees = state.worktrees;
+  // The snapshot with each pending create's synthetic row merged in, so
+  // listing, ordering, grouping and filtering treat it exactly as they will
+  // treat the created row. The snapshot's own array when nothing is pending.
+  const worktrees = useMemo(
+    () => mergePendingCreateRows(workspaces, state.worktrees, pendingCreates),
+    [pendingCreates, state.worktrees, workspaces],
+  );
+  const isPendingRow = (
+    workspaceLocalId: string,
+    worktreeLocalId: string,
+  ): boolean =>
+    isPendingCreateRow(pendingCreates, workspaceLocalId, worktreeLocalId);
   // Sidebar-wide, not per workspace: the pip exists to say WHERE work runs, so
   // it earns its place only when the sidebar holds more than one answer. Cheap
   // single pass over the same rows the sections already read.
@@ -1539,46 +1597,116 @@ export function WorkspacesSidebarSections({
     [revealIfTarget],
   );
 
-  useEffect(() => {
-    // Compute each pending workspace's newly-observed ids ONCE and reuse the
-    // result for both selection and the baseline state update.
-    //
-    // Known tradeoff (no wire correlation id): a single new id is assumed to
-    // be OUR create. If an unrelated worktree lands in the same workspace
-    // while a create is pending, it may be auto-selected — rare (duplicate
-    // creation per workspace is suppressed and creates resolve quickly) and
-    // benign (a navigation, not a mutation). Multiple simultaneous additions
-    // cannot be correlated, so they clear the pending row without selecting.
-    const resolvedWorkspaces = new Map<string, readonly string[]>();
-    pendingBaselines.forEach((baseline, workspaceLocalId) => {
-      const newIds = newWorktreeIdsAfterSnapshot(
-        baseline,
+  // Release a pending create only once the host lists its row: in the
+  // snapshot AND not vetoed by `isWorktreeListed` (desktop hides a snapshot row
+  // until its projects store has it). Until then the synthetic row stands in.
+  // A layout effect, so the release and its selection land before paint.
+  useLayoutEffect(() => {
+    if (pendingCreates.size === 0) return;
+    const now = Date.now();
+    const finished = new Map<string, PendingWorktreeCreate>();
+    pendingCreates.forEach((entry, workspaceLocalId) => {
+      // Abandon without an error when the workspace leaves the snapshot or
+      // its host stops accepting commands (a dropped Portal pairing).
+      if (
+        !state.workspaces.some(
+          (workspace) => workspace.localId === workspaceLocalId,
+        ) ||
+        isWorkspaceCommandDisabled?.(workspaceLocalId) === true
+      ) {
+        finished.set(workspaceLocalId, entry);
+        return;
+      }
+      const target = pendingCreateTarget(
+        entry,
         workspaceLocalId,
         state.worktrees,
       );
-      if (newIds.length > 0) {
-        resolvedWorkspaces.set(workspaceLocalId, newIds);
+      // Several additions at once cannot be correlated: release unselected.
+      if (target.kind === 'ambiguous') {
+        finished.set(workspaceLocalId, entry);
+        return;
       }
+      const inSnapshot =
+        target.kind === 'target' &&
+        state.worktrees.some(
+          (worktree) =>
+            worktree.workspaceLocalId === workspaceLocalId &&
+            worktree.localId === target.worktreeId,
+        );
+      // Nothing releases before the host answers. Another create can take the
+      // claimed id first (the host's generator can't see client claims), so a
+      // claim appearing proves nothing yet; the host's `completed` id, or the
+      // snapshot once it answered `pending`, names the row.
+      const hostAnswered =
+        entry.resolvedId !== undefined || entry.snapshotResolves === true;
       if (
-        newIds.length === 1 &&
-        pendingAttempts.current.get(workspaceLocalId)?.selectionRevision ===
-          selectionRevision.current.revision
+        inSnapshot &&
+        hostAnswered &&
+        isWorktreeListed?.(workspaceLocalId, target.worktreeId) !== false
       ) {
-        onSelectWorktree(workspaceLocalId, newIds[0]);
+        finished.set(workspaceLocalId, entry);
+        if (
+          entry.attempt.selectionRevision ===
+            selectionRevision.current.revision &&
+          pendingAttempts.current.get(workspaceLocalId) === entry.attempt
+        ) {
+          onSelectWorktree(workspaceLocalId, target.worktreeId);
+        }
+        return;
+      }
+      // A row that never arrives must not pin an inert selected row forever,
+      // nor may a completed create's row the host keeps vetoing. An in-flight
+      // create whose row is listed, but vetoed or not yet confirmed by the
+      // host, waits for its result instead, up to the backstop.
+      if (
+        ((!inSnapshot || entry.completedAtMs !== undefined) &&
+          now >= pendingCreateDeadline(entry)) ||
+        now >= pendingCreateBackstop(entry)
+      ) {
+        finished.set(workspaceLocalId, entry);
       }
     });
-    if (resolvedWorkspaces.size > 0) {
-      // Release the pending row, but keep attempt ownership until its receipt
-      // settles or a newer create replaces it. An ambiguous snapshot cannot
-      // select, while the matching completion still knows the created id.
-      // The model helper stays the single source of truth for baseline
-      // resolution; gating on the precomputed result means it only runs
-      // when something actually resolved instead of every snapshot cycle.
-      setPendingBaselines((previous) =>
-        pendingWorkspaceIdsAfterSnapshot(previous, state.worktrees),
-      );
-    }
-  }, [onSelectWorktree, pendingBaselines, state.worktrees]);
+    if (finished.size === 0) return;
+    setPendingCreates((previous) => {
+      let next: Map<string, PendingWorktreeCreate> | undefined;
+      finished.forEach((entry, workspaceLocalId) => {
+        if (previous.get(workspaceLocalId) !== entry) return;
+        next ??= new Map(previous);
+        next.delete(workspaceLocalId);
+      });
+      return next ?? previous;
+    });
+  }, [
+    isWorkspaceCommandDisabled,
+    isWorktreeListed,
+    onSelectWorktree,
+    pendingCreateClock,
+    pendingCreates,
+    state.workspaces,
+    state.worktrees,
+  ]);
+  // Wakes the release above at the next future deadline. Past deadlines are
+  // skipped, so an entry whose row is listed but still vetoed cannot spin.
+  useEffect(() => {
+    if (pendingCreates.size === 0) return;
+    const now = Date.now();
+    let next = Infinity;
+    pendingCreates.forEach((entry) => {
+      for (const deadline of [
+        pendingCreateDeadline(entry),
+        pendingCreateBackstop(entry),
+      ]) {
+        if (deadline > now) next = Math.min(next, deadline);
+      }
+    });
+    if (next === Infinity) return;
+    const timeout = setTimeout(
+      () => setPendingCreateClock((clock) => clock + 1),
+      next - now,
+    );
+    return (): void => clearTimeout(timeout);
+  }, [pendingCreateClock, pendingCreates]);
   useEffect(() => {
     mountedRef.current = true;
     return (): void => {
@@ -1664,42 +1792,97 @@ export function WorkspacesSidebarSections({
     );
   }
 
-  const pendingGroupByWorkspace = pendingGroupByWorkspaceRef.current;
   const createWorktree = (workspaceLocalId: string, groupId?: string): void => {
-    if (pendingBaselines.has(workspaceLocalId)) return;
+    if (pendingCreates.has(workspaceLocalId)) return;
     const revision = selectionRevision.current.revision;
     // Object identity owns cleanup: a snapshot can release A before its
     // receipt arrives, allowing B to start in the same workspace.
     const attempt = { selectionRevision: revision };
     pendingAttempts.current.set(workspaceLocalId, attempt);
     const baseline =
-      workspaceWorktreeIds(worktrees).get(workspaceLocalId) ?? new Set();
-    setPendingBaselines((previous) => {
+      workspaceWorktreeIds(state.worktrees).get(workspaceLocalId) ??
+      new Set<string>();
+    const workspace = workspaces.find(
+      (candidate) => candidate.localId === workspaceLocalId,
+    );
+    // Claim the id only where the workspace says its host honors claims;
+    // otherwise a temporary key stands in and the baseline diff resolves it.
+    const claim =
+      workspace === undefined
+        ? undefined
+        : claimPendingWorktreeId(workspace, baseline);
+    pendingCreateCounter.current += 1;
+    const startedAtMs = Date.now();
+    const entry: PendingWorktreeCreate = {
+      key: claim ?? `pending-create:${pendingCreateCounter.current}`,
+      claimed: claim !== undefined,
+      baseline,
+      ...(groupId ? { groupId } : {}),
+      createdAt: new Date(startedAtMs).toISOString(),
+      startedAtMs,
+      selectionKey,
+      attempt,
+    };
+    setPendingCreates((previous) => {
       const next = new Map(previous);
-      next.set(workspaceLocalId, baseline);
+      next.set(workspaceLocalId, entry);
       return next;
     });
-    if (groupId) pendingGroupByWorkspace.set(workspaceLocalId, groupId);
-    else pendingGroupByWorkspace.delete(workspaceLocalId);
     const clearPendingAttempt = (): void => {
       if (pendingAttempts.current.get(workspaceLocalId) !== attempt) return;
       pendingAttempts.current.delete(workspaceLocalId);
-      setPendingBaselines((previous) => {
-        if (previous.get(workspaceLocalId) !== baseline) return previous;
+      setPendingCreates((previous) => {
+        if (previous.get(workspaceLocalId)?.attempt !== attempt)
+          return previous;
         const next = new Map(previous);
         next.delete(workspaceLocalId);
         return next;
       });
     };
-    void onCreateWorktree(workspaceLocalId, groupId)
+    void onCreateWorktree(
+      workspaceLocalId,
+      groupId,
+      claim === undefined ? undefined : { worktreeId: claim },
+    )
       .then((result) => {
         if (!mountedRef.current) return;
-        if (result.status === 'completed') {
-          if (pendingAttempts.current.get(workspaceLocalId) !== attempt) return;
+        // No create was started: nothing will arrive for this row.
+        if (result === undefined) {
           clearPendingAttempt();
-          if (selectionRevision.current.revision === revision)
-            onSelectWorktree(workspaceLocalId, result.worktreeId);
+          return;
         }
+        // A `pending` result (the Portal) keeps the entry; the snapshot
+        // resolves it.
+        if (result.status !== 'completed') {
+          setPendingCreates((previous) => {
+            const current = previous.get(workspaceLocalId);
+            if (current?.attempt !== attempt) return previous;
+            const next = new Map(previous);
+            next.set(workspaceLocalId, { ...current, snapshotResolves: true });
+            return next;
+          });
+          return;
+        }
+        if (pendingAttempts.current.get(workspaceLocalId) !== attempt) return;
+        // The host's id is authoritative: a rejected claim re-keys the
+        // pending row once. The entry stays until the host lists the row,
+        // and the release selects it then: a host may answer before its
+        // snapshot lists the row (the Portal does), and a selection of a row
+        // the host doesn't list yet could be replaced by its fallback. The
+        // attempt stays in `pendingAttempts` on purpose: the release checks
+        // it is still current before selecting.
+        const completedAtMs = Date.now();
+        setPendingCreates((previous) => {
+          const current = previous.get(workspaceLocalId);
+          if (current?.attempt !== attempt) return previous;
+          const next = new Map(previous);
+          next.set(workspaceLocalId, {
+            ...current,
+            resolvedId: result.worktreeId,
+            completedAtMs,
+          });
+          return next;
+        });
       })
       .catch((error: unknown) => {
         if (!mountedRef.current) return;
@@ -1785,10 +1968,13 @@ export function WorkspacesSidebarSections({
     // parent entry (null detaches a pinned row) and its `ungroup` override
     // win over the snapshot's parent, so an ungrouped row lists flat at
     // once, as it did on desktop.
+    // A pending create's row bypasses the host veto: it stands in until
+    // the host lists the created row.
     const listedWorktrees = worktrees
       .filter(
         (worktree) =>
           worktree.workspaceLocalId !== workspace.localId ||
+          isPendingRow(workspace.localId, worktree.localId) ||
           isWorktreeListed?.(workspace.localId, worktree.localId) !== false,
       )
       .map((worktree) => {
@@ -1934,6 +2120,12 @@ export function WorkspacesSidebarSections({
     const itemGroupsEnabled =
       itemGroupCommands !== undefined ||
       (workspace.itemGroups?.length ?? 0) > 0;
+    // A create inside a group lists its pending row as the group's first
+    // member, where the created row will land.
+    const itemGroupsWithPending = withPendingGroupMember(
+      workspace.itemGroups ?? [],
+      pendingCreates.get(workspace.localId),
+    );
     const rootUnits = grouping
       ? grouping.groups.map((group) => ({
           rootId: group.node.id,
@@ -1966,7 +2158,7 @@ export function WorkspacesSidebarSections({
     const itemBlocks: SidebarItemGroupBlock[] = itemGroupsEnabled
       ? buildSidebarItemGroupBlocks(
           rootUnits,
-          workspace.itemGroups ?? [],
+          itemGroupsWithPending,
           itemSortMode,
           selectedItemId,
         )
@@ -1992,30 +2184,35 @@ export function WorkspacesSidebarSections({
         itemGroupsEnabled && !collapsed
           ? new Map(rows.visible.map((item) => [item.localId, item]))
           : undefined;
-      const renderedWorktrees = collapsed
-        ? []
-        : visibleById !== undefined
-          ? itemBlocks.flatMap((block) =>
-              block.visibleItemIds.flatMap((id) => {
-                const row = visibleById.get(id);
-                return row ? [row] : [];
-              }),
-            )
-          : grouping
-            ? grouping.groups.flatMap((group) => [
-                group.node.worktree,
-                ...group.children.map((child) => child.worktree),
-              ])
-            : rows.visible;
+      const renderedWorktrees = (
+        collapsed
+          ? []
+          : visibleById !== undefined
+            ? itemBlocks.flatMap((block) =>
+                block.visibleItemIds.flatMap((id) => {
+                  const row = visibleById.get(id);
+                  return row ? [row] : [];
+                }),
+              )
+            : grouping
+              ? grouping.groups.flatMap((group) => [
+                  group.node.worktree,
+                  ...group.children.map((child) => child.worktree),
+                ])
+              : rows.visible
+      ).filter(
+        // The pending row is outside ranges, select-all and bulk actions.
+        (worktree) => !isPendingRow(workspace.localId, worktree.localId),
+      );
       selectionRowsDraft.set(
         workspace.localId,
         worktreeSelectionRowsFor(
           workspace,
           renderedWorktrees,
           worktreeMultiSelect.isSelectable,
-          selected?.kind === 'worktree' &&
-            selected.workspaceLocalId === workspace.localId
-            ? selected.worktreeLocalId
+          hostSelected?.kind === 'worktree' &&
+            hostSelected.workspaceLocalId === workspace.localId
+            ? hostSelected.worktreeLocalId
             : undefined,
         ),
       );
@@ -2039,7 +2236,7 @@ export function WorkspacesSidebarSections({
       rows.visible.length === 0 &&
       rows.hidden.length === 0 &&
       itemBlocks.length === 0 &&
-      !pendingBaselines.has(workspace.localId) &&
+      !pendingCreates.has(workspace.localId) &&
       archivedItemCount === 0;
     const workspaceSelected =
       selected?.kind === 'workspace' &&
@@ -2065,6 +2262,7 @@ export function WorkspacesSidebarSections({
       collapsed,
     };
     const canSortWorktree = (worktree: SnapshotWorktree): boolean =>
+      !isPendingRow(workspace.localId, worktree.localId) &&
       ((capsOf(worktree.localId).worktreeReordering === true &&
         canDragSidebarRow(itemSortMode, worktree.pinned === true)) ||
         // A row its host withholds grouping from (a desktop cloud session the
@@ -2178,6 +2376,10 @@ export function WorkspacesSidebarSections({
       // deliberately so: it is what lets a workspace holding rows from more
       // than one backend answer per row without re-threading these call sites.
       const rowCapabilities = capsOf(worktree.localId);
+      // A pending create's stand-in: rendered by the real row path, but inert
+      // until the host lists the created row (no drag, menu, actions,
+      // preview, dialogs, activation or bulk selection).
+      const pendingRow = isPendingRow(workspace.localId, worktree.localId);
       const removalInProgress =
         isWorktreeRemovalInProgress?.(workspace.localId, worktree.localId) ===
         true;
@@ -2212,13 +2414,16 @@ export function WorkspacesSidebarSections({
             )
           : undefined,
       };
-      const actions = renderWorktreeActions?.(rowContext);
+      const actions = pendingRow
+        ? undefined
+        : renderWorktreeActions?.(rowContext);
       const statusSlot = renderWorktreeStatus?.(rowContext);
       const rowKey = worktreeRowKey(workspace.localId, worktree.localId);
       const multiSelection = worktreeMultiSelect?.selection;
       const rowSelectable =
         multiSelection !== undefined &&
         !removalInProgress &&
+        !pendingRow &&
         worktreeMultiSelect?.isSelectable(workspace, worktree) === true;
       const toggleRowSelection = (shiftKey: boolean): void => {
         if (multiSelection === undefined || !rowSelectable) return;
@@ -2242,7 +2447,10 @@ export function WorkspacesSidebarSections({
           // Pinned copies keep the attribute empty, so Shift+Up/Down focus
           // finds the in-flow row by its key.
           {...(multiSelection !== undefined
-            ? { [SIDEBAR_SELECTION_ROW_ATTR]: pinnedSurface ? '' : rowKey }
+            ? {
+                [SIDEBAR_SELECTION_ROW_ATTR]:
+                  pinnedSurface || pendingRow ? '' : rowKey,
+              }
             : {})}
           variant="bare"
           role={
@@ -2260,7 +2468,7 @@ export function WorkspacesSidebarSections({
           // The frame owns keyboard activation; the shared row owns pointer
           // intent. Ignore focus on nested status/menu controls.
           onFocus={
-            onWorktreeIntent && !removalInProgress
+            onWorktreeIntent && !removalInProgress && !pendingRow
               ? (event): void => {
                   if (event.target === event.currentTarget)
                     onWorktreeIntent(
@@ -2273,7 +2481,7 @@ export function WorkspacesSidebarSections({
               : undefined
           }
           onBlur={
-            onWorktreeIntent && !removalInProgress
+            onWorktreeIntent && !removalInProgress && !pendingRow
               ? (event): void => {
                   if (event.target === event.currentTarget)
                     onWorktreeIntent(
@@ -2287,10 +2495,11 @@ export function WorkspacesSidebarSections({
           }
           selected={rowSelected}
           density={touchTargets ? 'touch' : 'default'}
-          aria-disabled={removalInProgress || undefined}
+          aria-disabled={removalInProgress || pendingRow || undefined}
+          aria-busy={pendingRow || undefined}
           inert={removalInProgress}
           onClick={
-            removalInProgress
+            removalInProgress || pendingRow
               ? undefined
               : (event): void => {
                   // Cmd-click (Ctrl-click off macOS) toggles and Shift-click
@@ -2358,7 +2567,7 @@ export function WorkspacesSidebarSections({
                 }
           }
           onKeyDown={
-            multiSelection === undefined || removalInProgress
+            multiSelection === undefined || removalInProgress || pendingRow
               ? undefined
               : (event): void => {
                   // Only the focused row itself: inline inputs, menus, and
@@ -2408,7 +2617,7 @@ export function WorkspacesSidebarSections({
           // dialog's input or text (to use the OS's own Cut/Copy/Paste menu)
           // reached this handler and hijacked it into the row's actions menu.
           onContextMenu={
-            removalInProgress
+            removalInProgress || pendingRow
               ? undefined
               : (event): void => {
                   if (
@@ -2437,7 +2646,7 @@ export function WorkspacesSidebarSections({
             rowProps={{
               ...worktreeRowDisplayProps(worktree, rowContext),
               onIntent:
-                onWorktreeIntent && !removalInProgress
+                onWorktreeIntent && !removalInProgress && !pendingRow
                   ? (phase, source): void =>
                       onWorktreeIntent(
                         workspace.localId,
@@ -2446,23 +2655,24 @@ export function WorkspacesSidebarSections({
                         source,
                       )
                   : undefined,
-              hoverPreview: worktreeHoverPreview
-                ? {
-                    projectName: workspace.name,
-                    // The header's own glyph: avatar or kind badge.
-                    projectIcon: (
-                      <ProjectAvatarBadge
-                        kind={workspaceType}
-                        color={workspace.color}
-                        temporary={workspace.temporary}
-                        avatarUrl={workspace.avatarUrl}
-                        testIdSuffix="-preview"
-                      />
-                    ),
-                    baseBranch:
-                      previewBaseBranches?.get(worktree.localId) ?? undefined,
-                  }
-                : undefined,
+              hoverPreview:
+                worktreeHoverPreview && !pendingRow
+                  ? {
+                      projectName: workspace.name,
+                      // The header's own glyph: avatar or kind badge.
+                      projectIcon: (
+                        <ProjectAvatarBadge
+                          kind={workspaceType}
+                          color={workspace.color}
+                          temporary={workspace.temporary}
+                          avatarUrl={workspace.avatarUrl}
+                          testIdSuffix="-preview"
+                        />
+                      ),
+                      baseBranch:
+                        previewBaseBranches?.get(worktree.localId) ?? undefined,
+                    }
+                  : undefined,
               // A pinned copy suffixes the row's own fixed test ids (its
               // badges and indicators), as desktop's legacy copies did, so a
               // bare id still resolves to the one in-flow row (CAN-3127).
@@ -2482,7 +2692,9 @@ export function WorkspacesSidebarSections({
                 : {}),
               nested: nestedChildDepth !== undefined,
               nestedChildDepth,
-              dragHandleSlot: renderWorktreeDragHandle?.(rowContext),
+              dragHandleSlot: pendingRow
+                ? undefined
+                : renderWorktreeDragHandle?.(rowContext),
               statusSlot,
               actionChipSlot: actions ? actions.node : undefined,
               actionChipButtonCount: actions?.buttonCount ?? 1,
@@ -2503,53 +2715,20 @@ export function WorkspacesSidebarSections({
               dataBranch: worktree.branch,
             }}
           />
-          {pinnedSurface ? null : renderWorktreeDialogs?.(rowContext)}
+          {pinnedSurface || pendingRow
+            ? null
+            : renderWorktreeDialogs?.(rowContext)}
         </SidebarRowFrame>
       );
       return rowContext.sortable && !itemGroupsEnabled
         ? (wrapWorktreeRow?.(rowContext, row) ?? row)
         : row;
     };
-    // The pending row must sit where the resolved row will land, or it jumps
-    // across the list the moment the create completes. Hosts insert new chats
-    // and worktrees at the top of the manual order, and pinned rows always
-    // lead, so that is the first unpinned slot.
-    const topLevelWorktrees = grouping
-      ? grouping.groups.map((group) => group.node.worktree)
-      : rows.visible;
-    const firstUnpinnedIndex = topLevelWorktrees.findIndex(
-      (worktree) => worktree.pinned !== true,
-    );
-    const creatingPlaceholderIndex =
-      firstUnpinnedIndex === -1 ? topLevelWorktrees.length : firstUnpinnedIndex;
-    const creatingPlaceholder = pendingBaselines.has(workspace.localId) ? (
-      <li
-        role="status"
-        aria-label={`Creating ${childUnitLabel}`}
-        // On the row grid of the row it is about to become, so the label does
-        // not shift when the create resolves.
-        className={`flex min-w-0 items-center ${SIDEBAR_ROW_GRID_CLASSNAME} py-2 pr-2 text-xs fg-secondary`}
-        data-testid="sidebar-worktree-creating-placeholder"
-      >
-        <span className={SIDEBAR_ROW_LEADING_SLOT_CLASSNAME} aria-hidden="true">
-          <LoadingSpinner
-            tone="secondary"
-            sizePx={12}
-            decorative
-            dataTestId="sidebar-worktree-creating-icon-skeleton"
-          />
-        </span>
-        <span className="min-w-0 truncate">Creating {childUnitLabel}…</span>
-      </li>
-    ) : null;
     const flatVisibleList = (
       <SidebarList rowGap={worktreeRowGap ?? 'hairline'}>
         {grouping
-          ? grouping.groups.map((group, index) => (
+          ? grouping.groups.map((group) => (
               <Fragment key={group.node.id}>
-                {index === creatingPlaceholderIndex
-                  ? creatingPlaceholder
-                  : null}
                 {/* One stack: 1px between its rows; the list spaces stacks. */}
                 <div className="flex flex-col gap-px">
                   {renderRow(group.node.worktree, false)}
@@ -2595,17 +2774,7 @@ export function WorkspacesSidebarSections({
                 </div>
               </Fragment>
             ))
-          : rows.visible.map((worktree, index) => (
-              <Fragment key={worktree.localId}>
-                {index === creatingPlaceholderIndex
-                  ? creatingPlaceholder
-                  : null}
-                {renderRow(worktree, false)}
-              </Fragment>
-            ))}
-        {creatingPlaceholderIndex === topLevelWorktrees.length
-          ? creatingPlaceholder
-          : null}
+          : rows.visible.map((worktree) => renderRow(worktree, false))}
       </SidebarList>
     );
     const renderGroupStatus = (block: SidebarItemGroupBlock): ReactNode => {
@@ -2706,8 +2875,6 @@ export function WorkspacesSidebarSections({
         selectionCount={worktreeMultiSelect?.selection.count}
         isItemSelected={isItemRowSelected}
         renderStatus={renderGroupStatus}
-        pendingGroupId={pendingGroupByWorkspace.get(workspace.localId) ?? null}
-        placeholder={creatingPlaceholder}
         onCreate={(groupId): void => {
           void itemGroupCommands?.update(groupId, { collapsed: false });
           createWorktree(workspace.localId, groupId);
@@ -2836,10 +3003,30 @@ export function WorkspacesSidebarSections({
     // Only a workspace the host serves gets its menu rows; one it declines
     // (an organization catalog row) keeps the browser's own right-click.
     const hostContextMenuItems =
-      renderWorkspaceContextMenuItems &&
-      isWorkspaceContextMenuAvailable?.(workspace.localId) !== false
-        ? (close: () => void): ReactNode =>
-            renderWorkspaceContextMenuItems({ workspace, close })
+      isWorkspaceContextMenuAvailable?.(workspace.localId) !== false &&
+      (renderWorkspaceContextMenuItems ||
+        (workspaceCapabilities.worktreeRecoveryResolution === true &&
+          recoveryWorkspaceIds.has(workspace.localId)))
+        ? (close: () => void): ReactNode => (
+            <>
+              {workspaceCapabilities.worktreeRecoveryResolution === true &&
+              recoveryWorkspaceIds.has(workspace.localId) ? (
+                <DropdownMenuItem
+                  data-testid="workspace-review-archive-recovery"
+                  onClick={(): void => {
+                    close();
+                    requestArchiveRecoveryReview(workspace.localId);
+                  }}
+                >
+                  <DropdownMenuItemIcon>
+                    <ArchiveIcon />
+                  </DropdownMenuItemIcon>
+                  Review archive recovery
+                </DropdownMenuItem>
+              ) : null}
+              {renderWorkspaceContextMenuItems?.({ workspace, close })}
+            </>
+          )
         : undefined;
     const toggleTestId = testIds?.workspaceToggle?.(
       workspace.localId,
@@ -2977,7 +3164,7 @@ export function WorkspacesSidebarSections({
             : undefined
         }
         addDisabled={
-          pendingBaselines.has(workspace.localId) ||
+          pendingCreates.has(workspace.localId) ||
           emphasis?.addLocked === true ||
           (workspace.type === 'multi-repo' &&
             (workspace.repos?.length ?? 0) === 0)
@@ -3198,7 +3385,7 @@ export function WorkspacesSidebarSections({
             (rows.visible.length > 0 ||
               rows.hidden.length > 0 ||
               itemBlocks.length > 0 ||
-              pendingBaselines.has(workspace.localId) ||
+              pendingCreates.has(workspace.localId) ||
               (archivedCount !== undefined && archivedItemCount > 0) ||
               renderArchivedSection !== undefined ||
               showsEmptyState) && (

@@ -36,6 +36,15 @@ import {
   clearPendingAuthFailures,
   recordPendingMcpAuthFailure,
 } from './pending-auth-failures';
+import {
+  PendingToolLists,
+  relayToolList,
+  toolListRequest,
+  type McpProxiedToolListTransform,
+  type ToolListRequest,
+} from './tool-list-relay';
+
+export type { McpProxiedToolListTransform } from './tool-list-relay';
 
 /** A route as the connection service stores it (CAN-4126): a credential reference, never an OAuth definition or token. */
 export interface AgentMcpRoute {
@@ -76,14 +85,15 @@ interface InternalMcpProxyRoute extends AgentMcpRoute {
 /**
  * Execution-time gate a session installs for the proxied plugin and
  * standalone MCP routes it owns. Consulted for every `tools/call` before it
- * is forwarded upstream; `false` answers the call with a denial instead.
+ * is forwarded upstream; `false` answers the call with a denial instead, and
+ * a refusal answers it with the refusal's text.
  */
 export type McpProxiedToolCallGate = (call: {
   proxyUrl: string;
   tool: string;
   args: Record<string, unknown>;
   requestId?: string;
-}) => Promise<boolean>;
+}) => Promise<boolean | { readonly refusal: string }>;
 
 export interface AgentMcpConnectionsOptions {
   /** The transport's URL for a route; throws `Error('MCP proxy is not started.')` while stopped. */
@@ -185,6 +195,15 @@ export class AgentMcpConnections {
   private readonly sessionToolCallGates = new Map<
     string,
     McpProxiedToolCallGate
+  >();
+  private readonly sessionToolListTransforms = new Map<
+    string,
+    McpProxiedToolListTransform
+  >();
+  /** Unanswered `tools/list` requests per gated route; released with the route. */
+  private readonly pendingToolLists = new WeakMap<
+    InternalMcpProxyRoute,
+    PendingToolLists
   >();
 
   constructor(options: AgentMcpConnectionsOptions) {
@@ -295,6 +314,17 @@ export class AgentMcpConnections {
     this.sessionToolCallGates.set(sessionId, gate);
   }
 
+  /**
+   * Installs (or replaces) the session's `tools/list` rewrite for its gated
+   * routes. The session's gate must enforce whatever the rewrite omits.
+   */
+  setSessionToolListTransform(
+    sessionId: string,
+    transform: McpProxiedToolListTransform,
+  ): void {
+    this.sessionToolListTransforms.set(sessionId, transform);
+  }
+
   disconnectSession(sessionId: string): void {
     // Drop any auth failure this owner published but never claimed, and
     // its tool-name correlation cache (CAN-1814), unconditionally — a
@@ -304,6 +334,7 @@ export class AgentMcpConnections {
     clearPendingAuthFailures(sessionId);
     clearAuthFailureToolNameCache(sessionId);
     this.sessionToolCallGates.delete(sessionId);
+    this.sessionToolListTransforms.delete(sessionId);
 
     const routeIds = this.routesBySession.get(sessionId);
     if (!routeIds) {
@@ -503,9 +534,30 @@ export class AgentMcpConnections {
         ? parsed.id
         : null;
     const params = isRecord(parsed.params) ? parsed.params : {};
+    // A session that rewrites tool lists validates arguments on the host, so
+    // its gate must see what is forwarded: non-object arguments are invalid.
+    // `null`, which some clients send for no arguments, reads as none (the
+    // body is forwarded unchanged; a schema that requires fields refuses it).
+    // Other sessions keep their previous handling.
+    const strictArguments =
+      route.sessionId !== null &&
+      this.sessionToolListTransforms.has(route.sessionId);
+    if (
+      strictArguments &&
+      params.arguments !== undefined &&
+      params.arguments !== null &&
+      !isRecord(params.arguments)
+    ) {
+      writeJson(res, 200, {
+        jsonrpc: '2.0',
+        id,
+        error: { code: -32600, message: 'Invalid MCP request.' },
+      });
+      return 'answered';
+    }
     const tool = typeof params.name === 'string' ? params.name : null;
     const args = isRecord(params.arguments) ? params.arguments : {};
-    let allowed = false;
+    let allowed: boolean | { readonly refusal: string } = false;
     if (tool !== null) {
       try {
         allowed = await gate({
@@ -518,14 +570,15 @@ export class AgentMcpConnections {
         logMainProcessError('MCP proxied tool-call gate failed', error);
       }
     }
-    if (allowed) return 'forward';
+    if (allowed === true) return 'forward';
+    const text =
+      isRecord(allowed) && typeof allowed.refusal === 'string'
+        ? allowed.refusal
+        : `${tool ?? 'Tool'} was denied.`;
     writeJson(res, 200, {
       jsonrpc: '2.0',
       id,
-      result: {
-        content: [{ type: 'text', text: `${tool ?? 'Tool'} was denied.` }],
-        isError: true,
-      },
+      result: { content: [{ type: 'text', text }], isError: true },
     });
     return 'answered';
   }
@@ -640,6 +693,43 @@ export class AgentMcpConnections {
       )
         return;
     }
+    // Only a gated route's session may rewrite what its runtime is told.
+    const listTransform =
+      route.requireToolCallGate && route.sessionId !== null
+        ? this.sessionToolListTransforms.get(route.sessionId)
+        : undefined;
+    let listRequest: ToolListRequest | undefined;
+    // Captured while the route is served: the URL the session keyed its servers by.
+    let listProxyUrl = '';
+    if (listTransform && bufferedBody !== null) {
+      const parsedList = toolListRequest(bufferedBody);
+      if (parsedList === 'refuse') {
+        writeJson(res, 200, {
+          jsonrpc: '2.0',
+          error: {
+            code: -32600,
+            message: 'This tool list request is not accepted on this route.',
+          },
+          id: null,
+        });
+        return;
+      }
+      listRequest = parsedList;
+    }
+    // The client's MCP session keys its pending lists on this route.
+    const mcpSession = getHeaderValue(req.headers, 'mcp-session-id') ?? '';
+    // A list POST, or a GET stream that may carry a list answered with 202.
+    const rewritesLists =
+      listTransform !== undefined &&
+      (listRequest !== undefined || req.method === 'GET');
+    if (rewritesLists) {
+      try {
+        listProxyUrl = this.options.proxyUrl(route.routeId);
+      } catch {
+        selectedRouteUnavailable();
+        return;
+      }
+    }
 
     if (!selectedRouteActive(gate)) {
       selectedRouteUnavailable();
@@ -709,6 +799,34 @@ export class AgentMcpConnections {
     const requestFn =
       route.parsedUpstream.protocol === 'https:' ? httpsRequest : httpRequest;
 
+    let pendingLists: PendingToolLists | undefined;
+    if (rewritesLists) {
+      pendingLists = this.pendingToolLists.get(route) ?? new PendingToolLists();
+      this.pendingToolLists.set(route, pendingLists);
+      const admitted = listRequest
+        ? pendingLists.add(mcpSession, listRequest)
+        : 'added';
+      if (listRequest && admitted !== 'added') {
+        writeJson(res, 200, {
+          jsonrpc: '2.0',
+          id: listRequest.id,
+          error: {
+            code: -32000,
+            message:
+              admitted === 'duplicate'
+                ? 'A tool list request with this id is still waiting for its answer.'
+                : 'Too many tool list requests are waiting on this route.',
+          },
+        });
+        return;
+      }
+    }
+    const settleOwnList = (status: number | undefined): void => {
+      // A 202 leaves the answer to the session's GET stream.
+      if (listRequest && status !== 202)
+        pendingLists?.drop(mcpSession, listRequest.id);
+    };
+
     const upstreamReq = requestFn(options, (upstreamRes) => {
       const upstreamStatusCode = upstreamRes.statusCode;
       if (route.authSupplier === 'canopy-cloud') {
@@ -775,6 +893,23 @@ export class AgentMcpConnections {
       const forwardResponse = (): void => {
         if (res.destroyed) {
           upstreamRes.destroy();
+          settleOwnList(undefined);
+          return;
+        }
+        if (pendingLists && listTransform) {
+          void relayToolList(
+            upstreamRes,
+            res,
+            copyResponseHeaders(upstreamRes),
+            { lists: pendingLists, session: mcpSession },
+            (page) => listTransform({ proxyUrl: listProxyUrl, ...page }),
+            listRequest,
+          )
+            .catch(() => {
+              upstreamRes.destroy();
+              res.destroy();
+            })
+            .finally(() => settleOwnList(upstreamRes.statusCode));
           return;
         }
         res.writeHead(
@@ -785,11 +920,15 @@ export class AgentMcpConnections {
         upstreamRes.pipe(res);
       };
       // Persist the rejection before the caller can retry the failed request.
-      if (invalidation) void invalidation.then(forwardResponse);
+      if (invalidation)
+        void invalidation.then(forwardResponse).catch(() => {
+          settleOwnList(undefined);
+        });
       else forwardResponse();
     });
 
     upstreamReq.on('error', (error: Error) => {
+      settleOwnList(undefined);
       if (res.headersSent) {
         res.destroy(error);
         return;

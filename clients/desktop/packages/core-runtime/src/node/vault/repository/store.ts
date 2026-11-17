@@ -108,6 +108,8 @@ export interface VaultMigrationUpdate {
 
 const MIGRATION_KEY = 'copilot_migration_v1';
 const MIGRATION_MARKER = 'copilot_migration_format';
+const AUTHORITY_KEY = 'copilot_authority_v1';
+const AUTHORITY_MARKER = 'copilot_authority_format';
 
 export interface VaultStore {
   /** Null until `writeHeader` commits; a store without one holds no record. */
@@ -122,6 +124,8 @@ export interface VaultStore {
   /** Balanced begin/end fence; concurrent retries share the same intent. */
   setIntentRunning(sequence: number, running: boolean): void;
   isIntentRunning(sequence: number): boolean;
+  readCopilotAuthority(): string | null;
+  writeCopilotAuthority(update: VaultMigrationUpdate): VaultStoreWrite<void>;
   readMigrationJournal(): string | null;
   writeMigrationJournal(update: VaultMigrationUpdate): VaultStoreWrite<void>;
   /** Writes the revision and settles its pending put intent. */
@@ -452,6 +456,18 @@ function createVaultStore(
 
   const runningIntents = new Map<number, number>();
 
+  function readCopilotAuthority(): string | null {
+    const rows = readable()
+      .prepare('SELECT key, value FROM vault_meta WHERE key IN (?, ?)')
+      .all(AUTHORITY_KEY, AUTHORITY_MARKER);
+    if (rows.length === 0) return null;
+    const payload = rows.find((row) => row.key === AUTHORITY_KEY)?.value;
+    const marker = rows.find((row) => row.key === AUTHORITY_MARKER)?.value;
+    if (rows.length !== 2 || marker !== '1' || typeof payload !== 'string')
+      throw new Error('Copilot authority metadata is unavailable.');
+    return payload;
+  }
+
   function readMigrationJournal(): string | null {
     const rows = readable()
       .prepare('SELECT key, value FROM vault_meta WHERE key IN (?, ?)')
@@ -479,6 +495,24 @@ function createVaultStore(
   }
 
   return {
+    readCopilotAuthority,
+    writeCopilotAuthority(update): VaultStoreWrite<void> {
+      return write(() => {
+        if (header === null || readCopilotAuthority() !== update.expected)
+          return REFUSED;
+        if (
+          typeof update.next !== 'string' ||
+          Buffer.byteLength(update.next) > 262144
+        )
+          throw new TypeError('Invalid Copilot authority metadata.');
+        db.prepare(
+          'INSERT OR REPLACE INTO vault_meta (key, value) VALUES (?, ?)',
+        ).run(AUTHORITY_KEY, update.next);
+        db.prepare(
+          'INSERT OR IGNORE INTO vault_meta (key, value) VALUES (?, ?)',
+        ).run(AUTHORITY_MARKER, '1');
+      });
+    },
     get header(): VaultStoredHeader | null {
       return header;
     },

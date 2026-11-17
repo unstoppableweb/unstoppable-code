@@ -27,10 +27,12 @@ import {
   DropdownMenuLabel,
 } from './DropdownMenu';
 import { FloatingMenu } from './FloatingMenu';
+import type { InstalledItemStatusGlyph } from './InstalledItemStatusPicker';
 import {
-  InstalledItemStatusIndicator,
-  type InstalledItemStatusGlyph,
-} from './InstalledItemStatusPicker';
+  ITEM_STATE_LABEL_CLASS,
+  ItemStateMark,
+  type ItemStateTone,
+} from './ItemStateMark';
 import { LoadingSpinner } from './LoadingSpinner';
 import { Divider } from './Surface';
 import { Tooltip } from './Tooltip';
@@ -47,18 +49,33 @@ export interface CustomizeRowSplitStatus {
   readonly onChange: (status: InstalledItemStatus) => void;
 }
 
+/** What a row's split control shows: one of the shared item states. */
+export type CustomizeRowSplitTone = Extract<
+  ItemStateTone,
+  | 'active'
+  | 'available'
+  | 'disabled'
+  | 'unavailable'
+  | 'add'
+  | 'run'
+  | 'installed'
+>;
+
 /**
  * A Customize row's one action control (CAN-6813): the main segment shows
- * the row's state (Add, Active, Update, Sign in) and the caret opens the
- * row's existing actions. Pure display: the host decides the state and owns
- * every action.
+ * the row's state (Add, Active, Available, Disabled, Run) and the caret
+ * opens the row's existing actions. Sign-in and updates never replace the
+ * state; the row says them on its own lines. Pure display: the host decides
+ * the state and owns every action.
  */
 export interface CustomizeRowSplitAction {
   readonly label: string;
   /** The main segment's accessible name. */
   readonly accessibleName: string;
-  /** A status glyph before the label. */
+  /** A status glyph before the label; `tone` wins when both are set. */
   readonly glyph?: InstalledItemStatusGlyph;
+  /** The state's icon and label ink. */
+  readonly tone?: CustomizeRowSplitTone;
   readonly busy?: boolean;
   /** Runs the state's action; omitted, the main segment opens the menu. */
   readonly onPrimary?: () => void;
@@ -158,6 +175,7 @@ export function CustomizeRowSplitButton({
       setOpen(true);
   };
   const primaryOpensMenu = action.onPrimary === undefined && hasMenu;
+  const tone = action.tone ?? action.glyph;
   const main = (
     <ControlButton
       type="button"
@@ -171,7 +189,7 @@ export function CustomizeRowSplitButton({
       aria-disabled={
         action.onPrimary === undefined && !hasMenu ? true : undefined
       }
-      disabled={action.busy && action.onPrimary !== undefined}
+      disabled={action.busy === true}
       onPointerDown={primaryOpensMenu ? openOnPress : undefined}
       onClick={() => {
         if (action.onPrimary) {
@@ -183,11 +201,13 @@ export function CustomizeRowSplitButton({
       {action.busy ? (
         <LoadingSpinner sizePx={14} decorative />
       ) : (
-        action.glyph !== undefined && (
-          <InstalledItemStatusIndicator status={action.glyph} />
-        )
+        tone !== undefined && <ItemStateMark tone={tone} />
       )}
-      <span className="min-w-0 truncate">{action.label}</span>
+      <span
+        className={`min-w-0 truncate${tone !== undefined ? ` ${ITEM_STATE_LABEL_CLASS[tone]}` : ''}`}
+      >
+        {action.label}
+      </span>
       {action.reason && (
         <span id={reasonId} className="sr-only">
           {action.reason}
@@ -227,6 +247,7 @@ export function CustomizeRowSplitButton({
             aria-expanded={open}
             aria-controls={open ? menuId : undefined}
             aria-label={`More actions for ${entryName}`}
+            disabled={action.busy === true}
             onPointerDown={openOnPress}
             onClick={toggle}
           >
@@ -271,7 +292,7 @@ export function CustomizeRowSplitButton({
                       }}
                     >
                       <DropdownMenuItemIcon>
-                        <InstalledItemStatusIndicator status={option} />
+                        <ItemStateMark tone={option} />
                       </DropdownMenuItemIcon>
                       <span className="min-w-0 flex-1">
                         <span className="block font-medium fg-primary">

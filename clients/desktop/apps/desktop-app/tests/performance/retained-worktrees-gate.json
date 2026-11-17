@@ -1,0 +1,14 @@
+{
+  "$comment": "CAN-6969: the retained-worktrees-idle gate. Counts are judged by the work-counter ratchet (work-metrics.json, work-ceilings.json); this file holds the CPU side. cpuGate stays 'report' until 10+ develop runs show low spread after calibration. See docs/desktop-app-performance.md#retained-worktrees-gate.",
+  "version": 1,
+  "scenario": "retained-worktrees-idle",
+  "countRuns": 3,
+  "cpuRuns": 3,
+  "cpuGate": "report",
+  "cpuPhase": "idle",
+  "cpuThresholdPercent": 10,
+  "calibration": {
+    "normMs": null,
+    "slowMarginPercent": 25
+  }
+}

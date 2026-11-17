@@ -191,6 +191,21 @@ export interface MigrationSessionRegistryOptions {
 
 export interface MigrationSessionRegistry {
   issue(channel: object, slot: string): MigrationIssueResult;
+  /** Non-consuming admission; cannot release, select or mint a receipt. */
+  preflight(
+    sessionId: string,
+    presentation: MigrationPresentation,
+  ):
+    | {
+        readonly accepted: true;
+        readonly source: MigrationSourceIdentity;
+        readonly generation: string;
+        readonly slot: string;
+      }
+    | {
+        readonly accepted: false;
+        readonly reason: MigrationPresentationRefusal;
+      };
   /** `initiate` runs synchronously inside `consume`; `isResult` checks its fulfilment. */
   consume<T>(
     sessionId: string,
@@ -770,6 +785,17 @@ export function createMigrationSessionRegistry(
         // never will (refused, deadline unavailable, release blocked, throw).
         if (!handedOff) zero();
       }
+    },
+    preflight(sessionId, presentation) {
+      const record = admit(sessionId, presentation);
+      if (typeof record === 'string')
+        return { accepted: false, reason: record };
+      return {
+        accepted: true,
+        source: { ...record.binding.source },
+        generation: record.binding.sourceGeneration,
+        slot: record.binding.slot,
+      };
     },
     decline(
       sessionId,

@@ -7,7 +7,7 @@ import { ChatPanel } from '../ChatPanel';
 import type { FileEditorSlot } from '../file/FileViewer';
 import { FindableFileViewer } from '../../find/FindableFileViewer';
 import { ActivityPanel } from '../activity/ActivityPanel';
-import { WorktreeSidebar } from './WorktreeSidebar';
+import { WorktreeSidebar, type WorktreeSidebarProps } from './WorktreeSidebar';
 
 export interface CodeShellTestId {
   readonly id: string;
@@ -61,7 +61,7 @@ export interface CodeShellProps {
     workspaceLocalId: string,
     worktreeLocalId: string,
   ) => void;
-  readonly onAddWorktree?: (workspaceLocalId: string) => void;
+  readonly onAddWorktree?: WorktreeSidebarProps['onAddWorktree'];
   // Chat transport (injected by the host).
   readonly onSend?: (text: string) => void;
   readonly onStop?: () => void;

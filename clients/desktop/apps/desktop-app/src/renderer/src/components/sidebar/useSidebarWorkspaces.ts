@@ -17,6 +17,7 @@ import type { WorktreeUiStatus } from '@/lib/worktree-status';
 import {
   useProjectsStore,
   type ArchiveWorktreeOptions,
+  type CreateWorktreeOptions,
 } from '@/stores/projectsStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useChatSidebarStore } from '@/stores/chatSidebarStore';
@@ -145,6 +146,7 @@ export interface SidebarWorkspacesModel {
   onToggleCollapsed: (projectId: string) => void;
   onCreateWorktree: (
     projectId: string,
+    options?: Pick<CreateWorktreeOptions, 'worktreeId' | 'onRegistered'>,
   ) => ReturnType<
     ReturnType<typeof useProjectsStore.getState>['createWorktree']
   >;
@@ -615,12 +617,21 @@ export function useSidebarWorkspaces(): SidebarWorkspacesModel {
   );
 
   const onCreateWorktree = useCallback(
-    (projectId: string): ReturnType<typeof createWorktree> => {
+    (
+      projectId: string,
+      options?: Pick<CreateWorktreeOptions, 'worktreeId' | 'onRegistered'>,
+    ): ReturnType<typeof createWorktree> => {
       // Reveal the Code surface at local registration, when the row has been
       // inserted and selected. The returned promise also waits for persistence
       // and post-create refreshes, which must not delay the active UI.
       return createWorktree(projectId, {
-        onRegistered: () => navigate('main'),
+        ...(options?.worktreeId === undefined
+          ? {}
+          : { worktreeId: options.worktreeId }),
+        onRegistered: (worktree) => {
+          navigate('main');
+          options?.onRegistered?.(worktree);
+        },
       });
     },
     [createWorktree, navigate],

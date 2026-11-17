@@ -13,6 +13,7 @@ import {
   APP_ADVISOR_PROJECT_ID,
   IPC_CHANNELS,
   getExecutionHarnessForModel,
+  getProviderForChatModel,
   getProviderForModel,
   requireProviderForModel,
   isTerminalBackedInterfaceMode,
@@ -77,6 +78,7 @@ import {
   resolveAiCreditsScopeOwner,
   type WorkOwnerSession,
 } from '../../agents/work-owner';
+import { checkChatModelEligibility } from '../../agents/chat-model-eligibility';
 import {
   pinInheritingAgentToDestination,
   resolveSendModelPin,
@@ -104,6 +106,8 @@ import { LOCAL_DESKTOP_AUTHORITY_ID } from '../../canopy-runtime/desktop-runtime
 import { failServiceError, isRecord } from './validation';
 import { portalFileReferences } from '../portal-file-references';
 import { assertUntrustedChatInput } from '../../agent-messaging/untrusted-input';
+import { assertTurnModelGatewayRoute } from '../../lib/model-gateway-turn';
+import { isModelGatewayRefusal } from '../../lib/model-gateway-refusal';
 
 function rejectUntrustedPortalChatInput(
   command: PortalCommandEnvelope,
@@ -1000,6 +1004,27 @@ async function executePortalChatSend(
         'invalid_payload',
         'This model is blocked by your organization policy.',
       );
+      await removeMaterializedPortalChatAttachments(
+        materializedAttachmentPaths,
+      );
+      return;
+    }
+    // An enforced gateway that excludes this route is refused here too,
+    // before the revisioned send saves the message (CAN-6701), with the
+    // stable reason beside the closed top-level code. After the policy
+    // check, so a model that is both keeps the policy message.
+    try {
+      await assertTurnModelGatewayRoute(
+        effectiveModel,
+        effectiveProviderType,
+        workOwner,
+        'before-save',
+      );
+    } catch (error) {
+      if (!isModelGatewayRefusal(error)) throw error;
+      context.fail(command, 'invalid_payload', error.message, false, {
+        response: { code: error.code, message: error.message },
+      });
       await removeMaterializedPortalChatAttachments(
         materializedAttachmentPaths,
       );
@@ -2751,56 +2776,34 @@ export async function handlePortalChatSetModel(
     );
     return;
   }
-  // Same runtime preflight as the desktop model-change IPC: a Cursor model
-  // must not be durably persisted while the managed runtime cannot run it.
-  // The renderer's `changeChatModel` path re-checks availability and still
-  // refuses Cursor for app-managed projects (Pipeline Editor, plan explore,
-  // code review); Cowork runs it since 2026-09-25.
-  if (
-    getProviderForModel(model) === 'cursor' &&
-    !(await isCursorRuntimeAvailable())
-  ) {
-    context.fail(
-      command,
-      'invalid_payload',
-      'Connect Cursor in the desktop app to use it here.',
-    );
-    return;
-  }
-  if (
-    (selectedHarness === 'opencode' ||
-      getProviderForModel(model) === 'opencode') &&
-    !(await isOpenCodeRuntimeAvailable())
-  ) {
-    context.fail(
-      command,
-      'invalid_payload',
-      'Connect OpenCode in the desktop app to use it here.',
-    );
-    return;
-  }
-  if (
-    getProviderForModel(model) === 'copilot' &&
-    !(await isCopilotRuntimeAvailable())
-  ) {
-    context.fail(
-      command,
-      'invalid_payload',
-      'Connect Copilot in the desktop app to use it here.',
-    );
-    return;
-  }
+  // The same connection, policy and gateway checks agent chat creation uses,
+  // for the owner this chat runs under, so nothing is persisted that the
+  // turn would refuse. An unreadable owner is judged against every enforcing
+  // organization, as the desktop model-change IPC does. The renderer's
+  // `changeChatModel` path re-checks availability and still refuses Cursor
+  // for app-managed projects (Pipeline Editor, plan explore, code review);
+  // Cowork runs it since 2026-09-25. Each provider's turn gate re-checks its
+  // connection, and the session gate re-checks policy and the gateway, so a
+  // later revocation is still refused.
   const workOwner = await resolveAiCreditsScopeOwner({
     kind: 'work',
     projectId: target.projectId,
     worktreeId: target.worktreeId,
     chatId: target.chatId,
   });
-  if (await isModelBlockedByStoredPolicy(model, workOwner)) {
+  const eligibility = await checkChatModelEligibility({
+    model,
+    providerType: getProviderForChatModel(model, selectedHarness),
+    executionHarness: selectedHarness,
+    workOwner,
+  });
+  if (!eligibility.ok) {
     context.fail(
       command,
       'invalid_payload',
-      'This model is blocked by your organization policy.',
+      eligibility.reason === 'not-connected'
+        ? `Connect ${eligibility.label} in the desktop app to use it here.`
+        : eligibility.message,
     );
     return;
   }

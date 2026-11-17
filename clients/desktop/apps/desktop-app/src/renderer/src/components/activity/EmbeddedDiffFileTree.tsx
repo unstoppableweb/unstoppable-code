@@ -1,3 +1,4 @@
+import { requestChangedFilesRefresh } from '@/stores/changedFilesRefreshRuntime';
 import { useFileTabUiStore } from '@/stores/fileTabUiStore';
 import { useChatTabRenderState } from '@/stores/chatStore';
 import type { ChangedFileRow } from '@canopy/ui-app';
@@ -109,13 +110,9 @@ export function EmbeddedDiffFileTree({
     setRefreshing(true);
     setError(null);
     try {
-      const updated = await window.api.activity.getChangedFiles({
-        projectId,
-        worktreeId,
+      await requestChangedFilesRefresh(projectId, worktreeId, {
+        kind: 'explicit',
       });
-      useActivityStore
-        .getState()
-        .setChangedFiles(projectId, worktreeId, updated);
     } catch (error) {
       setError(
         error instanceof Error ? error.message : 'Unable to refresh files.',

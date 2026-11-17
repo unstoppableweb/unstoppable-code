@@ -16,6 +16,29 @@ import {
   getWorktreeCodeGraphDir,
 } from './worktree-paths';
 
+let writeAdmission: (() => void) | undefined;
+
+/**
+ * Sets this process's admission for the graph writes the service makes
+ * (CAN-6985): builds, and the create, convert or migrate before a read. It
+ * runs before the writer lease is taken, and a throw refuses the write. The
+ * CLI sets it; Electron main writes worktree graphs only in utility
+ * processes, which its build scheduler admits.
+ */
+export function setCodeGraphWorktreeWriteAdmission(
+  admit: (() => void) | undefined,
+): void {
+  writeAdmission = admit;
+}
+
+function admitted(
+  lease: AcquireCodeGraphWriterLeaseOptions | undefined,
+): AcquireCodeGraphWriterLeaseOptions | undefined {
+  return writeAdmission === undefined
+    ? lease
+    : { ...lease, admit: writeAdmission };
+}
+
 export interface CodeGraphWorktreeDescriptor {
   workspaceId: string;
   worktreeId: string;
@@ -105,6 +128,7 @@ export class CodeGraphWorktreeService {
     // still holds this open back.
     await ensureCodeGraphDatabaseCurrent(
       getWorktreeCodeGraphDbPath(descriptor.workspaceId, descriptor.worktreeId),
+      admitted(undefined),
     );
     // Work issued while a close is in flight must run strictly after that
     // close completes, so it never adopts an engine the close is about to
@@ -161,7 +185,7 @@ export class CodeGraphWorktreeService {
               ? engine.buildOrUpdate()
               : engine.buildOrUpdate(options);
           },
-          lease,
+          admitted(lease),
         );
       });
     // The stored tail must never reject, or every later caller on this key

@@ -36,6 +36,7 @@ export async function openCopilotLocalChannel(
   const send = async (
     frame: CopilotLocalFrame,
     guard?: CopilotLocalDelivery,
+    submitted?: () => void,
   ): Promise<void> => {
     if (disconnected) throw new Error('Copilot channel unavailable.');
     guard?.admit();
@@ -47,6 +48,7 @@ export async function openCopilotLocalChannel(
     const delivery = sending.then(() => {
       if (disconnected) throw new Error('Copilot channel unavailable.');
       guard?.admit();
+      submitted?.();
       return write(encoded);
     });
     sending = delivery.catch(disconnect);
@@ -69,6 +71,7 @@ export async function openCopilotLocalChannel(
           timer.unref();
         }),
       ]);
+      guard?.admit();
     } finally {
       clearTimeout(timer);
       abort.signal.removeEventListener('abort', cancel);
@@ -90,6 +93,7 @@ export async function openCopilotLocalChannel(
         return;
       }
       active++;
+      let successSubmitted = false;
       try {
         if (
           typeof encoded !== 'string' ||
@@ -114,7 +118,7 @@ export async function openCopilotLocalChannel(
           return;
         }
         requests.add(requestId);
-        // Deliberately not chained to other receives: replies/cancel must pass a
+        // Deliberately not chained to other receives: replies/renewal/cancel must pass a
         // pending run. Each outbound write remains ordered and acknowledged.
         let responded = false;
         const outcome = await host.receive(
@@ -123,13 +127,20 @@ export async function openCopilotLocalChannel(
             await send(
               { kind: 'response', requestId, outcome: completed },
               guard,
+              () => {
+                successSubmitted = true;
+              },
             );
             responded = true;
           },
         );
+        if (responded && outcome.kind === 'refused')
+          throw new Error('Copilot channel unavailable.');
         if (!responded) await send({ kind: 'response', requestId, outcome });
       } catch {
         disconnect();
+        // A post-delivery guard failure must not look like an acknowledged success.
+        if (successSubmitted) throw new Error('Copilot channel unavailable.');
       } finally {
         active--;
       }

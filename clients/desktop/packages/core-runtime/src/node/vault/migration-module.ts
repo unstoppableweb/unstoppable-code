@@ -1,3 +1,4 @@
+import type { CopilotVaultAccount } from './copilot-grant-contracts';
 import { randomUUID } from 'node:crypto';
 import type { CanopyDaemonClock } from '../daemon/leases';
 import {
@@ -57,6 +58,16 @@ export interface ResumableMigrationModule extends Pick<
   'decline' | 'reportAmbiguity' | 'endChannel' | 'close' | 'get'
 > {
   issue(channel: object, slot: string): Promise<MigrationIssueResult>;
+  preflightImport(
+    sessionId: string,
+    presentation: MigrationPresentation,
+  ): boolean;
+  beginImport(
+    sessionId: string,
+    presentation: MigrationPresentation,
+    account: CopilotVaultAccount,
+    predecessorGeneration: string | null,
+  ): Promise<MigrationAttemptContext>;
   importSlot(
     sessionId: string,
     presentation: MigrationPresentation,
@@ -224,15 +235,20 @@ export function createResumableMigrationModule(
       if (attempt.state === 'legacy_deleted') return progress();
       return snapshot.withGeneration(
         source,
-        (observed): Promise<MigrationRecoveryResult> => {
+        async (observed): Promise<MigrationRecoveryResult> => {
           live(attempt);
           if (
             observed.kind !== 'present' ||
             observed.generation !== attempt.identity.generation
           )
-            return Promise.resolve({ kind: 'stale' });
+            return { kind: 'stale' };
           storage.select(attempt.id, attempt.epoch);
-          return Promise.resolve(progress());
+          await importer?.finalize?.(
+            context(attempt),
+            () => !closed && current()?.id === attempt.id,
+          );
+          live(attempt);
+          return progress();
         },
       );
     });
@@ -303,6 +319,65 @@ export function createResumableMigrationModule(
         return issued;
       } catch {
         return { issued: false, reason: 'source-unavailable' };
+      } finally {
+        busy = false;
+      }
+    },
+    preflightImport(sessionId, presentation): boolean {
+      return (
+        !busy &&
+        !closed &&
+        offerEpochs.get(sessionId) === readEpoch() &&
+        sessions.preflight(sessionId, presentation).accepted
+      );
+    },
+    async beginImport(sessionId, presentation, account, predecessorGeneration) {
+      if (busy || closed || !snapshot || !importer?.begin)
+        throw new Error('Import preparation unavailable.');
+      const admitted = sessions.preflight(sessionId, presentation);
+      const epoch = readEpoch();
+      if (
+        !admitted.accepted ||
+        epoch === null ||
+        offerEpochs.get(sessionId) !== epoch
+      )
+        throw new Error('Import offer unavailable.');
+      busy = true;
+      try {
+        return await snapshot.withGeneration(source, async (observed) => {
+          if (
+            observed.kind !== 'present' ||
+            observed.generation !== admitted.generation ||
+            !sessions.preflight(sessionId, presentation).accepted ||
+            readEpoch() !== epoch
+          )
+            throw new Error('Import source changed.');
+          const existing = current();
+          const attempt =
+            existing ??
+            storage.prepare(
+              {
+                brand: options.brand,
+                build: options.build,
+                sourceFlavor: source.flavorId,
+                sourceMode: source.secureMode,
+                slot: 'copilot-account',
+                generation: observed.generation,
+              },
+              epoch,
+            );
+          if (attempt.identity.generation !== observed.generation)
+            throw new Error('Import generation changed.');
+          const ctx = context(attempt);
+          await importer.begin?.({
+            ...ctx,
+            idempotencyKey: storage.importKey(attempt.id),
+            account,
+            predecessorGeneration,
+          });
+          live(attempt);
+          return ctx;
+        });
       } finally {
         busy = false;
       }
@@ -384,6 +459,7 @@ export function createResumableMigrationModule(
                   ...context(attempt),
                   idempotencyKey: storage.importKey(attempt.id),
                   value,
+                  isCurrent: () => release.isCurrent(),
                 });
                 live(attempt);
                 const resolved = storage.reconcile(attempt.id, attempt.epoch);
@@ -392,6 +468,12 @@ export function createResumableMigrationModule(
                 if (!release.isCurrent())
                   throw new Error('Migration release retired.');
                 storage.select(attempt.id, attempt.epoch);
+                await importer.finalize?.(context(attempt), () =>
+                  release.isCurrent(),
+                );
+                live(attempt);
+                if (!release.isCurrent())
+                  throw new Error('Migration release retired.');
                 return { kind: 'created', receipt: attempt.id };
               });
             } finally {
@@ -444,6 +526,7 @@ export function createResumableMigrationModule(
           receipt: Awaited<ReturnType<typeof deletion.reconcile>>,
         ): MigrationRecoveryResult => {
           live(attempt);
+          if (receipt.kind === 'unavailable') return { kind: 'unavailable' };
           if (receipt.kind !== 'completed') return { kind: 'unresolved' };
           storage.deletionReceipt(
             attempt.id,

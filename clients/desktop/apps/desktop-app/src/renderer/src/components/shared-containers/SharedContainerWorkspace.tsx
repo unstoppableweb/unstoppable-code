@@ -204,7 +204,7 @@ export function SharedContainerWorkspace({
     const activity = useActivityStore.getState();
     const items = useWorkspaceItemsStore.getState();
     void Promise.allSettled([
-      requestChangedFilesRefresh(projectId, containerId),
+      requestChangedFilesRefresh(projectId, containerId, { kind: 'automatic' }),
       ...(surfaceContainerType === 'CODE_WORKTREE'
         ? [activity.loadTrackedPlans(projectId, containerId)]
         : []),

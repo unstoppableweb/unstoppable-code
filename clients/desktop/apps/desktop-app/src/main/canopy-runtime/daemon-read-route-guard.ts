@@ -84,6 +84,19 @@ const CHANGED_FILES_QUALIFICATION_PENDING: ReadRouteDisposition = {
   reason:
     'Platform qualification has not been assessed for this reserved read.',
 };
+/**
+ * CAN-4729's decision: both callers of the remote read, `repo:get-remote-url`
+ * and the workspace reference repository health, answer with the origin URL
+ * as Git printed it. The contract withholds a local remote's URL and strips a
+ * network URL's userinfo, so a daemon answer could not serve them without
+ * reading the configuration again in main. Reconsider when no caller needs
+ * the unredacted URL.
+ */
+const REMOTE_RETAINED: ReadRouteDisposition = {
+  kind: 'blocked',
+  until: 'CAN-4729',
+  reason: 'Stays in-process: callers need the origin URL the contract redacts.',
+};
 
 /**
  * Platform qualification only, not route selection or proof of serving.
@@ -143,7 +156,7 @@ export const READ_ROUTE_PREREQUISITES: Readonly<
   'files.search': ELIGIBLE,
   'files.link': ELIGIBLE,
   'git.branch.list': ELIGIBLE,
-  'git.remote.get': PROTOCOL_PENDING,
+  'git.remote.get': REMOTE_RETAINED,
   'git.worktree.health.get': PROTOCOL_PENDING,
   'git.executable.get': PROTOCOL_PENDING,
   'git.status.get': CHANGED_FILES_PENDING,

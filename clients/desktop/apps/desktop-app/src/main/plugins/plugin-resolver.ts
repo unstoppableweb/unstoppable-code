@@ -328,6 +328,13 @@ export interface ResolvePluginsOptions {
     | 'opencode-session'
     | 'antigravity-session';
   installExternalPlugins?: boolean;
+  /**
+   * Leave every MCP server unresolved: no MCP upstream probe, route, MCP
+   * credential read or MCP warning. Each plugin's manifest and MCP config
+   * files are still read to report declared servers. Selection evaluation can
+   * still read account MCP connection state. For a workflow step whose preset can never call an MCP server.
+   */
+  skipMcpServers?: boolean;
   enableHttpMcpProxy?: boolean;
   mcpHttpProxyService?: McpHttpProxyServiceForResolver;
   mcpStdioBroker?: McpStdioBrokerForResolver;
@@ -1540,18 +1547,20 @@ export async function resolvePlugins(
 
   selectionMs = Date.now() - stageStartedAt;
   stageStartedAt = Date.now();
-  const rawStandaloneMcpServers = await resolveStandaloneMcpServers(
-    new Map(
-      effectiveRefs.mcpServerRefs.map((ref) => [
-        `${ref.serverId}/${ref.configId}`,
-        ref,
-      ]),
-    ),
-    warnings,
-    options,
-    httpMcpContext,
-    preferences.mcpProxyPort,
-  );
+  const rawStandaloneMcpServers = options?.skipMcpServers
+    ? {}
+    : await resolveStandaloneMcpServers(
+        new Map(
+          effectiveRefs.mcpServerRefs.map((ref) => [
+            `${ref.serverId}/${ref.configId}`,
+            ref,
+          ]),
+        ),
+        warnings,
+        options,
+        httpMcpContext,
+        preferences.mcpProxyPort,
+      );
   const standaloneMcpServers = codexPurpose
     ? await brokerCodexStdioMcpServers(
         rawStandaloneMcpServers,
@@ -1569,18 +1578,28 @@ export async function resolvePlugins(
   const cursorPluginsWithMcpServers = new Set<string>();
 
   for (const plugin of resolvedPlugins) {
-    const pluginMcpResolution = await resolvePluginMcpServers(
-      plugin,
-      warnings,
-      options,
-      httpMcpContext,
-      preferences.mcpProxyPort,
-      inheritedRefs.some(
-        (ref) =>
-          ref.marketplaceId === plugin.marketplaceId &&
-          ref.pluginName === plugin.pluginName,
-      ),
-    );
+    const pluginMcpResolution: PluginMcpResolutionResult =
+      options?.skipMcpServers
+        ? {
+            servers: {},
+            // Declared, not resolved: only the plugin's manifest and MCP
+            // config files are read (no credential store, migration or
+            // network), so the plugin keeps an accurate notice. A file that
+            // cannot be read counts as none rather than failing the step.
+            hasMcpServers: pluginDeclaresMcpServers(plugin),
+          }
+        : await resolvePluginMcpServers(
+            plugin,
+            warnings,
+            options,
+            httpMcpContext,
+            preferences.mcpProxyPort,
+            inheritedRefs.some(
+              (ref) =>
+                ref.marketplaceId === plugin.marketplaceId &&
+                ref.pluginName === plugin.pluginName,
+            ),
+          );
     if (
       purpose === 'claude-session' &&
       plugin.provider === 'codex' &&
@@ -1647,7 +1666,9 @@ export async function resolvePlugins(
 
   if (purpose === 'antigravity-session' && resolvedPlugins.length > 0) {
     cursorNotices.push(
-      'Antigravity loads selected plugin skills, commands and MCP servers. Plugin hooks and native plugin agents are not loaded.',
+      options?.skipMcpServers
+        ? 'Antigravity loads selected plugin skills and commands. Plugin hooks and native plugin agents are not loaded.'
+        : 'Antigravity loads selected plugin skills, commands and MCP servers. Plugin hooks and native plugin agents are not loaded.',
     );
   }
 
@@ -2766,6 +2787,22 @@ function extractPluginMcpServers(
     }
   }
   return result;
+}
+
+/** Local manifest and config reads only; never throws. */
+function pluginDeclaresMcpServers(plugin: PluginResolvedPath): boolean {
+  try {
+    return (
+      Object.keys(
+        readPluginMcpConfigObjects(
+          plugin.pluginPath,
+          loadPluginManifest(plugin.pluginPath, plugin.provider),
+        ),
+      ).length > 0
+    );
+  } catch {
+    return false;
+  }
 }
 
 export function readPluginMcpConfigObjects(

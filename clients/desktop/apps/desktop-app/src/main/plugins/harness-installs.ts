@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import {
   classifyHarnessCompatibility,
   cursorPluginFacetProvider,
-  PLUGIN_HARNESSES,
+  PLUGIN_HARNESSES as OFFERED_PLUGIN_HARNESSES,
   type CompatibilityFacetEvidence,
   type PublisherPluginManifest,
 } from '@canopy/plugin-interop';
@@ -34,6 +34,11 @@ import {
   type HarnessInstallStoreDisk,
 } from '../lib/harness-install-store';
 import { getPluginHarnessInstallsFilePath } from '../lib/paths';
+
+// Experimental Antigravity has no qualified per-harness install record.
+const PLUGIN_HARNESSES = OFFERED_PLUGIN_HARNESSES.filter(
+  (id): id is HarnessCompatibilityHarness => id !== 'antigravity',
+);
 
 // ---------------------------------------------------------------------------
 // One Add for every harness, for plugins and skills (CAN-6816, behind the

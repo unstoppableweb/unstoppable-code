@@ -50,6 +50,7 @@ import {
   useScriptsStore,
   type ScriptRunState,
 } from '@/stores/scriptsStore';
+import { useWorktreeEffective } from '@/hooks/useWorktreeEffective';
 
 function ScriptOutputModal({
   run,
@@ -393,6 +394,7 @@ export function ScriptsSection({
   worktreeId: string;
   onOpenSettings?: (tab: 'scripts' | 'hooks') => void;
 }): JSX.Element {
+  useWorktreeEffective(projectId, worktreeId);
   const headerChrome = useScriptsHeaderChrome({ projectId, worktreeId });
   const scriptsSection = useScriptsSectionHostModel({ projectId, worktreeId });
   const hasProject = useProjectsStore((state) =>

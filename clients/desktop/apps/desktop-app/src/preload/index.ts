@@ -2375,6 +2375,8 @@ const canopyApi: CanopyApi = {
   },
   invalidateDesktopSessionSnapshot: () =>
     ipcRenderer.invoke(IPC_CHANNELS.desktopSessionSnapshotInvalidate),
+  getWorktreeEffective: (request) =>
+    ipcRenderer.invoke(IPC_CHANNELS.worktreeEffectiveGet, request),
   saveProjects: (items, options) =>
     ipcRenderer.invoke(IPC_CHANNELS.projectsSave, items, options),
   setTrackedBaseBranch: (request) =>
@@ -3939,6 +3941,10 @@ const canopyApi: CanopyApi = {
       ipcRenderer.invoke(IPC_CHANNELS.mcpAnswerUser, req),
     dismissMcpQuestion: (req) =>
       ipcRenderer.invoke(IPC_CHANNELS.mcpDismissUser, req),
+    submitSecretRequest: (req) =>
+      ipcRenderer.invoke(IPC_CHANNELS.secretRequestSubmit, req),
+    declineSecretRequest: (req) =>
+      ipcRenderer.invoke(IPC_CHANNELS.secretRequestDecline, req),
     onPlanExitRequest: (callback) => {
       const handler = (
         _event: Electron.IpcRendererEvent,

@@ -8,7 +8,11 @@ import {
   commitWithMessage,
   pushBranch,
 } from '@canopy/desktop-shared/lib/git';
-import { generateCommitMessageWithUsage } from '@canopy/desktop-shared/lib/commit-message-generator';
+import {
+  buildCommitMessageModelRequest,
+  generateCommitMessageWithUsage,
+  parseCommitMessageModelResult,
+} from '@canopy/desktop-shared/lib/commit-message-generator';
 import { localMemoryEnabledFromEnv } from '@canopy/execution-engine/node/lib/native-memory';
 import {
   type PrInstructionMode,
@@ -32,6 +36,25 @@ import {
   discoverWorkspaceRepos,
   type DiscoveredRepo,
 } from '../_lib/repo-discovery';
+import {
+  assertCommittableState,
+  assertPushableTarget,
+  commitCheckedContent,
+  CommittedIndexNotUpdatedError,
+  hostHelperRequestDigest,
+  identityHasUnsupportedEntry,
+  PreCommitRefusedError,
+  pushCheckedCommit,
+  readHostHelperBatchMode,
+  recordPreparedTarget,
+  repoTarget,
+  requireHostHelperBatchResult,
+  requirePreparedTarget,
+  workingTreeIdentity,
+  writeHostHelperBatchRequests,
+  type HostHelperBatchMode,
+  type RepoTarget,
+} from '../_lib/host-helper-batch';
 
 interface CommitPushConfig {
   model: string;
@@ -169,11 +192,83 @@ function renderSummary(results: CommitPushRepoResult[]): string {
   ].join('\n');
 }
 
+/**
+ * The commit message for a repository with uncommitted changes. Inline, the
+ * action calls the model. Preparing, it records the request and returns
+ * null, so the caller stops before any commit or push. Applying, it uses the
+ * host's result for the request rebuilt from the current state (CAN-6702),
+ * and returns the identity the staged content must match.
+ */
+async function resolveCommitMessage(
+  repo: DiscoveredRepo,
+  config: CommitPushConfig,
+  mode: HostHelperBatchMode,
+  branchName: string,
+  diff: string,
+): Promise<{
+  message: string;
+  checked?: { identity: string; target: RepoTarget };
+} | null> {
+  if (mode.kind === 'inline') {
+    const generated = await generateCommitMessageWithUsage({
+      repoPath: repo.repoPath,
+      branchName,
+      diff,
+      model: config.model,
+      thinkingLevel: config.thinkingLevel,
+      // Builtin actions are plain Node subprocesses: the desktop step
+      // runner projects the opt-in local memory preference into the
+      // branded `PREF_LOCAL_MEMORY_ENABLED` env var; absent (CLI-native
+      // runs) means OFF, keeping provider-native memory defaults
+      // (CAN-1969).
+      localMemoryEnabled: localMemoryEnabledFromEnv(),
+      instructions: buildCommitInstructions(config),
+      instructionMode: 'replace',
+    });
+    if (generated.source !== 'model') {
+      throw new Error(
+        'Commit message generation returned fallback content instead of model output.',
+      );
+    }
+    return { message: generated.message };
+  }
+  const request = buildCommitMessageModelRequest({
+    branchName,
+    diff,
+    instructions: buildCommitInstructions(config),
+    instructionMode: 'replace',
+  });
+  // The target (HEAD, branch, push URLs) and what `git add -A` would stage,
+  // path by path, so a change the diff text does not show (for example past
+  // its size cap) still counts.
+  const { identity, target } = await workingTreeIdentity(repo.repoPath);
+  // Checked before any request or change, so prepare records no request for
+  // such a repository and apply reports why.
+  if (identityHasUnsupportedEntry(identity))
+    throw new Error(
+      'The changes include a submodule or another entry that is not a file or symlink, so a host-run helper cannot check them. Nothing was committed or pushed for it.',
+    );
+  assertPushableTarget(target);
+  await assertCommittableState(repo.repoPath);
+  const digest = hostHelperRequestDigest(repo.repoPath, request, identity);
+  if (mode.kind === 'prepare') {
+    mode.requests.push({ digest, ...request });
+    return null;
+  }
+  const message = parseCommitMessageModelResult(
+    requireHostHelperBatchResult(mode, digest).structured,
+  );
+  if (message === null)
+    throw new Error('The model did not return a commit message.');
+  return { message, checked: { identity, target } };
+}
+
 async function processRepo(
   repo: DiscoveredRepo,
   config: CommitPushConfig,
   secretValues: readonly string[],
-): Promise<CommitPushRepoResult> {
+  mode: HostHelperBatchMode,
+): Promise<CommitPushRepoResult | null> {
   let branchName = '';
   let commitMessage = '';
   let commitHash = '';
@@ -212,28 +307,26 @@ async function processRepo(
       };
     }
 
+    if (mode.kind === 'prepare' && !hadUncommittedChanges) {
+      // Preparing makes no commit or push. A repository with nothing to
+      // commit records where it would push, so apply pushes it only while
+      // HEAD, the branch and the push URL are still what prepare saw.
+      const target = await repoTarget(repo.repoPath);
+      assertPushableTarget(target);
+      recordPreparedTarget(mode, repo.repoPath, target);
+      return null;
+    }
+
     if (hadUncommittedChanges) {
       const diff = await getUncommittedDiff(repo.repoPath);
-      const generatedCommitMessage = await generateCommitMessageWithUsage({
-        repoPath: repo.repoPath,
+      const generatedMessage = await resolveCommitMessage(
+        repo,
+        config,
+        mode,
         branchName,
         diff,
-        model: config.model,
-        thinkingLevel: config.thinkingLevel,
-        // Builtin actions are plain Node subprocesses: the desktop step
-        // runner projects the opt-in local memory preference into the
-        // branded `PREF_LOCAL_MEMORY_ENABLED` env var; absent (CLI-native
-        // runs) means OFF, keeping provider-native memory defaults
-        // (CAN-1969).
-        localMemoryEnabled: localMemoryEnabledFromEnv(),
-        instructions: buildCommitInstructions(config),
-        instructionMode: 'replace',
-      });
-      if (generatedCommitMessage.source !== 'model') {
-        throw new Error(
-          'Commit message generation returned fallback content instead of model output.',
-        );
-      }
+      );
+      if (generatedMessage === null) return null;
       // Redacted BEFORE it becomes the actual commit, not just before it's
       // reported: the model generating this message inherits `secretEnv`
       // in its own process and can read a pipeline secret, and a secret
@@ -248,9 +341,70 @@ async function processRepo(
       // splices the mask in at the original offsets, so the structure is
       // kept.
       commitMessage = redactNormalizedPreservingFormat(
-        generatedCommitMessage.message,
+        generatedMessage.message,
         secretValues,
       );
+      if (generatedMessage.checked) {
+        // Host-run turn: commit exactly the checked content on the checked
+        // branch, then push exactly that commit (CAN-6702).
+        const { identity, target } = generatedMessage.checked;
+        try {
+          commitHash = await commitCheckedContent({
+            repoPath: repo.repoPath,
+            identity,
+            target,
+            message: commitMessage,
+          });
+        } catch (error) {
+          if (
+            !(error instanceof PreCommitRefusedError) &&
+            !(error instanceof CommittedIndexNotUpdatedError)
+          )
+            throw error;
+          return {
+            repoId: repo.repoId,
+            repoName: repo.repoName,
+            repoPath: repo.repoPath,
+            relativePath: repo.relativePath,
+            branchName,
+            status: 'failed',
+            hadUncommittedChanges,
+            hadUnpushedCommits,
+            model: config.model,
+            commitMessage,
+            commitHash:
+              error instanceof CommittedIndexNotUpdatedError
+                ? error.commitHash
+                : '',
+            pushed: false,
+            error: redactNormalizedText(error.message, secretValues),
+            failurePhase: 'commit',
+            ...(error instanceof PreCommitRefusedError
+              ? { precommitFailureError: error.hookOutput }
+              : {}),
+          };
+        }
+        await pushCheckedCommit({
+          repoPath: repo.repoPath,
+          target,
+          commit: commitHash,
+        });
+        return {
+          repoId: repo.repoId,
+          repoName: repo.repoName,
+          repoPath: repo.repoPath,
+          relativePath: repo.relativePath,
+          branchName,
+          status: 'committed_and_pushed',
+          hadUncommittedChanges,
+          hadUnpushedCommits: true,
+          model: config.model,
+          commitMessage,
+          commitHash,
+          pushed: true,
+          error: '',
+        };
+      }
       await stageAllChanges(repo.repoPath);
       try {
         commitHash = await commitWithMessage(repo.repoPath, commitMessage);
@@ -286,7 +440,23 @@ async function processRepo(
     }
 
     if (hadUnpushedCommits) {
-      await pushBranch(repo.repoPath);
+      if (mode.kind === 'apply') {
+        // Only a worktree that was already clean at prepare reaches here
+        // with a prepared target. One that was dirty then and is clean now
+        // had its changes committed by something else meanwhile; it has
+        // no prepared target and is refused rather than pushed as whatever
+        // HEAD and the branch are now (CAN-6702).
+        const target = await repoTarget(repo.repoPath);
+        assertPushableTarget(target);
+        requirePreparedTarget(mode, repo.repoPath, target);
+        await pushCheckedCommit({
+          repoPath: repo.repoPath,
+          target,
+          commit: target.head,
+        });
+      } else {
+        await pushBranch(repo.repoPath);
+      }
       pushed = true;
     }
 
@@ -306,6 +476,9 @@ async function processRepo(
       error: '',
     };
   } catch (error) {
+    // A repository that cannot be read yet records no request; apply reads
+    // it again and reports the failure.
+    if (mode.kind === 'prepare') return null;
     const message = error instanceof Error ? error.message : String(error);
     return {
       repoId: repo.repoId,
@@ -348,8 +521,17 @@ export async function runGitCommitPushAction(
       getBrandEnv(env, 'AGENT_SECRET_VALUES'),
     );
 
+    const mode = readHostHelperBatchMode(env);
+
     for (const repo of repos) {
-      results.push(await processRepo(repo, config, secretValues));
+      const result = await processRepo(repo, config, secretValues, mode);
+      if (result) results.push(result);
+    }
+    // A preparing run only hands its requests to the host; it reports no
+    // outputs, and the step's outputs come from the apply run.
+    if (mode.kind === 'prepare') {
+      writeHostHelperBatchRequests(mode);
+      return;
     }
 
     const committedCount = results.filter(
@@ -409,5 +591,19 @@ export async function runGitCommitPushAction(
     setOutput('noop_count', String(noopCount));
     setOutput('failed_count', String(failedCount));
     setOutput('has_failures', failedCount > 0 ? 'true' : 'false');
+    // A committed change with an unreconciled index needs human repair. Fail
+    // the step so its normal successors cannot push it or open a PR for it.
+    if (
+      mode.kind === 'apply' &&
+      results.some(
+        (result) =>
+          result.status === 'failed' &&
+          result.failurePhase === 'commit' &&
+          result.commitHash !== '',
+      )
+    )
+      throw new Error(
+        "Couldn't finish the commit step because a local commit needs index reconciliation. Check git status and reconcile staging before continuing.",
+      );
   });
 }

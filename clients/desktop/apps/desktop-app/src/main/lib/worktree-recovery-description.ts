@@ -1,5 +1,9 @@
 import { recordMetadataWork } from '@canopy/desktop-shared/node/work-counters';
 import { readArchiveRecoveryHolds } from './archive-recovery-refs';
+import {
+  isCompletedTurnDiffCleanup,
+  inspectCompletedTurnDiffCleanup,
+} from './archive-turn-diff-cleanup';
 import type {
   WorktreeRecoveryListParams,
   WorktreeRecoveryListResult,
@@ -375,6 +379,21 @@ async function describeWorktreeRecoveryFromInspection(
     if (!isDestructiveRecoveryOwnerless(record)) {
       diagnosis.check = 'operation-owned';
       return description;
+    }
+    if (isCompletedTurnDiffCleanup(record)) {
+      const cleanup = await inspectCompletedTurnDiffCleanup(operation);
+      if (cleanup.eligible) {
+        // Retained manifests keep the existing Finish diagnosis below.
+        description.check = 'completed-turn-diff-cleanup';
+        diagnosis.verdict = 'cleanup-debt';
+        diagnosis.check = 'completed-turn-diff-cleanup';
+        description.retained.checkout = {
+          presence: 'absent',
+          verification: 'unknown',
+        };
+        return description;
+      }
+      diagnosis.check = cleanup.check;
     }
     if (hasWorkspaceDeletionLease(request.workspaceId)) {
       diagnosis.check = 'project-deletion-pending';

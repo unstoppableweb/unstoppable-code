@@ -21,6 +21,7 @@ export function TurnTimer({
   completedAt,
   showForkAction = false,
   onFork,
+  forkDisabled = false,
   showBranchAction = false,
   onBranch,
   watcherButton,
@@ -46,6 +47,8 @@ export function TurnTimer({
   completedAt: number | null;
   showForkAction?: boolean;
   onFork?: () => void;
+  /** Fork is shown but can't be pressed, as while a cloud fork runs. */
+  forkDisabled?: boolean;
   showBranchAction?: boolean;
   onBranch?: () => void;
   /** Optional watcher (eye) button rendered alongside the fork/branch actions. */
@@ -108,7 +111,9 @@ export function TurnTimer({
       {/* The clean look names the model in the time's tooltip instead. */}
 
       {watcherButton}
-      {showForkAction && onFork && <ForkChatButton onClick={onFork} />}
+      {showForkAction && onFork && (
+        <ForkChatButton onClick={onFork} disabled={forkDisabled} />
+      )}
       {archiveToggleButton}
       {showBranchAction && onBranch && (
         <ActionTooltip

@@ -92,6 +92,60 @@ export function buildDeferredToolsGuidance(provider: PromptProvider): string {
   return `- Use ${searchDeferredToolsToolName} and ${loadDeferredToolsToolName} to discover and enable missing skills, plugins and MCP servers, but ONLY when an active skill explicitly references one or the user explicitly asks to use one. These tools are only for already-installed local resources absent from the agent's current Skills list and callable tool surface. Check the capabilities already available in this chat first; never search for or load a skill, plugin, MCP server, or command that is already available—use it directly. Search first, then load only refs returned by search. Batch multiple queries or items in one call. A skill search also searches plugin-owned skills and slash commands, returning the parent plugin ref with matchedMembers; use plugin:skill syntax to scope the member search to a plugin. Do not use these tools proactively, for adjacent capabilities, recommendations, speculative discovery, marketplace lookup, installation, or OAuth setup. If ${loadDeferredToolsToolName} enables at least one item, this turn will stop and resume automatically after the requested items are available.`;
 }
 
+/** The code graph tool guidance, shared by every harness that advertises it. */
+export function buildCodeGraphToolPromptLines(
+  provider: PromptProvider,
+): string[] {
+  // Keep in sync with CODE_GRAPH_INJECTED_TOOL_KEYS in @canopy/desktop-shared
+  // (canopy-injected-tools.ts) — a new code-graph tool must be added here too.
+  const getCodeGraphContextToolName = injectedToolName(
+    'get_code_graph_context',
+    provider,
+  );
+  const buildOrUpdateCodeGraphToolName = injectedToolName(
+    'build_or_update_code_graph',
+    provider,
+  );
+  const queryCodeGraphToolName = injectedToolName('query_code_graph', provider);
+  const searchCodeGraphToolName = injectedToolName(
+    'search_code_graph',
+    provider,
+  );
+  const explainCodeSymbolToolName = injectedToolName(
+    'explain_code_symbol',
+    provider,
+  );
+  const getImpactRadiusToolName = injectedToolName(
+    'get_impact_radius',
+    provider,
+  );
+  const detectChangedSymbolsToolName = injectedToolName(
+    'detect_changed_symbols',
+    provider,
+  );
+  const compareChangeImpactToolName = injectedToolName(
+    'compare_change_impact',
+    provider,
+  );
+  const getReviewContextToolName = injectedToolName(
+    'get_review_context',
+    provider,
+  );
+
+  return [
+    `Code graph: For structural codebase questions, call ${getCodeGraphContextToolName}, then ${queryCodeGraphToolName} or ${searchCodeGraphToolName} before Grep, Glob, or broad file reads. Use raw files only after graph orientation or for targeted editing/debugging. Apply this workflow to subagents too.`,
+    `- Use ${getCodeGraphContextToolName} to check whether a code graph exists, its freshness, and file/symbol/edge counts.`,
+    `- Use ${buildOrUpdateCodeGraphToolName} to build a code graph the first time or refresh it incrementally after code changes.`,
+    `- Use ${queryCodeGraphToolName} for structural lookups by symbol or file: callers, callees, importers, imports, children, or tests-for.`,
+    `- Use ${searchCodeGraphToolName} to find symbols and files by name or fuzzy text across the whole code graph.`,
+    `- Use ${explainCodeSymbolToolName} for one symbol's definition plus its callers, callees, and tests in a single call.`,
+    `- Use ${getImpactRadiusToolName} to see the transitive blast radius of a symbol before you edit it.`,
+    `- Use ${detectChangedSymbolsToolName} to list the code-graph symbols touched by the current diff against a base ref.`,
+    `- Use ${compareChangeImpactToolName} for the change delta, transitive impact radius, and a risk assessment for the current diff.`,
+    `- Use ${getReviewContextToolName} for a review-oriented summary of the current diff: changed symbols, impacted files/tests, test gaps, and review priorities.`,
+  ];
+}
+
 /** Explicit-address sends, creation, steering and scheduling for roots. */
 function projectMessagingPrompt(): string {
   return `- To send to another chat, discover canonical IDs, then use projects.send_message (projectId, taskId, chatId, text) or bots.send_message (botId, taskId, chatId, text). These actions never navigate or change target settings. AcceptedInputReceipt proves started/messageId or queued/queuedMessageId, not completion. Self-send is rejected. A project chat with broader tool approvals than this chat, or one running in a Claude Code terminal, refuses the send. Optional inline watchers (label, followUpInstruction, allowDuplicate only) are reserved before sending and notify this calling chat; omit them when no follow-up is needed. No sender overrides. Managed delegates cannot discover or dispatch send actions.
@@ -206,59 +260,7 @@ export function buildWorktreeInjectedToolPrompt(
   }
 
   if (withCodeGraphTools) {
-    // Keep in sync with CODE_GRAPH_INJECTED_TOOL_KEYS in @canopy/desktop-shared
-    // (canopy-injected-tools.ts) — a new code-graph tool must be added here too.
-    const getCodeGraphContextToolName = injectedToolName(
-      'get_code_graph_context',
-      provider,
-    );
-    const buildOrUpdateCodeGraphToolName = injectedToolName(
-      'build_or_update_code_graph',
-      provider,
-    );
-    const queryCodeGraphToolName = injectedToolName(
-      'query_code_graph',
-      provider,
-    );
-    const searchCodeGraphToolName = injectedToolName(
-      'search_code_graph',
-      provider,
-    );
-    const explainCodeSymbolToolName = injectedToolName(
-      'explain_code_symbol',
-      provider,
-    );
-    const getImpactRadiusToolName = injectedToolName(
-      'get_impact_radius',
-      provider,
-    );
-    const detectChangedSymbolsToolName = injectedToolName(
-      'detect_changed_symbols',
-      provider,
-    );
-    const compareChangeImpactToolName = injectedToolName(
-      'compare_change_impact',
-      provider,
-    );
-    const getReviewContextToolName = injectedToolName(
-      'get_review_context',
-      provider,
-    );
-
-    lines.splice(
-      1,
-      0,
-      `Code graph: For structural codebase questions, call ${getCodeGraphContextToolName}, then ${queryCodeGraphToolName} or ${searchCodeGraphToolName} before Grep, Glob, or broad file reads. Use raw files only after graph orientation or for targeted editing/debugging. Apply this workflow to subagents too.`,
-      `- Use ${getCodeGraphContextToolName} to check whether a code graph exists, its freshness, and file/symbol/edge counts.`,
-      `- Use ${buildOrUpdateCodeGraphToolName} to build a code graph the first time or refresh it incrementally after code changes.`,
-      `- Use ${queryCodeGraphToolName} for structural lookups by symbol or file: callers, callees, importers, imports, children, or tests-for.`,
-      `- Use ${searchCodeGraphToolName} to find symbols and files by name or fuzzy text across the whole code graph.`,
-      `- Use ${explainCodeSymbolToolName} for one symbol's definition plus its callers, callees, and tests in a single call.`,
-      `- Use ${getImpactRadiusToolName} to see the transitive blast radius of a symbol before you edit it.`,
-      `- Use ${detectChangedSymbolsToolName} to list the code-graph symbols touched by the current diff against a base ref.`,
-      `- Use ${compareChangeImpactToolName} for the change delta, transitive impact radius, and a risk assessment for the current diff.`,
-      `- Use ${getReviewContextToolName} for a review-oriented summary of the current diff: changed symbols, impacted files/tests, test gaps, and review priorities.`,
-    );
+    lines.splice(1, 0, ...buildCodeGraphToolPromptLines(provider));
   }
 
   lines.push(

@@ -3,7 +3,6 @@ import {
   reconcileManagedMarketplaceReceiptsAtStartup,
   refreshMarketplaces,
 } from './plugins/plugin-service';
-import { refreshInvocableInventoryAfterMutation } from './plugins/invocable-inventory-service';
 import { getObservabilityService } from './observability';
 import { flushTurnFeedbackOutbox } from './feedback/turn-feedback-client';
 import { flushSharedItemSubscriptions } from './canopy-cloud/shared-item-subscriptions';
@@ -220,11 +219,8 @@ async function runStartupBackgroundTasks(
       'plugin_marketplace_refresh',
       marketplaceResult.value.error ?? 'Unknown error',
     );
-  } else {
-    refreshInvocableInventoryAfterMutation(
-      'startup:plugin_marketplace_refresh',
-    );
   }
+  // Catalog invalidation follows settled publications/effects, even on failure.
   if (blueprintResult.status === 'rejected') {
     recordStartupBackgroundTaskFailure(
       'blueprint_catalog_refresh',

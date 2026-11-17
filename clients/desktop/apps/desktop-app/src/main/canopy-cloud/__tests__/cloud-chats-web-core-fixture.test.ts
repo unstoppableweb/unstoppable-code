@@ -86,6 +86,35 @@ function definition(method: string): Definition {
   return found;
 }
 
+/**
+ * How long a turn's pushes may take when the runner is busy. The old sleeps
+ * were 100–250ms, shorter than a stalled event loop.
+ */
+const TURN_PUSH_DEADLINE_MS = 4_000;
+
+/**
+ * Polls until `ready`. A turn's report is a chain of timers, so one sleep
+ * can elapse before the last push is even scheduled. A missed deadline
+ * throws with `observed()` so a later, weaker assertion cannot pass.
+ */
+async function waitUntil(
+  ready: () => boolean,
+  observed: () => unknown,
+  deadlineMs = TURN_PUSH_DEADLINE_MS,
+): Promise<void> {
+  const deadline = Date.now() + deadlineMs;
+  while (!ready()) {
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `Timed out after ${deadlineMs}ms waiting for a cloud chat push: ${JSON.stringify(observed())}`,
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+jest.setTimeout(30_000);
+
 describe('the fake web core for desktop cloud chats (CAN-6280)', () => {
   const world = createCloudChatsWorld({ accountId: 'acct-1' });
   const items: { method: string; params: { item: unknown } }[] = [];
@@ -507,7 +536,10 @@ describe('the fake web core for desktop cloud chats (CAN-6280)', () => {
         _meta: { idempotencyKey: commandId },
       }),
     ).toHaveProperty('result');
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await waitUntil(
+      () => fresh.state.sandboxAsleep === false,
+      () => fresh.state.sandboxAsleep,
+    );
     expect(fresh.state.sandboxAsleep).toBe(false);
 
     const answer = fresh.call(
@@ -610,7 +642,17 @@ describe('the fake web core for desktop cloud chats (CAN-6280)', () => {
     expect(changes().map((change) => change.type)).toEqual([
       'pending_question.removed',
     ]);
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await waitUntil(
+      () => {
+        const settled = changes().some((change) =>
+          change.message?.blocks.some(
+            (block) => block.toolUseId === SEEDED_CLOUD_CHATS.questionToolUseId,
+          ),
+        );
+        return settled && runtimes().length === 1;
+      },
+      () => ({ runtimes: runtimes(), changes: changes() }),
+    );
     const asking = changes().find((change) =>
       change.message?.blocks.some(
         (block) => block.toolUseId === SEEDED_CLOUD_CHATS.questionToolUseId,
@@ -632,7 +674,17 @@ describe('the fake web core for desktop cloud chats (CAN-6280)', () => {
       _meta: { idempotencyKey: '0f3a9c1e-2b4d-4e6f-8a1b-3c5d7e9f1a21' },
     }) as { outcome: string; entityId: string };
     expect(receipt.outcome).toBe('applied');
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    await waitUntil(
+      () => {
+        const replied = changes().some((change) =>
+          change.message?.blocks.some(
+            (block) => block.text === 'Seeded reply: Studio B, please.',
+          ),
+        );
+        return runtimes().slice(1).length === 3 && replied;
+      },
+      () => ({ runtimes: runtimes(), changes: changes() }),
+    );
     // Queued, then running under the receipt's turn, then committed with no
     // turn and Core's session still streaming.
     expect(runtimes().slice(1)).toEqual([
@@ -707,15 +759,39 @@ describe('the fake web core for desktop cloud chats (CAN-6280)', () => {
     }) as { entityId: string };
     // The receipt names the conversation turn, as the snapshot's activeTurnId does.
     expect(receipt.entityId).toBe(`turn-${commandId}`);
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    runningCall('core.chat.live.events', {
-      scope: { ...SCOPE, chatId: SEEDED_CLOUD_CHATS.secondChatId },
-    });
-    await new Promise((resolve) => setTimeout(resolve, 50));
     const liveItems = (): unknown[] =>
       pushed
         .filter((each) => each.method === 'core.chat.live.events.item')
         .map((each) => each.params.item);
+    const turnRuntimes = (): Record<string, unknown>[] =>
+      pushed.flatMap((each) =>
+        each.method === 'core.chat.events.item'
+          ? (
+              each.params.item as {
+                changes: {
+                  type: string;
+                  runtime?: Record<string, unknown>;
+                }[];
+              }
+            ).changes.flatMap((change) =>
+              change.type === 'runtime.patched' && change.runtime
+                ? [change.runtime]
+                : [],
+            )
+          : [],
+      );
+    await waitUntil(
+      () =>
+        turnRuntimes().some(
+          (runtime) => runtime.activeTurnId === receipt.entityId,
+        ),
+      () => turnRuntimes(),
+    );
+    runningCall('core.chat.live.events', {
+      scope: { ...SCOPE, chatId: SEEDED_CLOUD_CHATS.secondChatId },
+    });
+    // The open emits on its own timer. Yield so that emit has run.
+    await new Promise((resolve) => setTimeout(resolve, 0));
     // A running turn's live stream opens with no idle.
     expect(liveItems()).toEqual([]);
     const ended = runningCall('core.chat.turn.cancel', {
@@ -731,20 +807,11 @@ describe('the fake web core for desktop cloud chats (CAN-6280)', () => {
     }) as { state: string };
     expect(stopped.state).toBe('running');
     expect(running.state.cancels).toHaveLength(2);
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    const runtimes = pushed.flatMap((each) =>
-      each.method === 'core.chat.events.item'
-        ? (
-            each.params.item as {
-              changes: { type: string; runtime?: Record<string, unknown> }[];
-            }
-          ).changes.flatMap((change) =>
-            change.type === 'runtime.patched' && change.runtime
-              ? [change.runtime]
-              : [],
-          )
-        : [],
+    await waitUntil(
+      () => turnRuntimes().length === 3 && liveItems().length === 1,
+      () => ({ runtimes: turnRuntimes(), live: liveItems() }),
     );
+    const runtimes = turnRuntimes();
     // Queued, running under its turn, then the reply so far commits with no
     // turn while Core's session still reads streaming; the live stream says
     // idle.
@@ -1019,7 +1086,22 @@ describe('the fake web core for desktop cloud chats (CAN-6280)', () => {
     }) as { result: { outcome: string } };
     expect(sent.result.outcome).toBe('applied');
     // The turn runs and commits its reply after the receipt, as Core's does.
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    await waitUntil(
+      () =>
+        pushed.some(
+          (notification) =>
+            notification.method === 'core.chat.events.item' &&
+            JSON.stringify(notification.params.item).includes(
+              'Seeded reply: Find a venue.',
+            ),
+        ),
+      () =>
+        pushed.flatMap((notification) =>
+          notification.method === 'core.chat.events.item'
+            ? [notification.params.item]
+            : [],
+        ),
+    );
     expect(
       pushed.findLast(
         (notification) => notification.method === 'core.chat.events.item',
@@ -1434,7 +1516,6 @@ describe('the fake web core for desktop cloud chats (CAN-6280)', () => {
       text: 'Shorter, please.',
       _meta: { idempotencyKey: '0f3a9c1e-2b4d-4e6f-8a1b-3c5d7e9f1a77' },
     });
-    await new Promise((resolve) => setTimeout(resolve, 250));
     const replies = (subscriptionId: string): { meter?: unknown }[] =>
       pushed
         .filter((each) => each.params.subscriptionId === subscriptionId)
@@ -1455,6 +1536,15 @@ describe('the fake web core for desktop cloud chats (CAN-6280)', () => {
             ? [change.message]
             : [],
         );
+    await waitUntil(
+      () =>
+        replies(revised.subscriptionId).length === 1 &&
+        replies(plain.subscriptionId).length === 1,
+      () => ({
+        revised: replies(revised.subscriptionId),
+        plain: replies(plain.subscriptionId),
+      }),
+    );
     const revisedReplies = replies(revised.subscriptionId);
     expect(revisedReplies).toHaveLength(1);
     expect(

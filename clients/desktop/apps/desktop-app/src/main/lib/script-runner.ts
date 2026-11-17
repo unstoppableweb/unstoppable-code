@@ -36,6 +36,35 @@ import {
 } from '../execution-accounting';
 import { assertWorkspaceTargetRuntimeStartAllowed } from './workspace-target-exclusion';
 import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
+import {
+  evaluateStorageWrite,
+  STORAGE_OWNERSHIP,
+  StorageWriteRefusedError,
+} from '@canopy/core-runtime/storage';
+
+/**
+ * Admits Electron main's run-log writes (CAN-6985). Every write and delete of
+ * the run logs enters `logLock`, so this is their one admission. It admits
+ * them while `script_runs` stays legacy and refuses them once the daemon owns
+ * the store. A section that only reads the run logs (a snapshot copied
+ * elsewhere) is not a write and is not checked.
+ */
+function admitRunLogWrite<T>(write: () => Promise<T>): Promise<T> {
+  const decision = evaluateStorageWrite(
+    'script_runs',
+    'electron_main',
+    STORAGE_OWNERSHIP,
+  );
+  return decision.allowed
+    ? write()
+    : Promise.reject(
+        new StorageWriteRefusedError(
+          'script_runs',
+          'electron_main',
+          decision.reason,
+        ),
+      );
+}
 
 /**
  * Electron main's host for the worker's script execution (CAN-4143): process
@@ -127,12 +156,12 @@ const desktopScriptHost: ScriptExecutionWorkerHost = {
   writerFence: desktopScriptRunWriterFence,
   // The daemon writes the same run logs under the same lock (CAN-5839).
   logLock: {
-    run: (runDir, work) =>
-      withW5ProcessFileLocks(
-        [runDir],
-        { dataRoot: getResolvedCanopyDataDir().path },
-        work,
-      ),
+    run: (runDir, work, access) => {
+      const lock = { dataRoot: getResolvedCanopyDataDir().path };
+      return access === 'read'
+        ? withW5ProcessFileLocks([runDir], lock, work)
+        : admitRunLogWrite(() => withW5ProcessFileLocks([runDir], lock, work));
+    },
   },
   // Manual runs reveal their terminal, as before the move (CAN-5062).
   revealTerminal: (tracking) =>

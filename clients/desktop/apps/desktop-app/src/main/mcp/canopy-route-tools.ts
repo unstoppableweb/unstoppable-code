@@ -1,4 +1,9 @@
 import {
+  REQUEST_SECRETS_DESCRIPTION,
+  REQUEST_SECRETS_JSON_SCHEMA,
+} from '@canopy/agent-actions';
+import { isAgentSecretRequestsEnabled } from '../agent-secrets/feature-gate';
+import {
   SHOW_CAPABILITIES_DESCRIPTION,
   showCapabilitiesJsonSchema,
 } from '../canopy-tools/show-capabilities';
@@ -217,6 +222,10 @@ export const CLAUDE_TERMINAL_TOOL_DEFINITIONS: Readonly<
   ask_user_question: {
     description: ASK_USER_QUESTION_DESCRIPTION,
     inputSchema: askUserQuestionJsonSchema,
+  },
+  request_secrets: {
+    description: REQUEST_SECRETS_DESCRIPTION,
+    inputSchema: REQUEST_SECRETS_JSON_SCHEMA,
   },
   get_script_output: {
     description: GET_SCRIPT_OUTPUT_DESCRIPTION,
@@ -735,10 +744,13 @@ export function getCanopyRouteTools(
   const effectiveSurface = uiServer
     ? 'native-sdk-ui'
     : getClaudeCanopyToolSurface(route);
-  // Cursor and Copilot omit deferred loaders when chat policy disables them.
-  // Claude and Codex retain the schemas and return guidance for disallowed calls.
+  // Cursor, Copilot and Antigravity omit deferred loaders when chat policy
+  // disables them. Claude and Codex retain the schemas and return guidance
+  // for disallowed calls.
   const advertiseDeferredLoaders = !(
-    (route.providerType === 'cursor' || route.providerType === 'copilot') &&
+    (route.providerType === 'cursor' ||
+      route.providerType === 'copilot' ||
+      route.providerType === 'antigravity') &&
     route.deferredToolsAllowed === false
   );
   const baseTools =
@@ -826,6 +838,13 @@ export function getCanopyRouteTools(
       )
         return false;
       const canonicalKey = getCanonicalCanopyToolKey(tool.name);
+      // Only a root local chat that offers secret requests, while the flag
+      // is on.
+      if (
+        canonicalKey === 'request_secrets' &&
+        (route.secretRequests !== true || !isAgentSecretRequestsEnabled())
+      )
+        return false;
       if (
         route.providerType === 'opencode' &&
         route.deferredToolsAllowed === false &&

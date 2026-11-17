@@ -18,7 +18,10 @@ import type {
   OperationListQuery,
   OperationNonTerminalStatus,
 } from './ledger/ledger';
-import { OperationLedgerRefusedError } from './ledger/errors';
+import {
+  OperationLedgerError,
+  OperationLedgerRefusedError,
+} from './ledger/errors';
 
 /**
  * How a domain's interrupted operation stands once the domain has looked
@@ -688,6 +691,9 @@ export class OperationService {
   }
 }
 
-function closedError(): Error {
-  return new Error('The operation service is closed.');
+function closedError(): OperationLedgerError {
+  return new OperationLedgerError(
+    'STORAGE_UNAVAILABLE',
+    'The operation service is closed.',
+  );
 }

@@ -11,12 +11,17 @@ import {
   CustomizeRowMenu,
   HarnessCatchUpNotice,
   McpRowHealth,
+  ItemStateMark,
+  ITEM_STATE_LABEL_CLASS,
+  StatusToneText,
+  type ItemStateTone,
   type CustomizeBreadcrumbItem,
   type HarnessCatchUpNoticeState,
   type CustomizeRowSplitAction,
 } from '@canopy/ui-shared/components';
 import type { HarnessCompatibility } from '@canopy/protocol/plugins';
 import { mcpRowHealthModel } from '@canopy/ui-shared/lib/mcp-row-health';
+import { badgeClassName } from '@canopy/ui-shared/lib/badge';
 import type {
   UnifiedEntryPlacement,
   UnifiedPluginEntry,
@@ -216,9 +221,76 @@ const TRAIL: readonly CustomizeBreadcrumbItem[] = [
  * Hover and press are real pointer states here, not forced ones; point at a
  * crumb or open a menu to see them.
  */
+/** The label colors before Sergii's "only the icon is colored" rule. */
+const LAB_COLORED_STATE_TEXT: Readonly<Record<ItemStateTone, string>> = {
+  active: 'fg-success-strong',
+  available: 'fg-primary',
+  disabled: 'fg-tertiary',
+  unavailable: 'fg-tertiary',
+  add: 'fg-primary',
+  run: 'fg-primary',
+  installed: 'fg-secondary',
+  'sign-in': 'fg-warning',
+  failed: 'fg-destructive',
+  update: 'fg-secondary',
+};
+
 export function CustomizePartsSpecimen(): JSX.Element {
   return (
     <div className="flex flex-col gap-6">
+      <SpecimenPanel title="Item state icons (shared ItemStateMark)">
+        <SpecimenGrid min={140}>
+          {(
+            [
+              'active',
+              'available',
+              'disabled',
+              'unavailable',
+              'add',
+              'run',
+              'installed',
+              'sign-in',
+              'failed',
+              'update',
+            ] as const
+          ).map((tone) => (
+            <SpecimenCell key={tone} label={tone}>
+              <span className="flex flex-col gap-1 text-xs">
+                <span className="flex items-center gap-1.5">
+                  <span className="fg-tertiary">Before</span>
+                  <ItemStateMark tone={tone} />
+                  <span className={LAB_COLORED_STATE_TEXT[tone]}>{tone}</span>
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <span className="fg-tertiary">After</span>
+                  <ItemStateMark tone={tone} />
+                  <span className={ITEM_STATE_LABEL_CLASS[tone]}>{tone}</span>
+                </span>
+              </span>
+            </SpecimenCell>
+          ))}
+        </SpecimenGrid>
+      </SpecimenPanel>
+      <SpecimenPanel title="Status text: colored icon, plain text (before / after)">
+        <SpecimenGrid min={180}>
+          {(
+            [
+              ['success', 'Installed'],
+              ['success', 'Connected'],
+              ['warning', 'Sign in required'],
+              ['danger', 'Couldn’t connect'],
+              ['neutral', 'Not checked'],
+            ] as const
+          ).map(([tone, label]) => (
+            <SpecimenCell key={label} label={label}>
+              <span className="flex flex-col gap-1 text-xs">
+                <span className={badgeClassName(tone)}>{label}</span>
+                <StatusToneText tone={tone}>{label}</StatusToneText>
+              </span>
+            </SpecimenCell>
+          ))}
+        </SpecimenGrid>
+      </SpecimenPanel>
       <SpecimenPanel title="New-harness catch-up offer (New Customize)">
         <SpecimenGrid min={420}>
           {LAB_CATCH_UP_STATES.map(({ label, state }) => (

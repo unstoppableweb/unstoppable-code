@@ -64,6 +64,7 @@ import {
   registerDesktopPipelineHostActions,
 } from './pipeline-host-requests';
 import {
+  checkDesktopPipelineNativeGatewayRoute,
   isDesktopPipelineModelBlocked,
   isDesktopPipelineOrgPolicyActive,
   recordDesktopPipelineModelPolicyRefusal,
@@ -265,6 +266,7 @@ export function createElectronExecutionRuntime(
     },
     resolvePipelineAgentModelAlias: resolveDesktopPipelineAgentModelAlias,
     isModelBlockedByOrgPolicy: isDesktopPipelineModelBlocked,
+    checkNativeModelGatewayRoute: checkDesktopPipelineNativeGatewayRoute,
     isOrgModelPolicyActive: isDesktopPipelineOrgPolicyActive,
     recordModelPolicyRefusal: recordDesktopPipelineModelPolicyRefusal,
     resolvePipelineTarget: resolveDesktopPipelineTarget,
@@ -288,6 +290,15 @@ export function createElectronExecutionRuntime(
         return (
           await import('./antigravity-prompt-runner')
         ).runDesktopAntigravityPipelinePrompt(request);
+      },
+      async preflight(signal) {
+        signal?.throwIfAborted();
+        const { isAntigravityConnectionEnabled } =
+          await import('../antigravity/connection');
+        if (!(await isAntigravityConnectionEnabled()))
+          throw new Error(
+            'This workflow has Google steps, but Google is disconnected or unavailable.',
+          );
       },
     },
     opencodePromptRunner: {

@@ -217,18 +217,23 @@ function personalGatewayModels(): readonly ChatModel[] {
   ).filter((model) => !isOrgGatewayExcluded(model));
 }
 
+/**
+ * Whether the next send would accept a gateway model: the same filters the
+ * fallback walk applies, so a switch never offers a model the next send
+ * would refuse.
+ */
+function sendableGatewayModelFilter(): (model: ChatModel) => boolean {
+  const policy = getRendererModelPolicy();
+  return (model) =>
+    !isModelBlocked(model, policy) &&
+    isModelRunnableForAccountOnLane('ai-credits', model);
+}
+
 /** The first of `models` the next send would accept. */
 function firstSendableGatewayModel(
   models: readonly ChatModel[] | undefined,
 ): ChatModel | undefined {
-  // The same filters the fallback walk applies, so a switch never offers a
-  // model the next send would refuse.
-  const policy = getRendererModelPolicy();
-  return models?.find(
-    (model) =>
-      !isModelBlocked(model, policy) &&
-      isModelRunnableForAccountOnLane('ai-credits', model),
-  );
+  return models?.find(sendableGatewayModelFilter());
 }
 
 /**
@@ -282,6 +287,42 @@ export function personalGatewaySwitch(): PersonalGatewaySwitch {
         unavailableReason:
           "None of this gateway's models are available right now.",
       };
+}
+
+/**
+ * Every Personal gateway model the provider-choice list could dispatch, in
+ * default order, under the same filters as {@link personalGatewaySwitch}:
+ * its first entry is that switch's `model`. Empty when the key isn't here.
+ * Separate from the switch, and computed only on demand, because a gateway
+ * catalog can hold hundreds of models and only the model matcher needs them.
+ */
+export function personalGatewaySendableModels(): readonly ChatModel[] {
+  const listed = listPersonalGatewayDefaultModels(
+    getRendererModelGatewayIndex(),
+    laneCatalog('ai-credits'),
+  );
+  const sendable = sendableGatewayModelFilter();
+  return listed.filter(
+    (model) => !isOrgGatewayExcluded(model) && sendable(model),
+  );
+}
+
+/**
+ * A subscription's own models the provider-choice list could dispatch on its
+ * native lane: allowed by policy and runnable for this account, in catalog
+ * order. Computed only on demand, for the model matcher.
+ */
+export function nativeSendableModels(
+  provider: 'claude' | 'codex',
+): readonly ChatModel[] {
+  const lane: BillingLane =
+    provider === 'claude' ? 'claude-native' : 'codex-native';
+  const policy = getRendererModelPolicy();
+  return laneCatalog(lane).filter(
+    (model) =>
+      !isModelBlocked(model, policy) &&
+      isModelRunnableForAccountOnLane(lane, model),
+  );
 }
 
 /**

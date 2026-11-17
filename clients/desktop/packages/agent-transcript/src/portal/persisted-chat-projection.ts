@@ -1,3 +1,4 @@
+import { readSessionResumeFailure } from '@canopy/protocol/session-recovery';
 import {
   readAutoResumeMetadata,
   readChatAutoResume,
@@ -601,11 +602,15 @@ export function persistedParts(
       block.type === 'text' &&
       (limits.includeText ||
         block.providerErrorDetails !== undefined ||
+        readSessionResumeFailure(block.sessionResumeFailure) !== undefined ||
         isClaudeAiCreditsFallbackErrorCode(block.errorCode) ||
         isCodexAccountModelAccessFailure(block.modelAccessFailure))
     ) {
       const modelAccessFailure = readCodexAccountModelAccessFailure(
         block.modelAccessFailure,
+      );
+      const sessionResumeFailure = readSessionResumeFailure(
+        block.sessionResumeFailure,
       );
       return [
         {
@@ -618,6 +623,7 @@ export function persistedParts(
               ? { errorCode: block.errorCode }
               : {}),
             ...(modelAccessFailure ? { modelAccessFailure } : {}),
+            ...(sessionResumeFailure ? { sessionResumeFailure } : {}),
             text: truncateText(
               stripMemoryCitationTags(block.text),
               partTextMaxChars,
@@ -933,6 +939,7 @@ export function persistedMessageToPortalMessage(
     .flatMap((block) =>
       block.type === 'text' &&
       block.providerErrorDetails === undefined &&
+      readSessionResumeFailure(block.sessionResumeFailure) === undefined &&
       !isClaudeAiCreditsFallbackErrorCode(block.errorCode) &&
       !isCodexAccountModelAccessFailure(block.modelAccessFailure)
         ? [
@@ -1158,6 +1165,9 @@ function portalPartToPersistedBlocks(
       const modelAccessFailure = readCodexAccountModelAccessFailure(
         data?.modelAccessFailure,
       );
+      const sessionResumeFailure = readSessionResumeFailure(
+        data?.sessionResumeFailure,
+      );
       return typeof data?.text === 'string'
         ? [
             {
@@ -1170,6 +1180,7 @@ function portalPartToPersistedBlocks(
                 ? { errorCode: data.errorCode }
                 : {}),
               ...(modelAccessFailure ? { modelAccessFailure } : {}),
+              ...(sessionResumeFailure ? { sessionResumeFailure } : {}),
             },
           ]
         : [placeholderBlock('text')];

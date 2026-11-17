@@ -185,6 +185,42 @@ export function resolveCommitMessageInstructions(
   return DEFAULT_COMMIT_MESSAGE_INSTRUCTIONS;
 }
 
+/**
+ * The commit-message model request, built once for every caller: the in-process
+ * Claude and Codex paths, and a workflow step whose turn runs on its host
+ * runner (CAN-6702).
+ */
+export function buildCommitMessageModelRequest(
+  options: Pick<
+    GenerateCommitMessageOptions,
+    'branchName' | 'diff' | 'instructions' | 'instructionMode'
+  >,
+): {
+  systemPrompt: string;
+  userMessage: string;
+  schema: Record<string, unknown>;
+} {
+  const systemPrompt = [
+    'You generate git commit messages from the supplied diff.',
+    'Return structured output only.',
+    resolveCommitMessageInstructions(options),
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+  const userMessage = [
+    `Branch: ${options.branchName}`,
+    '',
+    '## Diff',
+    options.diff || '(no diff)',
+  ].join('\n');
+  return { systemPrompt, userMessage, schema: COMMIT_MESSAGE_SCHEMA };
+}
+
+/** The message from a structured model result, or null when it has none. */
+export function parseCommitMessageModelResult(value: unknown): string | null {
+  return isCommitMessage(value) ? value.message : null;
+}
+
 export async function generateCommitMessageWithUsage(
   options: GenerateCommitMessageOptions,
   runner: StructuredHelperRunner = (queryOptions) => {
@@ -206,20 +242,7 @@ export async function generateCommitMessageWithUsage(
     });
   },
 ): Promise<GeneratedCommitMessage> {
-  const systemPrompt = [
-    'You generate git commit messages from the supplied diff.',
-    'Return structured output only.',
-    resolveCommitMessageInstructions(options),
-  ]
-    .filter(Boolean)
-    .join('\n\n');
-
-  const userMessage = [
-    `Branch: ${options.branchName}`,
-    '',
-    '## Diff',
-    options.diff || '(no diff)',
-  ].join('\n');
+  const { systemPrompt, userMessage } = buildCommitMessageModelRequest(options);
 
   const useCodex =
     (options.executionHarness ?? getExecutionHarnessForModel(options.model)) ===
