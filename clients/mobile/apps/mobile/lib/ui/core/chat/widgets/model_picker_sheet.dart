@@ -73,7 +73,6 @@ class _ModelPickerSheetState extends State<ModelPickerSheet> {
   }
 
   String? _reason(ComposerControlsData data, ModelOption row) =>
-      data.agentModelReason(row) ??
       modelRowDisabledReason(
         row,
         availability: data.providerAvailability,
@@ -104,7 +103,7 @@ class _ModelPickerSheetState extends State<ModelPickerSheet> {
     if (row.extraChargeOnly && !await _confirmExtraCharge(row)) return;
     if (!mounted) return;
     Navigator.of(context).pop();
-    data.selectConcreteModel(row.id);
+    data.selectModel(row.id);
   }
 
   Future<bool> _confirmExtraCharge(ModelOption row) async {
@@ -248,15 +247,9 @@ class _ModelPickerSheetState extends State<ModelPickerSheet> {
               glyph: CanopyGlyph.sparkle,
               label: 'Auto',
               selected: autoRow.selected,
-              enabled:
-                  !data.hasAgent &&
-                  (autoRow.selected || autoRow.reason == null),
-              explanation: data.hasAgent
-                  ? 'Remove the agent to use Auto'
-                  : autoRow.reason ?? 'Picks the best model for you',
-              onTap: () => data.hasAgent
-                  ? _announce('Remove the agent to use Auto')
-                  : _pickAuto(auto, autoRow),
+              enabled: autoRow.selected || autoRow.reason == null,
+              explanation: autoRow.reason ?? 'Picks the best model for you',
+              onTap: () => _pickAuto(auto, autoRow),
             ),
           ),
         if (!searching && tabs.length > 1)
@@ -371,7 +364,7 @@ class _ModelPickerSheetState extends State<ModelPickerSheet> {
           ? 'ollama'
           : 'other',
       label: row.label,
-      selected: !data.autoSelected && row.id == data.effectiveModelId,
+      selected: !data.autoSelected && row.id == data.pickerSelectionId,
       enabled: reason == null,
       // A sign-in lock names its remedy in place of the credits tag, like the
       // web picker (CAN-2872).

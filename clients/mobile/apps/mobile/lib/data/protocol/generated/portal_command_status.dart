@@ -22,7 +22,7 @@ enum BrowserPortalCommandStatus {
 
 /// Response of `GET .../portal/browser/sessions/{sessionId}/commands/{commandId}`. A small-RPC submit waits a bounded time for the desktop completion; when the paired desktop's outbox is saturated the completion can land well after that wait expires. This endpoint lets the browser keep asking for the late result instead of treating the queued submit as a failure.
 class BrowserPortalCommandStatusResponse {
-  const BrowserPortalCommandStatusResponse({this.archiveDeadlineRemainingMs, required this.commandId, this.delivered, this.error, this.result, required this.status});
+  const BrowserPortalCommandStatusResponse({this.archiveDeadlineRemainingMs, required this.commandId, this.delivered, this.error, this.errorCode, this.result, required this.status});
 
   /// Remaining time until a standalone archive's server-assigned start deadline.
   final num? archiveDeadlineRemainingMs;
@@ -31,6 +31,8 @@ class BrowserPortalCommandStatusResponse {
   final bool? delivered;
   /// Present once `status` is `FAILED` or `EXPIRED`; always path-free.
   final String? error;
+  /// Stable pre-save chat refusal code, paired with the authored error.
+  final String? errorCode;
   /// Present once `status` is `COMPLETED` and the desktop returned a payload.
   final Map<String, dynamic>? result;
   final BrowserPortalCommandStatus status;
@@ -40,6 +42,7 @@ class BrowserPortalCommandStatusResponse {
         commandId: json['commandId'] as String,
         delivered: json['delivered'] as bool?,
         error: json['error'] as String?,
+        errorCode: json['errorCode'] as String?,
         result: json['result'] as Map<String, dynamic>?,
         status: BrowserPortalCommandStatus.fromWire(json['status'] as String),
       );

@@ -161,6 +161,22 @@ enum PortalProviderUsageRefreshProvider {
       );
 }
 
+/// What the desktop knows about the Google account behind Antigravity chats. The pinned runtime reports only a plan label with each session. It is not account identity, quota, a usage period or a billing signal, and no usage limits are reported. `unavailable` means the last read failed, never that the user signed out.
+class AntigravityAccountSnapshot {
+  const AntigravityAccountSnapshot({this.planLabel, required this.status, required this.updatedAt});
+
+  /// Only with `ready`, and absent when the runtime did not report a plan. Kept flat (like the OpenCode snapshot) so every binding, including the generated mobile one, carries the fields; the schema enforces the pairing.
+  final String? planLabel;
+  final String status;
+  final String updatedAt;
+
+  factory AntigravityAccountSnapshot.fromJson(Map<String, dynamic> json) => AntigravityAccountSnapshot(
+        planLabel: json['planLabel'] as String?,
+        status: json['status'] as String,
+        updatedAt: json['updatedAt'] as String,
+      );
+}
+
 class OpenCodeAccount {
   const OpenCodeAccount({required this.label, required this.method, required this.needsSignIn, required this.selected, this.usage});
 
@@ -343,14 +359,17 @@ class PortalProviderUsageError {
 
 /// Payload of the account-level `provider_usage` singleton entity (CAN-3635), whose `localId` is `overview` in overview snapshots and deltas. Carries exactly one entry each for Claude and Codex. Copilot is included only when the host publishes its gated account-usage summary. No host paths, credentials or raw provider responses cross this boundary.
 class PortalProviderUsageProjection {
-  const PortalProviderUsageProjection({this.openCodeAccounts, required this.providers, required this.updatedAt});
+  const PortalProviderUsageProjection({this.antigravityAccount, this.openCodeAccounts, required this.providers, required this.updatedAt});
 
+  /// Optional Antigravity plan metadata, separate from quotas so older peers ignore it. Never identity, quota or a billing signal.
+  final AntigravityAccountSnapshot? antigravityAccount;
   /// Optional metadata, separate from quotas so older peers can ignore it.
   final OpenCodeAccountSnapshot? openCodeAccounts;
   final List<PortalProviderUsageEntry> providers;
   final String updatedAt;
 
   factory PortalProviderUsageProjection.fromJson(Map<String, dynamic> json) => PortalProviderUsageProjection(
+        antigravityAccount: json['antigravityAccount'] == null ? null : AntigravityAccountSnapshot.fromJson(json['antigravityAccount'] as Map<String, dynamic>),
         openCodeAccounts: json['openCodeAccounts'] == null ? null : OpenCodeAccountSnapshot.fromJson(json['openCodeAccounts'] as Map<String, dynamic>),
         providers: _parseList(json['providers'], (e) => PortalProviderUsageEntry.fromJson(e as Map<String, dynamic>)),
         updatedAt: json['updatedAt'] as String,

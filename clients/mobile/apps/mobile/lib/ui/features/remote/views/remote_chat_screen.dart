@@ -1590,7 +1590,6 @@ class _RemoteChatScreenState extends State<RemoteChatScreen>
         : null;
 
     return ComposerControlsData(
-      agentSelection: const AgentSelectionControl(),
       providerType: providerType,
       executionHarness: capturedHarness,
       modelLabel: effModelLabel ?? selectedModel?.label ?? effModelId,

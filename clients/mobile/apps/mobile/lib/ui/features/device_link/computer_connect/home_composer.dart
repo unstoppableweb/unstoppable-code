@@ -379,7 +379,6 @@ class ComputerHomeComposerState extends State<ComputerHomeComposer> {
             onAttach: files.onAttach,
           ),
           controls: ComposerControlsData(
-            agentSelection: const AgentSelectionControl(),
             providerType: selected?.harness ?? selected?.provider,
             modelLabel: selected?.label ?? 'Desktop default',
             selectedModelId: model.modelId,

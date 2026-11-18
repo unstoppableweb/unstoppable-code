@@ -87,8 +87,10 @@ in [`clients/desktop`](clients/desktop/README.md) or
 [`clients/mobile`](clients/mobile/README.md) for what to install and which
 commands to run.
 
-Desktop builds use stable hosted service defaults. Mobile connectivity depends
-on generated brand configuration and build settings. Follow each client's README
+Desktop builds use stable hosted service defaults. To build the desktop app
+with every hosted service off, use `pnpm run build:local`; see
+[Build without our services](clients/desktop/README.md#build-without-our-services).
+Mobile connectivity depends on generated brand configuration and build settings. Follow each client's README
 for configuration; a successful build alone does not verify sign-in or cloud
 features.
 

@@ -147,7 +147,6 @@ class _RemoteAppAdvisorChatScreenState
       executionHarness: summary?.executionHarness,
     );
     return ComposerControlsData(
-      agentSelection: const AgentSelectionControl(),
       providerType: selected?.provider ?? summary?.providerType,
       executionHarness: summary?.executionHarness,
       modelLabel:

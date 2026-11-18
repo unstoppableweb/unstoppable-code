@@ -33,6 +33,7 @@ ComposerControlsData deviceComposerControls(DeviceChatsViewModel model) {
       tab['executionHarness'] as String? ??
       current?.harness ??
       tab['providerType'] as String?;
+  final lockedHarness = settings.modelHarnessLocked == false ? null : provider;
   final config = tab['modelConfig'] as Map<String, dynamic>?;
   final effort = RemoteComposerEffort.resolve(
     catalog: catalog,
@@ -67,10 +68,8 @@ ComposerControlsData deviceComposerControls(DeviceChatsViewModel model) {
   }
 
   return ComposerControlsData(
-    agentSelection: AgentSelectionControl(
-      defaultModel: settings.defaultModelId,
-    ),
     providerType: harness,
+    executionHarness: provider ?? tab['executionHarness'] as String?,
     modelLabel:
         current?.label ??
         (settings.scopeKey == ref?.key ? settings.modelLabel : null) ??
@@ -136,7 +135,7 @@ ComposerControlsData deviceComposerControls(DeviceChatsViewModel model) {
             final choice = selectionModelOption(
               catalog,
               id,
-              executionHarness: executionHarness ?? provider,
+              executionHarness: executionHarness ?? lockedHarness,
             );
             if (choice != null) {
               unawaited(
@@ -184,8 +183,7 @@ ComposerControlsData deviceComposerControls(DeviceChatsViewModel model) {
         ? ModelCatalogStatus.loaded
         : ModelCatalogStatus.absent,
     onRetryCatalog: model.loadSettings,
-    // Match Remote Control: only an explicit host runtime locks the picker.
-    // Registry/provider fallbacks are labels, not execution-policy evidence.
-    lockedHarness: provider,
+    // Explicitly unlocked chats may switch; older hosts retain their lock.
+    lockedHarness: lockedHarness,
   );
 }

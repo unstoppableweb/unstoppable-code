@@ -27,32 +27,9 @@ String? explicitAgentModel(String? selection) {
   return AgentCatalogSelection.concrete(model) ? model : null;
 }
 
-String? changeSelectedModel(String? selection, String? model) {
-  final agent = selectedAgentId(selection);
-  if (model == null) return agent;
-  if (!AgentCatalogSelection.concrete(model)) {
-    throw const FormatException('Choose a concrete model');
-  }
-  return agent == null ? model : '$agent@$model';
-}
-
-String? changeSelectedAgent(
-  String? selection,
-  String? agent,
-  String? effectiveModel,
-) {
-  final previous = selectedAgentId(selection);
-  if (agent == previous) return selection;
-  final explicit = explicitAgentModel(selection);
-  if (agent == null) {
-    return changeSelectedModel(null, explicit ?? effectiveModel);
-  }
-  if (!_agentId.hasMatch(agent)) {
-    throw const FormatException('Invalid agent selection');
-  }
-  final concrete = explicit ?? (previous == null ? selection : null);
-  return concrete == null ? agent : changeSelectedModel(agent, concrete);
-}
+/// Stored overrides are displayed as their Agent, without exposing the model.
+String? modelPickerSelectionId(String? selection) =>
+    selectedAgentId(selection) ?? selection;
 
 String? effectiveAgentModel(
   List<ModelOption> catalog,

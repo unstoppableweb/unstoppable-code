@@ -1,0 +1,45 @@
+# Published to the public repository as .github/workflows/verify-source.yml.
+# A light, dependency-free check that each published commit carries the files
+# every export must include. Exports are built and tested privately before
+# publication; this workflow never installs, builds, or runs client code.
+name: Verify source
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Check required root files
+        run: |
+          set -euo pipefail
+          for file in LICENSE README.md CONTRIBUTING.md SECURITY.md; do
+            test -s "$file" || { echo "::error file=$file::Missing or empty"; exit 1; }
+          done
+
+      - name: Check each client has a license and readme
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          clients=(clients/*/)
+          [ "${#clients[@]}" -gt 0 ] || { echo "::error::No client sources found"; exit 1; }
+          for client in "${clients[@]}"; do
+            for file in LICENSE README.md; do
+              test -s "$client$file" || { echo "::error file=$client$file::Missing or empty"; exit 1; }
+            done
+          done
+
+      - name: Validate export history
+        run: jq -e . .public-export-history.json > /dev/null

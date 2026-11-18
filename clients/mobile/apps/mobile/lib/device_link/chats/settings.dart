@@ -22,7 +22,8 @@ final class DeviceChatSettings {
       modelLabel,
       defaultModelId,
       defaultThinkingLevel;
-  bool modelRoutingSupported = false, modelHarnessLocked = false;
+  bool modelRoutingSupported = false;
+  bool? modelHarnessLocked;
   bool loading = false, loaded = false;
   int _generation = 0;
   Future<void>? _read;
@@ -31,7 +32,8 @@ final class DeviceChatSettings {
     providerAvailability = null;
     executionHarness = modelLabel = defaultModelId = defaultThinkingLevel =
         null;
-    modelRoutingSupported = modelHarnessLocked = loaded = false;
+    modelRoutingSupported = loaded = false;
+    modelHarnessLocked = null;
   }
 
   void invalidate() {
@@ -130,7 +132,7 @@ final class DeviceChatSettings {
     executionHarness = projection?['executionHarness'] as String?;
     modelLabel = projection?['modelLabel'] as String?;
     modelRoutingSupported = projection?['modelRoutingSupported'] == true;
-    modelHarnessLocked = projection?['modelHarnessLocked'] == true;
+    modelHarnessLocked = projection?['modelHarnessLocked'] as bool?;
     loaded = true;
   }
 

@@ -358,7 +358,6 @@ class _RemoteNewChatDraftState extends State<RemoteNewChatDraft>
       RemoteDraftComposerChoices Function(RemoteDraftComposerChoices) change,
     ) => setState(() => _choices = change(_choices));
     return ComposerControlsData(
-      agentSelection: const AgentSelectionControl(),
       providerType: composer.providerType,
       modelLabel: composer.modelLabel,
       selectedModelId: composer.modelId ?? composer.selectedModel?.id,

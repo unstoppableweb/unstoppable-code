@@ -527,6 +527,15 @@
 @custom-variant workspace-header-actions-focused (:where(.group\/workspace-header):has([data-workspace-header-actions]:focus-within) &);
 
 /* Inline chips scale with the surrounding text and sit on its baseline. */
+/*
+ * A masked multiline secret (the secret request form): the field keeps its
+ * value, line breaks included, and only draws it as dots, which a password
+ * input cannot do for multiline text.
+ */
+@utility secret-text-mask {
+  -webkit-text-security: disc;
+}
+
 @utility canopy-inline-chip-geometry {
   padding: 0.125em 0.5em 0.042em 0.417em;
   vertical-align: 0.0625em;

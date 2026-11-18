@@ -413,7 +413,8 @@ processors:
 
 Chats with local models go to the model host you choose, usually your own
 computer. The skill safety check also goes straight from the desktop app to the
-Vercel skills audit, without your account.
+Vercel skills audit, without your account. A local-only desktop build turns the
+skill safety check off and shows skills as not checked.
 
 ## Running without our services
 
@@ -445,10 +446,13 @@ If you point the apps away from our services, you lose or need to replace:
 
 How to point the apps elsewhere:
 
-- **Desktop:** the service addresses are build settings. See the
-  [desktop build instructions](clients/desktop/README.md). Changing them
-  doesn't turn analytics off; see
-  [Telemetry and diagnostics](#telemetry-and-diagnostics).
+- **Desktop:** build from source with `pnpm run build:local`, then launch
+  with `pnpm run start:local`. The local-only build turns every hosted service
+  off when it compiles, including update checks, analytics, feature flags, and
+  the skill safety check, and blocks other automatic connections.
+  `pnpm run smoke:local` checks that it reaches no host it shouldn't. See
+  [Build without our services](clients/desktop/README.md#build-without-our-services)
+  for what still works and the known limits.
 - **Mobile:** set the `UNSTOPPABLE_CODE_API_BASE_URL_PRODUCTION` and
   `UNSTOPPABLE_CODE_API_BASE_URL_STAGING` build defines. See the
   [mobile build instructions](clients/mobile/README.md).
@@ -463,4 +467,4 @@ Our [privacy policy](https://unstoppable.ai/privacy) describes what we keep,
 how long we keep it, and how we use it. To report a security problem, see
 [SECURITY.md](SECURITY.md).
 
-Last reviewed: 2026-11-13
+Last reviewed: 2026-11-16
