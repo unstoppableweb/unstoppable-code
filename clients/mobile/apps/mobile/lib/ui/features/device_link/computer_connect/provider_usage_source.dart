@@ -23,9 +23,9 @@ final class ComputerProviderUsageSource extends ChangeNotifier
   int _generation = 0, _readRevision = 0, _attempt = 0;
   int _loadedGeneration = -1, _pendingReads = 0;
   bool _online = false, _disposed = false;
-  PortalProviderUsageProjection? _projection;
-  final _refreshing = <PortalProviderUsageProvider>{};
-  final _failures = <PortalProviderUsageProvider, String>{};
+  RemoteControlProviderUsageProjection? _projection;
+  final _refreshing = <RemoteControlProviderUsageProvider>{};
+  final _failures = <RemoteControlProviderUsageProvider, String>{};
 
   void bind(ComputerConnectEngine engine) {
     if (identical(engine, _engine)) return;
@@ -40,7 +40,7 @@ final class ComputerProviderUsageSource extends ChangeNotifier
   bool get isAvailable =>
       _online && _loadedGeneration == _generation && _projection != null;
   @override
-  PortalProviderUsageProjection? get projection => _projection;
+  RemoteControlProviderUsageProjection? get projection => _projection;
   @override
   ProviderUsageDelivery get delivery =>
       switch (_computer?.chats.connection.phase) {
@@ -50,10 +50,10 @@ final class ComputerProviderUsageSource extends ChangeNotifier
         _ => ProviderUsageDelivery.unreachable,
       };
   @override
-  bool isRefreshing(PortalProviderUsageProvider provider) =>
+  bool isRefreshing(RemoteControlProviderUsageProvider provider) =>
       _refreshing.contains(provider);
   @override
-  String? refreshFailure(PortalProviderUsageProvider provider) =>
+  String? refreshFailure(RemoteControlProviderUsageProvider provider) =>
       _failures[provider];
 
   void _changed() {
@@ -155,7 +155,7 @@ final class ComputerProviderUsageSource extends ChangeNotifier
   }
 
   @override
-  Future<void> refresh(PortalProviderUsageProvider provider) async {
+  Future<void> refresh(RemoteControlProviderUsageProvider provider) async {
     final repository = _repository;
     if (!isAvailable || repository == null || !_refreshing.add(provider)) {
       return;
@@ -186,16 +186,16 @@ final class ComputerProviderUsageSource extends ChangeNotifier
     }
   }
 
-  void _clearRecoveredFailures(PortalProviderUsageProjection next) {
+  void _clearRecoveredFailures(RemoteControlProviderUsageProjection next) {
     _failures.removeWhere(
       (provider, _) => _hasNewerUsage(_projection, next, provider),
     );
   }
 
   bool _hasNewerUsage(
-    PortalProviderUsageProjection? before,
-    PortalProviderUsageProjection? after,
-    PortalProviderUsageProvider provider,
+    RemoteControlProviderUsageProjection? before,
+    RemoteControlProviderUsageProjection? after,
+    RemoteControlProviderUsageProvider provider,
   ) {
     final previous = before?.providers
         .where((row) => row.provider == provider)
@@ -223,7 +223,8 @@ final class ComputerProviderUsageSource extends ChangeNotifier
             ),
       );
     }
-    return next.authState == PortalProviderUsageAuthState.authenticated &&
+    return next.authState ==
+            RemoteControlProviderUsageAuthState.authenticated &&
         next.error == null &&
         newer(next.lastUpdatedAt, previous?.lastUpdatedAt);
   }

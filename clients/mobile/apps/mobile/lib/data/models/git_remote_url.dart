@@ -1,6 +1,6 @@
 // Ports of `isPlausibleGitRemoteUrl` from the desktop's retired Portal
 // workspace adapter (deleted in CAN-5986) and of the protocol's
-// `repositoryNameFromCloneUrl` (packages/protocol/src/portal/index.ts).
+// `repositoryNameFromCloneUrl` (packages/protocol/src/remote-control/shell/index.ts).
 // Keep the name rule identical to the protocol's; the desktop checks every
 // clone URL again before it clones.
 

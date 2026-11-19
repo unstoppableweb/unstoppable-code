@@ -24,30 +24,31 @@ UsageTone usageToneFor(num usedPercent) {
 }
 
 /// Providers supported by every desktop version that supplies usage.
-const List<PortalProviderUsageProvider> kUsageProviderOrder = [
-  PortalProviderUsageProvider.claude,
-  PortalProviderUsageProvider.codex,
+const List<RemoteControlProviderUsageProvider> kUsageProviderOrder = [
+  RemoteControlProviderUsageProvider.claude,
+  RemoteControlProviderUsageProvider.codex,
 ];
 
 /// Copilot appears only when the paired desktop publishes its gated entry.
-List<PortalProviderUsageProvider> usageProviders(
-  PortalProviderUsageProjection? projection,
+List<RemoteControlProviderUsageProvider> usageProviders(
+  RemoteControlProviderUsageProjection? projection,
 ) => [
   ...kUsageProviderOrder,
-  if (usageEntryFor(projection, PortalProviderUsageProvider.copilot) != null)
-    PortalProviderUsageProvider.copilot,
+  if (usageEntryFor(projection, RemoteControlProviderUsageProvider.copilot) !=
+      null)
+    RemoteControlProviderUsageProvider.copilot,
 ];
 
-String usageProviderName(PortalProviderUsageProvider provider) =>
+String usageProviderName(RemoteControlProviderUsageProvider provider) =>
     switch (provider) {
-      PortalProviderUsageProvider.claude => 'Claude',
-      PortalProviderUsageProvider.codex => 'Codex',
-      PortalProviderUsageProvider.copilot => 'Copilot',
+      RemoteControlProviderUsageProvider.claude => 'Claude',
+      RemoteControlProviderUsageProvider.codex => 'Codex',
+      RemoteControlProviderUsageProvider.copilot => 'Copilot',
     };
 
-PortalProviderUsageEntry? usageEntryFor(
-  PortalProviderUsageProjection? projection,
-  PortalProviderUsageProvider provider,
+RemoteControlProviderUsageEntry? usageEntryFor(
+  RemoteControlProviderUsageProjection? projection,
+  RemoteControlProviderUsageProvider provider,
 ) {
   if (projection == null) return null;
   for (final entry in projection.providers) {
@@ -58,8 +59,10 @@ PortalProviderUsageEntry? usageEntryFor(
 
 /// The window closest to its limit: the highest finite used percentage, the
 /// first in desktop order on a tie. Null when no window reports one.
-PortalProviderUsageWindow? mostUsedWindow(PortalProviderUsageEntry entry) {
-  PortalProviderUsageWindow? best;
+RemoteControlProviderUsageWindow? mostUsedWindow(
+  RemoteControlProviderUsageEntry entry,
+) {
+  RemoteControlProviderUsageWindow? best;
   for (final window in entry.windows) {
     final percent = window.usedPercent;
     if (window.unlimited == true || percent == null || !percent.isFinite) {
@@ -80,7 +83,7 @@ final class UsageSummaryLine {
     this.unlimited = false,
   });
 
-  final PortalProviderUsageProvider provider;
+  final RemoteControlProviderUsageProvider provider;
 
   /// The most-used window's percentage; null when no window reports one.
   final num? usedPercent;
@@ -117,14 +120,15 @@ final class UsageSummaryLine {
 /// provider is signed in and no OpenCode account metadata is projected.
 List<UsageSummaryLine>? usageSummaryLines({
   required bool desktopAvailable,
-  required PortalProviderUsageProjection? projection,
+  required RemoteControlProviderUsageProjection? projection,
 }) {
   if (!desktopAvailable || projection == null) return null;
   final lines = [
     for (final provider in usageProviders(projection))
       if (usageEntryFor(projection, provider) case final entry?
-          when entry.authState == PortalProviderUsageAuthState.authenticated ||
-              entry.authState == PortalProviderUsageAuthState.error)
+          when entry.authState ==
+                  RemoteControlProviderUsageAuthState.authenticated ||
+              entry.authState == RemoteControlProviderUsageAuthState.error)
         _lineFor(entry),
   ];
   return lines.isEmpty && projection.openCodeAccounts == null
@@ -132,7 +136,7 @@ List<UsageSummaryLine>? usageSummaryLines({
       : List.unmodifiable(lines);
 }
 
-UsageSummaryLine _lineFor(PortalProviderUsageEntry entry) {
+UsageSummaryLine _lineFor(RemoteControlProviderUsageEntry entry) {
   final window = mostUsedWindow(entry);
   return UsageSummaryLine(
     provider: entry.provider,
@@ -145,14 +149,14 @@ UsageSummaryLine _lineFor(PortalProviderUsageEntry entry) {
 }
 
 /// The reset instant of [window], or null when absent or unparseable.
-DateTime? usageResetAt(PortalProviderUsageWindow window) {
+DateTime? usageResetAt(RemoteControlProviderUsageWindow window) {
   final raw = window.resetsAt;
   return raw == null ? null : DateTime.tryParse(raw);
 }
 
 /// Whether [window]'s reset time is at or before [now]; the desktop's
 /// `isResetPassed`.
-bool isUsageResetPassed(PortalProviderUsageWindow window, DateTime now) {
+bool isUsageResetPassed(RemoteControlProviderUsageWindow window, DateTime now) {
   final resetAt = usageResetAt(window);
   return resetAt != null && !resetAt.isAfter(now);
 }
@@ -160,12 +164,13 @@ bool isUsageResetPassed(PortalProviderUsageWindow window, DateTime now) {
 /// The earliest reset in [projection] still after [now], so an open screen
 /// can show the passed-reset overlay when it arrives.
 DateTime? nextUsageResetAfter(
-  PortalProviderUsageProjection? projection,
+  RemoteControlProviderUsageProjection? projection,
   DateTime now,
 ) {
   DateTime? next;
   final windows = [
-    for (final entry in projection?.providers ?? <PortalProviderUsageEntry>[])
+    for (final entry
+        in projection?.providers ?? <RemoteControlProviderUsageEntry>[])
       ...entry.windows,
     for (final provider
         in projection?.openCodeAccounts?.providers ??
@@ -191,9 +196,9 @@ double usageBarFraction(num usedPercent) =>
 
 /// Credit lines for a window, only for amounts the desktop reported. USD
 /// amounts are money; `credits` are a count and never take a dollar sign.
-List<String> usageCreditLines(PortalProviderUsageCredits? credits) {
+List<String> usageCreditLines(RemoteControlProviderUsageCredits? credits) {
   if (credits == null) return const [];
-  final usd = credits.unit == PortalProviderUsageCreditUnit.usd;
+  final usd = credits.unit == RemoteControlProviderUsageCreditUnit.usd;
   String amount(num value) =>
       usd ? formatCurrency(value) : '${formatCount(value)} credits';
   final spent = credits.spent;

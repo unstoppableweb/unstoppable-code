@@ -1,12 +1,12 @@
 /// Hand-written Dart mirror of the focused subset of the desktop Portal's
-/// `PortalSessionShellState` wire contract that the mobile Remote Control
+/// `RemoteControlSessionShellState` wire contract that the mobile Remote Control
 /// (a.k.a. "Workspaces") feature renders.
 ///
 /// Field names and JSON keys are kept **wire-accurate** (`localId`,
 /// `workspaceLocalId`, `branch`, `type`, ...) so that when the real Portal
 /// transport lands, the same shell-state payload deserializes here with no
-/// remapping.  See `packages/protocol/src/portal/index.ts`
-/// (`PortalSessionShellState`).
+/// remapping.  See `packages/protocol/src/remote-control/shell/index.ts`
+/// (`RemoteControlSessionShellState`).
 ///
 /// The wire shape carries more fields than we display today (`healthIssue`,
 /// `setupPhase`, ...). Those are intentionally omitted here and can be added
@@ -45,7 +45,7 @@ enum RemoteWorkspaceType {
   }
 }
 
-/// Mirrors the desktop's `PortalWorktreePipelineStatus` union
+/// Mirrors the desktop's `RemoteControlWorktreePipelineStatus` union
 /// (`'running' | 'unseen' | 'unseen-failure' | 'paused'`), driving the small
 /// pipeline indicator badge in a worktree row.
 enum RemoteWorktreePipelineStatus {
@@ -70,7 +70,7 @@ enum RemoteWorktreePipelineStatus {
 }
 
 /// Background git-setup phase for a worktree row, mirroring the desktop's
-/// `PortalWorktreeSetupPhase` union. A deferred create acknowledges before
+/// `RemoteControlWorktreeSetupPhase` union. A deferred create acknowledges before
 /// `git worktree add` runs, so a `gitPending` row is a reservation that may
 /// still roll back — success is not implied until the phase settles.
 enum RemoteWorktreeSetupPhase {
@@ -135,7 +135,7 @@ enum RemoteWorkspaceLayout {
 }
 
 /// A workspace entry in the desktop sidebar, mirroring one element of
-/// `PortalSessionShellState.workspaces`.
+/// `RemoteControlSessionShellState.workspaces`.
 class RemoteWorkspace {
   const RemoteWorkspace({
     required this.localId,
@@ -249,7 +249,7 @@ WorkspaceContext? _ownerContext(Object? owner) {
 /// One repo's most recent PR observation, projected from the worktree's
 /// `lastKnownPrStatus.repos[].status` (null statuses are dropped) or from a
 /// PR-action refresh's or live `pr_status` delta's `repos[].status`
-/// ([RemoteWorktreePr.fromPortal]). Only the Portal shape carries the
+/// ([RemoteWorktreePr.fromRemoteControl]). Only the Portal shape carries the
 /// per-check list; `lastKnownPrStatus` does not.
 /// Outcome of a `portal.worktree.create` submit.
 ///
@@ -278,7 +278,7 @@ class RemoteWorktreeCreateResult {
 }
 
 /// A worktree row under a workspace, mirroring one element of
-/// `PortalSessionShellState.worktrees`.
+/// `RemoteControlSessionShellState.worktrees`.
 enum RemotePrObservationSource { host, actionRead }
 
 class RemoteWorktree {
@@ -338,7 +338,7 @@ class RemoteWorktree {
   final bool? busy;
 
   /// True when an agent turn is actively streaming for this worktree
-  /// (`PortalSessionShellState.worktrees[].isStreaming`).
+  /// (`RemoteControlSessionShellState.worktrees[].isStreaming`).
   final bool? isStreaming;
 
   /// Whether an agent is actively working in this worktree, across both the
@@ -346,14 +346,14 @@ class RemoteWorktree {
   bool get isWorking => busy == true || isStreaming == true;
 
   /// Delegations and provider tasks still running after the agent's turn
-  /// ended (`PortalSessionShellState.worktrees[].backgroundTasks`).
+  /// ended (`RemoteControlSessionShellState.worktrees[].backgroundTasks`).
   final int? backgroundTasks;
 
   /// True when the worktree has at least one unread chat update.
   final bool? hasUnread;
 
   /// Mirrors the desktop sidebar's hidden-worktree flag
-  /// (`PortalSessionShellState.worktrees[].hidden`).
+  /// (`RemoteControlSessionShellState.worktrees[].hidden`).
   final bool? hidden;
 
   /// True when an ask-user prompt is awaiting the user's approval.
@@ -578,7 +578,7 @@ class RemoteWorktree {
 }
 
 /// A standalone (cowork) chat row, mirroring one element of
-/// `PortalSessionShellState.standaloneChats`.
+/// `RemoteControlSessionShellState.standaloneChats`.
 class RemoteStandaloneChat {
   const RemoteStandaloneChat({
     required this.localId,
@@ -723,7 +723,7 @@ class RemoteStandaloneChat {
       );
 }
 
-/// The focused slice of `PortalSessionShellState` the Remote Control feature
+/// The focused slice of `RemoteControlSessionShellState` the Remote Control feature
 /// consumes: workspaces plus their worktrees, standalone chats, chat tabs,
 /// and cached transcript rows.
 ///
@@ -756,7 +756,7 @@ class RemoteSessionSnapshot {
   /// True when the server found its cached projection missing/stale and
   /// transparently asked the desktop for a fresh snapshot — i.e. this data is
   /// still syncing and a fuller snapshot is expected to land shortly. Mirrors
-  /// `PortalSessionShellState.refreshing`.
+  /// `RemoteControlSessionShellState.refreshing`.
   final bool refreshing;
 
   /// Chat tabs projected from `state.chatSummaries`; hydrated per worktree by
@@ -764,7 +764,7 @@ class RemoteSessionSnapshot {
   final List<RemoteChatSummary> chatSummaries;
 
   /// Cached transcript rows from `state.chatMessages`
-  /// (`PortalChatMessageView` shape), across all hydrated chats.
+  /// (`RemoteControlChatMessageView` shape), across all hydrated chats.
   final List<RemoteChatMessage> chatMessages;
 
   /// The raw shell-state map this snapshot was parsed from, retained so the

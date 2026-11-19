@@ -17,14 +17,14 @@ abstract interface class ProviderUsageSource implements Listenable {
   ProviderUsageDelivery get delivery;
 
   /// The desktop's latest projected usage; null until projected.
-  PortalProviderUsageProjection? get projection;
+  RemoteControlProviderUsageProjection? get projection;
 
-  bool isRefreshing(PortalProviderUsageProvider provider);
+  bool isRefreshing(RemoteControlProviderUsageProvider provider);
 
-  String? refreshFailure(PortalProviderUsageProvider provider);
+  String? refreshFailure(RemoteControlProviderUsageProvider provider);
 
   /// Asks the desktop to re-read [provider]'s usage.
-  Future<void> refresh(PortalProviderUsageProvider provider);
+  Future<void> refresh(RemoteControlProviderUsageProvider provider);
 }
 
 /// This phone's delivery of usage updates from the selected computer.

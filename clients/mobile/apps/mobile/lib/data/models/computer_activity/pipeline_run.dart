@@ -1,5 +1,5 @@
 /// Mobile projection of the portal `pipeline_run` entity
-/// (`PortalPipelineRun` in `packages/protocol/src/portal/index.ts`).
+/// (`RemoteControlPipelineRun` in `packages/protocol/src/remote-control/shell/index.ts`).
 ///
 /// Rows reach the device two ways — the worktree `/state` slices and
 /// `portal.pipeline.event` upserts — and both use the same payload shape, so
@@ -341,18 +341,10 @@ Object? keepHeldPipelineRunChatTurns(Object? incoming, Object? held) {
   ];
 }
 
-/// A control the phone can send for a run. Each is fire-and-forget: the
-/// desktop acknowledges the command, and the run's new state arrives as a
-/// `portal.pipeline.event` upsert.
-enum RemotePipelineRunAction {
-  cancel('portal.pipeline.cancel'),
-  resume('portal.pipeline.resume'),
-  retry('portal.pipeline.retry');
-
-  const RemotePipelineRunAction(this.commandType);
-
-  final String commandType;
-}
+/// A control the phone can send for a run, sent by its [Enum.name]. Each is
+/// fire-and-forget: the desktop acknowledges the command, and the run's new
+/// state arrives as a `portal.pipeline.event` upsert.
+enum RemotePipelineRunAction { cancel, resume, retry }
 
 /// One pipeline execution.
 class RemotePipelineRun {

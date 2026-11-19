@@ -1,5 +1,5 @@
 /// Dispatch-form rules, ported from the web portal's
-/// `apps/web/src/components/portal/pipeline-input-form.ts`, which mirrors the
+/// `apps/web/src/components/remote-control/pipeline-input-form.ts`, which mirrors the
 /// desktop's `pipelineTriggerInputs.ts`. Keep the three in step: the desktop
 /// executor rejects anything these let through.
 library;

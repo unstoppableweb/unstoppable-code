@@ -2,8 +2,8 @@
 /// computer chat surface.
 ///
 /// These mirror the Portal chat wire contract in
-/// `packages/protocol/src/portal/index.ts` (`PortalChatPart`,
-/// `PortalAskUserQuestion*`, `ModelCatalogOption`), but carry nothing that is
+/// `packages/protocol/src/remote-control/shell/index.ts` (`RemoteControlChatPart`,
+/// `RemoteControlAskUserQuestion*`, `ModelCatalogOption`), but carry nothing that is
 /// specific to one transport. Remote Control adds its own fields by
 /// subclassing (`RemoteChatMessage`); Computer Connect maps desktop rows onto these
 /// types directly. Parsing is null-tolerant: unknown kinds degrade, never drop.
@@ -15,7 +15,7 @@ library;
 import 'dart:convert';
 import 'agent_catalog_selection.dart';
 
-/// Sender role on a chat message (`PortalChatMessage.role`).
+/// Sender role on a chat message (`RemoteControlChatMessage.role`).
 enum ChatRole {
   user('user'),
   assistant('assistant'),
@@ -36,7 +36,7 @@ enum ChatRole {
   }
 }
 
-/// Lifecycle of a chat message (`PortalChatMessage.status`).
+/// Lifecycle of a chat message (`RemoteControlChatMessage.status`).
 enum ChatMessageStatus {
   streaming('streaming'),
   complete('complete'),
@@ -62,7 +62,7 @@ enum ChatMessageStatus {
 enum ChatDelivery { notSent, uncertain }
 
 /// One rich content block inside a message's `parts` array
-/// (`PortalChatPart`). `kind` and `toolFamily` are kept as raw wire strings —
+/// (`RemoteControlChatPart`). `kind` and `toolFamily` are kept as raw wire strings —
 /// the closed enums grow over time and an unknown block should degrade to a
 /// generic chip, not be dropped.
 class ChatPart {
@@ -147,7 +147,7 @@ class ChatPart {
   }
 }
 
-/// One question inside an AskUserQuestion request (`PortalAskUserQuestion`).
+/// One question inside an AskUserQuestion request (`RemoteControlAskUserQuestion`).
 class AskUserQuestion {
   const AskUserQuestion({
     this.id,
@@ -194,7 +194,7 @@ class AskUserQuestion {
       );
 }
 
-/// An answer to one [AskUserQuestion] (`PortalAskUserQuestionAnswer`).
+/// An answer to one [AskUserQuestion] (`RemoteControlAskUserQuestionAnswer`).
 /// Sent raw on `portal.chat.answer_question`; received display-safe (secrets
 /// redacted to `[hidden]`) inside [AskUserQuestionState.answers].
 class AskUserQuestionAnswer {
@@ -228,8 +228,8 @@ class AskUserQuestionAnswer {
 }
 
 /// Projected lifecycle of one AskUserQuestion request
-/// (`PortalAskUserQuestionState`, carried on
-/// `PortalChatSummaryEntity.pendingQuestions`). Awaiting entries have
+/// (`RemoteControlAskUserQuestionState`, carried on
+/// `RemoteControlChatSummaryEntity.pendingQuestions`). Awaiting entries have
 /// `answered == false`; dismissed/expired requests are removed from the array
 /// rather than kept as answered entries.
 class AskUserQuestionState {
@@ -330,7 +330,7 @@ class ChatMessageAttachment {
 }
 
 /// Marker on a user message a fired watcher posted (`ChatWatcherFiredInfo`
-/// in `packages/protocol/src/portal/input-delivery.ts`). [kind] names the
+/// in `packages/protocol/src/remote-control/shell/input-delivery.ts`). [kind] names the
 /// watcher, rendered as "`kind` watcher has fired".
 class ChatWatcherFiredInfo {
   const ChatWatcherFiredInfo({required this.kind, this.combinedWatchers});
@@ -419,7 +419,7 @@ class ChatMessage {
   final ChatMessageStatus? status;
 
   /// Plain-text content. Tool/thinking blocks live in [parts] and never erase
-  /// text (mirrors the projection rules on `PortalChatMessage`).
+  /// text (mirrors the projection rules on `RemoteControlChatMessage`).
   final String text;
   final List<ChatPart> parts;
 
@@ -724,7 +724,7 @@ class ModelOption {
 }
 
 /// Provider native-auth availability the desktop cheaply projects
-/// (`PortalChatProviderAvailability`). An omitted `claude`/`codex`/`ollama`
+/// (`RemoteControlChatProviderAvailability`). An omitted `claude`/`codex`/`ollama`
 /// key means "unknown" (native-auth cache cold) and is treated optimistically
 /// as available, matching the desktop/web projection's existing intent for
 /// those three. `cursor` is different: it is a managed runtime that must be

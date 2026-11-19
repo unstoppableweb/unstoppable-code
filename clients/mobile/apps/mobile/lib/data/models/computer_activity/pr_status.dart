@@ -28,7 +28,7 @@ class RemoteWorktreePr {
   final int? prNumber;
   final String? url;
 
-  factory RemoteWorktreePr.fromPortal(
+  factory RemoteWorktreePr.fromRemoteControl(
     Map<String, dynamic> json, {
     String? repoId,
   }) => RemoteWorktreePr(

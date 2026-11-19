@@ -12,7 +12,8 @@ final class DeviceProviderUsageRepository {
   bool _ready = false;
   int _loadRevision = 0, _usageRevision = 0, _proxyRevision = 0;
 
-  PortalProviderUsageProjection? get projection => !_ready || _overview == null
+  RemoteControlProviderUsageProjection? get projection =>
+      !_ready || _overview == null
       ? null
       : projectDesktopUsage(_overview!, _proxy, _preferences);
 
@@ -20,7 +21,7 @@ final class DeviceProviderUsageRepository {
   /// Keep observations, but do not publish or refresh against the old route.
   void invalidateRoute() => _ready = false;
 
-  Future<PortalProviderUsageProjection> load() async {
+  Future<RemoteControlProviderUsageProjection> load() async {
     final loadRevision = ++_loadRevision;
     final usageRevision = _usageRevision, proxyRevision = _proxyRevision;
     // Serialize these reads to leave room for chat hydration on the same link.
@@ -62,7 +63,7 @@ final class DeviceProviderUsageRepository {
     return true;
   }
 
-  Future<void> refresh(PortalProviderUsageProvider provider) async {
+  Future<void> refresh(RemoteControlProviderUsageProvider provider) async {
     if (!_ready) throw StateError('Usage has not loaded for this session.');
     // Desktop provider reads can take 45 seconds, with proxy reads queued
     // behind other accounts. Allow a bounded read beyond the link's 15s default.

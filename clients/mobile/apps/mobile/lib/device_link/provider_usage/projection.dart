@@ -22,11 +22,11 @@ String? _iso(Object? value) {
 
 num? _number(Object? value) => value is num && value.isFinite ? value : null;
 
-PortalProviderUsageProjection projectDesktopUsage(
+RemoteControlProviderUsageProjection projectDesktopUsage(
   Map<String, dynamic> overview,
   Map<String, dynamic> proxy,
   Map<String, dynamic> preferences,
-) => PortalProviderUsageProjection(
+) => RemoteControlProviderUsageProjection(
   updatedAt: overview['updatedAt'] as String,
   openCodeAccounts: overview['openCodeAccounts'] is Map
       ? OpenCodeAccountSnapshot.fromJson(
@@ -34,8 +34,8 @@ PortalProviderUsageProjection projectDesktopUsage(
         )
       : null,
   providers: [
-    for (final provider in PortalProviderUsageProvider.values)
-      if (provider != PortalProviderUsageProvider.copilot ||
+    for (final provider in RemoteControlProviderUsageProvider.values)
+      if (provider != RemoteControlProviderUsageProvider.copilot ||
           _rows(
             overview['providers'],
           ).any((row) => row['provider'] == provider.wire))
@@ -58,16 +58,16 @@ PortalProviderUsageProjection projectDesktopUsage(
 /// The desktop's device-wide account-source rule, including local runtime
 /// readiness and the global AI Credits override. No organization is inferred.
 bool servesUsageProxy(
-  PortalProviderUsageProvider provider,
+  RemoteControlProviderUsageProvider provider,
   Map<String, dynamic> proxy,
   Map<String, dynamic> preferences,
 ) {
-  if (provider == PortalProviderUsageProvider.copilot ||
+  if (provider == RemoteControlProviderUsageProvider.copilot ||
       preferences['aiCreditsRoutingMode'] == 'on' ||
       proxy['available'] != true ||
       proxy['state'] != 'connected' ||
       proxy['error'] != null ||
-      proxy[provider == PortalProviderUsageProvider.claude
+      proxy[provider == RemoteControlProviderUsageProvider.claude
               ? 'routeClaude'
               : 'routeCodex'] !=
           true) {
@@ -83,30 +83,30 @@ bool servesUsageProxy(
       uri?.port == local['port'];
 }
 
-PortalProviderUsageEntry _entry(
-  PortalProviderUsageProvider provider,
+RemoteControlProviderUsageEntry _entry(
+  RemoteControlProviderUsageProvider provider,
   Map<String, dynamic> row,
-  List<PortalProviderUsageAccount>? accounts,
+  List<RemoteControlProviderUsageAccount>? accounts,
 ) {
   final unauthenticated = row['authState'] == 'unauthenticated';
   final windows = unauthenticated
-      ? <PortalProviderUsageWindow>[]
+      ? <RemoteControlProviderUsageWindow>[]
       : _windows(provider, row['rateLimits']);
   final info = usageObject(row['errorInfo']);
   final kind =
       info['kind'] as String? ??
       (row['error'] != null || row['authState'] == 'error' ? 'unknown' : null);
   final retainedThrottle = kind == 'rate_limited' && windows.isNotEmpty;
-  return PortalProviderUsageEntry(
+  return RemoteControlProviderUsageEntry(
     provider: provider,
     authState: unauthenticated
-        ? PortalProviderUsageAuthState.unauthenticated
+        ? RemoteControlProviderUsageAuthState.unauthenticated
         : retainedThrottle ||
               kind == null && row['authState'] == 'authenticated'
-        ? PortalProviderUsageAuthState.authenticated
+        ? RemoteControlProviderUsageAuthState.authenticated
         : kind != null
-        ? PortalProviderUsageAuthState.error
-        : PortalProviderUsageAuthState.unknown,
+        ? RemoteControlProviderUsageAuthState.error
+        : RemoteControlProviderUsageAuthState.unknown,
     accountEmail: unauthenticated ? null : row['accountEmail'] as String?,
     accountLabel: unauthenticated ? null : row['accountLabel'] as String?,
     planLabel: unauthenticated ? null : row['subscriptionLabel'] as String?,
@@ -119,14 +119,14 @@ PortalProviderUsageEntry _entry(
   );
 }
 
-PortalProviderUsageError _error(
-  PortalProviderUsageProvider provider,
+RemoteControlProviderUsageError _error(
+  RemoteControlProviderUsageProvider provider,
   String kind,
 ) {
   final label = switch (provider) {
-    PortalProviderUsageProvider.claude => 'Claude',
-    PortalProviderUsageProvider.codex => 'Codex',
-    PortalProviderUsageProvider.copilot => 'Copilot',
+    RemoteControlProviderUsageProvider.claude => 'Claude',
+    RemoteControlProviderUsageProvider.codex => 'Codex',
+    RemoteControlProviderUsageProvider.copilot => 'Copilot',
   };
   // Curated desktop headlines only; raw provider errors can contain secrets.
   final message = switch (kind) {
@@ -138,21 +138,21 @@ PortalProviderUsageError _error(
     'unsupported' => "This $label account doesn't expose usage details.",
     _ => 'Try again to load $label usage.',
   };
-  return PortalProviderUsageError(
+  return RemoteControlProviderUsageError(
     kind:
-        PortalProviderUsageErrorKind.values
+        RemoteControlProviderUsageErrorKind.values
             .where(
               (value) =>
                   value.wire == (kind == 'rate_limited' ? 'service' : kind),
             )
             .firstOrNull ??
-        PortalProviderUsageErrorKind.unknown,
+        RemoteControlProviderUsageErrorKind.unknown,
     message: message,
   );
 }
 
-List<PortalProviderUsageWindow> _windows(
-  PortalProviderUsageProvider provider,
+List<RemoteControlProviderUsageWindow> _windows(
+  RemoteControlProviderUsageProvider provider,
   Object? raw,
 ) {
   final rows = _rows(raw);
@@ -171,13 +171,13 @@ int _sortKey(Map<String, dynamic> row) =>
     ? 0
     : 1;
 
-List<PortalProviderUsageWindow> _limitWindows(
-  PortalProviderUsageProvider provider,
+List<RemoteControlProviderUsageWindow> _limitWindows(
+  RemoteControlProviderUsageProvider provider,
   Map<String, dynamic> row,
   Map<String, int> counts,
   Set<String> credited,
 ) {
-  final codex = provider == PortalProviderUsageProvider.codex;
+  final codex = provider == RemoteControlProviderUsageProvider.codex;
   final key = '${row['limitId'] ?? row['limitName'] ?? 'default'}';
   final credits = usageObject(row['credits']);
   final hasCredits = [
@@ -223,7 +223,7 @@ List<PortalProviderUsageWindow> _limitWindows(
         final id = '$key-$slot';
         final count = counts.update(id, (n) => n + 1, ifAbsent: () => 1);
         final includeCredits = hasCredits && credited.add(key);
-        return PortalProviderUsageWindow(
+        return RemoteControlProviderUsageWindow(
           id: count == 1 ? id : '$id-$count',
           label: window['unlimited'] == true
               ? label.replaceFirst(RegExp(r' · Unlimited$'), '')
@@ -233,17 +233,19 @@ List<PortalProviderUsageWindow> _limitWindows(
           resetsAt: _iso(window['resetsAt']),
           windowDurationMs: duration,
           credits: includeCredits
-              ? PortalProviderUsageCredits(
+              ? RemoteControlProviderUsageCredits(
                   unit: codex
-                      ? PortalProviderUsageCreditUnit.credits
-                      : PortalProviderUsageCreditUnit.usd,
+                      ? RemoteControlProviderUsageCreditUnit.credits
+                      : RemoteControlProviderUsageCreditUnit.usd,
                   spent: _number(credits['usedUsd']),
                   remaining: _number(credits['remainingUsd']),
                   total: _number(credits['totalUsd']),
                 )
               : null,
           spend: row['spend'] is Map
-              ? PortalProviderUsageSpend.fromJson(usageObject(row['spend']))
+              ? RemoteControlProviderUsageSpend.fromJson(
+                  usageObject(row['spend']),
+                )
               : null,
         );
       })(),
@@ -257,26 +259,30 @@ String? _durationLabel(num? mins) {
   return '${mins % 1 == 0 ? mins.toInt() : mins}-minute';
 }
 
-PortalProviderUsageAccount _account(
-  PortalProviderUsageProvider provider,
+RemoteControlProviderUsageAccount _account(
+  RemoteControlProviderUsageProvider provider,
   Map<String, dynamic> row,
 ) {
   final usage = usageObject(row['usage']);
   final info = usageObject(usage['errorInfo']);
   final limits = _rows(row['limits']);
-  return PortalProviderUsageAccount(
+  return RemoteControlProviderUsageAccount(
     id: row['authIndex'] as String,
     label: row['label'] as String?,
     planLabel: row['source'] == 'api-key'
         ? 'API key'
         : _planLabel(provider, row['planType'] as String?),
-    status: PortalProviderUsageAccountStatus.fromWire(row['status'] as String),
+    status: RemoteControlProviderUsageAccountStatus.fromWire(
+      row['status'] as String,
+    ),
     availableAt: _iso(row['availableAt']),
     usageSource: row['usage'] is Map
-        ? PortalProviderUsageAccountSource.fromWire(usage['source'] as String)
+        ? RemoteControlProviderUsageAccountSource.fromWire(
+            usage['source'] as String,
+          )
         : limits.isEmpty
         ? null
-        : PortalProviderUsageAccountSource.passive,
+        : RemoteControlProviderUsageAccountSource.passive,
     lastUpdatedAt: _iso(usage['lastUpdatedAt']),
     retryAt: _iso(usage['retryAt']),
     error: info['kind'] is String
@@ -286,7 +292,7 @@ PortalProviderUsageAccount _account(
         ? _windows(provider, usage['rateLimits'])
         : [
             for (final limit in limits)
-              PortalProviderUsageWindow(
+              RemoteControlProviderUsageWindow(
                 id: limit['id'] as String,
                 label: limit['id'] == 'five-hour'
                     ? '5-hour limit'
@@ -301,13 +307,14 @@ PortalProviderUsageAccount _account(
   );
 }
 
-String? _planLabel(PortalProviderUsageProvider provider, String? raw) {
+String? _planLabel(RemoteControlProviderUsageProvider provider, String? raw) {
   var slug = (raw ?? '').trim().toLowerCase().replaceAll(
     RegExp(r'[\s_]+'),
     '-',
   );
   if (slug.isEmpty || slug == 'unknown') return null;
-  if (provider == PortalProviderUsageProvider.claude && slug.contains('max')) {
+  if (provider == RemoteControlProviderUsageProvider.claude &&
+      slug.contains('max')) {
     if (RegExp(r'(?:^|\D)20x?(?:\D|$)').hasMatch(slug) ||
         slug == 'max20x' ||
         slug == 'max-20') {
@@ -319,7 +326,7 @@ String? _planLabel(PortalProviderUsageProvider provider, String? raw) {
       slug = 'max-5x';
     }
   }
-  if (provider == PortalProviderUsageProvider.codex && slug == 'team') {
+  if (provider == RemoteControlProviderUsageProvider.codex && slug == 'team') {
     slug = 'business';
   }
   final title = slug
@@ -329,7 +336,7 @@ String? _planLabel(PortalProviderUsageProvider provider, String? raw) {
             part.isEmpty ? '' : '${part[0].toUpperCase()}${part.substring(1)}',
       )
       .join(' ');
-  return '${provider == PortalProviderUsageProvider.codex ? 'ChatGPT' : 'Claude'} ${switch (slug) {
+  return '${provider == RemoteControlProviderUsageProvider.codex ? 'ChatGPT' : 'Claude'} ${switch (slug) {
     'max-5x' => 'Max 5x',
     'max-20x' => 'Max 20x',
     'team-premium' => 'Team Premium',

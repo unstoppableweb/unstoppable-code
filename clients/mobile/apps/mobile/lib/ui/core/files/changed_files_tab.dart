@@ -461,7 +461,7 @@ class _LineCounts extends StatelessWidget {
   }
 }
 
-/// Both status vocabularies are live on the wire (`PortalChangedFile.status`):
+/// Both status vocabularies are live on the wire (`RemoteControlChangedFile.status`):
 /// word statuses (`'modified'`) from the snapshot path and porcelain codes
 /// (`'M'`) from other producers. Accept both everywhere.
 Color _statusColor(String status, StatusColors colors) => switch (status) {

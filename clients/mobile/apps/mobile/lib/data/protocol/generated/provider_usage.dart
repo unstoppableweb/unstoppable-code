@@ -38,23 +38,23 @@ enum OpenCodeAccountMethod {
 }
 
 /// Where an account's limits came from: `live` is the desktop's own quota read; `passive` is what the account proxy last reported from its traffic.
-enum PortalProviderUsageAccountSource {
+enum RemoteControlProviderUsageAccountSource {
   live('live'),
   passive('passive'),
   ;
 
-  const PortalProviderUsageAccountSource(this.wire);
+  const RemoteControlProviderUsageAccountSource(this.wire);
 
   final String wire;
 
-  static PortalProviderUsageAccountSource fromWire(String wire) => values.firstWhere(
+  static RemoteControlProviderUsageAccountSource fromWire(String wire) => values.firstWhere(
         (e) => e.wire == wire,
-        orElse: () => throw FormatException('Unknown PortalProviderUsageAccountSource: $wire'),
+        orElse: () => throw FormatException('Unknown RemoteControlProviderUsageAccountSource: $wire'),
       );
 }
 
 /// Whether an account-proxy account can serve requests now, and why not.
-enum PortalProviderUsageAccountStatus {
+enum RemoteControlProviderUsageAccountStatus {
   active('active'),
   cooling('cooling'),
   error('error'),
@@ -63,52 +63,52 @@ enum PortalProviderUsageAccountStatus {
   pending('pending'),
   ;
 
-  const PortalProviderUsageAccountStatus(this.wire);
+  const RemoteControlProviderUsageAccountStatus(this.wire);
 
   final String wire;
 
-  static PortalProviderUsageAccountStatus fromWire(String wire) => values.firstWhere(
+  static RemoteControlProviderUsageAccountStatus fromWire(String wire) => values.firstWhere(
         (e) => e.wire == wire,
-        orElse: () => throw FormatException('Unknown PortalProviderUsageAccountStatus: $wire'),
+        orElse: () => throw FormatException('Unknown RemoteControlProviderUsageAccountStatus: $wire'),
       );
 }
 
 /// Sign-in state of one provider. `error` means the last usage fetch failed; the entry's `error` field then explains it.
-enum PortalProviderUsageAuthState {
+enum RemoteControlProviderUsageAuthState {
   authenticated('authenticated'),
   unauthenticated('unauthenticated'),
   unknown('unknown'),
   error('error'),
   ;
 
-  const PortalProviderUsageAuthState(this.wire);
+  const RemoteControlProviderUsageAuthState(this.wire);
 
   final String wire;
 
-  static PortalProviderUsageAuthState fromWire(String wire) => values.firstWhere(
+  static RemoteControlProviderUsageAuthState fromWire(String wire) => values.firstWhere(
         (e) => e.wire == wire,
-        orElse: () => throw FormatException('Unknown PortalProviderUsageAuthState: $wire'),
+        orElse: () => throw FormatException('Unknown RemoteControlProviderUsageAuthState: $wire'),
       );
 }
 
 /// `usd` amounts are dollars (Claude Extra usage). `credits` amounts are a count of provider credits (the Codex balance), not money.
-enum PortalProviderUsageCreditUnit {
+enum RemoteControlProviderUsageCreditUnit {
   usd('usd'),
   credits('credits'),
   ;
 
-  const PortalProviderUsageCreditUnit(this.wire);
+  const RemoteControlProviderUsageCreditUnit(this.wire);
 
   final String wire;
 
-  static PortalProviderUsageCreditUnit fromWire(String wire) => values.firstWhere(
+  static RemoteControlProviderUsageCreditUnit fromWire(String wire) => values.firstWhere(
         (e) => e.wire == wire,
-        orElse: () => throw FormatException('Unknown PortalProviderUsageCreditUnit: $wire'),
+        orElse: () => throw FormatException('Unknown RemoteControlProviderUsageCreditUnit: $wire'),
       );
 }
 
 /// Broad category of a failed usage fetch; mirrors the desktop's kinds.
-enum PortalProviderUsageErrorKind {
+enum RemoteControlProviderUsageErrorKind {
   auth('auth'),
   network('network'),
   service('service'),
@@ -116,48 +116,48 @@ enum PortalProviderUsageErrorKind {
   unknown('unknown'),
   ;
 
-  const PortalProviderUsageErrorKind(this.wire);
+  const RemoteControlProviderUsageErrorKind(this.wire);
 
   final String wire;
 
-  static PortalProviderUsageErrorKind fromWire(String wire) => values.firstWhere(
+  static RemoteControlProviderUsageErrorKind fromWire(String wire) => values.firstWhere(
         (e) => e.wire == wire,
-        orElse: () => throw FormatException('Unknown PortalProviderUsageErrorKind: $wire'),
+        orElse: () => throw FormatException('Unknown RemoteControlProviderUsageErrorKind: $wire'),
       );
 }
 
 /// Providers whose plan limits the `provider_usage` projection carries.
-enum PortalProviderUsageProvider {
+enum RemoteControlProviderUsageProvider {
   claude('claude'),
   codex('codex'),
   copilot('copilot'),
   ;
 
-  const PortalProviderUsageProvider(this.wire);
+  const RemoteControlProviderUsageProvider(this.wire);
 
   final String wire;
 
-  static PortalProviderUsageProvider fromWire(String wire) => values.firstWhere(
+  static RemoteControlProviderUsageProvider fromWire(String wire) => values.firstWhere(
         (e) => e.wire == wire,
-        orElse: () => throw FormatException('Unknown PortalProviderUsageProvider: $wire'),
+        orElse: () => throw FormatException('Unknown RemoteControlProviderUsageProvider: $wire'),
       );
 }
 
 /// Payload for `portal.provider_usage.refresh`.
-enum PortalProviderUsageRefreshProvider {
+enum RemoteControlProviderUsageRefreshProvider {
   claude('claude'),
   codex('codex'),
   copilot('copilot'),
   opencode('opencode'),
   ;
 
-  const PortalProviderUsageRefreshProvider(this.wire);
+  const RemoteControlProviderUsageRefreshProvider(this.wire);
 
   final String wire;
 
-  static PortalProviderUsageRefreshProvider fromWire(String wire) => values.firstWhere(
+  static RemoteControlProviderUsageRefreshProvider fromWire(String wire) => values.firstWhere(
         (e) => e.wire == wire,
-        orElse: () => throw FormatException('Unknown PortalProviderUsageRefreshProvider: $wire'),
+        orElse: () => throw FormatException('Unknown RemoteControlProviderUsageRefreshProvider: $wire'),
       );
 }
 
@@ -258,13 +258,13 @@ class OpenCodeUsageWindow {
 }
 
 /// One account the multi-account proxy shares for a provider. Display fields only: no credential file names, proxy messages, connection ids or URLs. Absent `usageSource` with no windows means usage is unavailable, never 0%.
-class PortalProviderUsageAccount {
-  const PortalProviderUsageAccount({this.availableAt, this.error, required this.id, this.label, this.lastUpdatedAt, this.planLabel, this.retryAt, this.signInRequired, required this.status, this.usageSource, required this.windows});
+class RemoteControlProviderUsageAccount {
+  const RemoteControlProviderUsageAccount({this.availableAt, this.error, required this.id, this.label, this.lastUpdatedAt, this.planLabel, this.retryAt, this.signInRequired, required this.status, this.usageSource, required this.windows});
 
   /// ISO timestamp when a cooling account can serve again.
   final String? availableAt;
   /// The latest failed read; `windows` keep the last known values.
-  final PortalProviderUsageError? error;
+  final RemoteControlProviderUsageError? error;
   /// Opaque id, unique within its entry and stable across refreshes.
   final String id;
   /// Email or account name; hosts block it from session replay.
@@ -277,108 +277,108 @@ class PortalProviderUsageAccount {
   final String? retryAt;
   /// The proxy can no longer renew this account's sign-in; sent with status `error`, which older hosts show. Sign in again in proxy settings.
   final bool? signInRequired;
-  final PortalProviderUsageAccountStatus status;
-  final PortalProviderUsageAccountSource? usageSource;
-  final List<PortalProviderUsageWindow> windows;
+  final RemoteControlProviderUsageAccountStatus status;
+  final RemoteControlProviderUsageAccountSource? usageSource;
+  final List<RemoteControlProviderUsageWindow> windows;
 
-  factory PortalProviderUsageAccount.fromJson(Map<String, dynamic> json) => PortalProviderUsageAccount(
+  factory RemoteControlProviderUsageAccount.fromJson(Map<String, dynamic> json) => RemoteControlProviderUsageAccount(
         availableAt: json['availableAt'] as String?,
-        error: json['error'] == null ? null : PortalProviderUsageError.fromJson(json['error'] as Map<String, dynamic>),
+        error: json['error'] == null ? null : RemoteControlProviderUsageError.fromJson(json['error'] as Map<String, dynamic>),
         id: json['id'] as String,
         label: json['label'] as String?,
         lastUpdatedAt: json['lastUpdatedAt'] as String?,
         planLabel: json['planLabel'] as String?,
         retryAt: json['retryAt'] as String?,
         signInRequired: json['signInRequired'] as bool?,
-        status: PortalProviderUsageAccountStatus.fromWire(json['status'] as String),
-        usageSource: json['usageSource'] == null ? null : PortalProviderUsageAccountSource.fromWire(json['usageSource'] as String),
-        windows: _parseList(json['windows'], (e) => PortalProviderUsageWindow.fromJson(e as Map<String, dynamic>)),
+        status: RemoteControlProviderUsageAccountStatus.fromWire(json['status'] as String),
+        usageSource: json['usageSource'] == null ? null : RemoteControlProviderUsageAccountSource.fromWire(json['usageSource'] as String),
+        windows: _parseList(json['windows'], (e) => RemoteControlProviderUsageWindow.fromJson(e as Map<String, dynamic>)),
       );
 }
 
 /// Credits for one window. Absent amounts were not reported.
-class PortalProviderUsageCredits {
-  const PortalProviderUsageCredits({this.remaining, this.spent, this.total, required this.unit});
+class RemoteControlProviderUsageCredits {
+  const RemoteControlProviderUsageCredits({this.remaining, this.spent, this.total, required this.unit});
 
   final num? remaining;
   final num? spent;
   final num? total;
-  final PortalProviderUsageCreditUnit unit;
+  final RemoteControlProviderUsageCreditUnit unit;
 
-  factory PortalProviderUsageCredits.fromJson(Map<String, dynamic> json) => PortalProviderUsageCredits(
+  factory RemoteControlProviderUsageCredits.fromJson(Map<String, dynamic> json) => RemoteControlProviderUsageCredits(
         remaining: json['remaining'] as num?,
         spent: json['spent'] as num?,
         total: json['total'] as num?,
-        unit: PortalProviderUsageCreditUnit.fromWire(json['unit'] as String),
+        unit: RemoteControlProviderUsageCreditUnit.fromWire(json['unit'] as String),
       );
 }
 
 /// Current-account usage of one provider.
-class PortalProviderUsageEntry {
-  const PortalProviderUsageEntry({this.accountEmail, this.accountLabel, this.accounts, required this.authState, this.error, this.lastUpdatedAt, this.planLabel, required this.provider, required this.windows});
+class RemoteControlProviderUsageEntry {
+  const RemoteControlProviderUsageEntry({this.accountEmail, this.accountLabel, this.accounts, required this.authState, this.error, this.lastUpdatedAt, this.planLabel, required this.provider, required this.windows});
 
   final String? accountEmail;
   /// Non-email account identity, such as a GitHub login.
   final String? accountLabel;
   /// Present only while the desktop's multi-account proxy serves this provider: its accounts, in place of the native sign-in, whose limits no longer apply. An empty list means the proxy has no account for it. Older desktops omit it.
-  final List<PortalProviderUsageAccount>? accounts;
-  final PortalProviderUsageAuthState authState;
-  final PortalProviderUsageError? error;
+  final List<RemoteControlProviderUsageAccount>? accounts;
+  final RemoteControlProviderUsageAuthState authState;
+  final RemoteControlProviderUsageError? error;
   /// ISO timestamp of the desktop's last usage read for this provider.
   final String? lastUpdatedAt;
   /// Plan display label, e.g. `Claude Max 20x` or `ChatGPT Pro`.
   final String? planLabel;
-  final PortalProviderUsageProvider provider;
-  final List<PortalProviderUsageWindow> windows;
+  final RemoteControlProviderUsageProvider provider;
+  final List<RemoteControlProviderUsageWindow> windows;
 
-  factory PortalProviderUsageEntry.fromJson(Map<String, dynamic> json) => PortalProviderUsageEntry(
+  factory RemoteControlProviderUsageEntry.fromJson(Map<String, dynamic> json) => RemoteControlProviderUsageEntry(
         accountEmail: json['accountEmail'] as String?,
         accountLabel: json['accountLabel'] as String?,
-        accounts: json['accounts'] == null ? null : _parseList(json['accounts'], (e) => PortalProviderUsageAccount.fromJson(e as Map<String, dynamic>)),
-        authState: PortalProviderUsageAuthState.fromWire(json['authState'] as String),
-        error: json['error'] == null ? null : PortalProviderUsageError.fromJson(json['error'] as Map<String, dynamic>),
+        accounts: json['accounts'] == null ? null : _parseList(json['accounts'], (e) => RemoteControlProviderUsageAccount.fromJson(e as Map<String, dynamic>)),
+        authState: RemoteControlProviderUsageAuthState.fromWire(json['authState'] as String),
+        error: json['error'] == null ? null : RemoteControlProviderUsageError.fromJson(json['error'] as Map<String, dynamic>),
         lastUpdatedAt: json['lastUpdatedAt'] as String?,
         planLabel: json['planLabel'] as String?,
-        provider: PortalProviderUsageProvider.fromWire(json['provider'] as String),
-        windows: _parseList(json['windows'], (e) => PortalProviderUsageWindow.fromJson(e as Map<String, dynamic>)),
+        provider: RemoteControlProviderUsageProvider.fromWire(json['provider'] as String),
+        windows: _parseList(json['windows'], (e) => RemoteControlProviderUsageWindow.fromJson(e as Map<String, dynamic>)),
       );
 }
 
 /// Classified fetch failure with user-safe copy; never raw provider text.
-class PortalProviderUsageError {
-  const PortalProviderUsageError({required this.kind, required this.message});
+class RemoteControlProviderUsageError {
+  const RemoteControlProviderUsageError({required this.kind, required this.message});
 
-  final PortalProviderUsageErrorKind kind;
+  final RemoteControlProviderUsageErrorKind kind;
   final String message;
 
-  factory PortalProviderUsageError.fromJson(Map<String, dynamic> json) => PortalProviderUsageError(
-        kind: PortalProviderUsageErrorKind.fromWire(json['kind'] as String),
+  factory RemoteControlProviderUsageError.fromJson(Map<String, dynamic> json) => RemoteControlProviderUsageError(
+        kind: RemoteControlProviderUsageErrorKind.fromWire(json['kind'] as String),
         message: json['message'] as String,
       );
 }
 
 /// Payload of the account-level `provider_usage` singleton entity (CAN-3635), whose `localId` is `overview` in overview snapshots and deltas. Carries exactly one entry each for Claude and Codex. Copilot is included only when the host publishes its gated account-usage summary. No host paths, credentials or raw provider responses cross this boundary.
-class PortalProviderUsageProjection {
-  const PortalProviderUsageProjection({this.antigravityAccount, this.openCodeAccounts, required this.providers, required this.updatedAt});
+class RemoteControlProviderUsageProjection {
+  const RemoteControlProviderUsageProjection({this.antigravityAccount, this.openCodeAccounts, required this.providers, required this.updatedAt});
 
   /// Optional Antigravity plan metadata, separate from quotas so older peers ignore it. Never identity, quota or a billing signal.
   final AntigravityAccountSnapshot? antigravityAccount;
   /// Optional metadata, separate from quotas so older peers can ignore it.
   final OpenCodeAccountSnapshot? openCodeAccounts;
-  final List<PortalProviderUsageEntry> providers;
+  final List<RemoteControlProviderUsageEntry> providers;
   final String updatedAt;
 
-  factory PortalProviderUsageProjection.fromJson(Map<String, dynamic> json) => PortalProviderUsageProjection(
+  factory RemoteControlProviderUsageProjection.fromJson(Map<String, dynamic> json) => RemoteControlProviderUsageProjection(
         antigravityAccount: json['antigravityAccount'] == null ? null : AntigravityAccountSnapshot.fromJson(json['antigravityAccount'] as Map<String, dynamic>),
         openCodeAccounts: json['openCodeAccounts'] == null ? null : OpenCodeAccountSnapshot.fromJson(json['openCodeAccounts'] as Map<String, dynamic>),
-        providers: _parseList(json['providers'], (e) => PortalProviderUsageEntry.fromJson(e as Map<String, dynamic>)),
+        providers: _parseList(json['providers'], (e) => RemoteControlProviderUsageEntry.fromJson(e as Map<String, dynamic>)),
         updatedAt: json['updatedAt'] as String,
       );
 }
 
 /// Billing-period spend and cap in major currency units, not wallet credits.
-class PortalProviderUsageSpend {
-  const PortalProviderUsageSpend({this.currency, this.isEnabled, this.limit, this.used});
+class RemoteControlProviderUsageSpend {
+  const RemoteControlProviderUsageSpend({this.currency, this.isEnabled, this.limit, this.used});
 
   final String? currency;
   final bool? isEnabled;
@@ -386,7 +386,7 @@ class PortalProviderUsageSpend {
   final num? limit;
   final num? used;
 
-  factory PortalProviderUsageSpend.fromJson(Map<String, dynamic> json) => PortalProviderUsageSpend(
+  factory RemoteControlProviderUsageSpend.fromJson(Map<String, dynamic> json) => RemoteControlProviderUsageSpend(
         currency: json['currency'] as String?,
         isEnabled: json['isEnabled'] as bool?,
         limit: json['limit'] as num?,
@@ -395,39 +395,39 @@ class PortalProviderUsageSpend {
 }
 
 /// One plan limit window, normalized on the desktop. `id` stays stable across refreshes and reordering; `label` is display copy such as `5-hour window`, `7-day Opus` or `Extra usage`.
-class PortalProviderUsageWindow {
-  const PortalProviderUsageWindow({this.credits, required this.id, required this.label, this.resetsAt, this.spend, this.unlimited, this.usedPercent, this.windowDurationMs});
+class RemoteControlProviderUsageWindow {
+  const RemoteControlProviderUsageWindow({this.credits, required this.id, required this.label, this.resetsAt, this.spend, this.unlimited, this.usedPercent, this.windowDurationMs});
 
-  final PortalProviderUsageCredits? credits;
+  final RemoteControlProviderUsageCredits? credits;
   final String id;
   final String label;
   /// ISO timestamp of the next reset.
   final String? resetsAt;
   /// Optional for compatibility with older paired clients.
-  final PortalProviderUsageSpend? spend;
+  final RemoteControlProviderUsageSpend? spend;
   /// Explicitly unlimited; absent usage alone does not imply this.
   final bool? unlimited;
   final num? usedPercent;
   final num? windowDurationMs;
 
-  factory PortalProviderUsageWindow.fromJson(Map<String, dynamic> json) => PortalProviderUsageWindow(
-        credits: json['credits'] == null ? null : PortalProviderUsageCredits.fromJson(json['credits'] as Map<String, dynamic>),
+  factory RemoteControlProviderUsageWindow.fromJson(Map<String, dynamic> json) => RemoteControlProviderUsageWindow(
+        credits: json['credits'] == null ? null : RemoteControlProviderUsageCredits.fromJson(json['credits'] as Map<String, dynamic>),
         id: json['id'] as String,
         label: json['label'] as String,
         resetsAt: json['resetsAt'] as String?,
-        spend: json['spend'] == null ? null : PortalProviderUsageSpend.fromJson(json['spend'] as Map<String, dynamic>),
+        spend: json['spend'] == null ? null : RemoteControlProviderUsageSpend.fromJson(json['spend'] as Map<String, dynamic>),
         unlimited: json['unlimited'] as bool?,
         usedPercent: json['usedPercent'] as num?,
         windowDurationMs: json['windowDurationMs'] as num?,
       );
 }
 
-class PortalProviderUsageRefreshPayload {
-  const PortalProviderUsageRefreshPayload({required this.provider});
+class RemoteControlProviderUsageRefreshPayload {
+  const RemoteControlProviderUsageRefreshPayload({required this.provider});
 
-  final PortalProviderUsageRefreshProvider provider;
+  final RemoteControlProviderUsageRefreshProvider provider;
 
-  factory PortalProviderUsageRefreshPayload.fromJson(Map<String, dynamic> json) => PortalProviderUsageRefreshPayload(
-        provider: PortalProviderUsageRefreshProvider.fromWire(json['provider'] as String),
+  factory RemoteControlProviderUsageRefreshPayload.fromJson(Map<String, dynamic> json) => RemoteControlProviderUsageRefreshPayload(
+        provider: RemoteControlProviderUsageRefreshProvider.fromWire(json['provider'] as String),
       );
 }

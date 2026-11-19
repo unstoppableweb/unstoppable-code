@@ -10,13 +10,13 @@ String openCodeUsageDescription(OpenCodeAccountUsage? usage) =>
     };
 
 /// Use the same window display and expired-reset policy as other providers.
-List<PortalProviderUsageWindow> openCodeUsageWindows(
+List<RemoteControlProviderUsageWindow> openCodeUsageWindows(
   OpenCodeAccountUsage? usage,
 ) => usage?.status != 'ready'
     ? const []
     : [
         for (final window in usage?.windows ?? <OpenCodeUsageWindow>[])
-          PortalProviderUsageWindow(
+          RemoteControlProviderUsageWindow(
             id: window.id,
             label: switch (window.id) {
               'rolling' => 'Rolling usage',

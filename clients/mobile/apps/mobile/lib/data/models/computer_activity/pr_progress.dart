@@ -1,6 +1,6 @@
 /// Mobile mirrors of the portal PR progress feeds carried on the `pr_status`
-/// entity: `PortalPrCreationProgress` and `PortalMergePrProgress` in
-/// `packages/protocol/src/portal/index.ts`.
+/// entity: `RemoteControlPrCreationProgress` and `RemoteControlMergePrProgress` in
+/// `packages/protocol/src/remote-control/shell/index.ts`.
 ///
 /// Parsing is deliberately lenient. A desktop host newer than this client can
 /// emit phases we do not know; an unknown step phase is dropped and an unknown

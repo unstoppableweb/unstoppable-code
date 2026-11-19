@@ -55,7 +55,7 @@ String? chatAttachmentMediaTypeForFilename(String filename) {
 }
 
 /// Ready upload the composer sends as `cloudAttachments[]`
-/// (`PortalChatCloudAttachmentRef`). JSON keys match the wire protocol.
+/// (`RemoteControlChatCloudAttachmentRef`). JSON keys match the wire protocol.
 class ChatAttachmentRef {
   const ChatAttachmentRef({
     required this.attachmentId,

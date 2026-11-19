@@ -31,14 +31,14 @@ final class UsageLimitsViewModel extends ChangeNotifier
   final DateTime Function() _clock;
   final Timer Function(Duration, void Function()) _timer;
 
-  PortalProviderUsageProjection? _projection;
+  RemoteControlProviderUsageProjection? _projection;
   Object? _scopeKey;
   bool _available = false;
   ProviderUsageDelivery _delivery = ProviderUsageDelivery.live;
   Timer? _resetTimer;
 
   /// The values on screen: live while available, the last ones otherwise.
-  PortalProviderUsageProjection? get projection => _projection;
+  RemoteControlProviderUsageProjection? get projection => _projection;
 
   /// False once the desktop stopped answering for usage.
   bool get isDesktopAvailable => _available;
@@ -48,18 +48,18 @@ final class UsageLimitsViewModel extends ChangeNotifier
 
   DateTime now() => _clock();
 
-  bool isRefreshing(PortalProviderUsageProvider provider) =>
+  bool isRefreshing(RemoteControlProviderUsageProvider provider) =>
       _available && _source.isRefreshing(provider);
 
-  String? refreshFailure(PortalProviderUsageProvider provider) =>
+  String? refreshFailure(RemoteControlProviderUsageProvider provider) =>
       _available ? _source.refreshFailure(provider) : null;
 
-  bool canRefresh(PortalProviderUsageProvider provider) =>
+  bool canRefresh(RemoteControlProviderUsageProvider provider) =>
       _available &&
       _delivery == ProviderUsageDelivery.live &&
       !_source.isRefreshing(provider);
 
-  Future<void> refresh(PortalProviderUsageProvider provider) async {
+  Future<void> refresh(RemoteControlProviderUsageProvider provider) async {
     if (!canRefresh(provider)) return;
     await _source.refresh(provider);
   }

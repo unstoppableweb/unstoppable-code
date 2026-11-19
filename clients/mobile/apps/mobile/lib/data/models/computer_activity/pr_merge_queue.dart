@@ -1,6 +1,6 @@
 import 'package:mobile/data/models/computer_activity/pr_status.dart';
 
-/// Wire `PortalPrMergeQueuePhase`: a queued PR's GitHub merge queue entry
+/// Wire `RemoteControlPrMergeQueuePhase`: a queued PR's GitHub merge queue entry
 /// state. [unknown] also covers a phase string this build does not know.
 enum RemotePrMergeQueuePhase {
   queued,

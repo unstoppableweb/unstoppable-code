@@ -1,21 +1,10 @@
-<p align="center">
+<h1 align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset=".github/assets/logo-dark.svg">
-    <img src=".github/assets/logo-light.svg" alt="Unstoppable Code" width="320">
+    <source media="(prefers-color-scheme: dark)" srcset=".github/assets/logo-mark-dark.svg">
+    <img src=".github/assets/logo-mark-light.svg" alt="" width="48" valign="middle">
   </picture>
-</p>
-
-<h1 align="center">Unstoppable Code</h1>
-
-<p align="center">
-  <strong>Agents scale. Your attention doesn't.</strong>
-</p>
-
-<p align="center">
-  Run Claude Code, Codex, and Cursor side by side, each in its own worktree, on
-  the subscriptions you already have. The app stays quiet until an agent needs
-  you.
-</p>
+  Unstoppable Code
+</h1>
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT"></a>
@@ -23,9 +12,16 @@
 </p>
 
 <p align="center">
-  <a href="#download">Download</a> ·
-  <a href="#building-from-source">Build from source</a> ·
-  <a href="https://unstoppable.ai/support">Docs</a>
+  <strong>Run a fleet of coding agents without babysitting them.</strong><br>
+  Run Claude Code, Codex, Cursor, and local models in parallel, each in its own
+  worktree, on the subscriptions you already have. Get a ping on your phone when
+  one needs you, and switch providers when you hit a limit.
+</p>
+
+<h3 align="center"><a href="#download">Download Unstoppable Code</a></h3>
+
+<p align="center">
+  <sub><a href="#building-from-source">Build from source</a> · <a href="https://unstoppable.ai/support">Docs</a></sub>
 </p>
 
 <picture>
@@ -33,11 +29,11 @@
   <img src=".github/assets/hero-light.png" alt="The Unstoppable Code desktop app with five agent tasks across three projects, one waiting on a question that is also open on a phone and showing on a watch">
 </picture>
 
-## Run more agents. Think about them less.
+## Agents scale. Your attention doesn't.
 
-Unstoppable Code brings Claude Code, Codex, Cursor, and local models into one
-app. Start as many tasks as you like and let them work. You only step in when
-one of them needs you.
+<table>
+<tr>
+<td width="50%" valign="middle">
 
 ### Quiet until it's your turn
 
@@ -45,25 +41,31 @@ Agents work in the background and the app stays muted. When one needs an
 approval or an answer, it lights up so you know where to look, and your phone
 gets a push so you can reply from wherever you are.
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/demo-attention-dark.webp">
-  <img src=".github/assets/demo-attention-light.webp" width="100%" alt="Agents work in parallel across three projects. One asks to run a database migration and is approved in a click. Another asks a question, a watch buzzes, and the answer comes from the phone app while the agent carries on.">
-</picture>
+[Watch the full demo →](https://storage.googleapis.com/unstoppable-client-assets/images/homepage/unstoppable-code/demos/hero-dark-281511986be7.mp4) · [Light mode](https://storage.googleapis.com/unstoppable-client-assets/images/homepage/unstoppable-code/demos/hero-light-1eec784f253c.mp4)
 
-[Watch the full demo](https://storage.googleapis.com/unstoppable-client-assets/images/homepage/unstoppable-code/demos/hero-light-1eec784f253c.mp4) ([dark mode](https://storage.googleapis.com/unstoppable-client-assets/images/homepage/unstoppable-code/demos/hero-dark-281511986be7.mp4))
+</td>
+<td width="50%">
+  <a href="https://storage.googleapis.com/unstoppable-client-assets/images/homepage/unstoppable-code/demos/hero-dark-281511986be7.mp4"><img src=".github/assets/demo-attention-dark.webp" width="100%" alt="Agents work in parallel across three projects. One asks to run a database migration and is approved in a click. Another asks a question, a watch buzzes, and the answer comes from the phone app while the agent carries on."></a>
+</td>
+</tr>
+<tr>
+<td width="50%" valign="middle">
 
-### One model builds, a rival model reviews, your team reuses it
+### Mix models in one workflow, then share it
 
-Tell the built-in assistant the workflow you want: Claude builds, GPT reviews,
-Claude fixes, then your tests run. Tweak any step by hand, and share it once
-it works.
+Use each model for what it's best at. Ask the built-in assistant for a
+workflow where Claude builds, GPT reviews, and your tests run last. Tweak any
+step by hand, then share it with your team.
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/demo-workflow-dark.webp">
-  <img src=".github/assets/demo-workflow-light.webp" width="100%" alt="The built-in assistant builds a workflow from a chat message: Implement on Claude, Review on GPT, Fix review findings, and Run tests. A step is tweaked by hand, the GPT review finds two issues, the fix lands, tests pass, and the workflow is shared and shows up in a teammate's library.">
-</picture>
+[Watch the full demo →](https://storage.googleapis.com/unstoppable-client-assets/images/homepage/unstoppable-code/demos/workflow-dark-56eba5788788.mp4) · [Light mode](https://storage.googleapis.com/unstoppable-client-assets/images/homepage/unstoppable-code/demos/workflow-light-8c6433038ba3.mp4)
 
-[Watch the full demo](https://storage.googleapis.com/unstoppable-client-assets/images/homepage/unstoppable-code/demos/workflow-light-8c6433038ba3.mp4) ([dark mode](https://storage.googleapis.com/unstoppable-client-assets/images/homepage/unstoppable-code/demos/workflow-dark-56eba5788788.mp4))
+</td>
+<td width="50%">
+  <a href="https://storage.googleapis.com/unstoppable-client-assets/images/homepage/unstoppable-code/demos/workflow-dark-56eba5788788.mp4"><img src=".github/assets/demo-workflow-dark.webp" width="100%" alt="The built-in assistant builds a workflow from a chat message: Implement on Claude, Review on GPT, Fix review findings, and Run tests. A step is tweaked by hand, the GPT review finds two issues, the fix lands, tests pass, and the workflow is shared and shows up in a teammate's library."></a>
+</td>
+</tr>
+<tr>
+<td width="50%" valign="middle">
 
 ### Hit a usage limit? Keep going
 
@@ -72,12 +74,14 @@ provider, or to an open model through
 [your own AI gateway](docs/ai-gateway.md), such as OpenRouter, and pick up
 where you left off.
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/demo-limit-dark.webp">
-  <img src=".github/assets/demo-limit-light.webp" width="100%" alt="A Claude usage limit notice appears mid-task. An OpenRouter gateway is connected, open-weight models are listed, Kimi K2 Thinking is picked, and it finishes the task.">
-</picture>
+[Watch the full demo →](https://storage.googleapis.com/unstoppable-client-assets/images/homepage/unstoppable-code/demos/limit-dark-7b51a9bd5f8d.mp4) · [Light mode](https://storage.googleapis.com/unstoppable-client-assets/images/homepage/unstoppable-code/demos/limit-light-bf934b62fd41.mp4)
 
-[Watch the full demo](https://storage.googleapis.com/unstoppable-client-assets/images/homepage/unstoppable-code/demos/limit-light-bf934b62fd41.mp4) ([dark mode](https://storage.googleapis.com/unstoppable-client-assets/images/homepage/unstoppable-code/demos/limit-dark-7b51a9bd5f8d.mp4))
+</td>
+<td width="50%">
+  <a href="https://storage.googleapis.com/unstoppable-client-assets/images/homepage/unstoppable-code/demos/limit-dark-7b51a9bd5f8d.mp4"><img src=".github/assets/demo-limit-dark.webp" width="100%" alt="A Claude usage limit notice appears mid-task. An OpenRouter gateway is connected, open-weight models are listed, Kimi K2 Thinking is picked, and it finishes the task."></a>
+</td>
+</tr>
+</table>
 
 ### And more
 

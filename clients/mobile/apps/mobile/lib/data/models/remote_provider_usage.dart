@@ -6,7 +6,7 @@ library;
 
 import 'package:mobile/data/protocol/generated/provider_usage.dart';
 
-/// `PortalEntityType` of the singleton.
+/// `RemoteControlEntityType` of the singleton.
 const String kProviderUsageEntityType = 'provider_usage';
 
 /// One authoritative observation of the singleton. A null [projection] means
@@ -15,10 +15,10 @@ const String kProviderUsageEntityType = 'provider_usage';
 final class RemoteProviderUsageUpdate {
   const RemoteProviderUsageUpdate(this.projection);
 
-  final PortalProviderUsageProjection? projection;
+  final RemoteControlProviderUsageProjection? projection;
 }
 
-/// The singleton from `PortalEntityEnvelope` [entities].
+/// The singleton from `RemoteControlEntityEnvelope` [entities].
 ///
 /// Returns null when the rows say nothing about usage: [entities] is not a
 /// list, the singleton is absent from a non-[authoritative] payload, or its
@@ -36,7 +36,7 @@ RemoteProviderUsageUpdate? parseProviderUsageEntities(
     if (payload is! Map<String, dynamic>) return null;
     try {
       return RemoteProviderUsageUpdate(
-        PortalProviderUsageProjection.fromJson(payload),
+        RemoteControlProviderUsageProjection.fromJson(payload),
       );
     } catch (_) {
       return null;

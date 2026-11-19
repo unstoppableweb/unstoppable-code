@@ -209,7 +209,7 @@ class _ProviderSection extends StatelessWidget {
   const _ProviderSection({required this.viewModel, required this.provider});
 
   final UsageLimitsViewModel viewModel;
-  final PortalProviderUsageProvider provider;
+  final RemoteControlProviderUsageProvider provider;
 
   @override
   Widget build(BuildContext context) {
@@ -271,18 +271,19 @@ class _ProviderSection extends StatelessWidget {
 
   List<Widget> _body(
     BuildContext context,
-    PortalProviderUsageEntry? entry,
+    RemoteControlProviderUsageEntry? entry,
     TextStyle? secondary,
   ) {
-    final windows = entry?.windows ?? const <PortalProviderUsageWindow>[];
+    final windows =
+        entry?.windows ?? const <RemoteControlProviderUsageWindow>[];
     final message = switch (entry?.authState) {
-      PortalProviderUsageAuthState.unauthenticated =>
+      RemoteControlProviderUsageAuthState.unauthenticated =>
         'Not signed in on desktop',
-      PortalProviderUsageAuthState.error =>
+      RemoteControlProviderUsageAuthState.error =>
         entry?.error?.message ?? "Couldn't load usage on the desktop.",
-      PortalProviderUsageAuthState.authenticated when windows.isEmpty =>
+      RemoteControlProviderUsageAuthState.authenticated when windows.isEmpty =>
         'No usage limits reported.',
-      PortalProviderUsageAuthState.unknown ||
+      RemoteControlProviderUsageAuthState.unknown ||
       null => 'Usage is not available yet.',
       _ => null,
     };
@@ -309,7 +310,7 @@ class _RefreshButton extends StatelessWidget {
   const _RefreshButton({required this.viewModel, required this.provider});
 
   final UsageLimitsViewModel viewModel;
-  final PortalProviderUsageProvider provider;
+  final RemoteControlProviderUsageProvider provider;
 
   @override
   Widget build(BuildContext context) {

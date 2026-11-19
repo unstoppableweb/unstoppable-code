@@ -1,5 +1,5 @@
 /// Mobile projection of the portal `background_process` entity
-/// (`PortalBackgroundProcessEntity` in `packages/protocol/src/portal/index.ts`):
+/// (`RemoteControlBackgroundProcessEntity` in `packages/protocol/src/remote-control/shell/index.ts`):
 /// one agent background task of a worktree chat (CAN-5253).
 ///
 /// Rows reach the device two ways, the worktree `/state` slices and

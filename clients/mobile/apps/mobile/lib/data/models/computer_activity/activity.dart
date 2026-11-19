@@ -1,5 +1,5 @@
 /// Worktree-scoped "activity" and "files" slices projected in the Portal shell
-/// state (`PortalSessionShellState`), parsed for the mobile Remote Control
+/// state (`RemoteControlSessionShellState`), parsed for the mobile Remote Control
 /// activity/files sidebar. All fields the desktop already projects into the
 /// worktree-scoped `/state` snapshot; the mobile sidebar reads them straight
 /// from the fetched snapshot without extra round trips.
@@ -21,8 +21,8 @@ class RemoteActivityRun {
   final String status;
 }
 
-/// A configured script visible in a worktree (`PortalScriptDescriptor`). Run
-/// rows (`PortalScriptRunProjection`) carry the same identity fields.
+/// A configured script visible in a worktree (`RemoteControlScriptDescriptor`). Run
+/// rows (`RemoteControlScriptRunProjection`) carry the same identity fields.
 class RemoteScriptDescriptor {
   const RemoteScriptDescriptor({
     required this.scriptKey,
@@ -76,7 +76,7 @@ class RemoteScriptDescriptor {
   }
 }
 
-/// One run of a script (`PortalScriptRunProjection`).
+/// One run of a script (`RemoteControlScriptRunProjection`).
 class RemoteScriptRun {
   const RemoteScriptRun({
     required this.script,
@@ -99,7 +99,7 @@ class RemoteScriptRun {
 }
 
 /// The Scripts card rows, matching the shared portal scripts mapper
-/// (`portalScriptsToSectionModel`): one row per configured script with the
+/// (`remoteControlScriptsToSectionModel`): one row per configured script with the
 /// status of its latest run (empty if it never ran), then one row per script
 /// that ran without a descriptor. Workspace lifecycle scripts come first,
 /// then projection order.
@@ -166,7 +166,7 @@ class RemoteActivityPlan {
   final String status;
 }
 
-/// One TODO row from a chat's `chat_todo` projection (`PortalTodoItem`).
+/// One TODO row from a chat's `chat_todo` projection (`RemoteControlTodoItem`).
 class RemoteTodoItem {
   const RemoteTodoItem({
     required this.id,
@@ -181,8 +181,8 @@ class RemoteTodoItem {
   final String status;
 }
 
-/// Per-chat TODO list (`PortalChatTodoProjection`), surfaced on
-/// `PortalSessionShellState.todoLists`.
+/// Per-chat TODO list (`RemoteControlChatTodoProjection`), surfaced on
+/// `RemoteControlSessionShellState.todoLists`.
 class RemoteChatTodoList {
   const RemoteChatTodoList({required this.chatId, this.items = const []});
 
@@ -190,7 +190,7 @@ class RemoteChatTodoList {
   final List<RemoteTodoItem> items;
 }
 
-/// A configured hook visible in a worktree (`PortalHookDescriptor`).
+/// A configured hook visible in a worktree (`RemoteControlHookDescriptor`).
 class RemoteHookDescriptor {
   const RemoteHookDescriptor({
     required this.name,

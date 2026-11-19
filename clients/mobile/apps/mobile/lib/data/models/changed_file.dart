@@ -11,7 +11,7 @@ class RemoteChangedFile {
     this.deletions,
   });
 
-  /// Per-file line counts (`PortalChangedFile.insertions`/`deletions`),
+  /// Per-file line counts (`RemoteControlChangedFile.insertions`/`deletions`),
   /// absent on older desktops.
   final int? insertions;
   final int? deletions;
@@ -22,7 +22,7 @@ class RemoteChangedFile {
   final String status;
 
   /// Owning-repo identity in multi-repo worktrees
-  /// (`PortalChangedFile.repoId`/`repoName`); absent on single-repo
+  /// (`RemoteControlChangedFile.repoId`/`repoName`); absent on single-repo
   /// projections and older desktops.
   final String? repoId;
   final String? repoName;

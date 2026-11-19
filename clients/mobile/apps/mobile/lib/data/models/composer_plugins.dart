@@ -1,8 +1,8 @@
 /// The composer's plugin catalog and the capability selections it toggles
 /// (CAN-3922). Both hosts answer the same shapes: the Remote Control
 /// `portal.chat.list_plugin_catalog` result and the computer capability catalog
-/// mirror `PortalPluginCatalog`, and both chats store a
-/// `PortalChatTabPluginSelections` object.
+/// mirror `RemoteControlPluginCatalog`, and both chats store a
+/// `RemoteControlChatTabPluginSelections` object.
 library;
 
 /// What a catalog row selects, in display order.
@@ -240,7 +240,7 @@ Map<String, Object?> withPluginSelection(
 }
 
 /// The explicit choices in [selections], counted the way the web picker's
-/// `countPortalPluginSelections` counts them; null when a list is malformed,
+/// `countRemoteControlPluginSelections` counts them; null when a list is malformed,
 /// so a bad projection shows no count instead of failing.
 int? countPluginSelections(Map<String, Object?> selections) {
   final Map<String, Object?> normalized;

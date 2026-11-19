@@ -1,6 +1,6 @@
 /// Mobile side of `portal.pipeline.content.read` (CAN-3717,
-/// `PortalPipelineContentReadResult` in
-/// `packages/protocol/src/portal/index.ts`).
+/// `RemoteControlPipelineContentReadResult` in
+/// `packages/protocol/src/remote-control/shell/index.ts`).
 library;
 
 /// What a content read reads: one step's readable output, or the run's

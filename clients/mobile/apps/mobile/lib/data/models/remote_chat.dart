@@ -2,12 +2,12 @@
 /// mobile Remote Control chat screen.
 ///
 /// The same chat message arrives in two spellings (see
-/// `packages/protocol/src/portal/index.ts`):
+/// `packages/protocol/src/remote-control/shell/index.ts`):
 ///
-///  * `PortalChatMessage` — the live wire shape carried by `portal.chat.event`
+///  * `RemoteControlChatMessage` — the live wire shape carried by `portal.chat.event`
 ///    payloads and `portal.state.snapshot` `chatMessages` arrays
 ///    (`messageId`, `chatId`, `text`, `createdAtMs`).
-///  * `PortalChatMessageView` — the server state projection returned inside
+///  * `RemoteControlChatMessageView` — the server state projection returned inside
 ///    `GET .../state` under `state.chatMessages`
 ///    (`localMessageId`, `localChatId`, `content`, `occurredAt`).
 ///
@@ -31,7 +31,7 @@ export 'package:mobile/data/models/chat_message.dart';
 /// chats; re-exported for the same single-import reason.
 export 'package:mobile/data/models/chat_attachment.dart';
 
-/// Worktree- vs standalone-scoped chat thread (`PortalChatScope`).
+/// Worktree- vs standalone-scoped chat thread (`RemoteControlChatScope`).
 enum RemoteChatScope {
   worktree('worktree'),
   standalone('standalone');
@@ -106,7 +106,7 @@ class RemoteChatMessage extends ChatMessage {
   @override
   DateTime? get positionAt => orderingAt ?? occurredAt;
 
-  /// Parses the live wire shape (`PortalChatMessage`): `portal.chat.event`
+  /// Parses the live wire shape (`RemoteControlChatMessage`): `portal.chat.event`
   /// payload `message` and snapshot `chatMessages` rows.
   factory RemoteChatMessage.fromWireJson(Map<String, dynamic> json) {
     final updatedAtMs = json['updatedAtMs'];
@@ -129,7 +129,7 @@ class RemoteChatMessage extends ChatMessage {
     );
   }
 
-  /// Parses the server state projection (`PortalChatMessageView`) returned by
+  /// Parses the server state projection (`RemoteControlChatMessageView`) returned by
   /// `GET .../state` under `state.chatMessages`.
   factory RemoteChatMessage.fromViewJson(Map<String, dynamic> json) {
     final occurredAt = _stringOrNull(json['occurredAt']);
@@ -236,7 +236,7 @@ class RemoteQueuedMessage {
   }
 }
 
-/// One chat tab row from `state.chatSummaries` (`PortalChatSummaryEntity`).
+/// One chat tab row from `state.chatSummaries` (`RemoteControlChatSummaryEntity`).
 class RemoteChatSummary implements ChatTabItem {
   /// Desktop-owned unread state.
   final bool? hasUnread;
@@ -383,7 +383,7 @@ class RemoteChatSummary implements ChatTabItem {
       modelCatalogProjected || availableModels.isNotEmpty;
 
   /// Projected AskUserQuestion lifecycle for this chat
-  /// (`PortalChatSummaryEntity.pendingQuestions`). Null means the wire
+  /// (`RemoteControlChatSummaryEntity.pendingQuestions`). Null means the wire
   /// omitted the field (older desktop / partial delta) — consumers must
   /// preserve previously cached state; an empty list explicitly clears it.
   final List<AskUserQuestionState>? pendingQuestions;
@@ -562,7 +562,7 @@ sealed class RemoteChatTarget {
 }
 
 /// A chat tab inside a worktree. [chatId] may be null on send, letting the
-/// desktop mint a new chat thread (`PortalChatSendPayload.chatId` omitted);
+/// desktop mint a new chat thread (`RemoteControlChatSendPayload.chatId` omitted);
 /// transcript requests require it.
 final class RemoteWorktreeChatTarget extends RemoteChatTarget {
   const RemoteWorktreeChatTarget({
@@ -594,7 +594,7 @@ final class RemoteStandaloneChatTarget extends RemoteChatTarget {
   final String? projectLocalId;
 }
 
-/// Result of a chat send (`SubmitBrowserPortalCommandResponse` subset).
+/// Result of a chat send (`SubmitBrowserRemoteControlCommandResponse` subset).
 /// Optional composer selections and input metadata carried with a chat send.
 /// An unset field stays off the wire so the desktop's persisted defaults keep
 /// applying.
@@ -667,7 +667,7 @@ class RemoteChatSendOptions {
 }
 
 /// One page of lazily-loaded transcript history
-/// (`PortalChatHistoryChunk` from `POST .../chat/history`): turn-aligned
+/// (`RemoteControlChatHistoryChunk` from `POST .../chat/history`): turn-aligned
 /// messages in ascending order plus the opaque cursor for the next-older
 /// page (`null` when the transcript start was reached).
 class RemoteChatHistoryChunk {

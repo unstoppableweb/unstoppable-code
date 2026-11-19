@@ -1,5 +1,5 @@
 /// Which diff the desktop should read for a file
-/// (`PortalDiffReadPayload.source`).
+/// (`RemoteControlDiffReadPayload.source`).
 enum RemoteDiffSource {
   /// Working-tree changes against the index/HEAD.
   uncommitted('uncommitted'),
@@ -17,7 +17,7 @@ enum RemoteDiffSource {
 }
 
 /// One file's unified diff as read through the Portal
-/// (`PortalDiffSnapshotPayload` from `POST .../diff/read`).
+/// (`RemoteControlDiffSnapshotPayload` from `POST .../diff/read`).
 class RemoteFileDiff {
   const RemoteFileDiff({
     required this.filePath,

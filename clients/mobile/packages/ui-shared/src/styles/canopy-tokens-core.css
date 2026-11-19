@@ -226,6 +226,22 @@
    * row is itself a capsule). The drawer adds its own 4px padding. */
   --radius-drawer-row: calc(14px + 4px);
   --radius-drawer: calc(var(--radius-drawer-row) + 4px);
+  /* A key cap nested at the end of a rounded control: the control's corner
+   * less the cap's inset there, so the two arcs share a centre. The 18px cap
+   * sits 5px inside a 28px field, 7px inside a 32px one, 4px inside a
+   * tooltip and 9px inside a 36px option row. A cap on its own line, or in a
+   * capsule button, stays a capsule. Owned by `Kbd`'s `nest` prop. */
+  --radius-kbd-field: calc(var(--radius-row) - 5px);
+  --radius-kbd-field-md: calc(var(--radius-row) - 7px);
+  --radius-kbd-tooltip: calc(var(--radius-md) - 4px);
+  --radius-kbd-option-row: calc(var(--radius-lg) - 9px);
+  /* An icon button nested at the end of a field: the field's corner less the
+   * button's inset, so the two arcs share a centre. The 24px button sits 2px
+   * inside a 28px field and 4px inside a 32px one; the 28px button sits 4px
+   * inside a 36px field. Owned by `FieldButton` (`SearchField.tsx`). */
+  --radius-field-button: calc(var(--radius-row) - 2px);
+  --radius-field-button-md: calc(var(--radius-row) - 4px);
+  --radius-field-button-lg: calc(var(--radius-lg) - 4px);
   --radius-full: 9999px;
 
   /* Shadows - from UI Kit. These must live in Tailwind's theme namespace;
@@ -265,14 +281,7 @@
   --animate-collapse-in: collapse-in 0.25s cubic-bezier(0, 0, 0.2, 1);
   --animate-slide-in-left: slide-in-left 0.25s cubic-bezier(0, 0, 0.2, 1);
   --animate-slide-in-right: slide-in-right 0.25s cubic-bezier(0, 0, 0.2, 1);
-  /* The three 3×3 dot spinners. Each dot runs the same named animation and
-   * staggers itself with `animation-delay`, which is declared after the
-   * `animate-*` shorthand in the utilities layer so the delay survives. */
-  --animate-loading-dot: loading-dot 1.2s ease-in-out infinite both;
-  --animate-run-dot: run-dot 1.2s ease-in-out infinite both;
-  --animate-thinking-dot: thinking-dot 0.9s ease-in-out infinite both;
-  /* CometSpinner: one unhurried turn of the comet ring every 1.2s, the
-   * dot spinners' cycle. */
+  /* CometSpinner: one unhurried turn of the comet ring every 1.2s. */
   --animate-comet-spin: comet-spin 1.2s linear infinite;
   /* RunningGlyph: a working glyph (the Orchestrator's orbit) turns at half
    * the comet's pace, so a 16px glyph reads as working, not frantic. */
@@ -373,136 +382,9 @@
     }
   }
 
-  /* 6-step cycle: 7→4→1→(0+2)→(3+5)→(6+8) → repeat */
   @keyframes comet-spin {
     to {
       transform: rotate(360deg);
-    }
-  }
-  @keyframes thinking-dot {
-    0% {
-      opacity: 0;
-      transform: scale(0);
-    }
-    3% {
-      opacity: 1;
-      transform: scale(1);
-    }
-    16.67% {
-      opacity: 1;
-      transform: scale(1);
-    }
-    20% {
-      opacity: 0.55;
-      transform: scale(0.94);
-    }
-    33.33% {
-      opacity: 0.55;
-      transform: scale(0.94);
-    }
-    37% {
-      opacity: 0.3;
-      transform: scale(0.9);
-    }
-    50% {
-      opacity: 0.3;
-      transform: scale(0.9);
-    }
-    53% {
-      opacity: 0.15;
-      transform: scale(0.85);
-    }
-    66.67% {
-      opacity: 0.15;
-      transform: scale(0.85);
-    }
-    70% {
-      opacity: 0;
-      transform: scale(0);
-    }
-    100% {
-      opacity: 0;
-      transform: scale(0);
-    }
-  }
-
-  /* Diagonal sweep: (1+9)→(8+2)→(7+3)→(4+6) → repeat */
-  @keyframes run-dot {
-    0% {
-      opacity: 0;
-      transform: scale(0);
-    }
-    3% {
-      opacity: 1;
-      transform: scale(1);
-    }
-    25% {
-      opacity: 1;
-      transform: scale(1);
-    }
-    28% {
-      opacity: 0.4;
-      transform: scale(0.92);
-    }
-    50% {
-      opacity: 0.15;
-      transform: scale(0.85);
-    }
-    53% {
-      opacity: 0;
-      transform: scale(0);
-    }
-    100% {
-      opacity: 0;
-      transform: scale(0);
-    }
-  }
-
-  /* Perimeter march: 8 positions, each ~12.5% apart, with fading trail */
-  @keyframes loading-dot {
-    0% {
-      opacity: 0;
-      transform: scale(0);
-    }
-    2% {
-      opacity: 1;
-      transform: scale(1);
-    }
-    12.5% {
-      opacity: 1;
-      transform: scale(1);
-    }
-    15% {
-      opacity: 0.55;
-      transform: scale(0.94);
-    }
-    25% {
-      opacity: 0.55;
-      transform: scale(0.94);
-    }
-    27.5% {
-      opacity: 0.3;
-      transform: scale(0.9);
-    }
-    37.5% {
-      opacity: 0.3;
-      transform: scale(0.9);
-    }
-    40% {
-      opacity: 0.15;
-      transform: scale(0.85);
-    }
-    50% {
-      opacity: 0.15;
-      transform: scale(0.85);
-    }
-    52.5% {
-      opacity: 0;
-      transform: scale(0);
-    }
-    100% {
-      opacity: 0;
-      transform: scale(0);
     }
   }
 }
@@ -1407,6 +1289,20 @@ body {
      Electron's drag mask ignores z-order, so the menu must opt out or its
      rows there drag the window instead of clicking. Ignored by browsers. */
   -webkit-app-region: no-drag;
+}
+
+/* A menu with nothing in it never draws: an empty surface is a stray pill
+ * under its trigger. A caller should not offer a menu it has no rows for
+ * (hide or disable the trigger); this is the backstop. It covers both
+ * bodies: rows directly in the surface, and rows in the surface's overlay
+ * scroll area. */
+.canopy-floating-menu:empty,
+.canopy-floating-menu:has(
+  > [data-overlay-scroll-area]
+    > [data-floating-menu-scroll-viewport]
+    > [data-overlay-scroll-content]:empty
+) {
+  display: none;
 }
 
 .canopy-floating-menu-content {

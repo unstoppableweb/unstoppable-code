@@ -71,7 +71,7 @@ class RemotePrRepo {
   final bool canMerge;
   final bool mergeWarning;
 
-  /// Wire `PortalPrCreateBlockedReason` / `PortalPrMergeBlockedReason`. Kept as
+  /// Wire `RemoteControlPrCreateBlockedReason` / `RemoteControlPrMergeBlockedReason`. Kept as
   /// strings so an unknown reason from a newer desktop degrades to silence
   /// rather than a parse failure.
   final String? createBlockedReason;
@@ -96,7 +96,7 @@ class RemotePrRepo {
     repoId: json['repoId'] as String? ?? '',
     repoName: json['repoName'] as String? ?? 'Repository',
     pr: json['status'] is Map<String, dynamic>
-        ? RemoteWorktreePr.fromPortal(
+        ? RemoteWorktreePr.fromRemoteControl(
             json['status'] as Map<String, dynamic>,
             repoId: json['repoId'] as String?,
           )

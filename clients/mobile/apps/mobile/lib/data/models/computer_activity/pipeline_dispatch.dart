@@ -2,9 +2,9 @@
 /// starting one (CAN-3174).
 ///
 /// [RemotePipelineDescriptor] mirrors the shell state's `pipelines` rows
-/// (`PortalPipelineDescriptorEntity`); [RemotePipelineDispatchForm] mirrors
-/// the `dispatchInputs` fields of `PortalPipelineGetResult` in
-/// `packages/protocol/src/portal/index.ts`.
+/// (`RemoteControlPipelineDescriptorEntity`); [RemotePipelineDispatchForm] mirrors
+/// the `dispatchInputs` fields of `RemoteControlPipelineGetResult` in
+/// `packages/protocol/src/remote-control/shell/index.ts`.
 library;
 
 /// Where a pipeline came from; labels the picker row.

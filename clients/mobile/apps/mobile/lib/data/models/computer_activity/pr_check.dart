@@ -1,5 +1,5 @@
 /// One CI check on a pull request, mirroring an element of the Portal
-/// `PortalPullRequestRepoStatus.checkDetails` list (CAN-3618).
+/// `RemoteControlPullRequestRepoStatus.checkDetails` list (CAN-3618).
 ///
 /// Parsing is lenient: a malformed entry is skipped without losing its
 /// siblings, and unknown status strings are kept so the display layer can

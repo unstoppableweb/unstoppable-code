@@ -16,7 +16,7 @@ class UsageLimitWindowCard extends StatelessWidget {
     super.key,
   });
 
-  final PortalProviderUsageWindow window;
+  final RemoteControlProviderUsageWindow window;
   final bool resetPassed;
   final String? resetLabel;
 
