@@ -1,6 +1,5 @@
-import 'package:mobile/data/repositories/turn_feedback_repository.dart';
-import 'package:mobile/ui/features/remote/view_models/turn_feedback_controller.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 import 'package:mobile/data/protocol/generated/organization.dart';
 import 'package:mobile/data/repositories/auth_repository.dart';
@@ -18,7 +17,6 @@ import 'package:mobile/ui/features/auth/view_models/auth_view_model.dart';
 import 'package:mobile/ui/features/settings/view_models/notifications_view_model.dart';
 import 'package:mobile/ui/features/organizations/view_models/org_settings_view_model.dart';
 import 'package:mobile/ui/features/sub_teams/view_models/sub_teams_view_model.dart';
-import 'package:mobile/ui/features/remote/view_models/remote_control_view_model.dart';
 import 'package:mobile/data/repositories/api_keys_repository.dart';
 import 'package:mobile/data/repositories/auth_sources_repository.dart';
 import 'package:mobile/data/repositories/two_factor_repository.dart';
@@ -32,8 +30,6 @@ import 'package:mobile/ui/features/developer_options/views/settings_list_screen.
 import 'package:mobile/ui/features/organizations/views/org_settings_screen.dart';
 import 'package:mobile/ui/features/sub_teams/views/sub_teams_screen.dart';
 import 'package:mobile/ui/features/members/views/member_detail_screen.dart';
-import 'package:mobile/ui/features/remote/views/chat_search_screen.dart';
-import 'package:mobile/ui/features/remote/views/remote_chat_screen.dart';
 import 'package:mobile/ui/features/developer_options/views/developer_options_screen.dart';
 import 'package:mobile/ui/features/developer_options/views/design_system_screen.dart';
 import 'package:mobile/ui/features/developer_options/views/icons_screen.dart';
@@ -42,8 +38,51 @@ import 'package:mobile/ui/features/developer_options/views/foundations_screen.da
 import 'package:mobile/ui/features/developer_options/views/fonts_screen.dart';
 import 'package:mobile/ui/features/developer_options/views/typography_screen.dart';
 import 'package:mobile/ui/features/developer_options/views/code_markdown_screen.dart';
+import 'package:mobile/ui/features/device_link/chats_screen.dart';
+import 'package:mobile/ui/features/device_link/computer_connect/controller.dart';
+import 'package:mobile/ui/features/device_link/computer_connect/search_screen.dart';
 
-Map<String, Widget> appBarRoutes(RemoteControlViewModel remote) => {
+import 'device_chat_harness.dart';
+import 'fake_attachment_picker.dart';
+import 'fake_desktop_computer.dart';
+
+/// A route's screen, or for a screen that reads a connected computer, the
+/// async setup that builds it. [setUp] runs inside the capture test, so it can
+/// register teardowns.
+final class AppBarRoute {
+  const AppBarRoute(Widget this.screen) : setUp = null;
+  const AppBarRoute.setUp(
+    Future<Widget> Function(WidgetTester tester) this.setUp,
+  ) : screen = null;
+  final Widget? screen;
+  final Future<Widget> Function(WidgetTester tester)? setUp;
+}
+
+Map<String, AppBarRoute> appBarRoutes() => {
+  for (final MapEntry(:key, :value) in _screens().entries)
+    key: AppBarRoute(value),
+  'search-chats': AppBarRoute.setUp((tester) async {
+    final harness = buildDeviceChatHarness(
+      computer: FakeDesktopComputer(answers: fakeInventoryAnswers()),
+    );
+    final controller = ComputerConnectController(harness.model);
+    addTearDown(harness.dispose);
+    addTearDown(controller.dispose);
+    await harness.select(tester, 'chat-pkce');
+    return DeviceChatSearchScreen(controller: controller);
+  }),
+  'computer-chat': AppBarRoute.setUp((tester) async {
+    final harness = buildDeviceChatHarness();
+    addTearDown(harness.dispose);
+    await harness.select(tester, 'chat-pkce');
+    return DeviceChatScreen(
+      model: harness.model,
+      attachmentPicker: FakeAttachmentPicker(),
+    );
+  }),
+};
+
+Map<String, Widget> _screens() => {
   'login-methods': const LoginMethodsScreen(),
   'two-factor': const TwoFactorSettingsScreen(),
   'api-keys': const ApiKeysScreen(),
@@ -60,10 +99,6 @@ Map<String, Widget> appBarRoutes(RemoteControlViewModel remote) => {
     ),
     canViewStats: true,
   ),
-  'search-chats': const ChatSearchScreen(),
-  'remote-chat': RemoteChatScreen.worktree(
-    worktree: remote.worktreesFor('ws-app').first,
-  ),
   'developer-options': const DeveloperOptionsScreen(),
   'design-system': const DesignSystemScreen(),
   'icons': const IconsScreen(),
@@ -76,80 +111,73 @@ Map<String, Widget> appBarRoutes(RemoteControlViewModel remote) => {
   'settings-list': const SettingsListScreen(),
 };
 
-Widget appBarRouteHost({
-  required RemoteControlViewModel remote,
-  required Widget screen,
-  required bool dark,
-}) => MultiProvider(
-  providers: [
-    ChangeNotifierProvider(
-      create: (_) =>
-          TurnFeedbackController(repository: MockTurnFeedbackRepository()),
-    ),
-    ChangeNotifierProvider.value(value: remote),
-    ChangeNotifierProvider(
-      create: (_) =>
-          AuthViewModel(repository: MockAuthRepository(latency: Duration.zero)),
-    ),
-    ChangeNotifierProvider(
-      create: (_) => ThemeController(store: InMemoryThemePreferenceStore()),
-    ),
-    ChangeNotifierProvider(
-      create: (_) =>
-          UsageDataController(store: InMemoryUsageDataPreferenceStore()),
-    ),
-    Provider<FeedbackReportRepository>(
-      create: (_) => MockFeedbackReportRepository(latency: Duration.zero),
-    ),
-    ChangeNotifierProvider(
-      create: (_) => NotificationsViewModel(
-        repository: MockNotificationPreferencesRepository(
-          latency: Duration.zero,
+Widget appBarRouteHost({required Widget screen, required bool dark}) =>
+    MultiProvider(
+      providers: [
+        ChangeNotifierProvider(
+          create: (_) => AuthViewModel(
+            repository: MockAuthRepository(latency: Duration.zero),
+          ),
         ),
-        isConfigured: () => true,
-      )..load(),
-    ),
-    ChangeNotifierProvider(
-      create: (_) => ApiKeysViewModel(
-        repository: MockApiKeysRepository(latency: Duration.zero),
-      )..load(),
-    ),
-    ChangeNotifierProvider(
-      create: (_) => AuthSourcesViewModel(
-        repository: MockAuthSourcesRepository(latency: Duration.zero),
-      )..load(),
-    ),
-    ChangeNotifierProvider(
-      create: (_) => TwoFactorViewModel(
-        repository: MockTwoFactorRepository(latency: Duration.zero),
-        issuer: 'Test',
-      )..load(),
-    ),
-    ChangeNotifierProvider(
-      create: (_) => OrgSettingsViewModel(
-        repository: MockOrgSettingsRepository(latency: Duration.zero),
-      ),
-    ),
-    ChangeNotifierProvider(
-      create: (_) => SubTeamsViewModel(
-        repository: MockSubTeamsRepository(latency: Duration.zero),
-      ),
-    ),
-  ],
-  child: MaterialApp(
-    debugShowCheckedModeBanner: false,
-    theme: dark ? AppTheme.dark : AppTheme.light,
-    home: Scaffold(
-      body: Builder(
-        builder: (context) => Center(
-          child: TextButton(
-            onPressed: () => Navigator.of(
-              context,
-            ).push(MaterialPageRoute<void>(builder: (_) => screen)),
-            child: const Text('Open screen'),
+        ChangeNotifierProvider(
+          create: (_) => ThemeController(store: InMemoryThemePreferenceStore()),
+        ),
+        ChangeNotifierProvider(
+          create: (_) =>
+              UsageDataController(store: InMemoryUsageDataPreferenceStore()),
+        ),
+        Provider<FeedbackReportRepository>(
+          create: (_) => MockFeedbackReportRepository(latency: Duration.zero),
+        ),
+        ChangeNotifierProvider(
+          create: (_) => NotificationsViewModel(
+            repository: MockNotificationPreferencesRepository(
+              latency: Duration.zero,
+            ),
+            isConfigured: () => true,
+          )..load(),
+        ),
+        ChangeNotifierProvider(
+          create: (_) => ApiKeysViewModel(
+            repository: MockApiKeysRepository(latency: Duration.zero),
+          )..load(),
+        ),
+        ChangeNotifierProvider(
+          create: (_) => AuthSourcesViewModel(
+            repository: MockAuthSourcesRepository(latency: Duration.zero),
+          )..load(),
+        ),
+        ChangeNotifierProvider(
+          create: (_) => TwoFactorViewModel(
+            repository: MockTwoFactorRepository(latency: Duration.zero),
+            issuer: 'Test',
+          )..load(),
+        ),
+        ChangeNotifierProvider(
+          create: (_) => OrgSettingsViewModel(
+            repository: MockOrgSettingsRepository(latency: Duration.zero),
+          ),
+        ),
+        ChangeNotifierProvider(
+          create: (_) => SubTeamsViewModel(
+            repository: MockSubTeamsRepository(latency: Duration.zero),
+          ),
+        ),
+      ],
+      child: MaterialApp(
+        debugShowCheckedModeBanner: false,
+        theme: dark ? AppTheme.dark : AppTheme.light,
+        home: Scaffold(
+          body: Builder(
+            builder: (context) => Center(
+              child: TextButton(
+                onPressed: () => Navigator.of(
+                  context,
+                ).push(MaterialPageRoute<void>(builder: (_) => screen)),
+                child: const Text('Open screen'),
+              ),
+            ),
           ),
         ),
       ),
-    ),
-  ),
-);
+    );

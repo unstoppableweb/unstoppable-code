@@ -26,9 +26,7 @@ import 'package:mobile/data/models/chat_drafts.dart';
 
 import 'package:mobile/data/models/device_registration.dart';
 import 'package:mobile/data/services/chat_draft_store.dart';
-import 'package:mobile/data/services/remote_transcript_storage.dart';
 import 'package:mobile/ui/core/chat/chat_draft_store_provider.dart';
-import 'package:mobile/ui/features/remote/views/remote_transcript_cache_scope.dart';
 import 'package:mobile/data/repositories/api_keys_repository.dart';
 import 'package:mobile/data/repositories/auth_repository.dart';
 import 'package:mobile/data/repositories/auth_sources_repository.dart';
@@ -42,12 +40,8 @@ import 'package:mobile/data/repositories/notification_preferences_repository.dar
 import 'package:mobile/data/repositories/org_settings_repository.dart';
 import 'package:mobile/data/repositories/org_repository.dart';
 import 'package:mobile/data/repositories/profile_repository.dart';
-import 'package:mobile/data/repositories/remote_control_repository.dart';
-import 'package:mobile/data/repositories/space_notifications_repository.dart';
-import 'package:mobile/data/repositories/remote_transcript_cache.dart';
 import 'package:mobile/data/repositories/stats_repository.dart';
 import 'package:mobile/data/repositories/sub_teams_repository.dart';
-import 'package:mobile/data/repositories/turn_feedback_repository.dart';
 import 'package:mobile/data/repositories/two_factor_repository.dart';
 import 'package:mobile/data/services/account_api_service.dart';
 import 'package:mobile/data/services/api_client.dart';
@@ -57,18 +51,15 @@ import 'package:mobile/data/services/auth_api_service.dart';
 import 'package:mobile/data/services/auth_sources_api_service.dart';
 import 'package:mobile/data/services/device_api_service.dart';
 import 'package:mobile/data/services/feed_api_service.dart';
-import 'package:mobile/data/services/feedback_outbox_store.dart';
 import 'package:mobile/data/services/feedback_report_api_service.dart';
 import 'package:mobile/data/services/install_beacon_service.dart';
 import 'package:mobile/data/services/firebase_push_messaging.dart';
 import 'package:mobile/data/services/member_detail_api_service.dart';
 import 'package:mobile/data/services/members_api_service.dart';
 import 'package:mobile/data/services/notification_preferences_api_service.dart';
-import 'package:mobile/data/services/space_notifications_api_service.dart';
 import 'package:mobile/data/services/oauth_authenticator.dart';
 import 'package:mobile/data/services/org_settings_api_service.dart';
 import 'package:mobile/data/services/profile_api_service.dart';
-import 'package:mobile/data/services/remote_transcript_file_storage.dart';
 import 'package:mobile/data/services/push_messaging.dart';
 import 'package:mobile/services/link_sharer.dart';
 import 'package:mobile/ui/core/external_links.dart';
@@ -77,13 +68,11 @@ import 'package:mobile/data/services/satisfaction_prompt_store.dart';
 import 'package:mobile/data/services/session_store.dart';
 import 'package:mobile/data/services/stats_api_service.dart';
 import 'package:mobile/data/services/sub_teams_api_service.dart';
-import 'package:mobile/data/services/turn_feedback_api_service.dart';
 import 'package:mobile/data/services/two_factor_api_service.dart';
 import 'package:mobile/data/services/theme_preference_store.dart';
 import 'package:mobile/data/services/start_screen_preference_store.dart';
 import 'package:mobile/data/services/usage_data_preference_store.dart';
 import 'package:mobile/data/services/workspace_context_store.dart';
-import 'package:mobile/services/active_chat_tracker.dart';
 import 'package:mobile/services/analytics/posthog_product_analytics.dart';
 import 'package:mobile/services/analytics/product_analytics.dart';
 import 'package:mobile/services/app_build_info.dart';
@@ -117,16 +106,12 @@ import 'package:mobile/ui/features/home/home_tab.dart';
 import 'package:mobile/ui/features/home/home_tab_controller.dart';
 import 'package:mobile/ui/features/chat/views/chat_draft_store_scope.dart';
 import 'package:mobile/ui/features/home/views/home_shell.dart';
-import 'package:mobile/ui/features/remote/views/no_desktop_session_binding.dart';
 import 'package:mobile/ui/features/members/view_models/incoming_invitations_view_model.dart';
 import 'package:mobile/ui/features/members/view_models/members_view_model.dart';
 import 'package:mobile/ui/features/organizations/view_models/org_settings_view_model.dart';
 import 'package:mobile/ui/features/organizations/view_models/org_view_model.dart';
-import 'package:mobile/ui/features/remote/view_models/remote_control_view_model.dart';
-import 'package:mobile/ui/features/remote/view_models/space_notifications_view_model.dart';
-import 'package:mobile/ui/features/remote/view_models/remote_file_diff_cache.dart';
-import 'package:mobile/ui/features/remote/view_models/turn_feedback_controller.dart';
-import 'package:mobile/ui/features/remote/views/push_tap_binding.dart';
+import 'package:mobile/app/push_tap_binding.dart';
+import 'package:mobile/app/turn_feedback_scope.dart';
 import 'package:mobile/ui/features/satisfaction/view_models/satisfaction_prompt_controller.dart';
 import 'package:mobile/ui/features/settings/view_models/notifications_view_model.dart';
 import 'package:mobile/ui/features/stats/view_models/stats_view_model.dart';
@@ -309,56 +294,8 @@ OrgRepository _buildOrgRepository() {
   return MockOrgRepository();
 }
 
-/// Builds the [RemoteControlRepository] backing the Remote tab.
-///
-/// Remote Control is device/user-scoped (not org-scoped), so unlike the
-/// org-keyed builders it gates on config alone: with real API config the live
-/// Portal transport ([HttpRemoteControlRepository]) talks to the browser
-/// Portal routes using the bearer session token; demo mode and unconfigured
-/// builds get the fully-working mock.
-RemoteControlRepository _buildRemoteControlRepository() {
-  if (AppConfig.hasAuthApiConfig) {
-    return HttpRemoteControlRepository.fromApiClient(_apiClient);
-  }
-  return MockRemoteControlRepository();
-}
-
-/// Builds the [SpaceNotificationsRepository] for per-space notification
-/// choices (CAN-3615). Account-scoped like Remote Control, so it gates on
-/// config alone.
-SpaceNotificationsRepository _buildSpaceNotificationsRepository() {
-  if (AppConfig.hasAuthApiConfig) {
-    return HttpSpaceNotificationsRepository(
-      service: SpaceNotificationsApiService(apiClient: _apiClient),
-    );
-  }
-  return MockSpaceNotificationsRepository();
-}
-
-/// The signed-in account's environment-qualified durable-feedback scope, or
-/// null while signed out.
-///
-/// Published by [PushLifecycleBinding] on every [AuthViewModel] notification
-/// and read live by [HttpTurnFeedbackRepository] (see
-/// [_buildTurnFeedbackRepository]), which stamps it onto every durable outbox
-/// entry and refuses to flush an entry stamped with any OTHER scope. The API
-/// environment is part of the identity because production user 7 and staging
-/// user 7 are unrelated principals even though their numeric ids match.
-///
-/// A plain library-private variable rather than another provider: the
-/// repository that needs it is constructed at module load, ABOVE the widget
-/// tree that owns [AuthViewModel], and it is read on a code path (the durable
-/// outbox) that has no `BuildContext`.
-String? _signedInUserId;
-
-String? get _signedInFeedbackScope {
-  final userId = _signedInUserId;
-  return userId == null ? null : '${AppConfig.environment.name}:$userId';
-}
-
 /// The signed-in account's environment-qualified key, or null while nobody
-/// is signed in. Scopes the account's chat drafts and Remote Control
-/// transcript cache.
+/// is signed in. Scopes the account's chat drafts.
 String? _accountScopeOf(AuthViewModel auth) {
   final userId = auth.status == AuthStatus.authenticated ? auth.user?.id : null;
   return userId == null ? null : '${AppConfig.environment.name}:$userId';
@@ -370,63 +307,15 @@ Future<ChatDraftStore> _openChatDraftStore(String accountScope) async =>
       accountScope: accountScope,
     );
 
-/// [_signedInFeedbackScope], for tests that need to assert the binding actually
-/// publishes and clears it.
-@visibleForTesting
-String? get signedInAccountId => _signedInFeedbackScope;
-
-/// Builds the [TurnFeedbackRepository] backing the transcript thumbs row.
-///
-/// Turn feedback is device/user-scoped (not org-scoped), matching Remote
-/// Control's gating: with real API config the live HTTP repository (with its
-/// durable outbox) is used; demo mode and unconfigured builds get the
-/// fully-working mock.
-///
-/// [TurnFeedbackController] (unlike most other view models in this file) is
-/// a single APP-LIFETIME singleton — see its doc comment — built once at
-/// module load so it survives sign-out and reviewer demo-mode toggles
-/// instead of being recreated per shell. Calling this function once at that
-/// same moment and handing the controller whichever concrete repository
-/// `AppConfig.hasAuthApiConfig` returns AT THAT INSTANT would freeze the
-/// choice: if the app happens to boot outside demo mode first, every LATER
-/// demo-mode session would still be wired to the real
-/// [HttpTurnFeedbackRepository]. A reviewer's tap would then reach the real
-/// backend, get a 401, which [shouldQueueTurnFeedbackFailure] treats as
-/// retryable, and queue a fabricated rating into the durable SharedPrefs
-/// outbox. (Principal scoping — see [_signedInFeedbackScope] — also stops a
-/// queued entry from being replayed under a DIFFERENT account, but that is a
-/// second line of defence: it would not stop a reviewer's demo tap from being
-/// replayed under the reviewer's own real account later.) Returning a
-/// [LiveConfigTurnFeedbackRepository] instead defers that choice to every
-/// individual call, mirroring the `isConfigured: () =>
-/// AppConfig.hasAuthApiConfig` live-closure pattern
-/// [NotificationsViewModel] already uses for the identical reason. Both the
-/// http and mock repositories are still built only once here, so
-/// [HttpTurnFeedbackRepository]'s outbox-write serialization and
-/// [MockTurnFeedbackRepository]'s in-memory rows keep their normal
-/// call-to-call continuity — only the CHOICE between them is live.
-TurnFeedbackRepository _buildTurnFeedbackRepository() =>
-    LiveConfigTurnFeedbackRepository(
-      isConfigured: () => AppConfig.hasAuthApiConfig,
-      http: HttpTurnFeedbackRepository(
-        service: TurnFeedbackApiService(apiClient: _apiClient),
-        outbox: SharedPrefsFeedbackOutboxStore(),
-        accountId: () => _signedInFeedbackScope,
-      ),
-      mock: MockTurnFeedbackRepository(),
-    );
-
 /// Builds the [FeedbackReportRepository] backing the app-wide "Send feedback"
 /// sheet (Account tab + Settings). Feedback reports are device/user-scoped
-/// (not org-scoped), so this gates on config alone like
-/// [_buildTurnFeedbackRepository].
+/// (not org-scoped), so this gates on config alone.
 ///
 /// [FeedbackReportRepository] is provided in [buildRootProviders] rather than
 /// [buildSharedShellProviders] — see that provider's registration and
-/// `showFeedbackReportSheet`'s doc comment for why — which means, exactly
-/// like [_buildTurnFeedbackRepository], this is built only once at module
-/// load, above the demo-mode/API-environment reactive boundary in
-/// [App.build]. A plain [HttpFeedbackReportRepository] or
+/// `showFeedbackReportSheet`'s doc comment for why — which means this is
+/// built only once at module load, above the demo-mode/API-environment
+/// reactive boundary in [App.build]. A plain [HttpFeedbackReportRepository] or
 /// [MockFeedbackReportRepository] chosen here would freeze that choice for
 /// the app's lifetime; [LiveConfigFeedbackReportRepository] defers it to
 /// every individual submit instead.
@@ -499,14 +388,12 @@ final PushService _pushService = PushService(
   isPushConfigured: () => AppConfig.hasAuthApiConfig,
 );
 
-/// Module-level singletons for push message handling: [_activeChatTracker]
-/// records the remote chat on screen, and [_pushMessageCoordinator] turns
-/// [_pushMessaging] notification taps into pending navigation. Foreground
-/// messages render nothing in the app. Provided above the auth gate (see
-/// [App.build]) alongside [_pushService] so they survive sign-out and
+/// Module-level singleton for push message handling: [_pushMessageCoordinator]
+/// turns [_pushMessaging] notification taps into pending navigation.
+/// Foreground messages render nothing in the app. Provided above the auth gate
+/// (see [App.build]) alongside [_pushService] so it survives sign-out and
 /// organization switches; [_PushLifecycleBindingState._handleAuthChange]
 /// starts the coordinator once authenticated.
-final ActiveChatTracker _activeChatTracker = ActiveChatTracker();
 final PushMessageCoordinator _pushMessageCoordinator = PushMessageCoordinator(
   messaging: _pushMessaging,
 );
@@ -521,23 +408,6 @@ final PushMessageCoordinator _pushMessageCoordinator = PushMessageCoordinator(
 final NotificationsViewModel _notificationsViewModel = NotificationsViewModel(
   repository: _buildNotificationPreferencesRepository(),
   isConfigured: () => AppConfig.hasAuthApiConfig,
-);
-
-/// Single [TurnFeedbackController] instance for the app's lifetime.
-///
-/// Provided above [MaterialApp] (see [App.build]) alongside
-/// [_activeChatTracker] and [_pushService] rather than inside
-/// [buildSharedShellProviders]: `RemoteChatScreen` — the only reader — is
-/// reached by `Navigator.of(context).push(...)` on the ROOT navigator from
-/// several call sites (`workspaces_list_view.dart`, `chat_search_screen.dart`,
-/// `push_tap_binding.dart`), which sits ABOVE the
-/// shell's own `MaterialApp` and therefore above anything
-/// `buildSharedShellProviders` provides inside it. Hoisting here is the same
-/// fix already applied to `ActiveChatTracker`/`AuthViewModel` for exactly
-/// this reason, and gives every current and future pushed screen one shared
-/// registration instead of requiring per-push-site re-provisioning.
-final TurnFeedbackController _turnFeedbackController = TurnFeedbackController(
-  repository: _buildTurnFeedbackRepository(),
 );
 
 /// The member's Crash reports and Usage analytics choices. `main()` loads
@@ -557,10 +427,9 @@ final AppProductAnalytics _productAnalytics = AppProductAnalytics(
 );
 
 /// Single [SatisfactionPromptController] for the app's lifetime. Root-provided
-/// for the same reason as [_turnFeedbackController]: chat screens are pushed
-/// on the ROOT navigator. Staging (internal testers only) uses the
-/// verification thresholds so the native review flow can be checked on real
-/// TestFlight / Play internal builds.
+/// so routes pushed on the ROOT navigator can read it. Staging (internal
+/// testers only) uses the verification thresholds so the native review flow
+/// can be checked on real TestFlight / Play internal builds.
 final SatisfactionPromptController _satisfactionPromptController =
     SatisfactionPromptController(
       store: SharedPrefsSatisfactionPromptStore(),
@@ -571,9 +440,6 @@ final SatisfactionPromptController _satisfactionPromptController =
           ? SatisfactionThresholds.verification
           : SatisfactionThresholds.production,
     );
-
-void _recordSuccessfulTurn(String turnKey) =>
-    unawaited(_satisfactionPromptController.recordSuccessfulTurn(turnKey));
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -708,11 +574,11 @@ Future<void> main() async {
         store: themeStore,
         initialMode: initialThemeMode,
       ),
-      transcriptStorage: FileRemoteTranscriptStorage(
-        directory: remoteTranscriptCacheDirectory,
-      ),
     ),
   );
+  // Best-effort and not awaited: removes chat tails an earlier build cached
+  // for the retired Remote tab, so they do not outlive it on disk.
+  unawaited(deleteRetiredRemoteTranscripts());
 }
 
 /// Providers held above [MaterialApp] for the app's lifetime (see
@@ -725,23 +591,18 @@ Future<void> main() async {
 /// `Navigator.of(context).push(...)` as a SIBLING overlay entry of the route
 /// that pushed it, not as a descendant of that route's local providers. A
 /// provider registered only inside [buildSharedShellProviders] is therefore
-/// invisible to any screen reached by a push — which is exactly why
-/// `RemoteChatScreen` push call sites (`workspaces_list_view.dart`,
-/// `chat_search_screen.dart`, `push_tap_binding.dart`) each manually re-provide
-/// [RemoteControlViewModel] via `.value` around the pushed route.
-/// [ActiveChatTracker]/[AuthViewModel] solve the same problem by living up
-/// here instead; [TurnFeedbackController] and [SatisfactionPromptController]
-/// follow the same fix rather than requiring every push site to re-provide
-/// them too. [FeedbackReportRepository] and [NotificationsViewModel] follow it
-/// because Settings' feedback and push rows must keep working wherever the
-/// page is shown, including from a pushed route.
+/// invisible to any screen reached by a push. [AuthViewModel] solves this by
+/// living up here; [SatisfactionPromptController] follows the same fix rather
+/// than requiring every push site to re-provide it. [FeedbackReportRepository]
+/// and [NotificationsViewModel] follow it because Settings' feedback and push
+/// rows must keep working wherever the page is shown, including from a pushed
+/// route.
 ///
 /// Public — like [buildSharedShellProviders] — so production and widget
 /// tests compose the identical list instead of a hand-copied duplicate that
 /// can silently drift out of sync with what a pushed route can actually see.
 List<SingleChildWidget> buildRootProviders() => [
   Provider<PushService>.value(value: _pushService),
-  Provider<ActiveChatTracker>.value(value: _activeChatTracker),
   Provider<PushMessageCoordinator>.value(value: _pushMessageCoordinator),
   Provider<FeedbackReportRepository>.value(value: _feedbackReportRepository),
   Provider<ModelPickerTabStore>(
@@ -749,9 +610,6 @@ List<SingleChildWidget> buildRootProviders() => [
   ),
   ChangeNotifierProvider<NotificationsViewModel>.value(
     value: _notificationsViewModel,
-  ),
-  ChangeNotifierProvider<TurnFeedbackController>.value(
-    value: _turnFeedbackController,
   ),
   ChangeNotifierProvider<SatisfactionPromptController>.value(
     value: _satisfactionPromptController,
@@ -775,16 +633,10 @@ class App extends StatelessWidget {
     super.key,
     required this.themeController,
     required this.startScreenController,
-    required this.transcriptStorage,
   });
 
   final ThemeController themeController;
   final StartScreenController startScreenController;
-
-  /// Persisted Remote Control chat tails (CAN-3373). One per app run, so a
-  /// single ordered queue serves every account: a sign-out's deletion lands
-  /// before the next account reads anything.
-  final RemoteTranscriptStorage transcriptStorage;
 
   @override
   Widget build(BuildContext context) {
@@ -830,59 +682,45 @@ class App extends StatelessWidget {
                   // Above MaterialApp so routes pushed on the root navigator
                   // read the same account draft store as the shell.
                   child: Builder(
-                    builder: (context) => RemoteTranscriptCacheScope(
+                    builder: (context) => ChatDraftStoreScope(
                       account: context.read<AuthViewModel>(),
                       accountScope: () =>
                           _accountScopeOf(context.read<AuthViewModel>()),
-                      signedOut: () =>
-                          context.read<AuthViewModel>().status ==
-                          AuthStatus.unauthenticated,
-                      create: (accountScope) => RemoteTranscriptCache(
-                        storage: transcriptStorage,
-                        accountScope: accountScope,
-                      ),
-                      purge: transcriptStorage.clear,
-                      child: ChatDraftStoreScope(
-                        account: context.read<AuthViewModel>(),
-                        accountScope: () =>
-                            _accountScopeOf(context.read<AuthViewModel>()),
-                        open: _openChatDraftStore,
-                        child: PushLifecycleBinding(
-                          child: Consumer<ThemeController>(
-                            builder: (context, theme, _) => MaterialApp(
-                              title: Brand.displayName,
-                              debugShowCheckedModeBanner: false,
-                              navigatorObservers: [appRouteObserver],
-                              theme: AppTheme.light,
-                              darkTheme: AppTheme.dark,
-                              themeMode: theme.mode,
-                              builder: (context, child) =>
-                                  AnnotatedRegion<SystemUiOverlayStyle>(
-                                    value: SystemUiOverlayStyle(
-                                      systemNavigationBarColor: Theme.of(
+                      open: _openChatDraftStore,
+                      child: PushLifecycleBinding(
+                        child: Consumer<ThemeController>(
+                          builder: (context, theme, _) => MaterialApp(
+                            title: Brand.displayName,
+                            debugShowCheckedModeBanner: false,
+                            navigatorObservers: [appRouteObserver],
+                            theme: AppTheme.light,
+                            darkTheme: AppTheme.dark,
+                            themeMode: theme.mode,
+                            builder: (context, child) =>
+                                AnnotatedRegion<SystemUiOverlayStyle>(
+                                  value: SystemUiOverlayStyle(
+                                    systemNavigationBarColor: Theme.of(
+                                      context,
+                                    ).scaffoldBackgroundColor,
+                                    systemNavigationBarDividerColor:
+                                        Colors.transparent,
+                                    systemNavigationBarIconBrightness:
+                                        Theme.of(context).brightness ==
+                                            Brightness.dark
+                                        ? Brightness.light
+                                        : Brightness.dark,
+                                    systemNavigationBarContrastEnforced: false,
+                                  ),
+                                  child: IosFoldRegionScope(
+                                    child: ColoredBox(
+                                      color: Theme.of(
                                         context,
                                       ).scaffoldBackgroundColor,
-                                      systemNavigationBarDividerColor:
-                                          Colors.transparent,
-                                      systemNavigationBarIconBrightness:
-                                          Theme.of(context).brightness ==
-                                              Brightness.dark
-                                          ? Brightness.light
-                                          : Brightness.dark,
-                                      systemNavigationBarContrastEnforced:
-                                          false,
-                                    ),
-                                    child: IosFoldRegionScope(
-                                      child: ColoredBox(
-                                        color: Theme.of(
-                                          context,
-                                        ).scaffoldBackgroundColor,
-                                        child: FoldSafeArea(child: child!),
-                                      ),
+                                      child: FoldSafeArea(child: child!),
                                     ),
                                   ),
-                              home: const AuthGate(),
-                            ),
+                                ),
+                            home: const AuthGate(),
                           ),
                         ),
                       ),
@@ -896,29 +734,15 @@ class App extends StatelessWidget {
   }
 }
 
-/// Wires [AuthViewModel] status transitions to [PushService],
-/// [NotificationsViewModel], and [TurnFeedbackController] (all read via
-/// `context.read` from providers above this widget — see [buildRootProviders]
-/// — so a test can substitute its own instances the same way it already can
-/// for [PushService]/[NotificationsViewModel]): the transition to
-/// [AuthStatus.authenticated] registers the push token and loads the
-/// notification preference; the transition to [AuthStatus.unauthenticated]
-/// unregisters the token. Both transitions also call
-/// [TurnFeedbackController.resetHydration] — in production
-/// [TurnFeedbackController] is a single app-lifetime singleton
-/// ([_turnFeedbackController], see its doc comment), so without this its
-/// cached ratings would otherwise survive a sign-out and reach the next
-/// signed-in account. Every foreground resume — and
-/// every transition INTO [AuthStatus.authenticated], which is when a rating
-/// queued behind a retryable 401 first becomes sendable — also calls
-/// [TurnFeedbackController.flushOutbox] so a rating queued while
-/// offline does not sit unsent until the next cold start. Every auth
-/// notification also republishes [_signedInUserId], which is combined with the
-/// live API environment to scope
-/// that durable outbox to one account — see its doc comment. A transparent
-/// wrapper — it renders [child] unchanged. Recreated whenever the keyed
-/// [AuthViewModel] provider above it is recreated (reviewer demo-mode
-/// toggle), so it always binds to the current [AuthViewModel] instance.
+/// Wires [AuthViewModel] status transitions to [PushService] and
+/// [NotificationsViewModel] (both read via `context.read` from providers above
+/// this widget — see [buildRootProviders] — so a test can substitute its own
+/// instances): the transition to [AuthStatus.authenticated] registers the push
+/// token and loads the notification preference; the transition to
+/// [AuthStatus.unauthenticated] unregisters the token. A transparent wrapper —
+/// it renders [child] unchanged. Recreated whenever the keyed [AuthViewModel]
+/// provider above it is recreated (reviewer demo-mode toggle), so it always
+/// binds to the current [AuthViewModel] instance.
 class PushLifecycleBinding extends StatefulWidget {
   const PushLifecycleBinding({super.key, required this.child});
 
@@ -934,8 +758,6 @@ class _PushLifecycleBindingState extends State<PushLifecycleBinding>
   late final PushService _service = context.read<PushService>();
   late final NotificationsViewModel _notifications = context
       .read<NotificationsViewModel>();
-  late final TurnFeedbackController _turnFeedback = context
-      .read<TurnFeedbackController>();
   late AuthStatus _previousStatus;
   late bool _previousHasAccount;
 
@@ -944,25 +766,8 @@ class _PushLifecycleBindingState extends State<PushLifecycleBinding>
     super.initState();
     _previousStatus = _auth.status;
     _previousHasAccount = _auth.hasAccount;
-    // Publish immediately as well as on every later notification: a host that
-    // mounts this binding under an already-authenticated view model would
-    // otherwise never see a transition, and the outbox would treat a
-    // signed-in user as signed out.
-    _publishAccountId();
     _auth.addListener(_handleAuthChange);
     WidgetsBinding.instance.addObserver(this);
-  }
-
-  /// Mirrors the current session's user id into [_signedInUserId], which is
-  /// combined with the live API environment to scope the durable feedback
-  /// outbox to one server principal. Driven off
-  /// EVERY auth notification rather than only status transitions: the id is a
-  /// separate field from the status, and publishing a stale one would send the
-  /// wrong account's queued ratings.
-  void _publishAccountId() {
-    _signedInUserId = _auth.status == AuthStatus.authenticated
-        ? _auth.user?.id
-        : null;
   }
 
   @override
@@ -981,19 +786,9 @@ class _PushLifecycleBindingState extends State<PushLifecycleBinding>
     // service itself no-ops when signed out, already registered, or still
     // denied (see PushService.onAppResumed).
     unawaited(_service.onAppResumed());
-    // Flush any turn-feedback rating queued while offline. Without this, a
-    // rating written to the durable SharedPrefs outbox (a rate/clear/detail
-    // call that hit a retryable error) would only ever be replayed on the
-    // next cold start, so it could sit unsent for days on a phone that is
-    // backgrounded/foregrounded but never fully closed. Safe to call on
-    // every resume: the repository is a no-op when the outbox is empty and
-    // guards against overlapping flushes (see
-    // HttpTurnFeedbackRepository.flushOutbox).
-    unawaited(_turnFeedback.flushOutbox());
   }
 
   void _handleAuthChange() {
-    _publishAccountId();
     final status = _auth.status;
     final hasAccount = _auth.hasAccount;
     if (status == _previousStatus && hasAccount == _previousHasAccount) return;
@@ -1006,27 +801,9 @@ class _PushLifecycleBindingState extends State<PushLifecycleBinding>
       unawaited(_notifications.load());
       // Idempotent and restartable after the sign-out stop below.
       unawaited(_pushMessageCoordinator.start());
-      // A fresh sign-in must never start from a previous account's cached
-      // ratings — reset here too, not just on sign-out, in case a session
-      // is ever replaced by a new one without an intervening
-      // AuthStatus.unauthenticated tick.
-      _turnFeedback.resetHydration();
-      // Drain the outbox now rather than waiting for the next foreground
-      // resume. A retryable 401 is the headline reason an entry is queued at
-      // all (`shouldQueueTurnFeedbackFailure`), so the moment this account's
-      // session is restored is precisely when its queued ratings become
-      // sendable; on a phone that stays in the foreground the resume hook may
-      // not fire for hours. `_publishAccountId()` above has already
-      // republished the current account, so the flush sends only its own
-      // entries.
-      unawaited(_turnFeedback.flushOutbox());
     } else if (status == AuthStatus.unauthenticated) {
       unawaited(_pushMessageCoordinator.stop());
       unawaited(_service.onSignedOut(null));
-      // Clear immediately on sign-out so no residual cached rating survives
-      // for whichever account signs in next, and so that account's own
-      // ratings are re-read from the server rather than served stale.
-      _turnFeedback.resetHydration();
     }
   }
 
@@ -1082,8 +859,8 @@ class AuthGate extends StatelessWidget {
       // here could hand a user a duplicate of an org they already own, so this
       // shell only retries. It is otherwise the no-organization shell: the
       // teams API can be flag-gated off for an account, where retrying never
-      // succeeds, and walling the app off would lock that user out of Remote
-      // Control and Account for good.
+      // succeeds, and walling the app off would lock that user out of
+      // Computer connect and Account for good.
       AuthenticatedShellMode.organizationsUnavailable => _shell(
         auth: auth,
         tabs: tabs,
@@ -1095,8 +872,8 @@ class AuthGate extends StatelessWidget {
         ),
       ),
       // An individual or Pro account with no organization is a legitimate
-      // user. Remote Control and Account are user/account-scoped, so they work
-      // untouched; the org-scoped tabs are dropped rather than faked
+      // user. Computer connect and Account are user/account-scoped, so they
+      // work untouched; the org-scoped tabs are dropped rather than faked
       // (CAN-2576).
       AuthenticatedShellMode.noOrganization => _shell(
         auth: auth,
@@ -1140,22 +917,20 @@ class AuthGate extends StatelessWidget {
         ),
       ),
       // Existing guest sessions get sign-in and a guest Settings page. No
-      // org-scoped provider is mounted, Settings swaps the account-security
-      // sections, which a guest's session cannot read, for sign-in, and the
-      // session is settled as having no desktop, which a guest cannot pair.
+      // org-scoped provider is mounted, and Settings swaps the
+      // account-security sections, which a guest's session cannot read, for
+      // sign-in. A guest has no Computer connect, so it pairs no computer.
       AuthenticatedShellMode.guest => _shell(
         auth: auth,
         tabs: tabs,
         landingTab: landingTab,
-        child: NoDesktopSessionBinding(
-          child: HomeShell(
-            refreshActivity: refreshActivityFeed,
-            activityAccount: watchActivityAccount,
-            membersTab: membersTab,
-            accountTab: GuestAccountScreen(
-              onSignIn: GuestSignInScreen.open,
-              onLeaveGuestMode: auth.signOut,
-            ),
+        child: HomeShell(
+          refreshActivity: refreshActivityFeed,
+          activityAccount: watchActivityAccount,
+          membersTab: membersTab,
+          accountTab: GuestAccountScreen(
+            onSignIn: GuestSignInScreen.open,
+            onLeaveGuestMode: auth.signOut,
           ),
         ),
       ),
@@ -1187,16 +962,18 @@ class AuthGate extends StatelessWidget {
   ///
   /// Everything here is user-, device- or account-scoped, so none of it sits
   /// under the org-keyed subtree: the org lifecycle view model manages the org
-  /// list itself (switching orgs must not tear it down mid-action), Remote
-  /// Control is device/user-scoped so its pairing must survive org switches,
-  /// the selected tab must survive org switches too (a push deep-link fallback
-  /// or in-flight tap shouldn't be undone by a concurrent org change), and the
-  /// account view models describe the person rather than the org — an org
-  /// switch has no business re-fetching their API keys or 2FA state.
+  /// list itself (switching orgs must not tear it down mid-action), Computer
+  /// connect is device/user-scoped so its pairings must survive org switches,
+  /// the selected tab must survive org switches too (a notification tap
+  /// shouldn't be undone by a concurrent org change), and the account view
+  /// models describe the person rather than the org — an org switch has no
+  /// business re-fetching their API keys or 2FA state.
   ///
-  /// The notification-tap binding sits here too, above the org-keyed subtree:
-  /// a tap that switches context (CAN-4429) rebuilds that subtree, and the
-  /// binding must outlive it to open the chat.
+  /// The notification-tap binding sits here too, above the org-keyed subtree,
+  /// so a tap is not lost when that subtree rebuilds. It sits inside Computer
+  /// connect's scope so it can open a chat on the computer the push names;
+  /// the scope remounts on an account change, which is safe because the
+  /// pending tap lives in the coordinator and is re-read after the first frame.
   Widget _shell({
     required AuthViewModel auth,
     required List<HomeTab> tabs,
@@ -1205,16 +982,14 @@ class AuthGate extends StatelessWidget {
   }) {
     return MultiProvider(
       providers: buildSharedShellProviders(),
-      // Not a plain provider: the visible tab set changes when the user gains
-      // or loses an organization, and the controller has to change with it.
-      child: HomeTabControllerProvider(
-        tabs: tabs,
-        initialTab: landingTab,
-        child: PushTapBinding(
-          coordinator: _pushMessageCoordinator,
-          selectWorkspaceContext: auth.selectWorkspaceContext,
-          workspaceContext: () => auth.workspaceContext,
-          personalActivityAvailable: () => auth.isPersonalActive,
+      // Turn feedback is account-scoped, not organization-scoped.
+      child: TurnFeedbackScope(
+        apiClient: _apiClient,
+        // Not a plain provider: the visible tab set changes when the user gains
+        // or loses an organization, and the controller has to change with it.
+        child: HomeTabControllerProvider(
+          tabs: tabs,
+          initialTab: landingTab,
           child: ComputerConnectScope(
             key: ValueKey(
               '${AppConfig.apiBaseUrl}:${auth.user?.id ?? 'guest'}',
@@ -1223,7 +998,10 @@ class AuthGate extends StatelessWidget {
             sessionToken: _sessionStore.currentToken,
             twoFactorProof: _sessionStore.currentTwoFactorProof,
             enabled: auth.hasAccount && AppConfig.hasAuthApiConfig,
-            child: DesktopAppPromptBinding(child: child),
+            child: PushTapBinding(
+              coordinator: _pushMessageCoordinator,
+              child: DesktopAppPromptBinding(child: child),
+            ),
           ),
         ),
       ),
@@ -1239,28 +1017,6 @@ class AuthGate extends StatelessWidget {
 List<SingleChildWidget> buildSharedShellProviders() => [
   ChangeNotifierProvider<OrgViewModel>(
     create: (_) => OrgViewModel(repository: _buildOrgRepository()),
-  ),
-  ChangeNotifierProvider<RemoteControlViewModel>(
-    create: (context) => RemoteControlViewModel(
-      repository: _buildRemoteControlRepository(),
-      fileDiffCache: RemoteFileDiffCache(maxEntries: 32, persist: true),
-      onSuccessfulTurn: _recordSuccessfulTurn,
-      draftStore: maybeChatDraftStore(context),
-      transcriptCache: maybeRemoteTranscriptCache(context),
-    ),
-  ),
-  // Reset whenever the paired session changes, so one session's choices or
-  // in-flight saves never reach another's rows.
-  ChangeNotifierProvider<SpaceNotificationsViewModel>(
-    create: (context) {
-      final remote = context.read<RemoteControlViewModel>();
-      return SpaceNotificationsViewModel(
-        repository: _buildSpaceNotificationsRepository(),
-        sessionChanges: remote,
-        sessionScope: () =>
-            (remote.sessionGeneration, remote.connection?.sessionId),
-      );
-    },
   ),
   ChangeNotifierProvider<ApiKeysViewModel>(
     create: (_) =>

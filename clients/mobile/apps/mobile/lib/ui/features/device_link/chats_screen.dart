@@ -9,6 +9,7 @@ import 'pipelines/chat_activity.dart';
 import 'computer_connect/work_composer.dart';
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:mobile/data/models/chat_message.dart';
 import 'package:mobile/core/design-system/app-bar/canopy_app_bar.dart';
 import 'package:mobile/core/design-system/app-bar/canopy_scaffold.dart';
 import 'package:mobile/core/design-system/button/canopy_button.dart';
@@ -16,6 +17,7 @@ import 'package:mobile/core/design-system/icon-button/canopy_icon_button.dart';
 import 'package:mobile/core/design-system/icon/canopy_glyph.dart';
 import 'package:mobile/core/design-system/overlay-action/canopy_overlay_action.dart';
 import 'package:mobile/device_link/chats/presentation.dart';
+import 'package:mobile/device_link/chats/turn_ends.dart';
 import 'package:mobile/device_link/files/reader.dart';
 import 'package:mobile/device_link/files/tabs.dart';
 import 'package:mobile/device_link/protocol.dart';
@@ -33,12 +35,14 @@ import 'package:mobile/ui/core/chat/view_models/chat_attachment_controller.dart'
 import 'package:mobile/ui/core/chat/widgets/attachment_thumbnail_scope.dart';
 import 'package:mobile/ui/core/chat/widgets/chat_attachment_input.dart';
 import 'chats_view_model.dart';
+import 'device_chat_satisfaction_host.dart';
 import 'computer_connect/chat_controls.dart';
 import 'computer_connect/composer_sources.dart';
 import 'computer_connect/file_screen.dart';
 import 'computer_connect/reconnect_notice_delay.dart';
 import 'computer_connect/settings_notice.dart';
 import 'device_chat_attachment_uploader.dart';
+import 'turn_feedback/turn_feedback_footers.dart';
 
 /// Shown on the attach control while the computer is unreachable.
 const String kDeviceAttachmentsNeedReconnect =
@@ -305,7 +309,10 @@ class _DeviceChatScreenState extends State<DeviceChatScreen>
   }
 
   @override
-  Widget build(BuildContext context) => ListenableBuilder(
+  Widget build(BuildContext context) =>
+      DeviceChatSatisfactionHost(model: widget.model, child: _chat(context));
+
+  Widget _chat(BuildContext context) => ListenableBuilder(
     listenable: _changes,
     builder: (context, _) {
       final model = widget.model;
@@ -404,6 +411,14 @@ class _DeviceChatScreenState extends State<DeviceChatScreen>
           DeviceSettingsNotice(model: model),
       ];
       final hasTabs = model.tabs.isNotEmpty;
+      // Presented once for the feed and its turn footers.
+      final presented = state == null
+          ? const <ChatMessage>[]
+          : deviceChatPresentation(
+              state.ref.id,
+              state.messages,
+              endReasons: deviceTurnEndReasons(state.tab),
+            );
       return CanopyScaffold(
         scaffoldKey: _scaffoldKey,
         onEndDrawerChanged: (open) {
@@ -490,68 +505,76 @@ class _DeviceChatScreenState extends State<DeviceChatScreen>
                                       : state.ref,
                                   messages: state.messages,
                                   online: model.online && model.chats.ready,
-                                  builder: (footers) => ChatFeed(
-                                    turnFooters: footers,
-                                    key: ValueKey(
-                                      'device-chat-transcript-${state.ref.key}',
+                                  builder: (footers) => DeviceTurnFeedbackFooters(
+                                    ref: state.ref,
+                                    messages: presented,
+                                    running: state.running,
+                                    tab: state.tab,
+                                    workspaceKind: model.activity.workspaceKind(
+                                      state.ref.projectId,
                                     ),
-                                    chatId: state.ref.id,
-                                    onForkResponse:
-                                        state.tab['readOnly'] == true
-                                        ? null
-                                        : model.forkResponse,
-                                    forkEnabled:
-                                        model.online &&
-                                        model.chats.ready &&
-                                        !state.closed,
-                                    topContentInset: notices.isEmpty
-                                        ? CanopyScaffold.contentPaddingOf(
-                                            context,
-                                          ).top
-                                        : 0,
-                                    bottomActionInset: hasTabs
-                                        ? CanopyOverlayAction.stackOffset
-                                        : 0,
-                                    messages: deviceChatPresentation(
-                                      state.ref.id,
-                                      state.messages,
-                                    ),
-                                    expandedTurns: _expanded,
-                                    turnInProgress: state.running,
-                                    onToggleTurn: (id) => setState(() {
-                                      if (!_expanded.remove(id)) {
-                                        _expanded.add(id);
-                                      }
-                                    }),
-                                    onLoadOlder:
-                                        state.before != null && model.online
-                                        ? () =>
-                                              unawaited(model.chats.loadOlder())
-                                        : null,
-                                    loadingOlder: model.chats.loadingOlder,
-                                    trailing: [
-                                      for (final question in questions)
-                                        PendingQuestionCard(
-                                          key: ValueKey(
-                                            'question-${question.requestId}',
-                                          ),
-                                          request: question,
-                                          onSubmit:
-                                              model.online && !model.deciding
-                                              ? (answers) => unawaited(
-                                                  model.answer(
-                                                    question.requestId,
-                                                    answers,
-                                                  ),
-                                                )
-                                              : null,
-                                          onDismiss: () => unawaited(
-                                            model.dismissQuestion(
-                                              question.requestId,
+                                    footers: footers,
+                                    builder: (footers) => ChatFeed(
+                                      turnFooters: footers,
+                                      key: ValueKey(
+                                        'device-chat-transcript-${state.ref.key}',
+                                      ),
+                                      chatId: state.ref.id,
+                                      onForkResponse:
+                                          state.tab['readOnly'] == true
+                                          ? null
+                                          : model.forkResponse,
+                                      forkEnabled:
+                                          model.online &&
+                                          model.chats.ready &&
+                                          !state.closed,
+                                      topContentInset: notices.isEmpty
+                                          ? CanopyScaffold.contentPaddingOf(
+                                              context,
+                                            ).top
+                                          : 0,
+                                      bottomActionInset: hasTabs
+                                          ? CanopyOverlayAction.stackOffset
+                                          : 0,
+                                      messages: presented,
+                                      expandedTurns: _expanded,
+                                      turnInProgress: state.running,
+                                      onToggleTurn: (id) => setState(() {
+                                        if (!_expanded.remove(id)) {
+                                          _expanded.add(id);
+                                        }
+                                      }),
+                                      onLoadOlder:
+                                          state.before != null && model.online
+                                          ? () => unawaited(
+                                              model.chats.loadOlder(),
+                                            )
+                                          : null,
+                                      loadingOlder: model.chats.loadingOlder,
+                                      trailing: [
+                                        for (final question in questions)
+                                          PendingQuestionCard(
+                                            key: ValueKey(
+                                              'question-${question.requestId}',
+                                            ),
+                                            request: question,
+                                            onSubmit:
+                                                model.online && !model.deciding
+                                                ? (answers) => unawaited(
+                                                    model.answer(
+                                                      question.requestId,
+                                                      answers,
+                                                    ),
+                                                  )
+                                                : null,
+                                            onDismiss: () => unawaited(
+                                              model.dismissQuestion(
+                                                question.requestId,
+                                              ),
                                             ),
                                           ),
-                                        ),
-                                    ],
+                                      ],
+                                    ),
                                   ),
                                 ),
                               ),

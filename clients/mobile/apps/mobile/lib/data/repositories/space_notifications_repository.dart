@@ -8,7 +8,8 @@ import 'package:mobile/data/services/space_notifications_api_service.dart';
 /// Why a read or save of a space's notification choice did not return a
 /// snapshot.
 enum SpaceNotificationsFailure {
-  /// 404: the server does not know this space, or the user cannot reach it.
+  /// 403 or 404: the server does not know this space, or the user is not in
+  /// it.
   notFound,
 
   /// 409: the save named a revision the space has moved past.
@@ -110,7 +111,7 @@ final class HttpSpaceNotificationsRepository
   static SpaceNotificationsException _fromApiException(ApiException error) {
     final policy = _policyFromBody(error.body);
     final failure = switch (error.statusCode) {
-      404 => SpaceNotificationsFailure.notFound,
+      403 || 404 => SpaceNotificationsFailure.notFound,
       409 => SpaceNotificationsFailure.staleRevision,
       423 => SpaceNotificationsFailure.deliveryInProgress,
       503 => SpaceNotificationsFailure.writesDisabled,

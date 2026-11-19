@@ -1,63 +1,117 @@
-// Worktree file diff viewer: deterministic light/dark evidence for the Files
-// tab row tap → RemoteFileDiffScreen flow.
+// Worktree file diff viewer on a Computer connect chat: deterministic
+// light/dark evidence for the Activity drawer's Files tab, a row tap, and
+// DeviceFileDiffScreen.
 //
-// FILE_DIFF_STAGE=before (or after) flutter test tool/file_diff/capture_test.dart
-// --update-goldens, from apps/mobile. Writes to
-// .playwright/mobile-file-diff/ at the repo root.
+// FILE_DIFF_STAGE=after flutter test tool/file_diff/capture_test.dart
+// --update-goldens, from apps/mobile. Writes to .playwright/mobile-file-diff/
+// at the repo root.
 //
-// Deterministic: fake repository with a fixed changed-file roster and a fixed
-// patch, bundled fonts, no network or live agents.
+// Deterministic: the fake computer serves a fixed changed-file roster and a
+// fixed before/after file, bundled fonts, no network or live agents.
 import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:provider/provider.dart';
-import 'package:mobile/data/models/remote_chat.dart';
-import 'package:mobile/data/models/remote_file_diff.dart';
-import 'package:mobile/data/models/remote_session.dart';
-import 'package:mobile/data/repositories/turn_feedback_repository.dart';
-import 'package:mobile/ui/core/theme.dart';
-import 'package:mobile/ui/features/remote/view_models/remote_control_view_model.dart';
-import 'package:mobile/ui/features/remote/view_models/turn_feedback_controller.dart';
-import 'package:mobile/ui/features/remote/views/remote_chat_screen.dart';
-import '../../test/support/fake_remote_control_repository.dart';
+import 'package:mobile/ui/core/activity/worktree_activity_context.dart';
+import 'package:mobile/ui/features/device_link/chats_screen.dart';
+import 'package:mobile/ui/features/device_link/computer_connect/file_diff_screen.dart';
 
-final _patch =
-    'diff --git a/apps/mobile/lib/data/repositories/remote_control_repository.dart '
-    'b/apps/mobile/lib/data/repositories/remote_control_repository.dart\n'
-    'index 3f1c2a9..8b7d4e1 100644\n'
-    '--- a/apps/mobile/lib/data/repositories/remote_control_repository.dart\n'
-    '+++ b/apps/mobile/lib/data/repositories/remote_control_repository.dart\n'
-    '@@ -180,6 +180,18 @@ abstract interface class RemoteControlRepository {\n'
-    '     String? before,\n'
-    '     int? limitTurns,\n'
-    '   });\n'
-    '+\n'
-    '+  /// Reads one changed file\'s unified diff from the paired desktop\n'
-    '+  /// (`POST .../diff/read` → `portal.diff.read`).\n'
-    '+  Future<RemoteFileDiff> readFileDiff({\n'
-    '+    required String workspaceLocalId,\n'
-    '+    required String worktreeLocalId,\n'
-    '+    required String path,\n'
-    '+    required RemoteDiffSource source,\n'
-    '+    String? repoId,\n'
-    '+  });\n'
-    ' }\n'
-    ' \n'
-    '@@ -1500,7 +1512,7 @@ final class HttpRemoteControlRepository {\n'
-    '     } on ApiException catch (e) {\n'
-    '       throw RemoteControlException(\n'
-    '-        apiErrorMessage(e) ?? \'Could not load older messages.\',\n'
-    '+        apiErrorMessage(e) ?? \'Could not load the diff.\',\n'
-    '       );\n'
-    '     } catch (_) {\n'
-    '       throw const RemoteControlException(\n'
-    '+${'x' * 1100}\n';
+import '../../test/support/device_chat_harness.dart';
+import '../../test/support/fake_attachment_picker.dart';
+import '../../test/support/fake_desktop_computer.dart';
+import '../../test/support/reduced_motion.dart';
+
+const _diffPath = 'apps/mobile/lib/device_link/files/repository.dart';
+
+const _oldFile = '''
+final class DeviceFileRepository {
+  DeviceFileRepository(this.ipc);
+
+  final DesktopIpc ipc;
+
+  Future<String> read(String path) async {
+    final raw = await ipc.invoke('file:read-content', [path]);
+    return raw as String;
+  }
+}
+''';
+
+const _newFile = '''
+final class DeviceFileRepository {
+  DeviceFileRepository(this.ipc);
+
+  final DesktopIpc ipc;
+
+  Future<String> read(String path) async {
+    final raw = await ipc.invoke('file:read-content', [path]);
+    return raw as String;
+  }
+
+  /// Reads one changed file's before and after text from the computer.
+  Future<Map<String, dynamic>> diff(String path, {required bool committed}) async {
+    final raw = await ipc.invoke('activity:file-diff', [
+      {'filePath': path, 'source': committed ? 'committed' : 'uncommitted'},
+    ]);
+    return raw as Map<String, dynamic>;
+  }
+}
+''';
+
+Map<String, Object?> _row(
+  String path,
+  String status, {
+  int? insertions,
+  int? deletions,
+}) => {
+  'path': path,
+  'status': status,
+  'insertions': ?insertions,
+  'deletions': ?deletions,
+};
+
+final _changedFiles = {
+  'uncommitted': [
+    _row(
+      'apps/mobile/lib/ui/features/device_link/computer_connect/file_diff_screen.dart',
+      'untracked',
+      insertions: 310,
+    ),
+    _row(
+      'apps/mobile/lib/ui/core/activity/activity_sidebar.dart',
+      'modified',
+      insertions: 39,
+      deletions: 6,
+    ),
+    _row(
+      'apps/mobile/lib/ui/core/files/unified_diff_lines.dart',
+      'untracked',
+      insertions: 88,
+    ),
+    _row('docs/parity/registry.yaml', 'modified', insertions: 10),
+    _row('docs/parity/FEATURE-PARITY.md', 'modified', insertions: 1),
+    _row('README.md', 'deleted', deletions: 12),
+  ],
+  'committed': [
+    _row(_diffPath, 'modified', insertions: 12, deletions: 1),
+    _row(
+      'apps/mobile/lib/device_link/activity/repository.dart',
+      'modified',
+      insertions: 26,
+    ),
+    _row(
+      'apps/mobile/lib/data/models/remote_file_diff.dart',
+      'added',
+      insertions: 74,
+    ),
+  ],
+};
 
 void main() {
-  final stage = Platform.environment['FILE_DIFF_STAGE'] == 'before'
-      ? 'before'
-      : 'after';
+  TestWidgetsFlutterBinding.ensureInitialized();
+  useReducedMotion();
+  final stage = Platform.environment['FILE_DIFF_STAGE'] ?? 'after';
+
   setUpAll(() async {
     await (FontLoader(
       'Inter',
@@ -72,181 +126,99 @@ void main() {
       'MaterialIcons',
     )..addFont(rootBundle.load('fonts/MaterialIcons-Regular.otf'))).load();
   });
+
   for (final dark in [false, true]) {
     final mode = dark ? 'dark' : 'light';
     testWidgets('file diff $mode', (tester) async {
-      tester.view.physicalSize = const Size(440, 900);
-      tester.view.devicePixelRatio = 1;
-      addTearDown(tester.view.reset);
-      final repo = FakeRemoteControlRepository();
-      repo.snapshotBuilder = () => RemoteSessionSnapshot(
-        workspaces: const [],
-        worktrees: const [
-          RemoteWorktree(
-            localId: 'wt-1',
-            workspaceLocalId: 'ws-1',
-            branch: 'gvoltr/mobile-file-diff',
-            insertions: 12,
-            deletions: 1,
-          ),
-        ],
-        standaloneChats: const [],
-        chatSummaries: const [
-          RemoteChatSummary(
-            chatId: 'chat-1',
-            scope: RemoteChatScope.worktree,
-            workspaceLocalId: 'ws-1',
-            worktreeLocalId: 'wt-1',
-            title: 'Diff viewer',
-            active: true,
-          ),
-        ],
-        chatMessages: const [],
-        raw: const {
-          'changedFiles': {
-            'wt-1': {
-              'worktreeLocalId': 'wt-1',
-              'uncommitted': [
-                {
-                  'filePath':
-                      'apps/mobile/lib/ui/features/remote/views/remote_file_diff_screen.dart',
-                  'status': 'untracked',
-                  'insertions': 310,
-                },
-                {
-                  'filePath':
-                      'apps/mobile/lib/ui/features/remote/views/widgets/activity_sidebar.dart',
-                  'status': 'modified',
-                  'insertions': 39,
-                  'deletions': 6,
-                },
-                {
-                  'filePath':
-                      'apps/mobile/lib/ui/features/remote/view_models/unified_diff_lines.dart',
-                  'status': 'untracked',
-                  'insertions': 88,
-                },
-                {
-                  'filePath':
-                      'apps/mobile/test/ui/features/remote/remote_file_diff_screen_test.dart',
-                  'status': 'untracked',
-                  'insertions': 240,
-                },
-                {
-                  'filePath':
-                      'apps/mobile/test/support/fake_remote_control_repository.dart',
-                  'status': 'modified',
-                  'insertions': 37,
-                },
-                {
-                  'filePath': 'docs/parity/registry.yaml',
-                  'status': 'modified',
-                  'insertions': 10,
-                },
-                {
-                  'filePath': 'docs/parity/FEATURE-PARITY.md',
-                  'status': 'modified',
-                  'insertions': 1,
-                },
-                {'filePath': 'README.md', 'status': 'deleted', 'deletions': 12},
-              ],
-              'committed': [
-                {
-                  'filePath':
-                      'apps/mobile/lib/data/repositories/remote_control_repository.dart',
-                  'status': 'modified',
-                  'insertions': 12,
-                  'deletions': 1,
-                },
-                {
-                  'filePath':
-                      'apps/mobile/lib/data/services/remote_control_api_service.dart',
-                  'status': 'modified',
-                  'insertions': 26,
-                },
-                {
-                  'filePath':
-                      'apps/mobile/lib/data/models/remote_file_diff.dart',
-                  'status': 'added',
-                  'insertions': 74,
-                },
-              ],
+      tester.view.padding = const FakeViewPadding(top: 47, bottom: 34);
+      final harness = buildDeviceChatHarness(
+        computer: FakeDesktopComputer(
+          tabs: [fakeTab('chat-1', 'Diff viewer')],
+          transcripts: {'chat-1': const []},
+          answers: {
+            'activity:changed-files': (_) => _changedFiles,
+            ...fakeInventoryAnswers(branch: 'gvoltr/mobile-file-diff'),
+            'worktree:get-path': (_) => '/Users/sam/acme-app',
+            'github:request-fast-refresh': (_) => null,
+            // Nothing else to show in the Activity tab.
+            'worktree-summary:load': (_) => null,
+            'tracked-plans:list': (_) => null,
+            'script:load-worktree-runs': (_) => null,
+            'hook:load-worktree-runs': (_) => null,
+            for (final channel in [
+              'pipelines:list',
+              'pipelines:list-executions',
+              'pipelines:discover-project',
+            ])
+              channel: (_) => {'success': true, 'data': <Object?>[]},
+            'activity:file-diff': (_) => {
+              'oldValue': _oldFile,
+              'newValue': _newFile,
             },
           },
-        },
+        ),
       );
-      repo.readFileDiffHandler = (path, source) async => RemoteFileDiff(
-        filePath: path,
-        patch: _patch,
-        rangeLabel: 'develop..HEAD',
-        insertions: 12,
-        deletions: 1,
-      );
-      final vm = RemoteControlViewModel(
-        repository: repo,
-        stateRefreshDebounce: Duration.zero,
-      );
-      await tester.runAsync(() => vm.connect('123456'));
-      await tester.pumpWidget(
-        MultiProvider(
-          providers: [
-            ChangeNotifierProvider<RemoteControlViewModel>.value(value: vm),
-            ChangeNotifierProvider(
-              create: (_) => TurnFeedbackController(
-                repository: MockTurnFeedbackRepository(),
-              ),
-            ),
-          ],
-          child: MaterialApp(
-            debugShowCheckedModeBanner: false,
-            theme: dark ? AppTheme.dark : AppTheme.light,
-            home: RepaintBoundary(
-              key: const ValueKey('capture'),
-              child: RemoteChatScreen.worktree(
-                worktree: vm.allWorktrees.single,
-              ),
-            ),
+      addTearDown(harness.dispose);
+      await harness.open(
+        tester,
+        'chat-1',
+        mode: dark ? ThemeMode.dark : ThemeMode.light,
+        screen: (model) => DeviceChatScreen(
+          model: model,
+          attachmentPicker: FakeAttachmentPicker(),
+          // The Activity drawer opens only for a chat in a worktree.
+          worktree: const WorktreeActivityContext(
+            workspaceLocalId: fakeProjectId,
+            localId: fakeWorktreeId,
           ),
         ),
       );
-      await tester.pumpAndSettle();
+
+      Future<void> capture(String name) async {
+        expect(tester.takeException(), isNull);
+        await expectLater(
+          find.byType(MaterialApp),
+          matchesGoldenFile(
+            '../../../../.playwright/mobile-file-diff/$name-$stage-$mode.png',
+          ),
+        );
+      }
+
       await tester.tap(find.byKey(const ValueKey('open-activity')));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Files'));
       await tester.pumpAndSettle();
-
-      Directory(
-        '../../.playwright/mobile-file-diff',
-      ).createSync(recursive: true);
-      await expectLater(
-        find.byKey(const ValueKey('capture')),
-        matchesGoldenFile(
-          '../../../../.playwright/mobile-file-diff/files-tab-$stage-$mode.png',
+      expect(
+        find.byKey(
+          const ValueKey(
+            'changed-file::apps/mobile/lib/ui/core/activity/activity_sidebar.dart',
+          ),
         ),
+        findsOneWidget,
       );
+      await capture('files-tab');
 
-      // Exact match on either the full path (before) or basename (after) so
-      // the sibling `fake_remote_control_repository.dart` row is not hit.
-      await tester.tap(
-        find.byWidgetPredicate(
-          (widget) =>
-              widget is Text &&
-              (widget.data == 'remote_control_repository.dart' ||
-                  widget.data ==
-                      'apps/mobile/lib/data/repositories/remote_control_repository.dart'),
-        ),
+      // The committed rows start below the fold.
+      final row = find.byKey(const ValueKey('changed-file::$_diffPath'));
+      await tester.scrollUntilVisible(
+        row,
+        200,
+        scrollable: find
+            .descendant(
+              of: find.byKey(const ValueKey('changed-files-list')),
+              matching: find.byType(Scrollable),
+            )
+            .first,
       );
+      await Scrollable.ensureVisible(tester.element(row), alignment: 0.5);
       await tester.pumpAndSettle();
-      await expectLater(
-        find.byType(MaterialApp),
-        matchesGoldenFile(
-          '../../../../.playwright/mobile-file-diff/diff-screen-$stage-$mode.png',
-        ),
-      );
-      expect(tester.takeException(), isNull);
+
+      await tester.tap(row);
+      await tester.pumpAndSettle();
+      expect(find.byType(DeviceFileDiffScreen), findsOneWidget);
+      expect(find.textContaining('Reads one changed file'), findsOneWidget);
+      await capture('diff-screen');
       await tester.pumpWidget(const SizedBox());
-      vm.dispose();
-      await repo.eventsController.close();
     });
   }
 }

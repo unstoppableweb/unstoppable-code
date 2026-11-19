@@ -1,6 +1,7 @@
 import 'widgets/home_adaptive_layout.dart';
 import 'widgets/home_chat_sidebar.dart';
 import 'widgets/home_navigation_rail.dart';
+import 'package:mobile/ui/core/navigation/home_chat_open_request.dart';
 import 'package:mobile/ui/core/navigation/home_detail_pane.dart';
 import 'widgets/home_recent_chats_builder.dart';
 import 'dart:async';
@@ -17,7 +18,6 @@ import 'package:mobile/ui/features/home/views/activity_refresh_binding.dart';
 import 'package:mobile/ui/features/feed/views/feed_screen.dart';
 import 'package:mobile/ui/features/home/home_tab.dart';
 import 'package:mobile/ui/features/home/home_tab_controller.dart';
-import 'package:mobile/ui/features/remote/view_models/remote_control_view_model.dart';
 import 'package:mobile/ui/features/home/views/organization_context_gate.dart';
 import 'package:mobile/ui/features/home/views/widgets/home_navigation_drawer.dart';
 import 'package:mobile/ui/core/navigation/home_extra_destination.dart';
@@ -25,9 +25,7 @@ import 'package:mobile/ui/core/navigation/home_navigation_scope.dart';
 import 'package:mobile/core/design-system/icon/canopy_glyph.dart';
 import 'package:mobile/ui/features/home/views/widgets/workspace_context_switcher.dart';
 import 'package:mobile/ui/features/members/views/members_screen.dart';
-import 'package:mobile/ui/features/remote/views/remote_app_advisor_screen.dart';
 import 'package:mobile/ui/core/navigation/home_orchestrator_destination.dart';
-import 'package:mobile/ui/features/remote/views/remote_screen.dart';
 import 'package:mobile/ui/features/stats/views/stats_screen.dart';
 
 /// How far the visible content card gets pushed off-screen never exceeds this
@@ -109,11 +107,11 @@ class _HomeShellState extends State<HomeShell>
     // The selected chat's chrome replaces detail immediately. Its connection
     // binds after the outgoing screen unmounts, without revealing other tabs.
     if (_recentChat.page != null) {
+      _openRequests?.noteNavigation();
       _adaptiveKey.currentState?.showDetail();
       _closeMenu();
     }
     setState(() {});
-    _syncRemoteVisibility();
   }
 
   /// Whether the app-composed [HomeExtraDestination] covers the selected tab.
@@ -133,9 +131,25 @@ class _HomeShellState extends State<HomeShell>
     );
   }
 
+  /// Chats a notification tap resolved; a cold start can request one before
+  /// this shell mounts, so the first frame takes it too.
+  HomeChatOpenRequests? _openRequests;
+
+  void _takeOpenRequest() {
+    if (!mounted) return;
+    final chat = _openRequests?.take();
+    if (chat != null) unawaited(_openRecentChat(chat));
+  }
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    final openRequests = context.read<HomeChatOpenRequests?>();
+    if (!identical(openRequests, _openRequests)) {
+      _openRequests?.removeListener(_takeOpenRequest);
+      _openRequests = openRequests?..addListener(_takeOpenRequest);
+      WidgetsBinding.instance.addPostFrameCallback((_) => _takeOpenRequest());
+    }
     final tabController = context.read<HomeTabController>();
     if (identical(tabController, _tabController)) return;
 
@@ -147,11 +161,11 @@ class _HomeShellState extends State<HomeShell>
     }
     _tabController?.removeListener(_handleTabChanged);
     _tabController = tabController..addListener(_handleTabChanged);
-    _syncRemoteVisibility();
   }
 
   @override
   void dispose() {
+    _openRequests?.removeListener(_takeOpenRequest);
     _recentChat.removeListener(_recentChatChanged);
     _recentChat.dispose();
     _tabController?.removeListener(_handleTabChanged);
@@ -165,14 +179,7 @@ class _HomeShellState extends State<HomeShell>
     _detailKey.currentState?.reset();
     // Selecting a tab, even the one under it, leaves the extra destination.
     if (_extraSelected) setState(() => _extraSelected = false);
-    _syncRemoteVisibility();
     if (!_menu.isDismissed) _closeMenu();
-  }
-
-  void _syncRemoteVisibility() {
-    context.read<RemoteControlViewModel>().setRemoteVisible(
-      _visibleTab == HomeTab.remote,
-    );
   }
 
   void _openMenu() {
@@ -192,13 +199,11 @@ class _HomeShellState extends State<HomeShell>
       _extraSelected = true;
       _extraMounted = true;
     });
-    _syncRemoteVisibility();
     _closeMenu();
   }
 
   void _leaveExtraDestination() {
     setState(() => _extraSelected = false);
-    _syncRemoteVisibility();
   }
 
   void _refreshRecents() {
@@ -303,6 +308,13 @@ class _HomeShellState extends State<HomeShell>
     final tabController = context.watch<HomeTabController>();
     final tabs = tabController.tabs;
     final extra = HomeExtraDestination.maybeOf(context);
+    // The Orchestrator needs Computer connect; without it the row is hidden.
+    final hasOrchestrator =
+        HomeOrchestratorDestination.maybeOf(context) != null;
+    final rowTabs = [
+      for (final tab in tabs)
+        if (tab != HomeTab.advisor || hasOrchestrator) tab,
+    ];
     final showsRecent = _recentChat.page != null;
     final showsExtra = extra != null && _extraSelected && !showsRecent;
     final outlineColor = Theme.of(context).colorScheme.outlineVariant;
@@ -323,12 +335,7 @@ class _HomeShellState extends State<HomeShell>
             onOpenChat: _openRecentChat,
           ),
           railBuilder: (context, listVisible) => HomeNavigationRail(
-            tabs: [
-              for (final tab in tabs)
-                if (tab != HomeTab.remote ||
-                    context.watch<RemoteControlViewModel>().isConnected)
-                  tab,
-            ],
+            tabs: rowTabs,
             selectedTab: showsExtra
                 ? null
                 : showsRecent
@@ -347,6 +354,8 @@ class _HomeShellState extends State<HomeShell>
             key: _detailKey,
             onCanPopChanged: (canPop) {
               if (_detailCanPop != canPop) {
+                // A screen opened above the tab's content.
+                if (canPop) _openRequests?.noteNavigation();
                 setState(() => _detailCanPop = canPop);
               }
             },
@@ -408,10 +417,6 @@ class _HomeShellState extends State<HomeShell>
                                 offset: Offset(-(1 - t) * menuWidth * 0.25, 0),
                                 child: HomeRecentChatsBuilder(
                                   builder: (context, recentChats, notice) {
-                                    final remoteConnected = context
-                                        .select<RemoteControlViewModel, bool>(
-                                          (remote) => remote.isConnected,
-                                        );
                                     return HomeNavigationDrawer(
                                       extraDestination: extra == null
                                           ? null
@@ -426,12 +431,7 @@ class _HomeShellState extends State<HomeShell>
                                               onTap: _openExtraDestination,
                                             ),
                                       contextRow: const WorkspaceContextRow(),
-                                      tabs: [
-                                        for (final tab in tabs)
-                                          if (tab != HomeTab.remote ||
-                                              remoteConnected)
-                                            tab,
-                                      ],
+                                      tabs: rowTabs,
                                       selectedTab: showsExtra || showsRecent
                                           ? null
                                           : tabController.value,
@@ -631,12 +631,12 @@ class _HomeShellState extends State<HomeShell>
       title: 'Members',
       child: widget.membersTab,
     ),
+    // Without Computer connect the Orchestrator has no row to open it.
     HomeTab.advisor =>
       HomeOrchestratorDestination.maybeOf(
             context,
           )?.builder(context, _visibleTab == HomeTab.advisor) ??
-          RemoteAppAdvisorScreen(isActive: _visibleTab == HomeTab.advisor),
-    HomeTab.remote => const RemoteScreen(),
+          const SizedBox.shrink(),
     HomeTab.account => widget.accountTab,
     HomeTab.chat =>
       HomeChatDestination.maybeOf(context)?.builder(context) ??

@@ -1,25 +1,23 @@
-import 'package:mobile/data/models/remote_connection.dart';
-
 /// What mobile knows about whether this account works with a desktop.
 enum DesktopPairing {
-  /// The Remote Control pairing probe has not answered yet.
+  /// Computer connect has not read the account's saved computers yet.
   unknown,
 
-  /// The probe answered and no desktop is paired.
+  /// The saved computers were read and none is paired.
   none,
 
-  /// A desktop is paired, being paired, or failed to connect. A paired
-  /// desktop that is offline still counts.
+  /// A computer is saved for this account. One that is offline or
+  /// disconnected still counts.
   paired;
 
-  /// Only `disconnected`
-  /// means "no desktop", and only once the probe has answered.
-  static DesktopPairing of(
-    RemoteConnectionStatus status, {
-    required bool hasProbedSession,
+  /// [settled] says whether the saved computers were read; [hasComputers]
+  /// whether any is saved.
+  static DesktopPairing of({
+    required bool settled,
+    required bool hasComputers,
   }) {
-    if (status != RemoteConnectionStatus.disconnected) return paired;
-    return hasProbedSession ? none : unknown;
+    if (hasComputers) return paired;
+    return settled ? none : unknown;
   }
 }
 

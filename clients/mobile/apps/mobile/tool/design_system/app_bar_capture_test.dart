@@ -1,4 +1,5 @@
-// Edge-to-edge Remote app bar. Seeded mock data, bundled fonts, no network.
+// Edge-to-edge app bar reference and the Computer connect home app bar on a
+// fake connected computer. Bundled fonts, no network.
 // From apps/mobile: APP_BAR_STAGE=before (or after) flutter test
 // tool/design_system/app_bar_capture_test.dart --update-goldens
 // Both appearances are captured on each run; after is the default.
@@ -7,12 +8,12 @@ import 'package:mobile/ui/features/developer_options/views/app_bars_screen.dart'
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:mobile/data/repositories/remote_control_repository.dart';
-import 'package:mobile/ui/core/theme.dart';
-import 'package:mobile/ui/features/remote/view_models/remote_control_view_model.dart';
-import 'package:mobile/ui/features/remote/views/remote_screen.dart';
 import 'package:mobile/ui/core/navigation/home_navigation_scope.dart';
-import 'package:provider/provider.dart';
+import 'package:mobile/ui/core/theme.dart';
+import 'package:mobile/ui/features/device_link/computer_connect/controller.dart';
+import 'package:mobile/ui/features/device_link/computer_connect/screen.dart';
+import '../../test/support/device_chat_harness.dart';
+import '../../test/support/fake_desktop_computer.dart';
 import '../../test/support/reduced_motion.dart';
 
 void main() {
@@ -53,57 +54,53 @@ void main() {
       });
     }
 
-    testWidgets('remote app bar ${dark ? 'dark' : 'light'}', (tester) async {
+    testWidgets('computer connect app bar ${dark ? 'dark' : 'light'}', (
+      tester,
+    ) async {
       tester.view.physicalSize = const Size(390, 844);
       tester.view.devicePixelRatio = 1;
       tester.view.padding = const FakeViewPadding(top: 47, bottom: 34);
       addTearDown(tester.view.reset);
-      final vm = RemoteControlViewModel(
-        repository: MockRemoteControlRepository(latency: Duration.zero),
+      final harness = buildDeviceChatHarness(
+        computer: FakeDesktopComputer(answers: fakeInventoryAnswers()),
       );
-      await tester.runAsync(() => vm.connect('123456'));
-      addTearDown(vm.dispose);
+      final controller = ComputerConnectController(harness.model);
+      addTearDown(harness.dispose);
+      addTearDown(controller.dispose);
+      harness.model.connection.host = {'name': 'Studio Mac'};
+      await harness.select(tester, 'chat-pkce');
       await tester.pumpWidget(
-        ChangeNotifierProvider.value(
-          value: vm,
-          child: MaterialApp(
-            debugShowCheckedModeBanner: false,
-            theme: dark ? AppTheme.dark : AppTheme.light,
-            home: HomeNavigationScope(
-              openDrawer: () {},
-              child: const RemoteScreen(),
+        MaterialApp(
+          debugShowCheckedModeBanner: false,
+          theme: dark ? AppTheme.dark : AppTheme.light,
+          home: HomeNavigationScope(
+            openDrawer: () {},
+            child: ComputerConnectScreen(
+              controller: controller,
+              apiOrigin: 'https://canopy.invalid',
             ),
           ),
         ),
       );
       await tester.pumpAndSettle();
-      Future<void> capture(String name) => expectLater(
-        find.byType(RemoteScreen),
-        matchesGoldenFile(
-          '../../../../.playwright/mobile-app-bar/$name-$stage-${dark ? 'dark' : 'light'}.png',
-        ),
-      );
-      await capture('remote');
-      for (final name in ['acme-web', 'platform']) {
-        await tester.tap(find.text(name).last);
-        await tester.pumpAndSettle();
+      Future<void> capture(Finder subject, String name) async {
+        expect(tester.takeException(), isNull);
+        await expectLater(
+          subject,
+          matchesGoldenFile(
+            '../../../../.playwright/mobile-app-bar/$name-$stage-${dark ? 'dark' : 'light'}.png',
+          ),
+        );
       }
-      await tester.drag(
-        find.byKey(const ValueKey('remote-workspaces-list')),
-        const Offset(0, -170),
-      );
-      await tester.pumpAndSettle();
-      await capture('scrolled');
+
+      expect(find.text('Studio Mac'), findsOneWidget);
+      expect(find.byKey(const ValueKey('home-menu-button')), findsOneWidget);
+      await capture(find.byType(ComputerConnectScreen), 'remote');
       await tester.tap(find.byTooltip('Remote options'));
       await tester.pumpAndSettle();
-      await expectLater(
-        find.byType(Navigator),
-        matchesGoldenFile(
-          '../../../../.playwright/mobile-app-bar/menu-$stage-${dark ? 'dark' : 'light'}.png',
-        ),
-      );
-      await tester.pump(const Duration(minutes: 2));
-      expect(tester.takeException(), isNull);
+      expect(find.text('Search chats'), findsOneWidget);
+      await capture(find.byType(Navigator), 'menu');
+      await tester.pumpWidget(const SizedBox());
     });
   }
 }

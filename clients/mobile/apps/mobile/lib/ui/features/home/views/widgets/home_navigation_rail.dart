@@ -35,7 +35,6 @@ class HomeNavigationRail extends StatelessWidget {
     final destinations = [
       if (tabs.contains(HomeTab.chat)) HomeTab.chat,
       if (tabs.contains(HomeTab.advisor)) HomeTab.advisor,
-      if (tabs.contains(HomeTab.remote)) HomeTab.remote,
       if (tabs.contains(HomeTab.usage)) HomeTab.usage,
       if (tabs.contains(HomeTab.account)) HomeTab.account,
     ];

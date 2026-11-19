@@ -25,8 +25,7 @@ import 'package:mobile/ui/core/navigation/home_recent_chats.dart';
 /// are pinned along the bottom edge above the list and stay put while the rows
 /// scroll underneath: the Chat button on the left (CAN-2930) and the Settings
 /// button, which opens Settings, on the right. The [settingsHomeTabs] get no
-/// row either; Settings lists them (CAN-3558). Remote Control is the exception:
-/// the shell includes its drawer row only while a session is paired.
+/// row either; Settings lists them (CAN-3558).
 ///
 /// Below the destination rows, and in the same scrolling list, a Recents
 /// section lists [recentChats] (CAN-2931): chats from every connected
@@ -91,7 +90,7 @@ class HomeNavigationDrawer extends StatelessWidget {
   static bool _hasNoRow(HomeTab tab) =>
       tab == HomeTab.chat ||
       tab == HomeTab.account ||
-      (settingsHomeTabs.contains(tab) && tab != HomeTab.remote);
+      settingsHomeTabs.contains(tab);
 
   /// Shared with the shell behind the rounded content card, so its exposed
   /// corners blend into the menu even beyond the panel's bounds.
@@ -283,7 +282,6 @@ class HomeNavigationDrawer extends StatelessWidget {
     HomeTab.usage => 'Usage',
     HomeTab.members => 'Members',
     HomeTab.advisor => 'Orchestrator',
-    HomeTab.remote => 'Remote control',
     HomeTab.account => 'Settings',
     HomeTab.chat => 'Chat',
   };
@@ -295,7 +293,6 @@ class HomeNavigationDrawer extends StatelessWidget {
     HomeTab.usage => CanopyGlyph.stackedBarChart,
     HomeTab.members => CanopyGlyph.userGroup,
     HomeTab.advisor => CanopyGlyph.orbit,
-    HomeTab.remote => CanopyGlyph.globe2,
     HomeTab.account => CanopyGlyph.settingsGear2,
     HomeTab.chat => CanopyGlyph.editBig,
   };

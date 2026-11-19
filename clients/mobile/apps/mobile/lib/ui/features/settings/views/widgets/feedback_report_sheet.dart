@@ -64,7 +64,7 @@ Future<FeedbackSheetOutcome> showFeedbackReportSheet(
     useSafeArea: true,
     builder: (sheetContext) => Padding(
       // Keeps Submit above the keyboard once the description field is
-      // focused, matching `showTurnFeedbackSheet`.
+      // focused.
       padding: EdgeInsets.only(
         bottom: MediaQuery.viewInsetsOf(sheetContext).bottom,
       ),

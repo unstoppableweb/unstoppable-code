@@ -71,6 +71,15 @@ connection. Newer versions can connect, but individual features may still need
 mobile changes if their APIs change. See the
 [compatibility notes](../../docs/planning/2026-11-03-computer-connect-protocol/README.md).
 
+Computer connect chats show thumbs up and down in the footer of each completed
+turn; thumbs down then offers an optional reason and comment. A long press on
+a worktree row or a Cowork chat row opens that space's notification choices
+when the computer has registered its notification space; the choices are
+read-only while the server reports `writesEnabled: false`. A successful turn
+counts toward the satisfaction prompt, which appears once the chat is quiet.
+These features were restored in CAN-7218; see
+[chat feedback and notification choices](../../docs/mobile-computer-connect.md#chat-feedback-and-notification-choices).
+
 Run `flutter test test/device_link test/architecture` for regression coverage.
 The native recovery target is
 `integration_test/computer_connect_recovery_test.dart`; the isolated runner and
@@ -124,9 +133,9 @@ integration test.
 transport-neutral chat UI: the transcript feed (`ChatFeed`), composer
 (`ChatInput`, `ComposerToolbar`), tool-call rows, the ask-user
 `PendingQuestionCard`, and the pure turn-grouping, turn-timer, tool-display,
-thinking-level, and voice-dictation logic. Remote Control (`lib/ui/features/remote/`) and Computer Connect
-(`lib/ui/features/device_link/`) both build on it. `RemoteChatMessage` extends
-`ChatMessage` to carry its desktop scope. Flutter has no cloud chat client.
+thinking-level, and voice-dictation logic. Computer Connect
+(`lib/ui/features/device_link/`) builds on it. Flutter has no cloud chat
+client.
 See [Computer Connect](../../docs/mobile-computer-connect.md) for the home
 launcher, protocol choices and selection persistence.
 
@@ -160,236 +169,23 @@ lets a caller open a viewer with the already loaded bytes. The renderer itself
 does not read files; the worktree file viewer below supplies both callbacks. The parser retains its
 32-column and 512-cell table limits.
 
-### Worktree file viewer (CAN-5130)
+## Remote Control (retired)
 
-`RemoteFileScreen` opens one root-scoped worktree file from a
-`RemoteFileRequest`. The header shows the file name and its folders. Markdown
-(`md`, `markdown`, `mdx`) opens in Formatted mode with a Source switch; other
-text opens in Source only. Both modes stay mounted, so switching does not read
-again or reload images.
+The Portal-based Remote tab, its Portal transport and its on-device transcript
+cache were removed in CAN-5986. Computer connect is the only way to reach a
+computer from mobile. Launch deletes a transcript cache an earlier build left
+behind.
 
-Formatted mode passes `RemoteFileViewModel.readImage` to `MessageMarkdown`.
-Sources resolve against the report's folder with
-`resolveRemoteFileImagePath`. Root escapes, absolute and UNC paths, `file:`,
-http(s) and other schemes, and malformed escapes are rejected before any read.
-The desktop still enforces containment. Accepted images are read only through
-`readAsset`, with the same project, worktree and root. A tap opens the loaded
-bytes in `RemoteImageScreen`, an `InteractiveViewer` with pinch zoom and pan.
-
-Read images stay in memory only, least recently used first, under a 20 MiB
-encoded-byte budget per screen. Pending reads are shared and failures are not
-cached. A session change clears the file and images, closes an open image, and
-discards late results. Closing the screen or a session change also evicts the
-screen's decoded images from Flutter's image cache; other cached images stay.
-A desktop without `chat_assets_v1` keeps text and alt text and shows an update
-notice. Entry points from file lists and links are
-separate work; the device test reaches the viewer from a test-only launcher.
-
-The viewer's unit, widget and device tests were removed in the [golden-only test cut](../../docs/golden-tests.md).
-
-## Remote chat controllers (CAN-3429)
-
-`RemoteChatScreen` renders state; it does not reconcile it during `build`.
-Pure Dart controllers in `lib/ui/features/remote/view_models/` own the
-optimistic state, and `RemoteClientEngine` wires them to its command
-registry, session generation, and chat-id minting:
-
-- `RemoteChatTabsController` owns provisional tab creates and closes, the
-  selection, and the latched chat resolution. Create and close outcomes
-  arrive through the handlers each submission registers.
-- `LastViewedChatTabs` keeps, in memory only, the chat tab last shown in
-  each worktree (CAN-3940). A worktree opened without an exact chat starts
-  on that tab; the tabs controller falls back when it is gone. A new tab
-  is remembered once the desktop lists it, even after the screen closed, so
-  a failed create is never remembered. A new session generation (pairing,
-  disconnect, ended session) forgets it.
-- `ComposerOverridesController` holds one record per composer field. A
-  value stays until the desktop rejects it, or until it completes and a
-  newer projection of its chat arrives.
-- `PrStateTracker.pollPrState` gives each chat view its own one-minute PR
-  poll. The view reports visibility and foreground state as one input.
-- Actions settle from the desktop's events, not from follow-up reads
-  (CAN-4875). Activity & files reads the worktree once its snapshot lands.
-  A read receipt stops retrying at its command's completion. A later unread
-  for the same output can predate the read, because completions overtake
-  older summaries and state reads lag. If the read's own summary does not
-  confirm it within 3 seconds, one fresh desktop projection decides. When
-  the desktop declines a read (`applied: false`: already read, older output,
-  or a running turn), a fresh projection reconciles it. While the chat stays
-  unread, each later decline asks again. Another client's read can confirm
-  the receipt before the phone's own read answers, also while its submit is
-  in flight. Then a later unread can predate the phone's read, and a fresh
-  projection decides. An unread that arrives before the read's answer, also
-  before its submit returns, can be a later desktop unread that a state read
-  covers or that follows the read's completion. If the chat still projects
-  unread when the read
-  applies, the same 3-second wait and fresh projection decide. A worktree chat
-  uses a chat `portal.state.request`; a standalone chat uses the overview
-  request and its state read. Hook toggles apply the `portal.hook.event`
-  upserts.
-- `ProjectCloneCoordinator` reads a clone's command status only when its
-  completion is 30 seconds overdue, and once on each return.
-- `PendingChatAttachmentStore` marks retry drafts restorable from command
-  outcomes. A chat view takes each batch once with `takeRestorable`.
-- `WorktreeCreateCoordinator` submits immediately and follows pushed Git-ready
-  and failure updates. A recovery round runs only after 30 foreground seconds
-  without them, then every 30 seconds, and never in the background (CAN-4875).
-  A round recovers a missing worktree ID from the command-status endpoint,
-  or refreshes the overview once the ID is known. It never identifies a
-  create by comparing worktree lists or sends the first message into another
-  client's worktree. An outcome with a known command or
-  worktree ID stays pending across retries to prevent duplicate creates. After
-  the original waiter times out, pull-to-refresh reads command status again
-  so a missed completion event cannot strand an accepted create. If
-  both IDs were lost, the reconciliation deadline releases the attempt and
-  asks the user to check the desktop before trying again, since the original
-  request may have created a task.
-
-`ChatSendCoordinator` mints chat ids (`chat-m…`, `cc-…`) next to message
-ids (`msg-mobile-…`). For tab creates and closes and composer setting
-commands, it does not claim a command whose submit response arrives after
-the session was replaced, so their outcomes cannot change or notify the
-replacement session. Message sends keep their existing delivery and
-recovery behavior and are not covered by this guard. The screen
-calls `_syncWithViewModel` from its view-model listener to apply
-projection bookkeeping and the bound chat's side effects.
-
-`test/ui/features/remote/remote_chat_screen_test.dart` is the registered
-golden for this screen.
-
-## Remote Control compatibility
-
-Remote Control is deprecated in favor of Computer connect. It stays in the
-sidebar only while this account has a paired Remote Control session, including
-while the desktop is offline or reconnecting. Settings keeps a Remote control
-entry in its Organization section (Personal in a Personal context), with a back
-button to Settings. Timeline no longer promotes Remote Control setup.
-
-Mobile keeps the existing desktop and web-server support range. Optional
-capabilities continue to select the available hydration behavior; missing
-`foreground_worktree_chat` or `worktree_chat_summaries_scope` does not require
-an update. Uncursored-event reconciliation and paced SSE/long-poll recovery
-remain. The [CAN-4878 audit](../../docs/planning/2026-10-29-can-4878/compatibility-audit.md)
-records the per-path decisions and the evidence needed before setting a release
-cutoff. The cleanup removes local Dart aliases and an unused feedback loader.
-
-## Remote Control request budgets (CAN-4872)
-
-The Remote Control client keeps the HTTP requests and event-stream
-connections of each user flow low. The pinned request-budget suite is retired
-under the [golden-only test policy](../../docs/golden-tests.md); write a local
-budget check under `test/__scratch__/` when a change touches the network path.
-
-For a current server tail, a missing or stale tail, and cold-connect request
-ordering (CAN-4877), a nonempty server tail can settle chat hydration when its
-projection cursor covers the overview and every observed event for that chat,
-and `chatTailCoverage` proves the exact cached message set was seeded by a
-completed targeted desktop snapshot. Mobile installs its ordered message IDs
-instead of sorting mutable revision timestamps. Absent or mismatched coverage
-keeps reconciliation, including on older servers and live-only partial caches.
-Missing cursors, stale responses and raced live rows keep the desktop snapshot
-fallback. A verified tail ignores older transcript replay for its chat. Legacy
-live events without row cursors resume snapshot reconciliation when their order
-cannot be proven. Chat reads never advance the session's event-stream cursor.
-Advisor prefetch and background summary warming wait for a foreground chat or
-overview projection to finish. A usable HTTP overview also releases the gate,
-so a fresh connect or restore does not depend on another overview push.
-Opening Advisor or chat search still loads it
-on demand. State responses of at least 64 KiB decode and map in an isolate.
-
-Measure tap-to-latest-message time, request counts and received bytes on the
-same physical device and paired desktop before and after a network or
-performance change, and post them in the change's issue.
-
-## Remote Control on-device caches (CAN-4879)
-
-`RemoteFileDiffCache` retains at most 32 diffs and 512 KiB of encoded JSON,
-including the session envelope. Each insertion encodes its row once and saves
-its UTF-8 size. LRU eviction and expiry subtract those sizes. Reads update
-memory only; writes collect for 500 ms, with an explicit flush on background
-and view-model disposal. Cold restoration decodes and validates JSON in a
-separate isolate. Pairing changes fence late reads and discard deferred writes.
-
-Every diff hit revalidates, including a hit restored from disk. Current
-projection revisions identify changed-file metadata rather than patch contents;
-a same-size edit can keep both its revision and line counts. Skipping requests
-requires a content-bound identity, tracked in
-[CAN-5472](https://linear.app/unstoppable-domains/issue/CAN-5472).
-Older hosts without revisions keep memory-only entries. The 15-minute expiry
-still applies.
-
-Transcript hydration reads each chat's persisted tail once per pairing without
-changing its recency. `ShownChatReopener` records actual foreground activations,
-including switching tabs or returning from a covered route. Activation waits
-for connection readiness so a screen mounted before automatic restoration can
-persist subsequent live revisions without another navigation. Notifications to
-mounted, hidden screens do not advance recency or rewrite idle tails. Live
-transcript changes retain the existing write delay and partial-tail protection.
-
-The cache, request-budget and five-diff profile tests were removed in the
-[golden-only test cut](../../docs/golden-tests.md). Profile cache changes with a scratch integration test that
-records the Dart timeline, frame timings, write count and encoded bytes, and
-run identical before and after builds on the same device.
-
-Emulator results compare the workload; they do not establish physical-device
-frame performance.
-
-## Remote Control reconnect pacing (CAN-4873)
-
-`PortalEventStream` (`lib/data/services/portal_event_stream.dart`) paces its
-reconnects with `PortalReconnectBackoff`:
-
-- A failed connection, or a batch that reports the desktop inactive or
-  ended, waits 4, 8, 16, 32 and then 60 seconds. Each wait takes 80-100% of
-  its step. At most five reconnects fit in two minutes of desktop sleep.
-- A healthy active batch, a long-lived stream with keepalives, or a fresh
-  subscription after foreground resets the wait to the first step.
-- A session read that reports the held desktop active ends the current wait
-  at once. Without that read, the client reaches a desktop that wakes within
-  one 60-second step, plus the connection time.
-- Connect errors, timeouts, 5xx and empty streams stay on SSE. Only a
-  stream-route 404 or an oversized frame moves the client to long-poll. It
-  polls at least once and probes SSE again after its own 4- to 60-second
-  step. Polls continue between probes, so delivery does not wait for them.
-
-`PortalReadClient` (`lib/data/services/portal_read_client.dart`) keeps one
-connection pool for session, overview and chat-cache reads. A read that
-passes its deadline is aborted on its own socket, and its retries do not
-reach the network. An abort cannot reach a
-connection that is still in its TCP connect or TLS handshake, so the pool
-also cancels each connection attempt after 10 seconds. A TLS handshake
-that stalls after TCP connects keeps its socket until the server or the OS
-closes it, because `dart:io` cannot cancel a handshake. If that handshake
-completes later, the pool closes the socket at once. The repository
-retires the pool when events pause: on background, session teardown and
-session replacement. Retirement fails the reads in flight at once and
-rejects their late results. A discarded event cursor keeps the pool, so
-reads in flight finish.
-Each SSE connection keeps its own client, so cancelling aborts it.
-Consecutive long-polls share one client.
-
-## Remote Control composer inventory (CAN-3925)
-
-`RemoteComposerCommands` (`lib/data/repositories/remote_composer_commands.dart`)
-reads the `invocable_inventory` session capability. With it, an existing
-worktree chat, or a standalone chat that the desktop projects, uses
-`portal.editor.list_invocables`. Rows keep the desktop order and groups:
-Commands, Skills and commands, then Available to enable. A row that needs
-resolution calls `portal.editor.resolve_invocable` before insertion, and the
-composer inserts the text that the desktop returns. A failed resolve shows the
-shared enable error and keeps the draft. `lib/data/models/remote_invocables.dart`
-validates both answers at the data boundary.
-
-Standalone chats also get the Plugins row. Its count and switches come from
-the projected `pluginSelectionsDetail` of the standalone chat. An absent
-projection is unknown, so the sheet does not load or save it. A toggle sends
-`portal.standalone_chat.set_plugin_selections` and holds as a pending choice
-until the desktop settles it, like a worktree chat.
-
-Without the capability, worktree chats keep `portal.editor.list_slash_commands`
-and standalone chats keep built-in actions only, with no Plugins row.
-
-The composer inventory unit and device tests were removed in the [golden-only test cut](../../docs/golden-tests.md).
+A notification tap for a cloud run opens the run on the web. Any other tap
+shows the Chat home at once. When the push names a chat on a computer
+(`computerId` and `clientChatId`, CAN-7218) and that computer is saved on the
+phone, the tap selects it, waits up to 8 seconds for it to come online, and
+opens the chat through the same row the drawer's Recents uses
+(`computer_connect/push_chat_router.dart`). The Chat home stays, with no error,
+when the push has no valid `computerId`, the computer is not saved, the shell
+has no Computer connect, the computer stays offline, the chat is not listed
+after one inventory refresh, or the chat is outside the phone's current
+context. A newer tap replaces one still resolving.
 
 ## Worktree collation
 

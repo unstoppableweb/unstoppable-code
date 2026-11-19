@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/semantics.dart';
 import 'package:mobile/core/design-system/app-bar/canopy_scaffold.dart';
 import 'package:mobile/core/design-system/icon-button/canopy_icon_button.dart';
 import 'package:mobile/core/design-system/icon/canopy_glyph.dart';
@@ -20,6 +21,8 @@ import 'controller.dart';
 import 'package:provider/provider.dart';
 import 'package:mobile/data/models/workspace_context.dart';
 import 'package:mobile/ui/core/widgets/chat_list_notice.dart';
+import '../space_notifications/space_notifications_sheet.dart';
+import '../space_notifications/space_notifications_view_model.dart';
 import 'worktree_archive_row.dart';
 
 class DeviceProjectsOverview extends StatefulWidget {
@@ -282,13 +285,40 @@ class _DeviceProjectsOverviewState extends State<DeviceProjectsOverview> {
       controller.active &&
       (context.read<WorkspaceContext?>()?.isPersonal ?? true);
 
+  /// A Cowork chat row. A long press (or the "Notifications" accessibility
+  /// action) opens its Work Entry's notification choices once the computer
+  /// has registered the entry's notification space.
   Widget _chat(DeviceChatRef chat) {
-    return ChatOverviewRow(
-      key: ValueKey('device-overview-chat-${chat.id}'),
+    final key = ValueKey('device-overview-chat-${chat.id}');
+    final notifications = context.read<SpaceNotificationsViewModel?>();
+    final spaceId = widget.controller.recents.workEntryNotificationSpaceId(
+      chat.id,
+    );
+    final openNotifications = notifications == null || spaceId == null
+        ? null
+        : () => unawaited(
+            showSpaceNotificationsSheet(
+              context,
+              viewModel: notifications,
+              spaceId: spaceId,
+              title: chat.title,
+            ),
+          );
+    final tile = ChatOverviewRow(
+      key: openNotifications == null ? key : null,
       title: chat.title,
       unread: widget.controller.overviewChats.unread(chat),
       working: widget.controller.overviewChats.working(chat),
       onTap: () => widget.onOpenChat(chat),
+      onLongPress: openNotifications,
+    );
+    if (openNotifications == null) return tile;
+    return Semantics(
+      key: key,
+      customSemanticsActions: {
+        const CustomSemanticsAction(label: 'Notifications'): openNotifications,
+      },
+      child: tile,
     );
   }
 

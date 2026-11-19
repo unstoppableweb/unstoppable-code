@@ -42,7 +42,7 @@ final class EmailAuthException implements Exception {
     'PASSWORD_TOO_SHORT' => 'Use at least 12 characters.',
     'PASSWORD_TOO_LONG' => 'Use 128 characters or fewer.',
     'PASSWORD_COMPROMISED' =>
-      'That password has appeared in a data breach. Choose a different one.',
+      'This is a commonly used password. Attackers try these first, so choose a different one.',
     'EMAIL_AUTH_UNAVAILABLE' =>
       "Email sign-in isn't available right now. Choose another sign-in method.",
     _ => 'Something went wrong. Try again.',

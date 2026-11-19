@@ -8,7 +8,13 @@
 <h1 align="center">Unstoppable Code</h1>
 
 <p align="center">
-  Choose your agents. Combine models across providers. Keep work moving.
+  <strong>Agents scale. Your attention doesn't.</strong>
+</p>
+
+<p align="center">
+  Run Claude Code, Codex, and Cursor side by side, each in its own worktree, on
+  the compatible subscriptions you already have. The app stays quiet until an
+  agent needs you.
 </p>
 
 <p align="center">
@@ -24,27 +30,73 @@
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset=".github/assets/hero-dark.png">
-  <img src=".github/assets/hero-light.png" alt="The Unstoppable Code desktop app with an agent chat open and three projects in the sidebar">
+  <img src=".github/assets/hero-light.png" alt="The Unstoppable Code desktop app with five agent tasks across three projects, one waiting on a question that is also open on a phone and showing on a watch">
 </picture>
 
-## Build with agents, your way
+## Run more agents. Think about them less.
 
 Unstoppable Code brings Claude Code, Codex, Cursor, and local models into one
-app for your projects. Choose the provider and model for the task, then connect
-different models across the steps of a pipeline instead of committing your
-whole workflow to one provider.
+app. Start as many tasks as you like and let them work. You only step in when
+one of them needs you.
 
-- **Combine models in one pipeline:** chain prompts, scripts, and checks into
-  repeatable workflows, choosing different models for different steps. Use Claude
-  and GPT models together for code review, or switch models as your needs change.
-- **Use subscriptions you already pay for:** connect a compatible Claude,
-  ChatGPT, or Cursor plan to run Claude Code, Codex, or Cursor. Your provider's
-  plan terms and usage limits still apply. You can also use local models or
-  choose hosted models with AI credits.
-- **Work in parallel:** give each task its own Git worktree so agents can work
-  on separate changes without sharing a working directory.
-- **Keep work moving from your phone:** use the mobile app to control work on
-  a connected desktop when you're away from your desk.
+### Quiet until it's your turn
+
+Agents work in the background and the app stays muted. When one needs an
+approval or an answer, it lights up so you know where to look, and your phone
+gets a push so you can reply from wherever you are.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/demo-attention-dark.webp">
+  <img src=".github/assets/demo-attention-light.webp" width="100%" alt="Agents work in parallel across three projects. One asks to run a database migration and is approved in a click. Another asks a question, a watch buzzes, and the answer comes from the phone app while the agent carries on.">
+</picture>
+
+[Watch the full demo](https://storage.googleapis.com/unstoppable-client-assets/images/homepage/unstoppable-code/demos/hero-light-1eec784f253c.mp4) ([dark mode](https://storage.googleapis.com/unstoppable-client-assets/images/homepage/unstoppable-code/demos/hero-dark-281511986be7.mp4))
+
+### A second opinion before it ships
+
+Tell the built-in assistant the workflow you want: Claude builds, GPT reviews,
+Claude fixes, then your tests run. Tweak any step by hand, and share it once
+it works.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/demo-workflow-dark.webp">
+  <img src=".github/assets/demo-workflow-light.webp" width="100%" alt="The built-in assistant builds a workflow from a chat message: Implement on Claude, Review on GPT, Fix review findings, and Run tests. A step is tweaked by hand, the GPT review finds two issues, the fix lands, tests pass, and the workflow is shared and shows up in a teammate's library.">
+</picture>
+
+[Watch the full demo](https://storage.googleapis.com/unstoppable-client-assets/images/homepage/unstoppable-code/demos/workflow-light-8c6433038ba3.mp4) ([dark mode](https://storage.googleapis.com/unstoppable-client-assets/images/homepage/unstoppable-code/demos/workflow-dark-56eba5788788.mp4))
+
+### Hit a usage limit? Keep going
+
+When your Claude plan hits its limit, switch the same chat to another
+provider, or to an open model through
+[your own AI gateway](docs/ai-gateway.md), such as OpenRouter, and pick up
+where you left off.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/demo-limit-dark.webp">
+  <img src=".github/assets/demo-limit-light.webp" width="100%" alt="A Claude usage limit notice appears mid-task. An OpenRouter gateway is connected, open-weight models are listed, Kimi K2 Thinking is picked, and it finishes the task.">
+</picture>
+
+[Watch the full demo](https://storage.googleapis.com/unstoppable-client-assets/images/homepage/unstoppable-code/demos/limit-light-bf934b62fd41.mp4) ([dark mode](https://storage.googleapis.com/unstoppable-client-assets/images/homepage/unstoppable-code/demos/limit-dark-7b51a9bd5f8d.mp4))
+
+### And more
+
+- **Every agent, on your subscription:** run Claude Code, Codex, and Cursor on
+  the compatible Claude, ChatGPT, or Cursor plans you already pay for. Your
+  provider's plan terms and usage limits still apply. You can also use local
+  models or choose hosted models with AI credits.
+- **As many as you need, in parallel:** each task gets its own worktree,
+  terminal, and browser, grouped by repo. Quit or reboot and the list comes
+  back.
+- **Pipelines on a schedule:** chain prompts and scripts across agents, and
+  start them on a schedule or a hook.
+- **Chat or terminal, your call:** switch any Claude chat to terminal mode and
+  keep your hooks, status line, `CLAUDE.md`, and skills. Switch back anytime;
+  it's the same session.
+- **Bring your setup with you:** import your projects, chats, and memory from
+  Claude Code and Codex. The skills and plugins you already use keep working.
+- **Respond on the go:** use the mobile app to answer an agent and keep work
+  moving on a connected desktop when you're away from your desk.
 
 The desktop and mobile clients are MIT-licensed;
 hosted services such as accounts and cloud features are not included in this

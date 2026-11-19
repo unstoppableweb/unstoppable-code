@@ -1,15 +1,20 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/semantics.dart';
+import 'package:provider/provider.dart';
 import 'package:mobile/device_link/protocol.dart';
 import 'package:mobile/device_link/worktrees/repository.dart';
 import 'package:mobile/device_link/worktrees/row_projection.dart';
 import 'package:mobile/ui/core/dimens.dart';
 import 'package:mobile/ui/core/workspaces/worktree_archive_menu.dart';
 import 'package:mobile/ui/core/workspaces/worktree_row.dart';
+import '../space_notifications/space_notification_menu.dart';
+import '../space_notifications/space_notifications_sheet.dart';
+import '../space_notifications/space_notifications_view_model.dart';
 import 'controller.dart';
 
-/// A Computer connect worktree row whose long press offers Archive, as
-/// Remote Control's row does.
+/// A Computer connect worktree row whose long press offers Archive, and the
+/// worktree's notification choices once the computer has registered its
+/// notification space.
 class DeviceWorktreeArchiveRow extends StatefulWidget {
   const DeviceWorktreeArchiveRow({
     super.key,
@@ -66,6 +71,9 @@ class _DeviceWorktreeArchiveRowState extends State<DeviceWorktreeArchiveRow> {
     final local = overlay.globalToLocal(position);
     final enabled = controller.canArchiveWorktree(widget.worktree);
     final pending = controller.isArchivingWorktree(widget.worktree);
+    final notifications = context.read<SpaceNotificationsViewModel?>();
+    final row = deviceWorktreeRow(widget.worktree);
+    final spaceId = row.notificationSpaceId;
     _menuOpen = true;
     try {
       final selected = await showMenu<String>(
@@ -75,6 +83,11 @@ class _DeviceWorktreeArchiveRowState extends State<DeviceWorktreeArchiveRow> {
           Offset.zero & overlay.size,
         ),
         items: [
+          if (notifications != null && spaceId != null)
+            spaceNotificationsMenuItem(
+              context,
+              key: ValueKey('device-space-notify-open-${widget.worktree.key}'),
+            ),
           worktreeArchiveMenuItem(
             context,
             key: ValueKey('device-archive-worktree-${widget.worktree.key}'),
@@ -89,6 +102,20 @@ class _DeviceWorktreeArchiveRowState extends State<DeviceWorktreeArchiveRow> {
         ],
       );
       if (!mounted) return;
+      if (selected == spaceNotificationsMenuValue &&
+          notifications != null &&
+          spaceId != null) {
+        // The row outlives the dismissed menu, so its context opens the sheet.
+        await showSpaceNotificationsSheet(
+          context,
+          viewModel: notifications,
+          spaceId: spaceId,
+          title: switch (row.label?.trim()) {
+            final label? when label.isNotEmpty => label,
+            _ => row.branch,
+          },
+        );
+      }
       if (selected == 'archive' &&
           controller.canArchiveWorktree(widget.worktree)) {
         await _archive();

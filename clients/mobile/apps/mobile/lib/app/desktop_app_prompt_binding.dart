@@ -5,13 +5,15 @@ import 'package:mobile/config/app_config.dart';
 import 'package:mobile/services/desktop_app/desktop_app_prompt_policy.dart';
 import 'package:mobile/ui/features/auth/view_models/auth_view_model.dart';
 import 'package:mobile/ui/features/desktop_app/view_models/desktop_app_prompt_controller.dart';
-import 'package:mobile/ui/features/remote/view_models/remote_control_view_model.dart';
+import 'package:mobile/ui/features/device_link/computer_connect/account.dart';
 import 'package:provider/provider.dart';
 
 /// Tells the app-lifetime [DesktopAppPromptController] which account is
-/// signed in and whether it has a paired desktop, from the shell's
-/// [AuthViewModel] and [RemoteControlViewModel]. Leaving the shell (sign-out)
-/// clears both. Inert when no controller is provided.
+/// signed in and whether it has a computer paired through Computer connect,
+/// from the shell's [AuthViewModel] and [ComputerConnectAccount]. A shell
+/// without Computer connect, such as a guest's, cannot pair a computer, so it
+/// counts as having none. Leaving the shell (sign-out) clears both. Inert when
+/// no controller is provided.
 class DesktopAppPromptBinding extends StatefulWidget {
   const DesktopAppPromptBinding({super.key, required this.child});
 
@@ -26,8 +28,8 @@ class _DesktopAppPromptBindingState extends State<DesktopAppPromptBinding> {
   late final DesktopAppPromptController? _controller = context
       .read<DesktopAppPromptController?>();
   late final AuthViewModel _auth = context.read<AuthViewModel>();
-  late final RemoteControlViewModel _remote = context
-      .read<RemoteControlViewModel>();
+  late final ComputerConnectAccount? _computers = context
+      .read<ComputerConnectAccount?>();
   bool _publishScheduled = false;
 
   @override
@@ -35,7 +37,7 @@ class _DesktopAppPromptBindingState extends State<DesktopAppPromptBinding> {
     super.initState();
     if (_controller == null) return;
     _auth.addListener(_schedulePublish);
-    _remote.addListener(_schedulePublish);
+    _computers?.addListener(_schedulePublish);
     _schedulePublish();
   }
 
@@ -44,7 +46,7 @@ class _DesktopAppPromptBindingState extends State<DesktopAppPromptBinding> {
     final controller = _controller;
     if (controller != null) {
       _auth.removeListener(_schedulePublish);
-      _remote.removeListener(_schedulePublish);
+      _computers?.removeListener(_schedulePublish);
       // The controller outlives the shell; its listeners may not rebuild
       // while this tree is being torn down.
       scheduleMicrotask(
@@ -68,16 +70,19 @@ class _DesktopAppPromptBindingState extends State<DesktopAppPromptBinding> {
       final userId = _auth.status == AuthStatus.authenticated
           ? _auth.user?.id
           : null;
+      final computers = _computers;
       _controller?.updateContext(
         // Environment-qualified: production user 7 and staging user 7 are
         // different accounts.
         accountScope: userId == null
             ? null
             : '${AppConfig.environment.name}:$userId',
-        pairing: DesktopPairing.of(
-          _remote.status,
-          hasProbedSession: _remote.hasProbedSession,
-        ),
+        pairing: computers == null
+            ? DesktopPairing.none
+            : DesktopPairing.of(
+                settled: computers.ready,
+                hasComputers: computers.computers.isNotEmpty,
+              ),
       );
     });
   }

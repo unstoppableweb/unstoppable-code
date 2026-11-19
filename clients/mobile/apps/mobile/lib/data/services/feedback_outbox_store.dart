@@ -62,7 +62,7 @@ final class FeedbackOutboxEntry {
   /// The server principal this entry was queued under.
   ///
   /// The queue is durable and survives sign-out, and a 401 is a RETRYABLE
-  /// failure (see `shouldQueueTurnFeedbackFailure`) — precisely because an
+  /// failure (see `isRejectedTurnFeedbackRequest`) — precisely because an
   /// expired session is the case worth replaying. Without this field the
   /// replay would happen under whichever account happens to be signed in at
   /// flush time, publishing one user's rating (and their typed comment) as

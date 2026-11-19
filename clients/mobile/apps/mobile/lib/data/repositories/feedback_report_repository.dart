@@ -27,8 +27,6 @@ final class HttpFeedbackReportRepository implements FeedbackReportRepository {
 
   /// How long ONE report submission may stay open before it is abandoned.
   ///
-  /// The same liveness rule, for the same reason, as
-  /// `HttpTurnFeedbackRepository.requestTimeout` — see its doc comment.
   /// `ApiClient` sets no timeout of its own and `dart:io`'s `HttpClient` has no
   /// default in-flight request timeout, so a half-open socket (a cellular/Wi-Fi
   /// handoff, not an exotic failure) leaves the request open until the OS tears
@@ -49,9 +47,8 @@ final class HttpFeedbackReportRepository implements FeedbackReportRepository {
   /// through to its existing generic retryable sentence, exactly as it does for
   /// a 5xx.
   ///
-  /// The 30-second default is CHOSEN, not measured, and matches
-  /// `HttpTurnFeedbackRepository`: it is a liveness bound on a stuck
-  /// connection, not a latency budget.
+  /// The 30-second default is CHOSEN, not measured: it is a liveness bound on
+  /// a stuck connection, not a latency budget.
   ///
   /// It does not cancel the request server-side, so an expired submit the
   /// server did accept files a DUPLICATE report if the user retries. Do not
@@ -121,9 +118,7 @@ final class MockFeedbackReportRepository implements FeedbackReportRepository {
 /// [MockFeedbackReportRepository] there would freeze whichever repository
 /// `AppConfig.hasAuthApiConfig` returned AT THAT INSTANT: if the app boots
 /// outside demo mode, a later demo-mode toggle would still route "Send
-/// feedback" submissions to the real backend. This mirrors
-/// [LiveConfigTurnFeedbackRepository] exactly, for exactly the same reason —
-/// see its doc comment.
+/// feedback" submissions to the real backend.
 final class LiveConfigFeedbackReportRepository
     implements FeedbackReportRepository {
   LiveConfigFeedbackReportRepository({

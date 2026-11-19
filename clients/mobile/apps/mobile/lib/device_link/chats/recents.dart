@@ -94,6 +94,16 @@ final class DeviceRecentChatsRepository {
     final snapshot? => buildDeviceRecentChats(context, snapshot),
     null => const [],
   };
+
+  /// The server notification space of Cowork chat [chatId]'s Work Entry, when
+  /// the computer has registered one. The search catalog behind the overview's
+  /// Cowork rows does not carry it; the session snapshot does.
+  String? workEntryNotificationSpaceId(String chatId) {
+    for (final chat in _snapshot?.standaloneChats ?? const []) {
+      if (chat.localId == chatId) return chat.workEntryNotificationSpaceId;
+    }
+    return null;
+  }
 }
 
 /// The snapshot's chats in [context], unordered. Rows the user could not open

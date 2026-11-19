@@ -4,10 +4,13 @@ import 'models.dart';
 
 /// Adapts canonical desktop blocks to the transport-neutral mobile feed.
 /// The wire messages stay intact in the repository. No Portal state is used.
+/// [endReasons] (see `deviceTurnEndReasons`) marks the completed timer of
+/// each turn that failed, was stopped or was interrupted.
 List<ChatMessage> deviceChatPresentation(
   String chatId,
-  Iterable<DeviceChatMessage> messages,
-) => [
+  Iterable<DeviceChatMessage> messages, {
+  Map<String, String> endReasons = const {},
+}) => [
   for (final message in messages)
     if (!message.hidden)
       ChatMessage(
@@ -41,11 +44,16 @@ List<ChatMessage> deviceChatPresentation(
                               (b['asyncQuestionAnswer'] as Map)['startsTurn'] ==
                                   false)),
                 )),
-        parts: [for (final block in message.blocks) ..._parts(block)],
+        parts: [
+          for (final block in message.blocks) ..._parts(block, endReasons),
+        ],
       ),
 ];
 
-Iterable<ChatPart> _parts(Map<String, dynamic> block) sync* {
+Iterable<ChatPart> _parts(
+  Map<String, dynamic> block,
+  Map<String, String> endReasons,
+) sync* {
   final type = block['type'];
   switch (type) {
     case 'thinking':
@@ -86,6 +94,8 @@ Iterable<ChatPart> _parts(Map<String, dynamic> block) sync* {
             'completedAt',
           ])
             if (block[key] != null) key: block[key],
+          if (block['completedAt'] != null)
+            'endReason': ?endReasons[block['userMessageId']],
         },
       );
     case 'file_references':

@@ -21,9 +21,12 @@ import 'package:mobile/ui/core/navigation/home_orchestrator_destination.dart';
 import 'package:mobile/ui/features/device_link/computer_connect/orchestrator/screen.dart';
 import 'package:mobile/ui/features/device_link/computer_connect/recent_chats.dart';
 import 'package:mobile/ui/core/navigation/home_recent_chats.dart';
+import 'package:mobile/ui/core/navigation/home_chat_open_request.dart';
+import 'package:mobile/ui/features/device_link/computer_connect/push_chat_router.dart';
 import 'computer_connect_access.dart';
 import 'device_link_device_name.dart';
 import 'device_link_secure_store.dart';
+import 'space_notifications_provider.dart';
 
 /// Account-scoped composition for the Computer Connect home and overview.
 /// The installation identity keeps old desktop pairings; credentials
@@ -49,6 +52,7 @@ class _ComputerConnectScopeState extends State<ComputerConnectScope>
   ComputerConnectEngine? _engine;
   ComputerConnectAccount? _account;
   ComputerRecentChats? _recentChats;
+  PushChatRouter? _pushChatRouter;
   final _usage = ComputerProviderUsageSource();
   bool get _enabled =>
       widget.enabled && widget.accountId != null && widget.sessionToken != null;
@@ -91,6 +95,10 @@ class _ComputerConnectScopeState extends State<ComputerConnectScope>
       revokeLegacyKey: access.revokeLegacyKey,
     );
     _recentChats = ComputerRecentChats(_account!);
+    _pushChatRouter = ComputerPushChatRouter(
+      account: _account!,
+      rows: _recentChats!.rows,
+    );
     WidgetsBinding.instance.addObserver(this);
     unawaited(_account!.restore());
   }
@@ -127,16 +135,30 @@ class _ComputerConnectScopeState extends State<ComputerConnectScope>
     final engine = _engine;
     final account = _account;
     final recentChats = _recentChats;
-    if (!_enabled || engine == null || account == null || recentChats == null) {
+    final pushChatRouter = _pushChatRouter;
+    if (!_enabled ||
+        engine == null ||
+        account == null ||
+        recentChats == null ||
+        pushChatRouter == null) {
       return widget.child;
     }
     return MultiProvider(
       providers: [
+        // Read by account-wide bindings, such as the desktop app prompt.
+        ListenableProvider<ComputerConnectAccount>.value(value: account),
         Provider<ComputerPickerBuilder>.value(
           value: (title) =>
               ComputerDetailsPicker(account: account, title: title),
         ),
         ListenableProvider<HomeRecentChatsSource>.value(value: recentChats),
+        // Read by the notification-tap binding to open a chat on its computer.
+        Provider<PushChatRouter>.value(value: pushChatRouter),
+        // Read by worktree and Cowork rows for their notification choices.
+        spaceNotificationsProvider(
+          sessionToken: () => widget.sessionToken,
+          twoFactorProof: () => widget.twoFactorProof,
+        ),
       ],
       child: ListenableBuilder(
         listenable: account,

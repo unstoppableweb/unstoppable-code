@@ -110,8 +110,8 @@ class ChatTabsLiveState {
 ///
 /// [chatState] is passed in rather than looked up from a provider: a modal
 /// route is a sibling overlay entry of the route that opened it, not a
-/// descendant, so the `.value` re-provide wrapping a pushed `RemoteChatScreen`
-/// is not visible from here.
+/// descendant, so providers around the opening chat screen are not visible
+/// from here.
 Future<void> showChatTabsSheet(
   BuildContext context, {
   required List<ChatTabItem> summaries,

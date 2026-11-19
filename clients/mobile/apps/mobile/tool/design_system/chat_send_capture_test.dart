@@ -1,63 +1,53 @@
-// Immediate send clearing: SEND_STAGE=before/after flutter test
-// tool/design_system/chat_send_capture_test.dart --update-goldens
-// Captures both themes with a deferred fake send and no network.
+// Pending send on a Computer connect chat: SEND_STAGE=after
+// flutter test tool/design_system/chat_send_capture_test.dart --update-goldens
+// Captures both themes while the fake computer holds the send open. No
+// network.
 import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:provider/provider.dart';
-import 'package:mobile/data/models/remote_chat.dart';
-import 'package:mobile/data/models/remote_session.dart';
-import 'package:mobile/data/repositories/turn_feedback_repository.dart';
-import 'package:mobile/ui/core/theme.dart';
-import 'package:mobile/ui/features/remote/view_models/remote_control_view_model.dart';
-import 'package:mobile/ui/features/remote/view_models/turn_feedback_controller.dart';
-import 'package:mobile/ui/features/remote/views/remote_chat_screen.dart';
+import 'package:mobile/ui/features/device_link/chats_screen.dart';
 
-import '../../test/support/fake_remote_control_repository.dart';
+import '../../test/support/device_chat_harness.dart';
+import '../../test/support/fake_attachment_picker.dart';
+import '../../test/support/fake_desktop_computer.dart';
+import '../../test/support/reduced_motion.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  useReducedMotion();
+  final stage = Platform.environment['SEND_STAGE'] ?? 'after';
+
+  setUpAll(() async {
+    await (FontLoader(
+      'Inter',
+    )..addFont(rootBundle.load('assets/fonts/inter/InterVariable.ttf'))).load();
+    await (FontLoader(
+      'MaterialIcons',
+    )..addFont(rootBundle.load('fonts/MaterialIcons-Regular.otf'))).load();
+  });
+
   for (final dark in [false, true]) {
-    testWidgets('pending send ${dark ? 'dark' : 'light'}', (tester) async {
-      tester.view.physicalSize = const Size(1170, 2532);
-      tester.view.devicePixelRatio = 3;
-      addTearDown(tester.view.reset);
-      await (FontLoader('Inter')
-            ..addFont(rootBundle.load('assets/fonts/inter/InterVariable.ttf')))
-          .load();
-      await (FontLoader(
-        'MaterialIcons',
-      )..addFont(rootBundle.load('fonts/MaterialIcons-Regular.otf'))).load();
-      final completion = Completer<RemoteChatSendResult>();
-      final repo = FakeRemoteControlRepository()
-        ..sendChatMessageHandler = () => completion.future;
-      final vm = RemoteControlViewModel(repository: repo);
-      await vm.connect('123456');
-      await tester.pumpWidget(
-        MultiProvider(
-          providers: [
-            ChangeNotifierProvider<RemoteControlViewModel>.value(value: vm),
-            ChangeNotifierProvider<TurnFeedbackController>(
-              create: (_) => TurnFeedbackController(
-                repository: MockTurnFeedbackRepository(),
-              ),
-            ),
-          ],
-          child: MaterialApp(
-            theme: dark ? AppTheme.dark : AppTheme.light,
-            home: const RemoteChatScreen.standalone(
-              standaloneChat: RemoteStandaloneChat(
-                localId: 'chat-1',
-                projectLocalId: 'ws-1',
-                title: 'Chat',
-              ),
-            ),
-          ),
+    final mode = dark ? 'dark' : 'light';
+    testWidgets('pending send $mode', (tester) async {
+      tester.view.padding = const FakeViewPadding(top: 47, bottom: 34);
+      final held = Completer<void>();
+      final harness = buildDeviceChatHarness(
+        computer: FakeDesktopComputer(heldSend: held),
+      );
+      addTearDown(harness.dispose);
+      await harness.open(
+        tester,
+        'chat-pkce',
+        mode: dark ? ThemeMode.dark : ThemeMode.light,
+        screen: (model) => DeviceChatScreen(
+          model: model,
+          attachmentPicker: FakeAttachmentPicker(),
         ),
       );
-      await tester.pump();
+
       await tester.enterText(
         find.byKey(const ValueKey('composer-draft')),
         'Deploy the fix',
@@ -65,21 +55,29 @@ void main() {
       await tester.pump();
       await tester.tap(find.byKey(const ValueKey('composer-send')));
       await tester.pump(const Duration(milliseconds: 100));
-      final stage = Platform.environment['SEND_STAGE'] == 'before'
-          ? 'before'
-          : 'after';
+
+      // Computer connect keeps the draft until the computer accepts the
+      // message, so the pending frame shows it beside the sending control.
+      expect(harness.model.chats.sending, isTrue);
+      expect(
+        tester
+            .widget<TextField>(find.byKey(const ValueKey('composer-draft')))
+            .controller
+            ?.text,
+        'Deploy the fix',
+      );
+      expect(tester.takeException(), isNull);
       await expectLater(
         find.byKey(const ValueKey('chat-composer')),
         matchesGoldenFile(
-          '../../../../.playwright/mobile-send-clear/pending-$stage-${dark ? 'dark' : 'light'}.png',
+          '../../../../.playwright/mobile-send-clear/pending-$stage-$mode.png',
         ),
       );
-      completion.complete(
-        const RemoteChatSendResult(commandId: '', chatId: 'chat-1'),
-      );
-      await tester.pump();
-      await tester.pumpWidget(const SizedBox.shrink());
-      vm.dispose();
+
+      held.complete();
+      await tester.runAsync(() => harness.computer.replied.future);
+      await tester.pumpAndSettle();
+      await tester.pumpWidget(const SizedBox());
     });
   }
 }

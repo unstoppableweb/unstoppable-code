@@ -148,4 +148,36 @@ final class TurnFeedbackEntry {
         feedbackId: summary.feedbackId,
         reason: summary.reason,
       );
+
+  /// One row of a desktop chat tab's `turnFeedback` map
+  /// (`TurnFeedbackEntry` in `packages/desktop-shared/src/types.ts`), or null
+  /// when it is not a recognizable rating.
+  static TurnFeedbackEntry? fromTabSeed(Object? value) {
+    if (value is! Map) return null;
+    final rating = turnFeedbackRatingFromWire(value['rating']);
+    if (rating == null) return null;
+    final feedbackId = value['feedbackId'];
+    return TurnFeedbackEntry(
+      rating: rating,
+      syncState: switch (value['syncState']) {
+        'synced' => TurnFeedbackSyncState.synced,
+        'failed' => TurnFeedbackSyncState.failed,
+        _ => TurnFeedbackSyncState.pending,
+      },
+      feedbackId: feedbackId is String && feedbackId.isNotEmpty
+          ? feedbackId
+          : null,
+      reason: turnFeedbackReasonFromWire(value['reason']),
+    );
+  }
+}
+
+/// A desktop chat tab's persisted `turnFeedback`, keyed by user message id.
+/// Missing or malformed input yields an empty map, never a throw.
+Map<String, TurnFeedbackEntry> turnFeedbackTabSeed(Object? value) {
+  if (value is! Map) return const {};
+  return {
+    for (final MapEntry(:key, :value) in value.entries)
+      if (key is String) key: ?TurnFeedbackEntry.fromTabSeed(value),
+  };
 }

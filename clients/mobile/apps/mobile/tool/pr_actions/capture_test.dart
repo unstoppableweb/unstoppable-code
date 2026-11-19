@@ -1,21 +1,23 @@
 // Mobile PR actions: deterministic Activity drawer evidence, no network.
-// Run PR_ACTIONS_STAGE=before/after flutter test tool/pr_actions/capture_test.dart
+// Run PR_ACTIONS_STAGE=after flutter test tool/pr_actions/capture_test.dart
 // --update-goldens from apps/mobile. Both color modes are captured together.
 //
-// `blocked-create`, `blocked-merge` and `unsupported` cover CAN-2982's
-// unavailable states; they have no `before` counterpart because the earlier
-// build rendered nothing at all for them.
+// Pumps the shared WorktreeActivitySidebar that Computer connect's Activity
+// drawer renders, with a scripted PR action runner in place of the computer.
+// `unsupported` is the drawer with no runner, as when the computer is offline.
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:mobile/data/models/remote_activity.dart';
-import 'package:mobile/data/models/remote_pr.dart';
-import 'package:mobile/data/models/remote_session.dart';
+import 'package:mobile/data/models/computer_activity/activity.dart';
+import 'package:mobile/data/models/computer_activity/pr.dart';
+import 'package:mobile/data/models/computer_activity/pr_status.dart';
+import 'package:mobile/ui/core/activity/activity_sidebar.dart';
+import 'package:mobile/ui/core/activity/worktree_activity_context.dart';
 import 'package:mobile/ui/core/theme.dart';
-import 'package:mobile/ui/features/remote/views/widgets/activity_sidebar.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
   final stage = Platform.environment['PR_ACTIONS_STAGE'] == 'before'
       ? 'before'
       : 'after';
@@ -107,8 +109,9 @@ void main() {
         final cached = runner == null
             ? null
             : await runner(RemotePrAction.refresh);
-        tester.view.physicalSize = const Size(390, 640);
+        tester.view.physicalSize = const Size(390, 844);
         tester.view.devicePixelRatio = 1;
+        tester.view.padding = const FakeViewPadding(top: 47, bottom: 34);
         addTearDown(tester.view.reset);
         await tester.pumpWidget(
           MaterialApp(
@@ -117,11 +120,10 @@ void main() {
             home: Scaffold(
               body: RepaintBoundary(
                 key: const ValueKey('capture'),
-                child: RemoteActivitySidebar(
-                  worktree: RemoteWorktree(
+                child: WorktreeActivitySidebar(
+                  worktree: WorktreeActivityContext(
                     localId: 'task',
                     workspaceLocalId: 'workspace',
-                    branch: 'feature/mobile-pr',
                     prStatuses: [
                       if (state != 'none')
                         RemoteWorktreePr(
@@ -138,6 +140,7 @@ void main() {
                     ],
                   ),
                   activity: const RemoteWorktreeActivity(),
+                  onOpenDiff: (_) {},
                   runPrAction: runner,
                   cachedPrRepos: cached == null
                       ? null
@@ -164,9 +167,11 @@ void main() {
           await tester.pump(const Duration(milliseconds: 300));
           expect(find.text('Merge with unresolved comments?'), findsOneWidget);
         }
-        Directory(
-          '../../.playwright/mobile-pr-actions',
-        ).createSync(recursive: true);
+        if (scenario == 'unsupported') {
+          expect(find.byKey(const ValueKey('create-pr-app')), findsNothing);
+        }
+        expect(find.text('Activity'), findsOneWidget);
+        expect(tester.takeException(), isNull);
         await expectLater(
           scenario == 'confirmation'
               ? find.byType(Overlay).first
@@ -175,7 +180,6 @@ void main() {
             '../../../../.playwright/mobile-pr-actions/$scenario-$stage-${dark ? 'dark' : 'light'}.png',
           ),
         );
-        expect(tester.takeException(), isNull);
       });
     }
   }

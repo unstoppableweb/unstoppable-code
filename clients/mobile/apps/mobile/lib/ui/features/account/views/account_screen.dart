@@ -137,8 +137,8 @@ class AccountScreen extends StatelessWidget {
 }
 
 /// Rows for the [settingsHomeTabs] this shell shows, so an account without an
-/// organization sees Members and Remote control. Each row selects its shell
-/// destination, which shows a back button to Settings.
+/// organization still sees Members. Each row selects its shell destination,
+/// which shows a back button to Settings.
 ///
 /// Renders nothing outside the shell, where there is no [HomeTabController].
 class _OrganizationSection extends StatelessWidget {

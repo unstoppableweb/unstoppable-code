@@ -6,8 +6,6 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:mobile/data/repositories/remote_control_repository.dart';
-import 'package:mobile/ui/features/remote/view_models/remote_control_view_model.dart';
 import '../../test/support/app_bar_routes.dart';
 import '../../test/support/reduced_motion.dart';
 
@@ -40,18 +38,14 @@ void main() {
       tester.view.devicePixelRatio = 1;
       tester.view.padding = const FakeViewPadding(top: 47, bottom: 34);
       addTearDown(tester.view.reset);
-      final remote = RemoteControlViewModel(
-        repository: MockRemoteControlRepository(latency: Duration.zero),
-      );
-      await tester.runAsync(() => remote.connect('123456'));
-      addTearDown(remote.dispose);
-      for (final entry in appBarRoutes(remote).entries) {
+      for (final entry in appBarRoutes().entries) {
         await tester.pumpWidget(const SizedBox.shrink());
-        await tester.pumpWidget(
-          appBarRouteHost(remote: remote, screen: entry.value, dark: dark),
-        );
+        final route = entry.value;
+        final screen = route.screen ?? await route.setUp!(tester);
+        await tester.pumpWidget(appBarRouteHost(screen: screen, dark: dark));
         await tester.tap(find.text('Open screen'));
         await tester.pumpAndSettle();
+        expect(find.byWidget(screen), findsOneWidget);
         await expectLater(
           find.byType(Navigator),
           matchesGoldenFile(

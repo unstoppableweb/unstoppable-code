@@ -1,7 +1,8 @@
-// Ports of the desktop's `isPlausibleGitRemoteUrl`
-// (apps/desktop-app/src/main/portal/adapters/workspace-adapter.ts) and the
-// protocol's `repositoryNameFromCloneUrl` (packages/protocol/src/portal).
-// Keep their rules identical: the desktop re-checks every clone URL.
+// Ports of `isPlausibleGitRemoteUrl` from the desktop's retired Portal
+// workspace adapter (deleted in CAN-5986) and of the protocol's
+// `repositoryNameFromCloneUrl` (packages/protocol/src/portal/index.ts).
+// Keep the name rule identical to the protocol's; the desktop checks every
+// clone URL again before it clones.
 
 final RegExp _remoteScheme = RegExp(
   r'^(https?|git|ssh)://',
