@@ -148,6 +148,8 @@ export const ReviewAnnotationsArtifactSchema = z.looseObject({
   /** Null until the first generation completes. */
   data: ReviewAnnotationSetSchema.nullable(),
   ...artifactEnvelope,
+  /** Generated annotations the reader could not use, so `data` leaves them out. */
+  skippedAnnotations: z.number().int().min(1).optional(),
 });
 
 export const ReviewDiagramArtifactSchema = z.looseObject({
@@ -174,6 +176,20 @@ export type CodeReviewRecord = z.output<typeof CodeReviewRecordSchema>;
 /** Stored comment threads the reader could not use, so `review` leaves them out. */
 const skippedCommentThreads = z.number().int().min(1).optional();
 
+/**
+ * Why a stored review cannot be written safely (CAN-6848): it could not be
+ * read, is not JSON, is not version 1, or holds a field this version would
+ * drop or change on its next write, unknown extensions included.
+ */
+export const REVIEW_STATE_FAILURES = [
+  'read_failed',
+  'invalid_json',
+  'unsupported_version',
+  'lossy_state',
+] as const;
+export type ReviewStateFailure = (typeof REVIEW_STATE_FAILURES)[number];
+export const ReviewStateFailureSchema = z.enum(REVIEW_STATE_FAILURES);
+
 // --- Reads -------------------------------------------------------------------
 
 export const ReviewGetParamsSchema = z.strictObject({
@@ -185,6 +201,11 @@ export const ReviewGetResultSchema = z.strictObject({
   /** The worktree's current branch diff fingerprint. */
   fingerprint: z.string().min(1),
   skippedCommentThreads,
+  /**
+   * Present when the stored review cannot be written safely; `review` is what
+   * could be read, and every write refuses with `core.review.damagedState`.
+   */
+  stateFailure: ReviewStateFailureSchema.optional(),
 });
 
 // --- Generation ----------------------------------------------------------------

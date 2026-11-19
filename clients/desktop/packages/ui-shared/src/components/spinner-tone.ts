@@ -1,7 +1,7 @@
 import { OPERATIONAL_STATUS_COLORS } from '../lib/operational-status-colors';
 
 /**
- * Ink for the dot spinners. `inherit` takes the surrounding text color, which
+ * Ink for the spinners. `inherit` takes the surrounding text color, which
  * is right inside a labelled control; the rest name the role the spinner
  * stands for. `active` and `unread` are operational run states and follow
  * {@link OPERATIONAL_STATUS_COLORS}.
@@ -42,19 +42,11 @@ export function spinnerClassName(tone: SpinnerTone, quiet: boolean): string {
   return quiet ? `${ink} ${SPINNER_QUIET_CLASS_NAME}` : ink;
 }
 
-const DOT_PX = 2;
-/** Natural width/height of the 3x3 dot grid at its default 2px gaps. */
-const DOT_GRID_PX = 3 * DOT_PX + 2 * 2;
-
 /**
- * Inline gap that grows the dot grid to fill a `sizePx` slot. The three 2px
- * columns are fixed, so a larger box is met by widening the gaps; a size at or
- * below the natural grid returns nothing, since shrinking would need smaller
- * dots rather than a negative gap. Inline so it beats the default `gap-0.5`
- * utility regardless of stylesheet order.
+ * The ring's ink for a tone. Activity reads in the primary ink rather than
+ * the brand accent; every other tone keeps its meaning, and `inherit` and
+ * `emphasis` still follow the control they sit in.
  */
-export function spinnerGapStyle(sizePx?: number): { gap: string } | undefined {
-  return sizePx !== undefined && sizePx > DOT_GRID_PX
-    ? { gap: `${(sizePx - 3 * DOT_PX) / 2}px` }
-    : undefined;
+export function cometTone(tone: SpinnerTone): SpinnerTone {
+  return tone === 'accent' ? 'primary' : tone;
 }

@@ -47,6 +47,7 @@ import {
   getWorkspaceWorktreeRootRepoDir,
   getWorkspaceWorktreesRootDir,
 } from './paths';
+import { ensureWorktreeMetadataDirectory } from './worktree-metadata-reservation';
 import {
   readWorkspaceConfig,
   readWorkspaceConfigDetailed,
@@ -958,9 +959,9 @@ async function ensureTargetWorkspaceWorktree(
 
   transition?.beforeEffects?.();
   await mkdir(dirname(worktreeRootPath), { recursive: true });
-  await mkdir(getWorktreeDataDir(request.workspaceId, worktreeId), {
-    recursive: true,
-  });
+  await ensureWorktreeMetadataDirectory(
+    getWorktreeDataDir(request.workspaceId, worktreeId),
+  );
   const branchName = await git.createWorktree(
     referenceRepoPath,
     worktreeRootPath,
@@ -1062,11 +1063,8 @@ async function applyAdmittedWorkspaceSourceChanges(
     transition,
   );
   transition?.beforeEffects?.();
-  await mkdir(
+  await ensureWorktreeMetadataDirectory(
     getWorktreeDataDir(request.workspaceId, targetContext.worktreeId),
-    {
-      recursive: true,
-    },
   );
 
   const targetManifest = await readExistingTargetManifest(

@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import { canonicalRelativePath } from '../ids';
 import { grammarForPath } from '../grammars/registry';
 import { nonCodeExtractorForPath } from '../extract/extractor-registry';
+import { isMissingPathError, isResourceExhaustionError } from '../io-failure';
 
 const execFileAsync = promisify(execFile);
 
@@ -47,8 +48,11 @@ async function statScanned(
       sizeBytes: Number(stats.size),
       mtimeNs: String(stats.mtimeNs),
     };
-  } catch {
-    return null; // vanished between listing and stat
+  } catch (error) {
+    // Only a missing path vanished between listing and stat; any other
+    // error is not "gone" and reaches the caller.
+    if (isMissingPathError(error)) return null;
+    throw error;
   }
 }
 
@@ -107,6 +111,12 @@ export interface EnumerateSourceFilesOptions {
   // normalized (lowercase, leading dot) by languages/custom-config.ts, and
   // matched with the same endsWith convention `grammarForPath` uses.
   customExtensions?: readonly string[];
+  /**
+   * A listed file that exists but could not be stat'ed (for example EACCES).
+   * It is left out of the result; the caller keeps its prior facts. Without
+   * this callback the error rejects the scan.
+   */
+  onUnreadable?: (relativePath: string) => void;
 }
 
 function matchesCustomExtension(
@@ -145,7 +155,15 @@ export async function enumerateSourceFiles(
   }
   const scanned: ScannedSourceFile[] = [];
   for (const relativePath of candidates) {
-    const entry = await statScanned(rootPath, relativePath);
+    let entry: ScannedSourceFile | null;
+    try {
+      entry = await statScanned(rootPath, relativePath);
+    } catch (error) {
+      if (isResourceExhaustionError(error) || !options?.onUnreadable)
+        throw error;
+      options.onUnreadable(relativePath);
+      continue;
+    }
     if (entry !== null) {
       scanned.push(entry);
     }

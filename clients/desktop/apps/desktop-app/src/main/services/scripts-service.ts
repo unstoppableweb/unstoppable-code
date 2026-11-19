@@ -3,9 +3,9 @@ import { SHARED_CONTAINER_VIEWER_PROJECT_ID } from '@canopy/desktop-shared/types
 import { lstat } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import type {
-  PortalEntityEnvelope,
-  PortalScriptRun,
-  PortalScriptSummary,
+  RemoteControlEntityEnvelope,
+  RemoteControlScriptRun,
+  RemoteControlScriptSummary,
   ScriptRunSnapshot,
   ScriptDescriptor,
   ScriptCompleteEvent,
@@ -24,11 +24,11 @@ import {
   resolveEffectiveScriptTimeoutSeconds,
   type ScriptDefinition,
 } from '@canopy/desktop-shared/scripts';
-import { worktreeScopedParentLocalId } from '@canopy/protocol/portal';
+import { worktreeScopedParentLocalId } from '@canopy/protocol/remote-control/shell';
 
 /**
  * Coarse-grained lifecycle bucket the named script belongs to. Mirrors
- * `PortalScriptSummary.lifecycle` — one of `before | setup | after |
+ * `RemoteControlScriptSummary.lifecycle` — one of `before | setup | after |
  * teardown | null`. Ad-hoc / launch scripts return `null` because they do
  * not participate in setup/teardown grouping.
  */
@@ -77,7 +77,7 @@ import { readPreferencesFile } from '../lib/preferences-store';
 import { validateId } from '../lib/validation';
 import { cancelWorkspaceTargetRuntimePreparation } from '../lib/workspace-target-exclusion';
 import { assertNotSplitLocked } from './split-lock-service';
-import { PortalServiceError } from './portal-service-error';
+import { RemoteControlServiceError } from './remote-control-service-error';
 import { readSingleRepoProject } from '../lib/script-definition-host';
 import { readScriptSourceInfo } from '../lib/script-source-info';
 import { getActiveDesktopRuntime } from '../canopy-runtime/desktop-runtime';
@@ -179,7 +179,7 @@ export interface RunScriptOptions {
   onRendererOutput?: (event: ScriptOutputEvent) => void;
   onRendererComplete?: (event: ScriptCompleteEvent) => void;
   onChunk?: (chunk: { stream: 'stdout' | 'stderr'; text: string }) => void;
-  onRunUpdate?: (run: PortalScriptRun) => void;
+  onRunUpdate?: (run: RemoteControlScriptRun) => void;
 }
 
 export interface StopScriptOptions {
@@ -187,12 +187,12 @@ export interface StopScriptOptions {
   onRendererComplete?: (event: ScriptCompleteEvent) => void;
 }
 
-function emitScriptRun(run: PortalScriptRun): void {
+function emitScriptRun(run: RemoteControlScriptRun): void {
   publishForeignScriptActivity(run);
 }
 
 function notifyScriptRunUpdate(
-  run: PortalScriptRun,
+  run: RemoteControlScriptRun,
   options: RunScriptOptions,
 ): void {
   options.onRunUpdate?.(run);
@@ -205,7 +205,10 @@ async function resolveScriptExecution(
 ): Promise<ScriptExecution | null> {
   const scriptName = normalizeScriptName(request.scriptName);
   if (!scriptName) {
-    throw new PortalServiceError('invalid_payload', 'scriptName is required.');
+    throw new RemoteControlServiceError(
+      'invalid_payload',
+      'scriptName is required.',
+    );
   }
 
   if (request.target === 'shared-container') {
@@ -218,7 +221,7 @@ async function resolveScriptExecution(
       !(await isSharedContainerAccepted(request.containerId)) ||
       !(await isSharedContainerRunAllowed(request.containerId))
     ) {
-      throw new PortalServiceError(
+      throw new RemoteControlServiceError(
         'invalid_target',
         'Shared-container run is not allowed.',
       );
@@ -231,7 +234,7 @@ async function resolveScriptExecution(
     // a command the publisher did not publish has to see that refusal.
     const state = await reader.store.get(request.containerId);
     if (state?.status !== 'available' && state?.status !== 'pinned') {
-      throw new PortalServiceError(
+      throw new RemoteControlServiceError(
         'invalid_target',
         'Shared-container revision is not available.',
       );
@@ -241,7 +244,7 @@ async function resolveScriptExecution(
       revisionId: state.revisionId,
     });
     if (!run) {
-      throw new PortalServiceError(
+      throw new RemoteControlServiceError(
         'invalid_target',
         'This share did not publish run configuration.',
       );
@@ -250,7 +253,7 @@ async function resolveScriptExecution(
       (command) => command.name === scriptName,
     );
     if (!published) {
-      throw new PortalServiceError(
+      throw new RemoteControlServiceError(
         'invalid_target',
         'This share did not publish that command.',
       );
@@ -260,7 +263,7 @@ async function resolveScriptExecution(
       runCopy.state === 'committed' &&
       runCopy.revisionId !== state.revisionId
     ) {
-      throw new PortalServiceError(
+      throw new RemoteControlServiceError(
         'invalid_target',
         'Update the shared-container run copy before running this command.',
       );
@@ -276,7 +279,7 @@ async function resolveScriptExecution(
     );
     const cwdInfo = await lstat(cwd).catch(() => null);
     if (!cwdInfo || !cwdInfo.isDirectory() || cwdInfo.isSymbolicLink()) {
-      throw new PortalServiceError(
+      throw new RemoteControlServiceError(
         'invalid_target',
         'The shared-container run-copy repository is unavailable.',
       );
@@ -433,7 +436,10 @@ async function runScriptWithLifecycle(
 ): Promise<ScriptRunResponse> {
   const scriptName = normalizeScriptName(request.scriptName);
   if (!scriptName) {
-    throw new PortalServiceError('invalid_payload', 'scriptName is required.');
+    throw new RemoteControlServiceError(
+      'invalid_payload',
+      'scriptName is required.',
+    );
   }
   const scriptWorkspaceId =
     request.target === 'shared-container'
@@ -464,7 +470,7 @@ async function runScriptWithLifecycle(
         configuredInteractive: execution.script.interactive,
       }) !== expected.interactive)
   )
-    throw new PortalServiceError(
+    throw new RemoteControlServiceError(
       'invalid_target',
       'The script changed after it was checked, so it was not run. Run it again to use the current command.',
     );
@@ -498,7 +504,7 @@ async function runScriptWithLifecycle(
     ),
   );
   notifyScriptRunUpdate(
-    buildPortalScriptRun({
+    buildRemoteControlScriptRun({
       execution,
       runId,
       status: 'running',
@@ -554,7 +560,7 @@ async function runScriptWithLifecycle(
             );
             options.onChunk?.({ stream: 'stdout', text });
             notifyScriptRunUpdate(
-              buildPortalScriptRun({
+              buildRemoteControlScriptRun({
                 execution,
                 runId: ref.runId,
                 status: 'running',
@@ -594,7 +600,7 @@ async function runScriptWithLifecycle(
     };
   }
   notifyScriptRunUpdate(
-    buildPortalScriptRun({
+    buildRemoteControlScriptRun({
       execution,
       runId: ref.runId,
       status: scriptRunStatus(response),
@@ -814,7 +820,7 @@ function resolveScriptRunLogStatus(args: {
   execution: WorkerScriptExecution;
 }): {
   snapshotStatus: ScriptRunSnapshot['status'];
-  portalStatus: PortalScriptRun['status'];
+  remoteControlRunStatus: RemoteControlScriptRun['status'];
   completedAt?: string;
 } {
   const { execution } = args;
@@ -823,7 +829,7 @@ function resolveScriptRunLogStatus(args: {
   if (execution.status === 'orphaned')
     return {
       snapshotStatus: 'running',
-      portalStatus: 'running',
+      remoteControlRunStatus: 'running',
       completedAt: execution.completedAt ?? undefined,
     };
   // A lost run (a restart interrupted it) shows as cancelled, as a stale
@@ -842,7 +848,7 @@ function resolveScriptRunLogStatus(args: {
       : execution.status;
   return {
     snapshotStatus: status,
-    portalStatus: execution.timedOut ? 'timed_out' : status,
+    remoteControlRunStatus: execution.timedOut ? 'timed_out' : status,
     completedAt: execution.completedAt ?? undefined,
   };
 }
@@ -852,7 +858,7 @@ export async function readScriptRunTail(request: {
   worktreeId: string;
   scriptKey: string;
   maxLines?: number;
-}): Promise<{ lines: string[]; run?: PortalScriptRun }> {
+}): Promise<{ lines: string[]; run?: RemoteControlScriptRun }> {
   validateId(request.projectId, 'projectId');
   validateId(request.worktreeId, 'worktreeId');
   const { run } = await readScriptRun({
@@ -863,7 +869,7 @@ export async function readScriptRunTail(request: {
   });
   if (!run) return { lines: [] };
   const { execution: meta, lines } = run;
-  const { portalStatus, completedAt } = resolveScriptRunLogStatus({
+  const { remoteControlRunStatus, completedAt } = resolveScriptRunLogStatus({
     projectId: request.projectId,
     worktreeId: request.worktreeId,
     execution: meta,
@@ -885,7 +891,7 @@ export async function readScriptRunTail(request: {
       target: meta.script.target,
       repoId: meta.script.repoId,
       repoName: meta.script.repoName,
-      status: portalStatus,
+      status: remoteControlRunStatus,
       startedAt: meta.startedAt,
       finishedAt: completedAt,
       outputTail,
@@ -898,7 +904,7 @@ export async function readAndEmitScriptRunTail(request: {
   worktreeId: string;
   scriptKey: string;
   maxLines?: number;
-}): Promise<{ lines: string[]; run?: PortalScriptRun }> {
+}): Promise<{ lines: string[]; run?: RemoteControlScriptRun }> {
   const result = await readScriptRunTail(request);
   if (result.run) {
     emitScriptRun(result.run);
@@ -954,19 +960,19 @@ export async function loadWorktreeScriptRuns(request: {
 
 function scriptRunStatus(
   response: ScriptRunResponse,
-): PortalScriptRun['status'] {
+): RemoteControlScriptRun['status'] {
   if (response.timedOut) return 'timed_out';
   if (!response.success && response.exitCode === null) return 'cancelled';
   return response.success ? 'success' : 'failed';
 }
 
-function buildPortalScriptRun(input: {
+function buildRemoteControlScriptRun(input: {
   execution: ScriptExecution;
   runId: string;
-  status: PortalScriptRun['status'];
+  status: RemoteControlScriptRun['status'];
   outputTail: string;
   finishedAt?: string;
-}): PortalScriptRun {
+}): RemoteControlScriptRun {
   return {
     workspaceLocalId: input.execution.projectId,
     worktreeLocalId: input.execution.worktreeId,
@@ -1058,7 +1064,7 @@ export async function listScripts(input?: {
   workspaceId?: string;
   projectId?: string;
   worktreeId?: string;
-}): Promise<PortalScriptSummary[]> {
+}): Promise<RemoteControlScriptSummary[]> {
   const workspaceLocalId =
     input?.workspaceLocalId ?? input?.workspaceId ?? input?.projectId;
   const worktreeLocalId = input?.worktreeLocalId ?? input?.worktreeId;
@@ -1284,7 +1290,7 @@ export async function listScriptRuns(input?: {
   workspaceId?: string;
   projectId?: string;
   worktreeId?: string;
-}): Promise<PortalScriptRun[]> {
+}): Promise<RemoteControlScriptRun[]> {
   const workspaceLocalId =
     input?.workspaceLocalId ?? input?.workspaceId ?? input?.projectId;
   const worktreeLocalId = input?.worktreeLocalId ?? input?.worktreeId;
@@ -1300,11 +1306,13 @@ export async function listScriptRuns(input?: {
       }).catch(() => ({ run: null }));
       if (!run) return null;
       const { execution: meta, lines } = run;
-      const { portalStatus, completedAt } = resolveScriptRunLogStatus({
-        projectId: workspaceLocalId,
-        worktreeId: worktreeLocalId,
-        execution: meta,
-      });
+      const { remoteControlRunStatus, completedAt } = resolveScriptRunLogStatus(
+        {
+          projectId: workspaceLocalId,
+          worktreeId: worktreeLocalId,
+          execution: meta,
+        },
+      );
       return {
         workspaceLocalId,
         worktreeLocalId,
@@ -1319,22 +1327,22 @@ export async function listScriptRuns(input?: {
         target: script.target,
         repoId: script.repoId,
         repoName: script.repoName,
-        status: portalStatus,
+        status: remoteControlRunStatus,
         startedAt: meta.startedAt,
         finishedAt: completedAt,
         // Phase 7 cleanup: only the canonical `outputTail` is populated;
-        // the deprecated `logTail` alias was removed from PortalScriptRun
+        // the deprecated `logTail` alias was removed from RemoteControlScriptRun
         // along with this dual-population.
         outputTail: lines.join('\n'),
-      } satisfies PortalScriptRun;
+      } satisfies RemoteControlScriptRun;
     }),
   );
   return runs.flatMap((run) => (run ? [run] : []));
 }
 
-export function scriptToPortalEntity(
-  script: PortalScriptSummary,
-): PortalEntityEnvelope {
+export function scriptToRemoteControlEntity(
+  script: RemoteControlScriptSummary,
+): RemoteControlEntityEnvelope {
   return {
     entityType: 'script_descriptor',
     localId: `${script.worktreeLocalId}:${script.scriptId}`,

@@ -1,4 +1,4 @@
-import type { ChatAgentSentInfo } from '@canopy/protocol/portal';
+import type { ChatAgentSentInfo } from '@canopy/protocol/remote-control/shell';
 import {
   firstIssueMessage,
   PROJECT_READ_TYPES as PROJECT_READ_ACTION_TYPES,

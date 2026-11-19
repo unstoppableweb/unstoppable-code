@@ -64,7 +64,7 @@ export interface DaemonGitRouteOptions {
   readonly workspaceType: (workspaceId: string) => WorkspaceType | null;
   readonly resolveWorktreeTargetIds: ReadRouteLookups['resolveWorktreeTargetIds'];
   readonly platform?: ReadRoutePlatform | null;
-  /** Test-only selection; production selects nothing until CAN-4729. */
+  /** Test-only selection; production uses {@link DAEMON_GIT_PRODUCTION_SELECTION}. */
   readonly selectable?: ReadonlySet<'git.branch.list'>;
   readonly queryDeadlineMs?: number;
   readonly execution?: () => CanopyHostExecution;
@@ -93,7 +93,20 @@ const WORKSPACE_TYPES: ReadonlySet<WorkspaceType> = new Set([
   'multi-repo',
   'cowork',
 ]);
-const PRODUCTION_SELECTION: ReadonlySet<'git.branch.list'> = new Set();
+
+/**
+ * Per-platform production selection (CAN-4729, GA4b): reads that may leave
+ * for the daemon. Windows waits on CAN-4732 and CAN-5943. Listed literally,
+ * so a new read never becomes selectable by accident.
+ */
+export const DAEMON_GIT_PRODUCTION_SELECTION: Readonly<
+  Record<ReadRoutePlatform, ReadonlySet<'git.branch.list'>>
+> = {
+  darwin: new Set(['git.branch.list']),
+  win32: new Set(),
+  linux: new Set(['git.branch.list']),
+};
+const NO_SELECTION: ReadonlySet<'git.branch.list'> = new Set();
 
 function failure(kind: CanopyErrorKind, message: string): CanopyOperationError {
   return new CanopyOperationError({ kind, message, retry: { kind: 'never' } });
@@ -156,7 +169,11 @@ export function createDaemonGitRoute(
     options.platform === undefined
       ? resolveReadRoutePlatform()
       : options.platform;
-  const selectable = options.selectable ?? PRODUCTION_SELECTION;
+  const selectable =
+    options.selectable ??
+    (platform === null
+      ? NO_SELECTION
+      : DAEMON_GIT_PRODUCTION_SELECTION[platform]);
   const lifetime = new AbortController();
   return {
     async branchList(

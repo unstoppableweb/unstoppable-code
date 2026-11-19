@@ -1,3 +1,3 @@
 export * from './types';
 export { buildSubagentChatTranscript } from './message-transcript';
-export { buildPortalSubagentChatTranscript } from './part-transcript';
+export { buildRemoteControlSubagentChatTranscript } from './part-transcript';

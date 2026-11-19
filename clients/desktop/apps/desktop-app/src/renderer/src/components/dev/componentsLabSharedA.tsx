@@ -1,13 +1,5 @@
+import { useState, type ComponentProps, type JSX, type ReactNode } from 'react';
 import {
-  useRef,
-  useState,
-  type ComponentProps,
-  type JSX,
-  type ReactNode,
-} from 'react';
-import {
-  ActionMenuItems,
-  ActionMenuRowStyle,
   ActiveItemsSummary,
   AgentStateGlyph,
   AiCreditsCheckFeedback,
@@ -17,26 +9,12 @@ import {
   ArchivedChatsCard,
   ArchivedChatsList,
   AutomationPipelineTargetFields,
-  DropdownMenuItemIcon,
-  DropdownMenuLinkItem,
   UnifiedTable,
-  Button,
-  FloatingMenu,
-  type ActionMenuItem,
   type AppAdvisorProjectAgentAccessValue,
   type ArchivedChatsListItem,
   type AutomationPipelineRunIn,
   type AutomationPipelineTaskList,
 } from '@canopy/ui-shared/components';
-import {
-  ArchiveIcon,
-  CloseIcon,
-  CopyIcon,
-  LoginIcon,
-  PencilIcon,
-  PinIcon,
-  TrashIcon,
-} from '@canopy/ui-shared/icons/AppIcons';
 import {
   ORCHESTRATOR_PLUGINS_SELECTION_COPY,
   type ActiveInstalledItemCounts,
@@ -65,155 +43,7 @@ const NO_ITEMS: ActiveInstalledItemCounts = {
 /** Web's synced fallback sets this; desktop never does (CAN-6037). */
 const SYNCED_AT = new Date(Date.now() - 5 * 60_000).toISOString();
 
-const MENU_ITEMS: readonly ActionMenuItem[] = [
-  {
-    key: 'rename',
-    label: 'Rename',
-    icon: <PencilIcon />,
-    shortcut: 'F2',
-  },
-  { key: 'copy', label: 'Copy link', icon: <CopyIcon /> },
-  { key: 'pin', label: 'Pin to top', icon: <PinIcon />, busy: true },
-  {
-    key: 'archive',
-    label: 'Archive (needs a finished turn)',
-    icon: <ArchiveIcon />,
-    disabled: true,
-    tooltip: 'Finish the running turn first',
-  },
-  {
-    key: 'close',
-    label: 'Close',
-    icon: <CloseIcon />,
-    separatorBefore: true,
-  },
-  { key: 'close-others', label: 'Close others', icon: <CloseIcon /> },
-  {
-    key: 'delete',
-    label: 'Delete this chat and every file it created in the project',
-    icon: <TrashIcon />,
-    tone: 'destructive',
-    separatorBefore: true,
-  },
-];
-
-const GROUPED_MENU_ITEMS: readonly ActionMenuItem[] = [
-  { key: 'heading', label: 'Open in', icon: null, kind: 'label' },
-  {
-    key: 'finder',
-    label: 'Finder',
-    icon: <CopyIcon />,
-    role: 'menuitemradio',
-    checked: true,
-    sectionLabel: 'Default editor',
-  },
-  {
-    key: 'terminal',
-    label: 'Terminal',
-    icon: <CopyIcon />,
-    role: 'menuitemradio',
-    checked: false,
-  },
-  {
-    key: 'more',
-    label: 'More',
-    icon: <PencilIcon />,
-    kind: 'submenu',
-    submenu: [{ key: 'zed', label: 'Zed', icon: <PencilIcon /> }],
-    separatorBefore: true,
-    sectionStatus: { tone: 'failure', text: 'Couldn’t read editors.' },
-  },
-  {
-    key: 'loading',
-    label: 'Remote',
-    icon: <PencilIcon />,
-    sectionStatus: {
-      tone: 'default',
-      text: 'Looking for editors…',
-      loading: true,
-    },
-  },
-];
-
-function SpecimenMenu({
-  children,
-}: {
-  readonly children: ReactNode;
-}): JSX.Element {
-  const anchorRef = useRef<HTMLButtonElement>(null);
-  const [open, setOpen] = useState(false);
-  return (
-    <ActionMenuRowStyle>
-      <Button
-        ref={anchorRef}
-        size="compact"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        onClick={(): void => setOpen((current) => !current)}
-      >
-        Open menu
-      </Button>
-      <FloatingMenu
-        open={open}
-        onOpenChange={setOpen}
-        anchorRef={anchorRef}
-        className="w-64"
-      >
-        {children}
-      </FloatingMenu>
-    </ActionMenuRowStyle>
-  );
-}
-
-function MenuCell({
-  label,
-  items,
-}: {
-  readonly label: string;
-  readonly items: readonly ActionMenuItem[];
-}): JSX.Element {
-  const [last, setLast] = useState<string | null>(null);
-  return (
-    <SpecimenCell label={last ? `${label} · chose ${last}` : label}>
-      <SpecimenMenu>
-        <ActionMenuItems
-          items={items}
-          onSelect={(item): void => setLast(item.label)}
-        />
-      </SpecimenMenu>
-    </SpecimenCell>
-  );
-}
-
-function ActionMenuSheet(): JSX.Element {
-  return (
-    <SpecimenPanel title="ActionMenuItems">
-      <SpecimenGrid min={260}>
-        <SpecimenCell label="DropdownMenuLinkItem: a row that navigates">
-          <SpecimenMenu>
-            <DropdownMenuLinkItem href="#components-lab">
-              <DropdownMenuItemIcon>
-                <LoginIcon />
-              </DropdownMenuItemIcon>
-              Sign in
-            </DropdownMenuLinkItem>
-          </SpecimenMenu>
-        </SpecimenCell>
-        <MenuCell
-          label="Icons, shortcut, busy, disabled, destructive, shared icon run"
-          items={MENU_ITEMS}
-        />
-        <MenuCell
-          label="Section label, radio rows, submenu, status lines"
-          items={GROUPED_MENU_ITEMS}
-        />
-        <MenuCell label="Empty menu" items={[]} />
-      </SpecimenGrid>
-    </SpecimenPanel>
-  );
-}
-
-function ActiveItemsSheet(): JSX.Element {
+export function ActiveItemsSheet(): JSX.Element {
   return (
     <SpecimenPanel title="ActiveItemsSummary">
       <SpecimenGrid min={420}>
@@ -285,7 +115,7 @@ function ActiveItemsSheet(): JSX.Element {
 }
 
 /** The picker describes additions to this context, never global activation. */
-function OrchestratorPluginsSheet(): JSX.Element {
+export function OrchestratorPluginsSheet(): JSX.Element {
   const [selected, setSelected] = useState<Set<string>>(new Set(['review']));
   return (
     <SpecimenPanel title={ORCHESTRATOR_PLUGINS_SELECTION_COPY.title}>
@@ -322,7 +152,7 @@ function OrchestratorPluginsSheet(): JSX.Element {
   );
 }
 
-function AgentStateSheet(): JSX.Element {
+export function AgentStateSheet(): JSX.Element {
   return (
     <SpecimenPanel title="AgentStateGlyph">
       <SpecimenGrid min={140}>
@@ -362,7 +192,7 @@ function AgentStateSheet(): JSX.Element {
   );
 }
 
-function AiCreditsSheet(): JSX.Element {
+export function AiCreditsSheet(): JSX.Element {
   return (
     <SpecimenPanel title="AiCreditsCheckFeedback and AiCreditsStopLine">
       <SpecimenGrid min={320}>
@@ -459,7 +289,7 @@ function AccessCell({
   );
 }
 
-function AccessSheet(): JSX.Element {
+export function AccessSheet(): JSX.Element {
   return (
     <SpecimenPanel title="AppAdvisorProjectAgentAccessControl">
       <SpecimenGrid min={520}>
@@ -578,7 +408,7 @@ function AppearanceCell({
   );
 }
 
-function AppearanceSheet(): JSX.Element {
+export function AppearanceSheet(): JSX.Element {
   return (
     <SpecimenPanel title="AppearanceSelect">
       <SpecimenGrid min={200}>
@@ -753,7 +583,7 @@ function ArchivedListCell({
   );
 }
 
-function ArchivedChatsListSheet(): JSX.Element {
+export function ArchivedChatsListSheet(): JSX.Element {
   const items = labListItems();
   return (
     <SpecimenPanel title="ArchivedChatsList">
@@ -777,7 +607,7 @@ function ArchivedChatsListSheet(): JSX.Element {
   );
 }
 
-function ArchivedChatsSheet(): JSX.Element {
+export function ArchivedChatsSheet(): JSX.Element {
   return (
     <SpecimenPanel title="ArchivedChatsCard">
       <SpecimenGrid min={340}>
@@ -886,7 +716,7 @@ function TargetCell({
   );
 }
 
-function PipelineTargetSheet(): JSX.Element {
+export function PipelineTargetSheet(): JSX.Element {
   return (
     <SpecimenPanel title="AutomationPipelineTargetFields">
       <SpecimenGrid min={320}>
@@ -968,22 +798,5 @@ function PipelineTargetSheet(): JSX.Element {
         />
       </SpecimenGrid>
     </SpecimenPanel>
-  );
-}
-
-export function SharedASpecimen(): JSX.Element {
-  return (
-    <div className="flex flex-col gap-8">
-      <ActionMenuSheet />
-      <ActiveItemsSheet />
-      <OrchestratorPluginsSheet />
-      <AgentStateSheet />
-      <AiCreditsSheet />
-      <AccessSheet />
-      <AppearanceSheet />
-      <ArchivedChatsSheet />
-      <ArchivedChatsListSheet />
-      <PipelineTargetSheet />
-    </div>
   );
 }

@@ -32,6 +32,8 @@ import {
   readBoundedCodeGraphCustomLanguageFile,
   validateCustomLanguageEntries,
 } from '@canopy/code-graph/languages/custom-config';
+import { CodeGraphIoError } from '@canopy/code-graph/io-failure';
+import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { getBundledCodeGraphDir } from '@canopy/execution-engine/pipelines/config-paths';
 import { writeFileAtomically } from './atomic-file';
 import {
@@ -801,6 +803,8 @@ async function maintainBase(
         };
       }
       let failureStage: 'worker-build' | 'publication' = 'worker-build';
+      // The worker's closed class and errno; its message stays in process.
+      let workerFailure: Partial<CodeGraphBuildDiagnosticDetail> = {};
       try {
         if (enabledOwners().length === 0) {
           throw new CodeGraphWorkerBuildError(
@@ -849,6 +853,12 @@ async function maintainBase(
           buildAttemptId = buildHandle.attemptId ?? undefined;
         }
         if (!response.ok) {
+          workerFailure = {
+            ...(response.failureClass === undefined
+              ? {}
+              : { failureClass: response.failureClass }),
+            ...(response.errno === undefined ? {} : { errno: response.errno }),
+          };
           throw new Error(response.message);
         }
         if (response.baseFinalized !== true) {
@@ -880,6 +890,7 @@ async function maintainBase(
               stagingDir: staging.stagingDir,
               identity,
               gitHead,
+              flushRequiresWriteHandle: hostOperatingSystem() === 'win32',
             });
           } finally {
             installMs = performance.now() - installStartedAt;
@@ -891,10 +902,30 @@ async function maintainBase(
         });
         return { repoId: repository.repoId, ok: true };
       } catch (error) {
+        const ioDetail: Partial<CodeGraphBuildDiagnosticDetail> =
+          error instanceof CodeGraphIoError
+            ? {
+                failureClass: error.failureClass,
+                ...(error.code === undefined ? {} : { errno: error.code }),
+              }
+            : workerFailure;
+        if (
+          error instanceof CodeGraphIoError &&
+          error.kind === 'durability-unverified'
+        ) {
+          // Published and current, but its switch is not known durable; its
+          // staging is already the generation. A crash that loses the switch
+          // leaves the prior generation, which the next cycle rebuilds.
+          recordBaseBuild('failure', {
+            failureStage: 'publication-durability',
+            ...ioDetail,
+          });
+          return { repoId: repository.repoId, ok: true };
+        }
         await rm(staging.stagingDir, { recursive: true, force: true }).catch(
           () => undefined,
         );
-        recordBaseBuild('failure', { failureStage });
+        recordBaseBuild('failure', { failureStage, ...ioDetail });
         return {
           repoId: repository.repoId,
           ok: false,

@@ -18,7 +18,7 @@ import { sendToWindow, type SendableBrowserWindow } from '../lib/window-send';
 import { readWorkspaceWorktrees } from '../lib/workspace-persistence';
 import { getWorkspaceType } from '../lib/workspace-registry';
 import { mapHumanStatus, resolveScriptKey } from '../mcp/script-output';
-import { PortalServiceError } from '../services/portal-service-error';
+import { RemoteControlServiceError } from '../services/remote-control-service-error';
 import {
   listWorktreeScriptEntries,
   runScript,
@@ -417,7 +417,8 @@ function failureFromCause(cause: unknown): AppAdvisorActionResponse {
       ? cause.message
       : 'The script could not run.';
   return failure(
-    cause instanceof PortalServiceError && cause.code !== 'github_not_connected'
+    cause instanceof RemoteControlServiceError &&
+      cause.code !== 'github_not_connected'
       ? cause.code
       : 'execution_failed',
     message,

@@ -440,7 +440,6 @@ export function TopUpSheet({
         <div className="flex flex-col gap-4 p-6">
           <SegmentedControl
             label="Amount"
-            shape="capsule"
             width="content"
             disabled={working}
             value={amountChoice(parsed, valid)}

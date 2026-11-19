@@ -36,8 +36,6 @@ export interface CreditsBalanceReading {
   readonly credits: number;
   readonly source: string;
   readonly email: string;
-  /** The read itself minted the daily drip. */
-  readonly reportedGrant: boolean;
 }
 
 /** What an account re-read found. */

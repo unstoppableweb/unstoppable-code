@@ -5,7 +5,7 @@ import type {
   OpenCodeAccountMethod,
   OpenCodeAccountSnapshot,
   OpenCodeAccountUsage,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import { useMinuteClock } from '../lib/useMinuteClock';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 import { Button } from './Button';

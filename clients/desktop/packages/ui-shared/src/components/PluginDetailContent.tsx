@@ -1583,11 +1583,13 @@ function NameDescriptionTable({
 }
 
 /** One row of New Customize's grouped Contents table. */
-interface PluginContentsRow extends NameDescriptionItem {
+export interface PluginContentsRow extends NameDescriptionItem {
   /** The kind it is, which groups the rows: Skill, Agent, Command… */
   readonly type: string;
   /** A command line: session replay keeps a placeholder for it. */
   readonly replayBlock?: boolean;
+  /** Names copied from installed files are private in session replay. */
+  readonly replayBlockName?: boolean;
 }
 
 const CONTENTS_TYPE_ORDER = [
@@ -1619,7 +1621,7 @@ interface PluginContentsMcp {
  * Hooks…), then by name. MCP server rows keep their endpoint, health and
  * Test connection in a Status column.
  */
-function PluginContentsTable({
+export function PluginContentsTable({
   rows,
   mcp,
   commandHint,
@@ -1644,7 +1646,7 @@ function PluginContentsTable({
     .sort(
       (a, b) => order(a.type) - order(b.type) || a.name.localeCompare(b.name),
     );
-  const before = sorted.filter((row) => order(row.type) < order('MCP server'));
+  const before = sorted.filter((row) => order(row.type) <= order('MCP server'));
   const after = sorted.filter((row) => order(row.type) > order('MCP server'));
   const componentRow = (row: PluginContentsRow): JSX.Element => (
     <DataTableRow key={row.key} verticalAlign="top">
@@ -1660,9 +1662,9 @@ function PluginContentsTable({
           />
         ) : (
           <span
-            className={
+            className={`${
               row.command ? 'font-mono text-xs font-medium' : 'font-medium'
-            }
+            }${row.replayBlockName ? ` ${REPLAY_BLOCK_CLASS}` : ''}`}
           >
             {row.command ?? row.name}
           </span>

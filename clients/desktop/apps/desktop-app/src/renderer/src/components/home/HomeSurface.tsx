@@ -1911,7 +1911,7 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
                       <span>Task planning</span>
                       <Tooltip label="Cancel task planning">
                         <Button
-                          variant="ghost-quiet"
+                          variant="ghost"
                           size="sm"
                           iconOnly
                           data-testid="home-task-plan-cancel"

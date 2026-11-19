@@ -3,7 +3,7 @@
 import { isPlanModeReadOnly } from '@canopy/ui-shared/lib/plan-mode-suggestion';
 import { usePlanModeHintStore } from './composer/PlanModeHintContext';
 
-import type { ChatPlanReviewApproval } from '@canopy/protocol/portal';
+import type { ChatPlanReviewApproval } from '@canopy/protocol/remote-control/shell';
 import { requestChatComposerText } from '@canopy/app-core';
 
 import {
@@ -23,15 +23,15 @@ import {
   useChatStore,
   useRetainChatThread,
 } from '@canopy/app-state';
-import { portalChatMessageAttachmentsFromRefs } from '@canopy/protocol/portal';
+import { remoteControlChatMessageAttachmentsFromRefs } from '@canopy/protocol/remote-control/shell';
 import { APP_ADVISOR_BOT_ID } from '@canopy/protocol/chat-targets';
 import type {
-  PortalChatCloudAttachmentRef,
-  PortalChatFileReference,
-  PortalChatMessage,
-  PortalChatThinkingLevel,
-  PortalQueuedMessage,
-} from '@canopy/protocol/portal';
+  RemoteControlChatCloudAttachmentRef,
+  RemoteControlChatFileReference,
+  RemoteControlChatMessage,
+  RemoteControlChatThinkingLevel,
+  RemoteControlQueuedMessage,
+} from '@canopy/protocol/remote-control/shell';
 import type { ModelCatalogThinkingLevel } from '@canopy/protocol/models';
 import {
   MESSAGE_NO_LONGER_EDITABLE_NOTICE,
@@ -75,7 +75,7 @@ import {
   type CreditsNoticePurchase,
 } from '../credits/CreditsNotice';
 
-const EMPTY_QUEUED_MESSAGES: readonly PortalQueuedMessage[] = [];
+const EMPTY_QUEUED_MESSAGES: readonly RemoteControlQueuedMessage[] = [];
 
 // A held message's notice names no wallet and starts no purchase: the queued
 // row retries and the composer's own notice sells the credits.
@@ -123,9 +123,9 @@ export interface ChatPanelSendContext {
    * host composer (see {@link ChatComposerSendOptions}). Present only when the
    * draft carried at least one pill; hosts that ignore them are unaffected.
    */
-  readonly fileReferences?: readonly PortalChatFileReference[];
+  readonly fileReferences?: readonly RemoteControlChatFileReference[];
   /** Ready cloud attachment references serialized by the host composer. */
-  readonly cloudAttachments?: readonly PortalChatCloudAttachmentRef[];
+  readonly cloudAttachments?: readonly RemoteControlChatCloudAttachmentRef[];
 }
 
 /**
@@ -136,8 +136,8 @@ export interface ChatPanelSendContext {
 export interface ChatComposerSendOptions {
   readonly onSubmissionIdentity?: (userMessageId: string) => void;
   readonly planReviewApproval?: ChatPlanReviewApproval;
-  readonly fileReferences?: readonly PortalChatFileReference[];
-  readonly cloudAttachments?: readonly PortalChatCloudAttachmentRef[];
+  readonly fileReferences?: readonly RemoteControlChatFileReference[];
+  readonly cloudAttachments?: readonly RemoteControlChatCloudAttachmentRef[];
 }
 
 /**
@@ -276,7 +276,7 @@ export interface ChatComposerHostControls {
   /** Toggle plan-mode in the shared store. */
   readonly onTogglePlanMode: () => void;
   /** Current thinking level from the shared store (undefined when unset). */
-  readonly thinkingLevel?: PortalChatThinkingLevel;
+  readonly thinkingLevel?: RemoteControlChatThinkingLevel;
   /**
    * Advance the thinking level in the shared store.
    *
@@ -385,7 +385,7 @@ export function ChatPanel({
       queuedMessages
         .filter((message) => message.delivering === true)
         .map(
-          (message): PortalChatMessage => ({
+          (message): RemoteControlChatMessage => ({
             messageId: message.id,
             chatId,
             role: 'user',
@@ -729,7 +729,9 @@ export function ChatPanel({
               ...(cloudAttachments && cloudAttachments.length > 0
                 ? {
                     attachments:
-                      portalChatMessageAttachmentsFromRefs(cloudAttachments),
+                      remoteControlChatMessageAttachmentsFromRefs(
+                        cloudAttachments,
+                      ),
                   }
                 : {}),
             });
@@ -782,7 +784,7 @@ export function ChatPanel({
    * list's row, so both offer the same actions with the same eligibility.
    */
   const queuedEntryActions = (
-    message: PortalQueuedMessage,
+    message: RemoteControlQueuedMessage,
   ): {
     onSteer?: () => void;
     onCancel?: () => void;
@@ -854,7 +856,7 @@ export function ChatPanel({
   };
 
   const renderQueuedEntry = (
-    message: PortalQueuedMessage,
+    message: RemoteControlQueuedMessage,
   ): JSX.Element | null => {
     // The entry being edited steps out of the queue: its editor sits in the
     // composer's place (CAN-3607).

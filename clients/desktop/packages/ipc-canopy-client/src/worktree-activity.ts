@@ -16,7 +16,7 @@ import type {
   SubscriptionFilter,
   Unsubscribe,
 } from '@canopy/app-core';
-import type { PortalEntityEnvelope } from '@canopy/protocol/portal';
+import type { RemoteControlEntityEnvelope } from '@canopy/protocol/remote-control/shell';
 import {
   REMOTE_IPC_CHANNELS as C,
   type RemoteIpcChannel,
@@ -47,7 +47,7 @@ const ACTIVITY_ENTITY_TYPES: ReadonlySet<string> = new Set([
 ]);
 
 const isActivityEntities = reply<{
-  readonly entities: readonly PortalEntityEnvelope[];
+  readonly entities: readonly RemoteControlEntityEnvelope[];
 }>(
   (value) =>
     isRecord(value) &&

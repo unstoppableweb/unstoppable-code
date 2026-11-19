@@ -170,7 +170,10 @@ export function ApprovalContentModalSheet(): JSX.Element {
   const [openId, setOpenId] = useState<string | null>(null);
   const open = MODAL_CASES.find((item) => item.id === openId);
   return (
-    <SpecimenPanel title="Full view of an approval’s content (opens a dialog)">
+    <SpecimenPanel
+      title="Full view of an approval’s content"
+      hint="Opens a dialog"
+    >
       <SpecimenCell label="Each button opens the real dialog; Escape or Close dismisses it">
         {MODAL_CASES.map((item) => (
           <Button
@@ -230,7 +233,7 @@ const TONES: readonly ComposerIconButtonTone[] = [
 export function ComposerIconButtonSheet(): JSX.Element {
   return (
     <div className="flex flex-col gap-6">
-      <SpecimenPanel title="Tones: rest, active and disabled">
+      <SpecimenPanel title="Tones" hint="Rest, active and disabled">
         <SpecimenGrid min={200}>
           {TONES.map((tone) => (
             <SpecimenCell key={tone} label={tone}>
@@ -387,7 +390,7 @@ export function MessageEditEntrySheet(): JSX.Element {
   ];
   return (
     <div className="flex flex-col gap-6">
-      <SpecimenPanel title="Edit surface (double-click opens the editor)">
+      <SpecimenPanel title="Edit surface" hint="Double-click opens the editor">
         <SpecimenGrid min={260}>
           <SpecimenCell label="Message bubble, editable">
             <MessageEditSurface onEdit={noop}>

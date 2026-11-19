@@ -1,5 +1,5 @@
 import type { JSX, ReactNode } from 'react';
-import type { SettingsHeldChange } from '@canopy/protocol/portal';
+import type { SettingsHeldChange } from '@canopy/protocol/remote-control/shell';
 import {
   AgentSentMarker,
   Button,
@@ -569,7 +569,7 @@ function BubbleFrame({
 export function QueuedMessageActionsSpecimen(): JSX.Element {
   return (
     <div className="flex flex-col gap-6">
-      <SpecimenPanel title="Footer pills (under the bubble)">
+      <SpecimenPanel title="Footer pills" hint="Under the bubble">
         <SpecimenGrid min={340}>
           {FOOTER_CASES.map(([label, props]) => (
             <SpecimenCell key={label} label={label}>
@@ -592,7 +592,10 @@ export function QueuedMessageActionsSpecimen(): JSX.Element {
           </SpecimenCell>
         </SpecimenGrid>
       </SpecimenPanel>
-      <SpecimenPanel title="Corner badges (shown on hover or focus, held open here)">
+      <SpecimenPanel
+        title="Corner badges"
+        hint="Shown on hover or focus, held open here"
+      >
         <SpecimenGrid min={340}>
           {CORNER_CASES.map(([label, props]) => (
             <SpecimenCell key={label} label={label}>
@@ -664,7 +667,10 @@ export function QueuedMessageReasonSpecimen(): JSX.Element {
 
 export function QueuedMessageSettingsHeldWarningSpecimen(): JSX.Element {
   return (
-    <SpecimenPanel title="Warning beside Steer and Interrupt (hover or focus for the explanation)">
+    <SpecimenPanel
+      title="Warning beside Steer and Interrupt"
+      hint="Hover or focus for the explanation"
+    >
       <SpecimenGrid min={240}>
         <SpecimenCell label="Steer and Interrupt, one change">
           <QueuedMessageSettingsHeldWarning

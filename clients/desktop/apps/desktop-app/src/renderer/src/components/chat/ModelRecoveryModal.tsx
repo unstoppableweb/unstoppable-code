@@ -983,8 +983,8 @@ function ModelRecoveryAttempt({
    *
    * Which branch renders is decided by the fail-OPEN constant, so during the
    * empty-registry window a `needs-billing-source` guest reaches the guest
-   * branch, signs in, receives free credits — and would commit a native-only
-   * model that credits still cannot route. Gating only the silent auto-commit
+   * branch, signs in to an account that holds credits — and would commit a
+   * native-only model that credits still cannot route. Gating only the silent auto-commit
    * left this second door open to exactly the dead end the split was added to
    * prevent. On unproven routability, re-read instead of committing: once the
    * registry has loaded the modal re-renders into the honest native-only

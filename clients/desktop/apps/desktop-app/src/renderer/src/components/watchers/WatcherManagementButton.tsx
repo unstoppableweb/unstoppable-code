@@ -309,7 +309,7 @@ export function WatcherManagementButton({
         ) : (
           <span className={className}>
             <Button
-              variant="ghost-accent"
+              variant="ghost"
               size="sm"
               iconOnly={watchers.length === 1}
               aria-label={ariaLabel}

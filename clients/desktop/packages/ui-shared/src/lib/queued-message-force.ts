@@ -2,7 +2,7 @@ import type {
   ChatTurnPhase,
   QueuedMessageRetryBlockedReason,
   QueuedMessageWaitingReason,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 
 /** The desktop queue marks every row behind its credit hold as retryable. */
 export function isCreditHeldQueuedMessage(row: {

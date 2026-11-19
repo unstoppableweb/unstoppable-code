@@ -247,7 +247,6 @@ export function ManagedDelegationModelPolicyRow({
         <SegmentedControl<ManagedDelegationModelPolicyMode>
           label="Allowed models"
           value={current.mode}
-          shape="capsule"
           disabled={disabled}
           options={[
             { value: 'all', label: 'All models' },

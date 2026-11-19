@@ -29,7 +29,6 @@ export const CANOPY_SERVER_CAPABILITIES = [
   'pipelines-crud-v1',
   'organizations-v1',
   'teams-v1',
-  'portal-v1',
   'skills-crud-v1',
   // Optional: an older server ignores a create's expectedAudience (CAN-7037).
   SKILL_CREATE_EXPECTED_AUDIENCE_CAPABILITY,

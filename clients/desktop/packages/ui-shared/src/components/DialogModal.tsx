@@ -288,7 +288,6 @@ interface DialogModalBaseProps {
   showCloseButton?: boolean;
   /** Compact list dialogs align their title and circular close control. */
   headerAlignment?: 'start' | 'center';
-  closeButtonAppearance?: 'default' | 'compact';
   /** Extra classes on the full-screen backdrop/overlay element */
   overlayClassName?: string;
   /** Stable test ID on the scrim. */
@@ -806,12 +805,15 @@ function useDialogInitialFocusTarget(
   }, [enabled, onFocus, surfaceRef]);
 }
 
+/**
+ * A dialog's Close: the 28px ghost button around a 16px glyph. The glyph is
+ * drawn at exactly 16px (the icon catalog would otherwise snap it to its
+ * 14px tier, which reads as too small for the corner of a dialog).
+ */
 export function CloseButton({
   onClick,
   disabled = false,
-  appearance = 'default',
 }: {
-  appearance?: 'default' | 'compact';
   onClick: () => void;
   disabled?: boolean;
 }): JSX.Element {
@@ -824,11 +826,7 @@ export function CloseButton({
       disabled={disabled}
       aria-label="Close"
     >
-      <AppCatalogCloseIcon
-        size={16}
-        exactSize={appearance === 'compact'}
-        aria-hidden="true"
-      />
+      <AppCatalogCloseIcon size={16} exactSize aria-hidden="true" />
     </Button>
   );
 }
@@ -859,7 +857,6 @@ export function DialogModal({
   footer,
   showCloseButton = true,
   headerAlignment = 'start',
-  closeButtonAppearance = 'default',
   overlayClassName = '',
   overlayDataTestId,
   containment = 'window',
@@ -881,11 +878,19 @@ export function DialogModal({
   // Both insets put the header and footer at 24px; only `section` pads the body.
   const owned = inset === 'section';
   const headerBottomClass = headerSpacing === 'tight' ? 'pb-2' : 'pb-4';
+  // A dialog's proportions (docs/design/overlays.md#dialogs). The card's
+  // content keeps one 24px line: the sides, the footer's buttons from the
+  // bottom, and the title's own ink from the top (20px of padding plus the
+  // leading above its first line). The header's end is 18px in, so Close's
+  // 16px glyph, centered in its 28px button, ends on that same 24px line.
+  // A page keeps the roomier 24px top of the page it stands in for.
+  const headerTopClass = pageShape ? 'pt-6' : 'pt-5';
   const headerPadClass = confirmShape
-    ? 'px-6 pt-6'
-    : `px-6 pt-6 ${headerBottomClass}`;
-  // The owned body: 24px sides, 24px below a header divider (the header's
-  // own bottom inset is the gap without one), blocks 16px apart. Above a
+    ? `pl-6 pr-4.5 ${headerTopClass}`
+    : `pl-6 pr-4.5 ${headerTopClass} ${headerBottomClass}`;
+  // The owned body: 24px sides, 16px below a header divider, the same as
+  // above it (24px in a page; the header's own bottom inset is the gap
+  // without a divider), blocks 16px apart. Above a
   // footer the body keeps 4px under its last control so the scroll edge
   // never clips its focus ring; without one it ends on the 24px inset.
   // The body always grows into the card, so a fixed-height dialog's
@@ -894,12 +899,25 @@ export function DialogModal({
   // itself (`scrollableBody={false}`) may also shrink, so its own scroller
   // keeps a definite height.
   const ownedBodyClass = `flex ${scrollableBody ? 'flex-1 ' : 'min-h-0 flex-1 '}flex-col gap-4 px-6 ${
-    headerBorder && !confirmShape ? 'pt-6' : ''
+    headerBorder && !confirmShape ? (pageShape ? 'pt-6' : 'pt-4') : ''
   } ${footer ? 'pb-1' : 'pb-6'}`;
   const footerPadClass = 'px-6 pb-6 pt-4';
-  const titleClass = confirmShape
-    ? 'text-m font-medium text-balance fg-primary'
-    : 'text-lg font-semibold fg-primary';
+  // One title for every dialog: the 16px medium of a confirmation. A dialog
+  // is a small card, and the 18px semibold of a page heading outweighs the
+  // 14px body under it. A page keeps the page heading.
+  const titleClass = pageShape
+    ? 'text-lg font-semibold fg-primary'
+    : confirmShape
+      ? 'text-m font-medium text-balance fg-primary'
+      : 'text-m font-medium fg-primary';
+  // The subtitle supports the title, so it steps under the body's 14px.
+  const subtitleClass = pageShape
+    ? 'text-s fg-secondary'
+    : 'text-xs text-pretty fg-secondary';
+  // Close and the header's actions center on the title's first line (24px,
+  // 28px in a page) whatever their own height, instead of hanging from its
+  // top.
+  const titleLineClass = pageShape ? 'h-7' : 'h-6';
   const widthClass =
     variant === 'confirm'
       ? 'max-w-95'
@@ -1002,9 +1020,7 @@ export function DialogModal({
               </h2>
               {(subtitle || headerActions) && (
                 <div className="mt-0.5 flex items-center gap-3">
-                  {subtitle && (
-                    <p className="text-s fg-secondary">{subtitle}</p>
-                  )}
+                  {subtitle && <p className={subtitleClass}>{subtitle}</p>}
                   {headerActions && (
                     <div className="ml-auto flex items-center gap-2">
                       {headerActions}
@@ -1013,14 +1029,12 @@ export function DialogModal({
                 </div>
               )}
             </div>
-            <div className="flex items-center gap-2">
+            <div
+              className={`flex ${titleLineClass} shrink-0 items-center gap-2`}
+            >
               {topRightActions}
               {renderCloseButton ? (
-                <CloseButton
-                  onClick={onClose}
-                  disabled={closeButtonDisabled}
-                  appearance={closeButtonAppearance}
-                />
+                <CloseButton onClick={onClose} disabled={closeButtonDisabled} />
               ) : null}
             </div>
           </div>

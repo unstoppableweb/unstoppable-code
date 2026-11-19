@@ -70,6 +70,31 @@ export class GitHubBrokerTimeoutError extends GitHubBrokerError {
   }
 }
 
+/**
+ * The reason an attempt's signal is aborted once the attempt has settled, so
+ * a call it left running can no longer be authorized or sent.
+ */
+export class GitHubBrokerAttemptSettledError extends GitHubBrokerError {
+  constructor() {
+    super('cancelled', 'The GitHub request attempt has already settled.');
+    this.name = 'GitHubBrokerAttemptSettledError';
+  }
+}
+
+/**
+ * A pinned credential lease used past its lifetime. It is refused as
+ * `not_authenticated` and never retried on the same lease: the holder mints
+ * a fresh lease.
+ */
+export class GitHubBrokerLeaseExpiredError extends GitHubBrokerError {
+  readonly reason = 'lease_expired';
+
+  constructor() {
+    super('not_authenticated', 'The GitHub credential lease has expired.');
+    this.name = 'GitHubBrokerLeaseExpiredError';
+  }
+}
+
 export class GitHubBrokerCredentialResetError extends GitHubBrokerError {
   readonly reason: 'credential_reset' | 'authentication_refresh';
 

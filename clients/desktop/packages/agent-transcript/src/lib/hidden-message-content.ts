@@ -1,4 +1,4 @@
-import type { ChatWatcherFiredInfo } from '@canopy/protocol/portal';
+import type { ChatWatcherFiredInfo } from '@canopy/protocol/remote-control/shell';
 
 /**
  * One on-screen part of a message that may carry hidden provider context.

@@ -49,7 +49,10 @@ const CONTEXT_SPLIT: readonly BarSegment[] = [
 export function ProgressSpecimen(): JSX.Element {
   return (
     <div className="flex flex-col gap-6">
-      <SpecimenPanel title="ProgressBar: 6px, the label at the left and its value at the right">
+      <SpecimenPanel
+        title="ProgressBar"
+        hint="6px, the label at the left and its value at the right"
+      >
         <div className="flex w-full max-w-xl flex-col gap-4">
           <ProgressBar value={42} label="Importing 4 of 10 projects" />
           <ProgressBar
@@ -86,7 +89,10 @@ export function ProgressSpecimen(): JSX.Element {
           </SpecimenCell>
         </SpecimenGrid>
       </SpecimenPanel>
-      <SpecimenPanel title="ProgressRing: 16px with a 2px stroke, inside a small control">
+      <SpecimenPanel
+        title="ProgressRing"
+        hint="16px with a 2px stroke, inside a small control"
+      >
         <SpecimenGrid min={120}>
           {TONES.map((tone) => (
             <SpecimenCell key={tone} label={`tone ${tone}`}>
@@ -95,7 +101,10 @@ export function ProgressSpecimen(): JSX.Element {
           ))}
         </SpecimenGrid>
       </SpecimenPanel>
-      <SpecimenPanel title="ProgressSteps: 12px status glyphs, stages split by a short rule">
+      <SpecimenPanel
+        title="ProgressSteps"
+        hint="12px status glyphs, stages split by a short rule"
+      >
         <SpecimenGrid min={200}>
           <SpecimenCell label="running">
             <ProgressSteps stages={RUN} label="Run steps" />
@@ -105,7 +114,10 @@ export function ProgressSpecimen(): JSX.Element {
           </SpecimenCell>
         </SpecimenGrid>
       </SpecimenPanel>
-      <SpecimenPanel title="SegmentsBar: a stacked share, in chart colors, never for progress">
+      <SpecimenPanel
+        title="SegmentsBar"
+        hint="A stacked share, in chart colors, never for progress"
+      >
         <SpecimenGrid>
           <SpecimenCell label="default, whole length" wide>
             <SegmentsBar

@@ -29,15 +29,8 @@ import {
 const VARIANTS: readonly ButtonVariant[] = [
   'primary',
   'secondary',
-  'outline',
   'ghost',
-  'ghost-quiet',
-  'ghost-accent',
   'ghost-destructive',
-  'ghost-warning',
-  'ghost-overlay',
-  'tinted',
-  'warning',
   'destructive',
 ];
 
@@ -144,12 +137,12 @@ export function ButtonsSpecimen(): JSX.Element {
           </SpecimenCell>
           <SpecimenCell label="groupHover: held while the ✕ is hovered" wide>
             <span className="group/gitaction relative inline-flex items-center gap-1">
-              <Button size="compact" variant="ghost-accent" groupHover>
+              <Button size="compact" variant="ghost" groupHover>
                 Creating PR…
               </Button>
               <Button
                 size="compact"
-                variant="ghost-quiet"
+                variant="ghost"
                 iconOnly
                 aria-label="Cancel"
               >
@@ -160,7 +153,7 @@ export function ButtonsSpecimen(): JSX.Element {
           <SpecimenCell label="pressedHover: toolbar toggle, on and off">
             <Button
               size="sm"
-              variant="ghost-overlay"
+              variant="ghost"
               iconOnly
               aria-label="Bookmark on"
               aria-pressed
@@ -170,7 +163,7 @@ export function ButtonsSpecimen(): JSX.Element {
             </Button>
             <Button
               size="sm"
-              variant="ghost-overlay"
+              variant="ghost"
               iconOnly
               aria-label="Bookmark off"
               aria-pressed={false}
@@ -182,7 +175,7 @@ export function ButtonsSpecimen(): JSX.Element {
           <SpecimenCell label="quietWhenDisabled: running Refresh">
             <Button
               size="compact"
-              variant="ghost-overlay"
+              variant="ghost"
               iconOnly
               aria-label="Refresh"
               disabled
@@ -192,7 +185,7 @@ export function ButtonsSpecimen(): JSX.Element {
             </Button>
             <Button
               size="compact"
-              variant="ghost-overlay"
+              variant="ghost"
               iconOnly
               aria-label="Refresh"
               disabled
@@ -202,17 +195,12 @@ export function ButtonsSpecimen(): JSX.Element {
           </SpecimenCell>
           <SpecimenCell label='touchArea="contained": touch hit area = own box (outlined)'>
             <span className="inline-flex gap-1 [&_button]:before:outline [&_button]:before:outline-1 [&_button]:before:outline-dashed">
-              <Button
-                size="sm"
-                variant="ghost-quiet"
-                iconOnly
-                aria-label="Expanded"
-              >
+              <Button size="sm" variant="ghost" iconOnly aria-label="Expanded">
                 <FolderIcon />
               </Button>
               <Button
                 size="sm"
-                variant="ghost-quiet"
+                variant="ghost"
                 iconOnly
                 aria-label="Contained"
                 touchArea="contained"

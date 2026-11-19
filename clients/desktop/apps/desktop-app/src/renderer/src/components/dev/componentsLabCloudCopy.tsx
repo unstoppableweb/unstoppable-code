@@ -115,10 +115,12 @@ function Specimen({
   title,
   kind,
   gitIgnoreCheck,
+  offerKeepInStep = kind === 'skill',
 }: {
   readonly title: string;
   readonly kind: 'skill' | 'plugin';
   readonly gitIgnoreCheck: 'checked' | 'unavailable';
+  readonly offerKeepInStep?: boolean;
 }): JSX.Element {
   const [open, setOpen] = useState(true);
   return (
@@ -127,6 +129,7 @@ function Specimen({
         <CloudCopyConsentDialog
           audience="private"
           subject={{ kind, name: 'notes' }}
+          offerKeepInStep={offerKeepInStep}
           replacing={false}
           analysis={analysis(gitIgnoreCheck)}
           loading={false}
@@ -164,6 +167,21 @@ export function CloudCopyGitUncheckedSpecimen(): JSX.Element {
       title="Git couldn't check the folder (fixture render)"
       kind="skill"
       gitIgnoreCheck="unavailable"
+    />
+  );
+}
+
+/**
+ * A skill installed from GitHub, a URL or a local folder (CAN-6943): its copy
+ * is never kept up to date, so the dialog doesn't offer it.
+ */
+export function CloudCopyInstalledSkillSpecimen(): JSX.Element {
+  return (
+    <Specimen
+      title="Add an installed skill to the cloud (fixture render)"
+      kind="skill"
+      gitIgnoreCheck="checked"
+      offerKeepInStep={false}
     />
   );
 }

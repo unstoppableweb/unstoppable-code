@@ -2,7 +2,7 @@ import { CodeGraphEngine } from '../engine';
 import {
   cloneCompletedCodeGraphDatabase,
   finalizeCodeGraphBaseStaging,
-  hasCompletedCodeGraph,
+  hasCompletedSeedTarget,
   readPublishedCodeGraphBase,
   seedCodeGraphDatabase,
   seedCodeGraphDatabaseByClone,
@@ -30,6 +30,11 @@ import { performance } from 'node:perf_hooks';
 import type { CodeGraphBuildResult } from '../types/code-graph';
 import type { CodeGraphHostChannel } from './channel';
 import { fingerprintCodeGraphWorktree } from './worktree-fingerprint';
+import {
+  codeGraphFailureClass,
+  errnoOf,
+  type CodeGraphFailureClass,
+} from '../io-failure';
 import type {
   CodeGraphWorkerFingerprintPersist,
   CodeGraphWorkerSummaryRepairRequest,
@@ -48,6 +53,11 @@ export interface CodeGraphBuildHostFacts {
    * installs then copy instead of renaming over a live target.
    */
   readonly openFilesBlockReplacement: boolean;
+  /**
+   * Whether flushing a file or directory needs a handle opened for writing,
+   * as on Windows (`FlushFileBuffers` refuses a read-only handle).
+   */
+  readonly flushRequiresWriteHandle?: boolean;
   /** Where to write a CPU profile of each build; none without it. */
   readonly cpuProfileDirectory?: string;
   /** The Git executable for the end-of-build worktree fingerprint. */
@@ -158,7 +168,10 @@ function withFinalizeTiming(
 async function seedWorktreeDatabase(
   request: CodeGraphWorkerBuildRequest,
   preparation: NonNullable<CodeGraphWorkerBuildRequest['preparation']>,
-  openFilesBlockReplacement: boolean,
+  facts: {
+    openFilesBlockReplacement: boolean;
+    flushRequiresWriteHandle: boolean;
+  },
 ): Promise<SeedCodeGraphResult> {
   const [onlySource] = preparation.seedSources;
   const [onlyRepository] = request.repositories;
@@ -175,7 +188,7 @@ async function seedWorktreeDatabase(
       targetDbPath: request.dbPath,
       source: onlySource,
       customLanguagesFingerprint: preparation.customLanguagesFingerprint,
-      openFilesBlockReplacement,
+      ...facts,
     });
     if (cloned !== null) return cloned;
   }
@@ -183,7 +196,7 @@ async function seedWorktreeDatabase(
     targetDbPath: request.dbPath,
     sources: preparation.seedSources,
     customLanguagesFingerprint: preparation.customLanguagesFingerprint,
-    openFilesBlockReplacement,
+    ...facts,
   });
 }
 
@@ -196,6 +209,20 @@ export interface CodeGraphBuildExecutionOptions {
   allowDeferredDerived?: boolean;
   /** See {@link CodeGraphBuildHostFacts.openFilesBlockReplacement}. */
   openFilesBlockReplacement?: boolean;
+  /** See {@link CodeGraphBuildHostFacts.flushRequiresWriteHandle}. */
+  flushRequiresWriteHandle?: boolean;
+}
+
+/** A failure's closed class and errno; the message stays in process. */
+function failureDetail(error: unknown): {
+  failureClass: CodeGraphFailureClass;
+  errno?: string;
+} {
+  const errno = errnoOf(error);
+  return {
+    failureClass: codeGraphFailureClass(error),
+    ...(errno === undefined ? {} : { errno }),
+  };
 }
 
 /**
@@ -259,9 +286,10 @@ export async function executeCodeGraphBuild(
   let seedOutcomes: CodeGraphSeedOutcome[] = [];
   let fusionDurationMs = 0;
   let fused = false;
+  const flushRequiresWriteHandle = execution?.flushRequiresWriteHandle === true;
   try {
     if (request.preparation !== undefined) {
-      if (hasCompletedCodeGraph(request.dbPath)) {
+      if (await hasCompletedSeedTarget(request.dbPath)) {
         seedOutcomes = request.repositories.map((repository) => ({
           repoId: repository.repoId,
           status: 'existing-graph-reused',
@@ -270,16 +298,19 @@ export async function executeCodeGraphBuild(
         const seeded = await seedWorktreeDatabase(
           request,
           request.preparation,
-          execution?.openFilesBlockReplacement === true,
+          {
+            openFilesBlockReplacement:
+              execution?.openFilesBlockReplacement === true,
+            flushRequiresWriteHandle,
+          },
         );
         fusionDurationMs = seeded.durationMs;
         fused = true;
         seedOutcomes = [
           ...seeded.outcomes,
           ...request.preparation.coldFallbacks.map((fallback) => ({
-            repoId: fallback.repoId,
+            ...fallback,
             status: 'cold-fallback' as const,
-            reason: fallback.reason,
           })),
         ];
       }
@@ -330,6 +361,7 @@ export async function executeCodeGraphBuild(
       dbPath: request.dbPath,
       identity: request.baseFinalization.identity,
       gitHead: request.baseFinalization.gitHead,
+      flushRequiresWriteHandle,
     });
     return {
       ok: true,
@@ -347,6 +379,7 @@ export async function executeCodeGraphBuild(
           : error instanceof Error
             ? error.message
             : String(error),
+      ...failureDetail(error),
     };
   } finally {
     if (engine !== undefined) {
@@ -407,14 +440,18 @@ export async function executeDeferredCodeGraphDerived(input: {
 /** Executes only the eager snapshot install; it never parses source files. */
 export async function executeCodeGraphEagerSeed(
   request: CodeGraphWorkerEagerSeedRequest,
-  facts: Pick<CodeGraphBuildHostFacts, 'openFilesBlockReplacement'> = {
+  facts: Pick<
+    CodeGraphBuildHostFacts,
+    'openFilesBlockReplacement' | 'flushRequiresWriteHandle'
+  > = {
     openFilesBlockReplacement: false,
   },
 ): Promise<CodeGraphWorkerEagerSeedResponse> {
   const { openFilesBlockReplacement } = facts;
+  const flushRequiresWriteHandle = facts.flushRequiresWriteHandle === true;
   const startedAt = Date.now();
   try {
-    if (hasCompletedCodeGraph(request.targetDbPath)) {
+    if (await hasCompletedSeedTarget(request.targetDbPath)) {
       return {
         ok: true,
         status: 'existing',
@@ -430,6 +467,7 @@ export async function executeCodeGraphEagerSeed(
         sourceValidation: 'metadata-only',
         targetValidation: 'metadata-only',
         openFilesBlockReplacement,
+        flushRequiresWriteHandle,
       });
       return {
         ok: true,
@@ -487,6 +525,7 @@ export async function executeCodeGraphEagerSeed(
         sourceAlreadyValidated: true,
         targetValidation: 'metadata-only',
         openFilesBlockReplacement,
+        flushRequiresWriteHandle,
       });
       return {
         ok: true,
@@ -503,7 +542,22 @@ export async function executeCodeGraphEagerSeed(
         request.source.bases[0]?.identity.customLanguagesFingerprint ?? '',
       markCompletedFromSources: true,
       openFilesBlockReplacement,
+      flushRequiresWriteHandle,
     });
+    // An unflushed seed installed nothing. Answer a failure, not `existing`,
+    // so the caller still tries its fallback.
+    for (const outcome of result.outcomes) {
+      if (
+        outcome.status === 'cold-fallback' &&
+        outcome.reason === 'seed-flush-failed'
+      ) {
+        return {
+          ok: false,
+          message: 'The code graph seed could not be flushed to disk.',
+          failureClass: outcome.failureClass ?? 'io',
+        };
+      }
+    }
     return {
       ok: true,
       status: result.installed ? 'seeded' : 'existing',
@@ -514,6 +568,7 @@ export async function executeCodeGraphEagerSeed(
     return {
       ok: false,
       message: error instanceof Error ? error.message : String(error),
+      ...failureDetail(error),
     };
   }
 }
@@ -667,6 +722,7 @@ async function respondOnce(
         channel.postMessage({
           ok: false,
           message: error instanceof Error ? error.message : String(error),
+          ...failureDetail(error),
         });
         return;
       }
@@ -679,6 +735,7 @@ async function respondOnce(
       const response = await executeCodeGraphBuild(payload, {
         allowDeferredDerived: true,
         openFilesBlockReplacement: facts.openFilesBlockReplacement,
+        flushRequiresWriteHandle: facts.flushRequiresWriteHandle,
       });
       if (
         response.ok &&

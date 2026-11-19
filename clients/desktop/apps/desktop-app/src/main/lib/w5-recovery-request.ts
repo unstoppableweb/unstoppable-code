@@ -10,7 +10,7 @@ import {
 import {
   W5RecoveryStatusSchema,
   type W5RecoveryStatus,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import { syncDirectory } from './atomic-file';
 import { isErrnoException, isRecord } from './type-guards';
 

@@ -70,7 +70,7 @@ import {
   isApprovalMode,
   normalizeApprovalRules,
 } from '@canopy/desktop-shared/lib/approval-engine';
-import { parseAgentSentInfo } from '@canopy/protocol/portal/external-agent-sender';
+import { parseAgentSentInfo } from '@canopy/protocol/remote-control/shell/external-agent-sender';
 
 /** A persisted `importedFrom` is kept only when it names a known import source. */
 function isExternalProjectProvider(

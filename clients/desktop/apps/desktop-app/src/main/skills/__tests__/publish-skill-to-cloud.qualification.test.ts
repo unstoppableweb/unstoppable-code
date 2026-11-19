@@ -132,6 +132,13 @@ function fakes(
   const deps: PublishSkillDeps = {
     loadSkills: () => Promise.resolve(skills),
     readRawSkill: () => Promise.resolve(RAW),
+    // CAN-6943's flag, off: installed-source skills are its own golden.
+    installedSkillsEnabled: () => Promise.resolve(false),
+    readInstalledSkill: () => Promise.reject(new Error('flag off')),
+    fingerprintInstalledSkill: () => Promise.reject(new Error('flag off')),
+    // Asked only for an installed skill's copy (CAN-6943).
+    assertCreateAudienceSupported: () =>
+      Promise.reject(new Error('not asked for a custom skill')),
     analysisFacts: () => Promise.resolve(facts()),
     analysisSubject: () =>
       Promise.resolve({

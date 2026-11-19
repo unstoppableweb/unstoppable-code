@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState, type JSX } from 'react';
-import type { PortalChatMessage } from '@canopy/protocol/portal';
+import type { RemoteControlChatMessage } from '@canopy/protocol/remote-control/shell';
 import {
   expandTurnFileRecords,
   reconcileTurnFileRecords,
@@ -24,7 +24,7 @@ import {
 export interface TranscriptTurnFilesInteraction {
   readonly filesByTurn?: Readonly<Record<string, readonly TurnFileRecord[]>>;
   readonly collect: (
-    messages: readonly PortalChatMessage[],
+    messages: readonly RemoteControlChatMessage[],
     retained?: readonly TurnFileRecord[],
   ) => readonly TurnFileRecord[];
   readonly resolve: (file: TurnFileRecord) => Promise<{
@@ -96,7 +96,7 @@ export function TurnFiles({
   latest,
   turnId,
 }: {
-  readonly messages: readonly PortalChatMessage[];
+  readonly messages: readonly RemoteControlChatMessage[];
   readonly retained?: readonly TurnFileRecord[];
   readonly complete: boolean;
   readonly latest: boolean;

@@ -4,13 +4,15 @@ import {
 } from '../helper-runs/helper-runs';
 import {
   clampThinkingLevelForModel,
+  getExecutionHarnessForModel,
+  getModelSource,
   type AgentModelConfig,
   type AiCreditsRoutingMode,
   type ChatModel,
   type ChatTabPluginSelections,
 } from '@canopy/desktop-shared/types';
 import { classifyAgentFailure } from '@canopy/execution-engine/agent-failures';
-import { detectClaudeQuotaReached } from '@canopy/desktop-shared/portal/provider-usage-limit';
+import { detectClaudeQuotaReached } from '@canopy/desktop-shared/remote-control/provider-usage-limit';
 import type { HelperTranscriptObserver } from '@canopy/desktop-shared/lib/helper-transcript';
 import {
   generateCommitMessageWithUsage,
@@ -26,6 +28,14 @@ import {
   type HelperInvocation,
 } from '../ollama/helper-invocation';
 import { markProviderQuotaReached } from '../agents/ai-credits-quota-state';
+import {
+  isHelperNoBillingSourceError,
+  type HelperNoBillingSourceProvider,
+} from '../agents/helper-no-billing-source';
+import {
+  isGatewayOnlyModel,
+  resolveGatewayModelEntry,
+} from '@canopy/execution-engine/lib/gateway-model-availability';
 import { isDemotedForQuota } from './commit-generation-model-candidates';
 import { logMainProcessWarn } from './main-process-logging';
 import { isModelBlockedByStoredPolicy } from './model-policy-state';
@@ -93,7 +103,38 @@ export interface GenerateObservedCommitMessageOptions extends Omit<
 
 type CommitMessageAttemptOutcome =
   | { outcome: 'success'; message: string }
-  | { outcome: 'failed' };
+  | { outcome: 'failed' }
+  /**
+   * Not started: the provider is signed out with no billing source
+   * (CAN-7062). The chain passes over that provider's later candidates.
+   */
+  | { outcome: 'refused'; provider: HelperNoBillingSourceProvider };
+
+/**
+ * Whether a candidate would be refused the same way as an earlier candidate
+ * whose provider had no billing source (CAN-7062). Ollama models never route,
+ * and gateway-only or organization gateway models route instead of refusing,
+ * so those still run.
+ */
+function sharesNoBillingSourceRefusal(
+  model: ChatModel,
+  refusedProviders: ReadonlySet<HelperNoBillingSourceProvider>,
+): boolean {
+  if (refusedProviders.size === 0 || getModelSource(model) === 'ollama') {
+    return false;
+  }
+  if (
+    isGatewayOnlyModel(model) ||
+    resolveGatewayModelEntry(model)?.origin === 'org-gateway'
+  ) {
+    return false;
+  }
+  const harness = getExecutionHarnessForModel(model);
+  return (
+    (harness === 'claude' || harness === 'codex') &&
+    refusedProviders.has(harness)
+  );
+}
 
 /**
  * Generate a commit message, walking `model` then `fallbackModels` until one
@@ -104,8 +145,11 @@ type CommitMessageAttemptOutcome =
  * refusal, invocation or provider error, usage limit, or an unusable model
  * result) is recorded as its own audit entry and the chain advances. An
  * unknown/stale id has no provider to attribute an entry to, so it is logged
- * and skipped. Once every candidate has failed the branch name is returned as
- * a plain-text title.
+ * and skipped. A candidate whose provider is signed out with no billing
+ * source (CAN-7062) is not started and its entry is `cancelled`; later
+ * candidates on that provider are passed over before they open an entry,
+ * while candidates on another provider still run. Once every candidate has
+ * failed the branch name is returned as a plain-text title.
  *
  * Contract: resolves in every case except cancellation. When the caller's
  * abort controller fires, the abort error is rethrown and no further candidate
@@ -122,14 +166,21 @@ export async function generateCommitMessage(
     ...attemptOptions
   } = options;
   let attemptIndex = 0;
+  const refusedProviders = new Set<HelperNoBillingSourceProvider>();
   const tryCandidate = async (model: ChatModel): Promise<string | null> => {
     options.abortController?.signal.throwIfAborted();
+    if (sharesNoBillingSourceRefusal(model, refusedProviders)) {
+      return null;
+    }
     const attempt = await attemptCommitMessageWithModel(
       model,
       attemptOptions,
       attemptIndex++,
       fallbackModels.length === 0,
     );
+    if (attempt.outcome === 'refused') {
+      refusedProviders.add(attempt.provider);
+    }
     return attempt.outcome === 'success' ? attempt.message : null;
   };
   // A native usage limit found earlier in this chain marks that lane; defer
@@ -516,6 +567,12 @@ async function attemptCommitMessageWithModel(
     work.catch(() => undefined);
     return await Promise.race([work, deadline.promise]);
   } catch (error) {
+    if (isHelperNoBillingSourceError(error)) {
+      // Refused before any spawn (CAN-7062): `cancelled` with the reason,
+      // and the chain remembers the provider.
+      finalizeAttempt('cancelled', error.message);
+      return { outcome: 'refused', provider: error.provider };
+    }
     const callerAborted = callerSignal?.aborted === true;
     const timedOut = deadline.timedOut() && !callerAborted;
     finalizeAttempt(

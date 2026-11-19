@@ -19,7 +19,10 @@ import {
 
 /** The row, principal and module a durable install claims for admission. */
 export interface DurableInstallClaim {
-  readonly namespace: 'pipeline_definitions' | 'pipeline_local_metadata';
+  readonly namespace:
+    | 'pipeline_definitions'
+    | 'pipeline_local_metadata'
+    | 'pipeline_data';
   readonly writer: StorageWriterPrincipal;
   readonly module: string;
   readonly ownership?: readonly StorageOwnershipRow[];
@@ -38,7 +41,7 @@ function errorCode(error: unknown): string {
 }
 
 /** Retries transient sharing violations; never deletes the destination. */
-function renameWithRetry(source: string, target: string): void {
+export function renameWithRetry(source: string, target: string): void {
   for (let attempt = 0; ; attempt += 1) {
     try {
       renameSync(source, target);
@@ -69,7 +72,7 @@ export function createDurableAtomicInstall(
   flushDirectorySync: (directory: string) => void,
 ): (
   filePath: string,
-  data: string,
+  data: string | Uint8Array,
   claim: DurableInstallClaim,
   mode?: number,
 ) => void {
@@ -88,7 +91,11 @@ export function createDurableAtomicInstall(
     try {
       const fd = openSync(tempPath, 'wx', mode);
       try {
-        writeFileSync(fd, data, { encoding: 'utf8' });
+        writeFileSync(
+          fd,
+          data,
+          typeof data === 'string' ? { encoding: 'utf8' } : {},
+        );
         if (mode !== undefined) {
           try {
             fchmodSync(fd, mode);

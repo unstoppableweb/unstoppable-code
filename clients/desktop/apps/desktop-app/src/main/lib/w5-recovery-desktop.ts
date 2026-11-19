@@ -10,7 +10,7 @@ import { hostPlatformOperatingSystem } from '@canopy/core-platform';
 import {
   W5RecoveryStatusSchema,
   type W5RecoveryStatus,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import {
   w5RecoveryGuidance,
   W5_RECOVERY_QUIT_ALL_GUIDANCE,

@@ -23,7 +23,7 @@ export interface SidebarGuestProjectsCardProps {
 export function SidebarGuestProjectsCard({
   signInHref,
   onActivate,
-  testId = 'portal-sidebar-guest-projects-card',
+  testId = 'remote-control-sidebar-guest-projects-card',
 }: SidebarGuestProjectsCardProps): JSX.Element {
   return (
     <div className="px-1 empty:hidden">

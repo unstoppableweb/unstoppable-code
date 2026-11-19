@@ -491,7 +491,7 @@ export function PanelGridHost({
   const groupById = new Map(
     layout.groups.map((group) => [group.groupId, group]),
   );
-  const branchPortals =
+  const branchRemoteControls =
     typeof document === 'undefined' || layout.maximizedGroupId !== null
       ? null
       : gridController.getCollapsedBranches?.().map((branch) =>
@@ -513,7 +513,7 @@ export function PanelGridHost({
           ),
         );
 
-  const groupPortals =
+  const groupRemoteControls =
     typeof document === 'undefined'
       ? null
       : layout.groups.map((group) => {
@@ -579,8 +579,8 @@ export function PanelGridHost({
       data-testid="panel-grid-root"
       data-window={windowLabel ?? 'main'}
     >
-      {groupPortals}
-      {branchPortals}
+      {groupRemoteControls}
+      {branchRemoteControls}
       {rootDropOverlay}
       {rootDropZones}
     </div>

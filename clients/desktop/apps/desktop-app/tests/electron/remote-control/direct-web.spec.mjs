@@ -27,17 +27,20 @@ import path from 'node:path';
 import { chromium } from '@playwright/test';
 import { expect, test } from './harness/fixtures.mjs';
 import {
-  PORTAL_BETTER_AUTH_SECRET,
-  PORTAL_WEB_ORIGIN,
-  PORTAL_WEB_ORIGIN_LOOPBACK,
+  REMOTE_CONTROL_BETTER_AUTH_SECRET,
+  REMOTE_CONTROL_WEB_ORIGIN,
+  REMOTE_CONTROL_WEB_ORIGIN_LOOPBACK,
 } from './harness/config.mjs';
 import {
-  ensurePortalSchema,
+  ensureRemoteControlSchema,
   seededSessionCookie,
-} from './harness/portalHarness.mjs';
-import { seedPortalWebUser } from './harness/seedWebUser.mjs';
-import { truncateWebTestState, withPortalDbClient } from './harness/db.mjs';
-import { warmPortalRoutes } from './harness/web-server.mjs';
+} from './harness/remoteControlHarness.mjs';
+import { seedRemoteControlWebUser } from './harness/seedWebUser.mjs';
+import {
+  truncateWebTestState,
+  withRemoteControlDbClient,
+} from './harness/db.mjs';
+import { warmRemoteControlRoutes } from './harness/web-server.mjs';
 import {
   buildTrackedPlan,
   DEFAULT_MOCK_BASE_URL,
@@ -197,7 +200,9 @@ function teeOwnerPort(sharedWorkerName) {
  * owner runs in the leader tab's dedicated worker.
  */
 async function openProfile(cookie, { leaderTab = false } = {}) {
-  const context = await browser.newContext({ baseURL: PORTAL_WEB_ORIGIN });
+  const context = await browser.newContext({
+    baseURL: REMOTE_CONTROL_WEB_ORIGIN,
+  });
   if (leaderTab) {
     await context.addInitScript(() => {
       Reflect.deleteProperty(globalThis, 'SharedWorker');
@@ -208,15 +213,15 @@ async function openProfile(cookie, { leaderTab = false } = {}) {
   // Portal transport traffic: pairing by code and the per-session routes
   // (state, commands, events, chat history, files). The session status read
   // and the synced desktop inventory read carry no remote work.
-  const portalRequests = [];
+  const remoteControlRequests = [];
   context.on('request', (request) => {
     const { pathname } = new URL(request.url());
     if (/\/portal\/browser\/(sessions\/|connect\b)/.test(pathname))
-      portalRequests.push(request.url());
+      remoteControlRequests.push(request.url());
   });
   return {
     context,
-    portalRequests,
+    remoteControlRequests,
     page: null,
     deviceId: null,
     async open(route = '/chat') {
@@ -324,7 +329,7 @@ async function evaluateInTarget(cdp, targetId, expression) {
 // ---------------------------------------------------------------------------
 
 async function externalIdOf(userId) {
-  return withPortalDbClient(async (client) => {
+  return withRemoteControlDbClient(async (client) => {
     const result = await client.query(
       'SELECT external_id FROM users WHERE id = $1',
       [userId],
@@ -336,14 +341,14 @@ async function externalIdOf(userId) {
 /** Another signed-in session for the same account (its own cookie). */
 async function seedSessionCookie(userId) {
   const token = randomBytes(32).toString('hex');
-  await withPortalDbClient((client) =>
+  await withRemoteControlDbClient((client) =>
     client.query(
       `INSERT INTO "sessions" ("token", "expires_at", "user_id")
        VALUES ($1, $2, $3)`,
       [token, new Date(Date.now() + 24 * 60 * 60 * 1000), userId],
     ),
   );
-  const signature = createHmac('sha256', PORTAL_BETTER_AUTH_SECRET)
+  const signature = createHmac('sha256', REMOTE_CONTROL_BETTER_AUTH_SECRET)
     .update(token)
     .digest('base64');
   return seededSessionCookie(
@@ -387,9 +392,11 @@ function desktopPairingEvents() {
  */
 function webPairingLink(link) {
   expect(
-    link.startsWith(`${PORTAL_WEB_ORIGIN_LOOPBACK}/portal/pair#device=`),
+    link.startsWith(
+      `${REMOTE_CONTROL_WEB_ORIGIN_LOOPBACK}/portal/pair#device=`,
+    ),
   ).toBe(true);
-  return `${PORTAL_WEB_ORIGIN}${link.slice(PORTAL_WEB_ORIGIN_LOOPBACK.length)}`;
+  return `${REMOTE_CONTROL_WEB_ORIGIN}${link.slice(REMOTE_CONTROL_WEB_ORIGIN_LOOPBACK.length)}`;
 }
 
 async function openDesktopPairingLink() {
@@ -445,7 +452,9 @@ async function releaseMockBarrier(key, name) {
  * only the visible composer is the open chat's.
  */
 function composer(page) {
-  return page.locator('[data-testid="portal-chat-composer"]:visible').first();
+  return page
+    .locator('[data-testid="remote-control-chat-composer"]:visible')
+    .first();
 }
 
 /** Opens the desktop's demo worktree from the sidebar, ready to chat. */
@@ -535,23 +544,23 @@ function seedScriptRepository(root, name) {
   return `file://${remote}`;
 }
 
-test.beforeAll(async ({ portalServerManager }) => {
+test.beforeAll(async ({ remoteControlServerManager }) => {
   // A cold Turbopack compile of `/chat`, the pairing page and the owner's
   // worker chunk can take minutes; the budget absorbs it here.
   test.setTimeout(900_000);
-  await ensurePortalSchema();
+  await ensureRemoteControlSchema();
   await truncateWebTestState();
   relay = await startDeviceRelay({ maxDevicesPerAccount: RELAY_DEVICE_CAP });
-  webServer = await portalServerManager.acquire(
+  webServer = await remoteControlServerManager.acquire(
     directWebServerOptions({ relay }),
   );
-  await warmPortalRoutes([
+  await warmRemoteControlRoutes([
     { path: '/api/v1/device-relay/token', method: 'POST' },
   ]);
 
-  userA = await seedPortalWebUser({ name: 'Direct web owner' });
-  userB = await seedPortalWebUser({ name: 'Another account' });
-  userC = await seedPortalWebUser({ name: 'Device cap account' });
+  userA = await seedRemoteControlWebUser({ name: 'Direct web owner' });
+  userB = await seedRemoteControlWebUser({ name: 'Another account' });
+  userC = await seedRemoteControlWebUser({ name: 'Device cap account' });
   desktop = await launchRemoteControlDesktop({
     relay,
     seeded: userA,
@@ -615,7 +624,7 @@ test('link pairing: the browser opens the desktop pairing link and pairs by proo
   // The desktop opens its pairing window from the Remote Control dialog;
   // Copy link hands over the QR code's link. The page's clipboard write is
   // captured instead of reaching the machine's shared clipboard.
-  await desktop.app.openCanopyPortal();
+  await desktop.app.openRemoteControlDialog();
   await expect(
     desktop.window.getByTestId('remote-control-pairing-qr-image'),
   ).toBeVisible({ timeout: 30_000 });
@@ -687,7 +696,7 @@ test('link pairing: the browser opens the desktop pairing link and pairs by proo
   // Until a computer was selected, `/chat` may check for a Portal session
   // (it keeps one working until the browser pairs directly). From here on
   // this profile is served directly only.
-  primary.portalRequests.length = 0;
+  primary.remoteControlRequests.length = 0;
 });
 
 test('code pairing: the browser and the desktop show the same code and Allow on the desktop pairs it', async () => {
@@ -766,7 +775,7 @@ test('chat: a message sent from /chat runs on the desktop and its reply streams 
   await expect(page.getByText(reply).first()).toBeVisible({ timeout: 60_000 });
   await expect.poll(() => worktreeChatText(), POLL).toContain(reply);
   expect(worktreeChatText()).toContain(prompt);
-  expect(primary.portalRequests).toEqual([]);
+  expect(primary.remoteControlRequests).toEqual([]);
   openChatReply = reply;
 });
 
@@ -815,7 +824,7 @@ test('existing desktop chats: a chat started on the desktop lists in its worktre
     timeout: 60_000,
   });
   await expect(page.getByText(seeded.prompt).first()).toBeVisible();
-  expect(primary.portalRequests).toEqual([]);
+  expect(primary.remoteControlRequests).toEqual([]);
   openChatReply = seeded.reply;
 });
 
@@ -895,7 +904,7 @@ test('panels: a pipeline run, a tracked plan and a hook run the desktop finished
   );
   expect(started?.success, JSON.stringify(started)).toBe(true);
   const page = primary.page;
-  primary.portalRequests.length = 0;
+  primary.remoteControlRequests.length = 0;
   await page.reload();
   await expect(projectRow(page)).toBeVisible({ timeout: 60_000 });
   await openWorktree(page);
@@ -917,7 +926,7 @@ test('panels: a pipeline run, a tracked plan and a hook run the desktop finished
   await expect(panel.getByTestId('activity-hooks-completed')).toContainText(
     'Success',
   );
-  expect(primary.portalRequests).toEqual([]);
+  expect(primary.remoteControlRequests).toEqual([]);
 });
 
 // ---------------------------------------------------------------------------
@@ -1348,7 +1357,7 @@ test('inventory: the synced desktop inventory and the Marketplace serve over dir
     );
     expect(catalogStatuses).toEqual([200, 200]);
     const manifest = await fetch(
-      `${PORTAL_WEB_ORIGIN_LOOPBACK}/api/v1/desktop-app/desktop-inventory/documents?clientDeviceId=${encodeURIComponent(inventory.device.clientDeviceId)}`,
+      `${REMOTE_CONTROL_WEB_ORIGIN_LOOPBACK}/api/v1/desktop-app/desktop-inventory/documents?clientDeviceId=${encodeURIComponent(inventory.device.clientDeviceId)}`,
       { headers: { Authorization: `Bearer ${userA.apiKey}` } },
     );
     expect(manifest.status).toBe(200);
@@ -1386,7 +1395,7 @@ test('inventory: the synced desktop inventory and the Marketplace serve over dir
     // Opting out (CAN-5986). The documents DELETE needs an account and
     // touches only that account's rows for the device: another account's
     // delete of this device removes nothing.
-    const documentsUrl = `${PORTAL_WEB_ORIGIN_LOOPBACK}/api/v1/desktop-app/desktop-inventory/documents?clientDeviceId=${encodeURIComponent(inventory.device.clientDeviceId)}`;
+    const documentsUrl = `${REMOTE_CONTROL_WEB_ORIGIN_LOOPBACK}/api/v1/desktop-app/desktop-inventory/documents?clientDeviceId=${encodeURIComponent(inventory.device.clientDeviceId)}`;
     const ownDocumentCount = async () => {
       const response = await fetch(documentsUrl, {
         headers: { Authorization: `Bearer ${userA.apiKey}` },
@@ -1521,7 +1530,7 @@ test('script review: a direct browser reviews detected scripts, and the desktop 
 
     // The worktree panel's Detected scripts opens the shared review over
     // direct, and an approval there lands on the desktop.
-    primary.portalRequests.length = 0;
+    primary.remoteControlRequests.length = 0;
     await page.reload();
     await expect(projectRow(page)).toBeVisible({ timeout: 60_000 });
     await openWorktree(page);
@@ -1561,14 +1570,14 @@ test('script review: a direct browser reviews detected scripts, and the desktop 
       { request: SCRIPT_CONTEXT, name: fromDesktop },
     );
     await expect(approvedRow(fromDesktop)).toBeVisible({ timeout: 30_000 });
-    expect(primary.portalRequests).toEqual([]);
+    expect(primary.remoteControlRequests).toEqual([]);
     await page.keyboard.press('Escape');
     await expect(review).toBeHidden();
 
     // A clone from the browser polls its scan receipt and offers Review.
     const remoteUrl = seedScriptRepository(repositoryRoot, 'direct-web-notice');
-    await page.getByTestId('portal-workspaces-header').hover();
-    await page.getByTestId('portal-add-workspace').click();
+    await page.getByTestId('remote-control-workspaces-header').hover();
+    await page.getByTestId('remote-control-add-workspace').click();
     const dialog = page.getByTestId('chat-add-workspace-dialog');
     await expect(dialog).toBeVisible();
     await dialog.getByTestId('chat-add-workspace-destination-device').click();
@@ -1580,7 +1589,7 @@ test('script review: a direct browser reviews detected scripts, and the desktop 
       .filter({ hasText: /Found .+ in direct-web-notice to review/ });
     await expect(notice).toBeVisible({ timeout: 60_000 });
     await expect(notice.getByTestId('toast-action')).toHaveText('Review');
-    expect(primary.portalRequests).toEqual([]);
+    expect(primary.remoteControlRequests).toEqual([]);
   } finally {
     writeFileSync(packagePath, originalPackage, 'utf8');
     rmSync(repositoryRoot, { recursive: true, force: true });

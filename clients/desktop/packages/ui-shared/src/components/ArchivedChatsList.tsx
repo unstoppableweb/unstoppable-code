@@ -421,7 +421,6 @@ export function ArchivedChatsList({
               value={filter}
               onChange={setFilter}
               label={`Filter archived ${CHATS_LOWER}`}
-              shape="capsule"
               width="content"
               dataTestId="archived-chats-filter"
               options={[
@@ -445,7 +444,7 @@ export function ArchivedChatsList({
           </div>
           {counts.unread > 0 ? (
             <Button
-              variant="ghost-quiet"
+              variant="ghost"
               size="compact"
               data-testid="archived-chats-mark-all-read"
               onClick={(): void => {

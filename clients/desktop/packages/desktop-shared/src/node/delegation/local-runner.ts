@@ -27,7 +27,7 @@ import type {
   ResolvedAgentRouteSnapshot,
   RunnerAvailability,
 } from './types';
-import type { ChatInputAdmission } from '@canopy/protocol/portal/input-delivery';
+import type { ChatInputAdmission } from '@canopy/protocol/remote-control/shell/input-delivery';
 import type {
   DelegationTranscriptChange,
   DelegationTranscriptPort,

@@ -299,7 +299,7 @@ function GroupRow({
           <span className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100">
             <Tooltip label="Rename">
               <Button
-                variant="ghost-quiet"
+                variant="ghost"
                 size="sm"
                 iconOnly
                 aria-label={`Rename ${ariaLabel}`}
@@ -314,7 +314,7 @@ function GroupRow({
           <span className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100">
             <Tooltip label="Close group">
               <Button
-                variant="ghost-quiet"
+                variant="ghost"
                 size="sm"
                 iconOnly
                 aria-label={`Close ${ariaLabel}`}
@@ -359,7 +359,7 @@ function GroupRow({
           <span className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100">
             <Tooltip label="Rename">
               <Button
-                variant="ghost-quiet"
+                variant="ghost"
                 size="sm"
                 iconOnly
                 aria-label={`Rename ${ariaLabel}`}
@@ -374,7 +374,7 @@ function GroupRow({
           <span className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100">
             <Tooltip label="Close group">
               <Button
-                variant="ghost-quiet"
+                variant="ghost"
                 size="sm"
                 iconOnly
                 aria-label={`Close ${ariaLabel}`}
@@ -436,7 +436,7 @@ function GroupRow({
                 <span className="shrink-0 opacity-0 transition-opacity group-hover/pane:opacity-100">
                   <Tooltip label="Rename">
                     <Button
-                      variant="ghost-quiet"
+                      variant="ghost"
                       size="sm"
                       iconOnly
                       aria-label={`Rename terminal ${paneNumber}`}
@@ -451,7 +451,7 @@ function GroupRow({
                 <span className="shrink-0 opacity-0 transition-opacity group-hover/pane:opacity-100">
                   <Tooltip label="Close terminal">
                     <Button
-                      variant="ghost-quiet"
+                      variant="ghost"
                       size="sm"
                       iconOnly
                       aria-label={`Close terminal ${paneNumber}`}

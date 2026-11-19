@@ -21,9 +21,9 @@ export * from './chat/create-chat-store';
 export * from './chat/chat-repair';
 export {
   computeIncrementalTurnGroups,
-  computePortalTurnOutcomes,
+  computeRemoteControlTurnOutcomes,
   createEmptyTurnGroupCache,
-  getPortalTurnOutcomeSteps,
+  getRemoteControlTurnOutcomeSteps,
   hasLiveTurnTimer,
   isTurnTimerMessage,
   type TurnGroupCache,

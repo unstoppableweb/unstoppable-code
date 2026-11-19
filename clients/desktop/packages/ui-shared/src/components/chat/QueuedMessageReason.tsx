@@ -1,6 +1,6 @@
 import { memo, type JSX, type ReactNode } from 'react';
 import { Stack } from '../Stack';
-import type { QueuedMessageWaitingReason } from '@canopy/protocol/portal';
+import type { QueuedMessageWaitingReason } from '@canopy/protocol/remote-control/shell';
 import { Tooltip } from '../Tooltip';
 
 /**

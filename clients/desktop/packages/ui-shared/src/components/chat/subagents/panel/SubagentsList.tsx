@@ -344,7 +344,7 @@ export const SubagentsListRow = memo(function SubagentsListRow({
       <DataTableCell align="right">
         {isSubagentChatKind(node.kind) ? (
           <Button
-            variant="ghost-quiet"
+            variant="ghost"
             size="sm"
             iconOnly
             touchArea="contained"
@@ -524,7 +524,7 @@ function SubagentWorkflowRunListRow({
       <DataTableCell align="right">
         {onOpenWorkflow ? (
           <Button
-            variant="ghost-quiet"
+            variant="ghost"
             size="sm"
             iconOnly
             touchArea="contained"

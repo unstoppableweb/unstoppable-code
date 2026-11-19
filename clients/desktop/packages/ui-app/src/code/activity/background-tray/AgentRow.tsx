@@ -323,7 +323,7 @@ export function AgentRow({
       >
         <span className="inline-flex">
           <Button
-            variant="ghost-overlay"
+            variant="ghost"
             size="compact"
             iconOnly
             disabled

@@ -26,7 +26,7 @@ export function DeferredPluginsControl({
         }
       >
         <Button
-          variant={allowed ? 'ghost-accent' : 'ghost'}
+          variant="ghost"
           size="sm"
           iconOnly
           role="switch"

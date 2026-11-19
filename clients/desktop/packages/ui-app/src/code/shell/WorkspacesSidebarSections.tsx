@@ -3556,7 +3556,7 @@ export function WorkspacesSidebarSections({
                                   </span>
                                 ) : onRestoreArchived ? (
                                   <Button
-                                    variant="ghost-quiet"
+                                    variant="ghost"
                                     size="compact"
                                     iconOnly
                                     aria-label={`Restore ${entry.title}`}
@@ -3572,7 +3572,7 @@ export function WorkspacesSidebarSections({
                                 ) : null}
                                 {!renderArchivedActions && onDeleteArchived && (
                                   <Button
-                                    variant="ghost-quiet"
+                                    variant="ghost"
                                     size="compact"
                                     iconOnly
                                     aria-label={`Delete ${entry.title}`}

@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, type JSX, type ReactNode } from 'react';
-import type { PortalFileReadPayload } from '@canopy/protocol/portal';
+import type { RemoteControlFileReadPayload } from '@canopy/protocol/remote-control/shell';
 import { Surface, Button } from '@canopy/ui-shared/components';
 import { ChatPanel } from '../ChatPanel';
 import type { FileEditorSlot } from '../file/FileViewer';
@@ -79,7 +79,7 @@ export interface CodeShellProps {
    */
   readonly buildFileRequest?: (
     filePath: string,
-  ) => PortalFileReadPayload | null;
+  ) => RemoteControlFileReadPayload | null;
   // Activity panel host wiring.
   readonly onRevertFile?: (filePath: string) => void;
   readonly fileTreeRootKey?: string;
@@ -163,7 +163,9 @@ export function CodeShell({
   leftPanelWidth = '16rem',
   rightPanelWidth = '20rem',
 }: CodeShellProps): JSX.Element {
-  const [openFile, setOpenFile] = useState<PortalFileReadPayload | null>(null);
+  const [openFile, setOpenFile] = useState<RemoteControlFileReadPayload | null>(
+    null,
+  );
 
   // Worktree localIds are workspace-scoped, so reset the open file whenever
   // EITHER the workspace or the worktree changes — otherwise switching to a

@@ -63,6 +63,10 @@ import {
 } from '../lib/preferences-store';
 import { resolveCodexRuntimeEnvironmentProfile } from '../lib/user-environment-runtime';
 import type { DesktopExecutionObservabilityIngest } from '../observability/ingest';
+import {
+  isHelperNoBillingSourceError,
+  type HelperNoBillingSourceError,
+} from './helper-no-billing-source';
 import type { HelperInvocation } from '../ollama/helper-invocation';
 import {
   resolveHelperInvocation,
@@ -94,8 +98,11 @@ export interface SummaryResult {
    * truncated user-message fallback rather than model output. `retryable`
    * marks a thrown provider error (offline, credentials, abort) rather than a
    * deterministic outcome such as a policy refusal or empty output.
+   * `skipped` marks a helper that was never started because its provider is
+   * signed out with no billing source (`HelperNoBillingSourceError`): the
+   * caller must leave the work eligible, not store `text` as a final result.
    */
-  fallback?: { reason: string; retryable?: boolean };
+  fallback?: { reason: string; retryable?: boolean; skipped?: true };
 }
 
 const HANDOFF_SUMMARY_SYSTEM_PROMPT =
@@ -350,6 +357,26 @@ async function recordSummaryPolicyRefusal(
     taskKey,
     'failure',
     SUMMARY_MODEL_POLICY_REFUSAL,
+  );
+}
+
+/**
+ * Finalize a helper's audit entry as `cancelled` when it was skipped because
+ * its provider is signed out with no billing source (CAN-7062). The Audit
+ * Trail has no skipped status; the reason line says why.
+ */
+async function recordHelperNoBillingSourceSkip(
+  taskKey: string | undefined,
+  error: HelperNoBillingSourceError,
+): Promise<void> {
+  if (!taskKey) {
+    return;
+  }
+  const observabilityService = await loadObservabilityIngest();
+  observabilityService.finalizeObservedTask(
+    taskKey,
+    'cancelled',
+    error.message,
   );
 }
 
@@ -1044,6 +1071,20 @@ export async function generateChatSummary(
       usageOf: (r) => r.usage,
     });
   } catch (err) {
+    if (isHelperNoBillingSourceError(err)) {
+      // Not started: the provider is signed out and nothing pays for the
+      // helper (CAN-7062). Not retryable within this turn, and `skipped` keeps
+      // the fallback from being stored as the final title, so a turn after
+      // sign-in names the chat.
+      return {
+        text:
+          options?.purpose === 'chat-title'
+            ? chatTitleFallback(userMessage)
+            : userMessage.slice(0, 100),
+        usage: {},
+        fallback: { reason: err.message, skipped: true },
+      };
+    }
     // eslint-disable-next-line no-console
     console.error('[generateChatSummary] failed:', err);
     const reason = err instanceof Error ? err.message : String(err);
@@ -1236,6 +1277,15 @@ ${conversationText}`;
           usage: result.usage,
         };
       } catch (error) {
+        if (isHelperNoBillingSourceError(error)) {
+          // Not started (CAN-7062): record the skip, like the policy refusal
+          // above, instead of a provider failure.
+          await recordHelperNoBillingSourceSkip(
+            options?.observabilityTaskKey,
+            error,
+          );
+          return { text: error.message, usage: {} };
+        }
         return {
           text: 'Summary generation failed.',
           usage: readHelperUsage(error) ?? {},
@@ -1304,13 +1354,26 @@ ${conversationText}`;
         `${admission.message} Choose an allowed conversation handoff model in Settings.`,
       );
   }
-  const invocation = await resolveHelperInvocation(selectedModel, undefined, {
-    ...(options?.workspaceId !== undefined
-      ? { workspaceId: options.workspaceId }
-      : {}),
-    workOwner: policyOwner,
-    ...(selectedLocal ? { preserveModelSelection: true } : {}),
-  });
+  let invocation: HelperInvocation;
+  try {
+    invocation = await resolveHelperInvocation(selectedModel, undefined, {
+      ...(options?.workspaceId !== undefined
+        ? { workspaceId: options.workspaceId }
+        : {}),
+      workOwner: policyOwner,
+      ...(selectedLocal ? { preserveModelSelection: true } : {}),
+    });
+  } catch (error) {
+    // Not started (CAN-7062): record the skip as `cancelled`, like the policy
+    // refusal above records its refusal, and throw the readable message.
+    if (isHelperNoBillingSourceError(error)) {
+      await recordHelperNoBillingSourceSkip(
+        options?.observabilityTaskKey,
+        error,
+      );
+    }
+    throw error;
+  }
   try {
     return await runHelperThroughWorker({
       kind: 'chat_handoff_summary',

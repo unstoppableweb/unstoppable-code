@@ -38,12 +38,40 @@ import {
   type CloudCopyConsent,
 } from './cloud-copy-consents';
 import { CUSTOM_SOURCE_ID, getSkillsRootDir } from './paths';
+import {
+  isCopyableInstalledSkill,
+  parseInstalledSkillEntry,
+} from './installed-skill-cloud-copy';
+
+/**
+ * How a share request is authorized: an installed-source skill's cloud copy
+ * (CAN-6943) may read a skill installed from GitHub, a URL or a local
+ * folder; every other share reads only custom and built-in skills.
+ */
+export interface ShareSourceOptions {
+  readonly installedSource: boolean;
+}
 
 /** What a skill publish calls; tests inject fakes. Defaults load lazily. */
 export interface PublishSkillDeps {
   /** The installed skills, each with its author-side link. */
   loadSkills: () => Promise<readonly InstalledSkillInfo[]>;
   readRawSkill: (localId: string) => Promise<string>;
+  /**
+   * Whether skills installed from GitHub, a URL or a local folder may be
+   * copied (CAN-6943's flag), and their SKILL.md as main reads it.
+   */
+  installedSkillsEnabled: () => Promise<boolean>;
+  readInstalledSkill: (localId: string) => Promise<string>;
+  /** Its whole folder's fingerprint, which its consent records. */
+  fingerprintInstalledSkill: (localId: string) => Promise<string>;
+  /**
+   * Throws unless the cloud honours a create's expectedAudience; an older
+   * one would relink an identical public skill's package (CAN-6943).
+   */
+  assertCreateAudienceSupported: (
+    context: CanopyCloudCredentialContext,
+  ) => Promise<void>;
   /**
    * The skill a live analysis covered and the content hash it was made over;
    * null once expired or for a pipeline analysis.
@@ -86,6 +114,7 @@ export interface PublishSkillDeps {
       expectedAudience: CloudCopyAudience;
     },
     context: CanopyCloudCredentialContext,
+    options?: ShareSourceOptions,
   ) => Promise<SharedSkillDetail>;
   updateSharedSkill: (
     request: {
@@ -101,6 +130,7 @@ export interface PublishSkillDeps {
     context: CanopyCloudCredentialContext,
     /** Runs just before the copy is written; throwing stops it. */
     beforeWrite?: () => void,
+    options?: ShareSourceOptions,
   ) => Promise<SharedSkillDetail>;
   writeLink: (localId: string, remote: ShareRemoteMetadata) => Promise<void>;
   writeConsent: (localId: string, consent: CloudCopyConsent) => Promise<void>;
@@ -131,6 +161,26 @@ const defaultDeps: PublishSkillDeps = {
   },
   readRawSkill: async (localId) =>
     (await import('./skill-service')).readRawSkill(localId),
+  installedSkillsEnabled: async () =>
+    (
+      await import('../cloud-copy/installed-skills-flag')
+    ).installedSkillCloudCopyEnabled(),
+  readInstalledSkill: async (localId) =>
+    (await import('./skill-service')).readInstalledSkillForCloudCopy(localId),
+  fingerprintInstalledSkill: async (localId) =>
+    (await import('./skill-service')).fingerprintInstalledSkillForCloudCopy(
+      localId,
+    ),
+  assertCreateAudienceSupported: async (context) => {
+    const { assertCanopyCloudCapability } =
+      await import('../canopy-cloud/client');
+    const { SKILL_CREATE_EXPECTED_AUDIENCE_CAPABILITY } =
+      await import('@canopy/protocol/canopy-server');
+    await assertCanopyCloudCapability(
+      SKILL_CREATE_EXPECTED_AUDIENCE_CAPABILITY,
+      context,
+    );
+  },
   analysisSubject: async (analysisId) =>
     (
       await import('../pipelines/pipeline-package-service')
@@ -167,16 +217,18 @@ const defaultDeps: PublishSkillDeps = {
       stillInTime,
     );
   },
-  createSharedSkill: async (request, context) =>
+  createSharedSkill: async (request, context, options) =>
     (await import('./canopy-server-client')).createSharedSkill(
       request,
       context,
+      { allowInstalledSource: options?.installedSource === true },
     ),
-  updateSharedSkill: async (request, context, beforeWrite) =>
+  updateSharedSkill: async (request, context, beforeWrite, options) =>
     (await import('./canopy-server-client')).updateSharedSkill(
       request,
       context,
       beforeWrite,
+      { allowInstalledSource: options?.installedSource === true },
     ),
   writeLink: async (localId, remote) =>
     (await import('./skill-service')).writeSkillRemoteMetadata(localId, remote),
@@ -221,6 +273,13 @@ function cloudRefusal(error: unknown): CatalogHostRefusedError {
  * is now, so another skill's analysis or a skill edited after the consent
  * dialog answers `publish-package-stale` and nothing uploads. A linked copy is updated in its existing scope against the hash it
  * was last published with, so a copy changed elsewhere answers 409.
+ *
+ * With CAN-6943's flag on, a skill installed from GitHub, a URL or a local
+ * folder publishes the same way, with three differences: only to a private
+ * copy, never kept in step (its consent records `keepInStep: false`, so a
+ * changed skill offers "Update in cloud" and asks again), and its SKILL.md is
+ * read through the installed-source reader. Off, it is refused as
+ * `publish-source-unsupported` and nothing uploads.
  */
 export async function publishSkillToCloud(
   entryId: string,
@@ -228,21 +287,36 @@ export async function publishSkillToCloud(
   deps: PublishSkillDeps = defaultDeps,
   options: CatalogPublishOptions = {},
 ): Promise<CatalogPublication> {
-  if (!entryId.startsWith(CUSTOM_PREFIX))
+  const installed = entryId.startsWith(CUSTOM_PREFIX)
+    ? null
+    : parseInstalledSkillEntry(entryId);
+  if (
+    !entryId.startsWith(CUSTOM_PREFIX) &&
+    (installed === null || !(await deps.installedSkillsEnabled()))
+  )
     throw new CatalogHostRefusedError('publish-source-unsupported');
-  const skillName = entryId.slice(CUSTOM_PREFIX.length);
+  const sourceId = installed?.sourceId ?? CUSTOM_SOURCE_ID;
+  const skillName = installed?.skillName ?? entryId.slice(CUSTOM_PREFIX.length);
   const skill = (await deps.loadSkills()).find(
     (candidate) =>
-      candidate.sourceId === CUSTOM_SOURCE_ID && candidate.name === skillName,
+      candidate.sourceId === sourceId && candidate.name === skillName,
   );
   if (skill === undefined)
     throw new CatalogHostRefusedError('publish-entry-not-found');
-  const localId = `${CUSTOM_SOURCE_ID}/${skillName}`;
-  const rawSkill = await deps.readRawSkill(localId);
+  if (installed !== null && !isCopyableInstalledSkill(skill))
+    throw new CatalogHostRefusedError('publish-source-unsupported');
+  const shareSource: ShareSourceOptions = {
+    installedSource: installed !== null,
+  };
+  const localId = `${sourceId}/${skillName}`;
+  const rawSkill =
+    installed === null
+      ? await deps.readRawSkill(localId)
+      : await deps.readInstalledSkill(localId);
   const checked = sha256(rawSkill);
   const analysed = await deps.analysisSubject(pkg.analysisId);
   if (
-    analysed?.sourceId !== CUSTOM_SOURCE_ID ||
+    analysed?.sourceId !== sourceId ||
     analysed.skillName !== skillName ||
     analysed.contentHash !== checked ||
     // Only a cloud copy's review withholds what a share would block on.
@@ -254,6 +328,10 @@ export async function publishSkillToCloud(
   )
     throw new CatalogHostRefusedError('publish-package-stale');
   const consentedAudience = analysed.audience;
+  // A third-party skill goes to a private copy only, until wider copies of
+  // them are decided (CAN-6943).
+  if (installed !== null && consentedAudience !== 'private')
+    throw new CatalogHostRefusedError('publish-source-unsupported');
   // The files it would carry and leave out, recorded with the consent so a
   // later republish is held to them.
   const facts = await deps.analysisFacts(
@@ -262,6 +340,16 @@ export async function publishSkillToCloud(
   );
   if (facts === null || !facts.ready || facts.contentHash !== checked)
     throw new CatalogHostRefusedError('publish-package-stale');
+  // Taken before the package commit, which refuses an analysis whose files
+  // changed since: the folder recorded is the one that uploads (CAN-6943).
+  let sourceFingerprint: string | undefined;
+  if (installed !== null) {
+    try {
+      sourceFingerprint = await deps.fingerprintInstalledSkill(localId);
+    } catch (error) {
+      throw new CatalogHostRefusedError('publish-package-stale', error);
+    }
+  }
 
   let accountId: string;
   let detail: SharedSkillDetail;
@@ -294,6 +382,18 @@ export async function publishSkillToCloud(
       if (now !== null && now !== consentedAudience)
         throw new CatalogHostRefusedError('publish-package-stale');
     }
+    // Nothing uploads for an installed skill to a cloud that would ignore
+    // the create's audience and relink an identical public skill.
+    if (installed !== null) {
+      try {
+        await deps.assertCreateAudienceSupported(credentials.context);
+      } catch (error) {
+        throw error instanceof CanopyCloudClientError &&
+          error.code === 'unsupported-capability'
+          ? new CatalogHostRefusedError('publish-source-unsupported', error)
+          : error;
+      }
+    }
     const committed = await deps.commitPackage(pkg, credentials.context);
     // A new copy is always private, including one replacing a linked copy
     // deleted in the cloud. An identical skill the account already shares
@@ -312,6 +412,7 @@ export async function publishSkillToCloud(
             expectedAudience: 'private',
           },
           credentials.context,
+          shareSource,
         );
       } catch (error) {
         throw error instanceof CanopyCloudClientError &&
@@ -349,6 +450,8 @@ export async function publishSkillToCloud(
                 expectedAudience: consentedAudience,
               },
               credentials.context,
+              undefined,
+              shareSource,
             );
     } catch (error) {
       // The linked copy was deleted in the cloud: start a new private one.
@@ -378,12 +481,15 @@ export async function publishSkillToCloud(
     await deps.writeConsent(localId, {
       accountId,
       remoteId: detail.id,
-      keepInStep: pkg.keepInStep,
+      // An installed-source copy is never kept in step: any change to the
+      // skill asks again (CAN-6943), whatever the request said.
+      keepInStep: installed === null && pkg.keepInStep,
       consentedAt: deps.now(),
       selectedOptionalResourceIds: [...pkg.selectedOptionalResourceIds],
       files: facts.files,
       withheld: facts.withheld,
       audience: writtenAudience,
+      ...(sourceFingerprint === undefined ? {} : { sourceFingerprint }),
     });
   }
   return {

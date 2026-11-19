@@ -7,7 +7,7 @@ import {
 } from '@canopy/ui-shared/components';
 import { Count } from '@canopy/ui-shared/components/Badge';
 import { type JSX, type ReactNode, useState } from 'react';
-import type { PortalPipelineDefinitionViewModel } from '@canopy/protocol/portal';
+import type { RemoteControlPipelineDefinitionViewModel } from '@canopy/protocol/remote-control/shell';
 import { PipelineIcon } from '@canopy/ui-shared';
 import {
   Stack,
@@ -27,7 +27,7 @@ import { Surface } from '@canopy/ui-shared/components';
 import { PipelineStepRow } from './PipelineStepRow';
 
 export interface PipelineReadDetailProps {
-  definition: PortalPipelineDefinitionViewModel;
+  definition: RemoteControlPipelineDefinitionViewModel;
   onOpenEditor?: () => void;
   /**
    * Drop the top padding because the host already spaced this panel — the
@@ -81,7 +81,7 @@ export interface PipelineReadDetailLayout {
 }
 
 function scopeLabel(
-  scope: PortalPipelineDefinitionViewModel['scopes'][number],
+  scope: RemoteControlPipelineDefinitionViewModel['scopes'][number],
 ): string {
   return scope.charAt(0).toUpperCase() + scope.slice(1);
 }
@@ -266,7 +266,7 @@ function PipelineLayoutDetail({
   definition,
   layout,
 }: {
-  readonly definition: PortalPipelineDefinitionViewModel;
+  readonly definition: RemoteControlPipelineDefinitionViewModel;
   readonly layout: PipelineReadDetailLayout;
 }): JSX.Element {
   return (

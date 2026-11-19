@@ -1,6 +1,6 @@
 import { assertSharedMultiRepoWorkReady } from './org-shared-multi-repo-readiness';
 import { z } from 'zod';
-import { withW5Commit } from './w5-commit-log-file-store';
+import { getW5ReceiptStore, withW5Commit } from './w5-commit-log-file-store';
 import { w5RecordReadPaths } from './paths';
 import { runKeyedW5Operation } from './w5-keyed-operation';
 import type {
@@ -330,9 +330,50 @@ export async function createWorktreeFromSelection(
         // Repair retains its recovery row and records the outcome in one decision.
         // Success is decided only after the service has built its final response;
         // no canonical write remains, so finish with a receipt-only decision.
-        if (outcome.status === 'created')
-          await withW5Commit({ ...binding, outcome }, async () => {});
+        if (outcome.status === 'created') {
+          try {
+            await withW5Commit({ ...binding, outcome }, async () => {});
+          } catch (error) {
+            // The reply can be lost after the receipt became durable. Recover
+            // and replay that exact decision, never creation or Git setup.
+            try {
+              if (binding.receipt) {
+                const receipt = binding.receipt;
+                const store = getW5ReceiptStore();
+                // A transient lookup failure must not hide our live key.
+                const saved = await store
+                  .lookupReceipt(receipt)
+                  .catch(() => store.lookupReceipt(receipt));
+                if (saved.status === 'replay')
+                  return worktreeReceiptSchema.parse(saved.outcome);
+                if (
+                  saved.status === 'in-progress' &&
+                  saved.reservationId === binding.reservationId
+                ) {
+                  try {
+                    await withW5Commit({ ...binding, outcome }, async () => {});
+                    return outcome;
+                  } catch {
+                    // The retry can also commit before losing its reply.
+                    const completed = await store.lookupReceipt(receipt);
+                    if (completed.status === 'replay')
+                      return worktreeReceiptSchema.parse(completed.outcome);
+                  }
+                }
+              }
+            } catch {
+              // Unproved completion keeps the original failure and identity.
+            }
+            throw error;
+          }
+        }
         return outcome;
+      },
+      {
+        kind: 'local-workspace-create',
+        workspaceId: options.workspaceId,
+        ownedPaths: [],
+        phase: 'before-canonical-commit',
       },
     );
   }

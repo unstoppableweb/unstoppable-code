@@ -54,7 +54,7 @@ describe('slash-command discovery after committed plugin changes (CAN-5999)', ()
 
   it('a plugin change the Portal committed triggers exactly one discovery too', () => {
     // Committed events carry no origin: the window reacts to the commit itself.
-    const portalEvent = [
+    const remoteControlEvent = [
       patched(AFTER),
       {
         type: 'tab.metadata_patched',
@@ -63,7 +63,7 @@ describe('slash-command discovery after committed plugin changes (CAN-5999)', ()
       } as ChatStateChange,
     ];
 
-    expect(discover(portalEvent)).toHaveLength(1);
+    expect(discover(remoteControlEvent)).toHaveLength(1);
   });
 
   it("selections that did not change trigger no discovery, so the window's own change is not repeated", () => {

@@ -5,33 +5,38 @@
  * the same section readers while it still runs.
  */
 import type {
-  PortalEntityEnvelope,
-  PortalHookRun,
-  PortalPipelineRun,
-  PortalScriptRun,
+  RemoteControlEntityEnvelope,
+  RemoteControlHookRun,
+  RemoteControlPipelineRun,
+  RemoteControlScriptRun,
 } from '@canopy/desktop-shared/types';
-import { worktreeScopedParentLocalId } from '@canopy/protocol/portal';
+import { worktreeScopedParentLocalId } from '@canopy/protocol/remote-control/shell';
 import { validateId } from '../lib/validation';
 import { readWorktreeSummary } from '../lib/worktree-summary-persistence';
 import { isWorktreeSummaryGenerating } from '../lib/worktree-summary-scheduler';
-import { listPlans, planToPortalEntity } from '../services/plans-service';
+import {
+  listPlans,
+  planToRemoteControlEntity,
+} from '../services/plans-service';
 import {
   listScripts,
   listScriptRuns,
-  scriptToPortalEntity,
+  scriptToRemoteControlEntity,
 } from '../services/scripts-service';
 import {
-  hookToPortalEntity,
+  hookToRemoteControlEntity,
   listHookRuns,
   listHooks,
 } from '../services/hooks-service';
 import {
   listPipelineRuns,
   listPipelines,
-  pipelineToPortalEntity,
+  pipelineToRemoteControlEntity,
 } from '../services/pipelines-service';
 
-function scriptRunToPortalEntity(run: PortalScriptRun): PortalEntityEnvelope {
+function scriptRunToRemoteControlEntity(
+  run: RemoteControlScriptRun,
+): RemoteControlEntityEnvelope {
   return {
     entityType: 'script_run',
     localId: run.localId,
@@ -43,7 +48,9 @@ function scriptRunToPortalEntity(run: PortalScriptRun): PortalEntityEnvelope {
   };
 }
 
-function hookRunToPortalEntity(run: PortalHookRun): PortalEntityEnvelope {
+function hookRunToRemoteControlEntity(
+  run: RemoteControlHookRun,
+): RemoteControlEntityEnvelope {
   return {
     entityType: 'hook_run',
     localId: run.localId,
@@ -55,9 +62,9 @@ function hookRunToPortalEntity(run: PortalHookRun): PortalEntityEnvelope {
   };
 }
 
-function pipelineRunToPortalEntity(
-  run: PortalPipelineRun,
-): PortalEntityEnvelope {
+function pipelineRunToRemoteControlEntity(
+  run: RemoteControlPipelineRun,
+): RemoteControlEntityEnvelope {
   return {
     entityType: 'pipeline_run',
     localId: run.localId,
@@ -72,7 +79,7 @@ function pipelineRunToPortalEntity(
 export async function listScriptEntitiesForWorktree(input: {
   workspaceLocalId: string;
   worktreeLocalId: string;
-}): Promise<PortalEntityEnvelope[]> {
+}): Promise<RemoteControlEntityEnvelope[]> {
   const scriptInput = {
     ...input,
     workspaceId: input.workspaceLocalId,
@@ -84,15 +91,15 @@ export async function listScriptEntitiesForWorktree(input: {
     listScriptRuns(scriptInput).catch(() => []),
   ]);
   return [
-    ...scripts.map(scriptToPortalEntity),
-    ...scriptRuns.map(scriptRunToPortalEntity),
+    ...scripts.map(scriptToRemoteControlEntity),
+    ...scriptRuns.map(scriptRunToRemoteControlEntity),
   ];
 }
 
 export async function listPipelineEntitiesForWorktree(input: {
   workspaceLocalId: string;
   worktreeLocalId: string;
-}): Promise<PortalEntityEnvelope[]> {
+}): Promise<RemoteControlEntityEnvelope[]> {
   const pipelineInput = {
     ...input,
     workspaceId: input.workspaceLocalId,
@@ -104,26 +111,26 @@ export async function listPipelineEntitiesForWorktree(input: {
     listPipelineRuns(pipelineInput).catch(() => []),
   ]);
   return [
-    ...pipelines.map(pipelineToPortalEntity),
-    ...pipelineRuns.map(pipelineRunToPortalEntity),
+    ...pipelines.map(pipelineToRemoteControlEntity),
+    ...pipelineRuns.map(pipelineRunToRemoteControlEntity),
   ];
 }
 
 export async function listPlanEntitiesForWorktree(input: {
   workspaceLocalId: string;
   worktreeLocalId: string;
-}): Promise<PortalEntityEnvelope[]> {
+}): Promise<RemoteControlEntityEnvelope[]> {
   const plans = await listPlans({
     projectId: input.workspaceLocalId,
     worktreeId: input.worktreeLocalId,
   }).catch(() => []);
-  return plans.map(planToPortalEntity);
+  return plans.map(planToRemoteControlEntity);
 }
 
 export async function listHookEntitiesForWorktree(input: {
   workspaceLocalId: string;
   worktreeLocalId: string;
-}): Promise<PortalEntityEnvelope[]> {
+}): Promise<RemoteControlEntityEnvelope[]> {
   const hookInput = {
     ...input,
     workspaceId: input.workspaceLocalId,
@@ -135,15 +142,15 @@ export async function listHookEntitiesForWorktree(input: {
     listHookRuns(hookInput).catch(() => []),
   ]);
   return [
-    ...hooks.map(hookToPortalEntity),
-    ...hookRuns.map(hookRunToPortalEntity),
+    ...hooks.map(hookToRemoteControlEntity),
+    ...hookRuns.map(hookRunToRemoteControlEntity),
   ];
 }
 
 export async function listSummaryEntitiesForWorktree(input: {
   workspaceLocalId: string;
   worktreeLocalId: string;
-}): Promise<PortalEntityEnvelope[]> {
+}): Promise<RemoteControlEntityEnvelope[]> {
   const { workspaceLocalId, worktreeLocalId } = input;
   const summary = await readWorktreeSummary(
     workspaceLocalId,
@@ -185,7 +192,7 @@ export async function listSummaryEntitiesForWorktree(input: {
 export async function listWorktreeActivityEntities(input: {
   workspaceLocalId: string;
   worktreeLocalId: string;
-}): Promise<PortalEntityEnvelope[]> {
+}): Promise<RemoteControlEntityEnvelope[]> {
   validateId(input.workspaceLocalId, 'projectId');
   validateId(input.worktreeLocalId, 'worktreeId');
   const sections = await Promise.all([

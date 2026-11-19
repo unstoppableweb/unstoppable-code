@@ -153,7 +153,7 @@ import type {
   DelegationDeliveryState,
 } from './types';
 import { DELEGATION_TRANSCRIPT_LIMITS } from './types';
-import type { ChatInputAdmission } from '@canopy/protocol/portal/input-delivery';
+import type { ChatInputAdmission } from '@canopy/protocol/remote-control/shell/input-delivery';
 import {
   DEFAULT_DELEGATION_QUEUE_ID,
   DELEGATION_IF_BUSY_VALUES,

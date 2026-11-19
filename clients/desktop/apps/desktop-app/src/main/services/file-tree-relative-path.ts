@@ -1,5 +1,5 @@
 import { posix, sep, win32 } from 'node:path';
-import { PortalServiceError } from './portal-service-error';
+import { RemoteControlServiceError } from './remote-control-service-error';
 
 /**
  * A file-tree path relative to its root, with `/` separators. Shared by the
@@ -8,17 +8,23 @@ import { PortalServiceError } from './portal-service-error';
  */
 export function normalizeFileTreeRelativePath(value: string): string {
   if (win32.isAbsolute(value) || /^[a-zA-Z]:/.test(value)) {
-    throw new PortalServiceError('invalid_target', 'Path must be relative.');
+    throw new RemoteControlServiceError(
+      'invalid_target',
+      'Path must be relative.',
+    );
   }
   const normalizedInput = sep === '\\' ? value.replace(/\\/g, '/') : value;
   if (posix.isAbsolute(normalizedInput)) {
-    throw new PortalServiceError('invalid_target', 'Path must be relative.');
+    throw new RemoteControlServiceError(
+      'invalid_target',
+      'Path must be relative.',
+    );
   }
   if (
     normalizedInput.split('/').some((segment) => segment === '..') ||
     value.split('\\').includes('..')
   ) {
-    throw new PortalServiceError(
+    throw new RemoteControlServiceError(
       'invalid_target',
       'Path cannot traverse outside the worktree.',
     );

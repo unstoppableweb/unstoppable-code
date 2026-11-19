@@ -46,7 +46,7 @@ export function DevServerOpenControl({
     const [hit] = hits;
     return (
       <Button
-        variant="ghost-accent"
+        variant="ghost"
         size="compact"
         onClick={(): void => openDevServerHit(hit, context)}
         aria-label={getDevServerOpenAriaLabel(hit)}
@@ -61,7 +61,7 @@ export function DevServerOpenControl({
     <div className="inline-flex">
       <Button
         ref={triggerRef}
-        variant="ghost-accent"
+        variant="ghost"
         size="compact"
         onClick={(): void => setMenuOpen((prev) => !prev)}
         aria-haspopup="menu"

@@ -238,7 +238,10 @@ function GroupedParts(): JSX.Element {
 export function TablesSpecimen(): JSX.Element {
   return (
     <div className="flex flex-col gap-6">
-      <SpecimenPanel title="DataTable: framed card, 32px header band, 36px rows">
+      <SpecimenPanel
+        title="DataTable"
+        hint="Framed card, 32px header band, 36px rows"
+      >
         <DataTable<RunRow>
           columns={RUN_COLUMNS}
           rows={RUNS}
@@ -246,7 +249,10 @@ export function TablesSpecimen(): JSX.Element {
           caption="Workflow runs"
         />
       </SpecimenPanel>
-      <SpecimenPanel title="Sortable columns with a group row (click a label)">
+      <SpecimenPanel
+        title="Sortable columns with a group row"
+        hint="Click a label"
+      >
         <DataTable<StatRow>
           columns={STAT_COLUMNS}
           rows={STATS}
@@ -259,10 +265,16 @@ export function TablesSpecimen(): JSX.Element {
           caption="Activity by member"
         />
       </SpecimenPanel>
-      <SpecimenPanel title="Rows that open: hover fill, focus, selected row, an actions column">
+      <SpecimenPanel
+        title="Rows that open"
+        hint="Hover fill, focus, selected row, an actions column"
+      >
         <SelectableRuns />
       </SpecimenPanel>
-      <SpecimenPanel title="Rows with no tab stop of their own: a button inside is the keyboard path">
+      <SpecimenPanel
+        title="Rows with no tab stop of their own"
+        hint="A button inside is the keyboard path"
+      >
         <RowsWithOwnControl />
       </SpecimenPanel>
       <SpecimenPanel title="Empty and loading">
@@ -279,7 +291,7 @@ export function TablesSpecimen(): JSX.Element {
           loading
         />
       </SpecimenPanel>
-      <SpecimenPanel title="Parts: grouped rows that span">
+      <SpecimenPanel title="Parts" hint="Grouped rows that span">
         <GroupedParts />
       </SpecimenPanel>
     </div>

@@ -140,7 +140,7 @@ export function SettingsDangerConfirmBlock({
         <Button
           onClick={onConfirmStart}
           disabled={triggerDisabled || isWorking}
-          variant={variant}
+          variant={variant === 'destructive' ? 'destructive' : 'secondary'}
           size="sm"
           className="self-start"
         >

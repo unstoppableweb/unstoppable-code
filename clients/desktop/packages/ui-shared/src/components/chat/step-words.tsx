@@ -1,5 +1,5 @@
 import type { JSX } from 'react';
-import type { PortalChatToolFamily } from './tool-display-info';
+import type { RemoteControlChatToolFamily } from './tool-display-info';
 import { isPlanFileWrite } from './exit-plan-mode-plan';
 import {
   AgentIcon,
@@ -134,7 +134,9 @@ export function describeStepKinds(counts: Iterable<StepCount>): string {
 }
 
 /** The kind of step a tool family's call counts as. */
-export function stepKindOfToolFamily(family: PortalChatToolFamily): StepKind {
+export function stepKindOfToolFamily(
+  family: RemoteControlChatToolFamily,
+): StepKind {
   switch (family) {
     case 'grep':
     case 'glob':
@@ -173,7 +175,7 @@ export function stepKindOfToolCall({
   input,
 }: {
   readonly toolName: string;
-  readonly family: PortalChatToolFamily;
+  readonly family: RemoteControlChatToolFamily;
   readonly input: unknown;
 }): StepKind {
   if (isPlanFileWrite(toolName, input)) return 'plan';

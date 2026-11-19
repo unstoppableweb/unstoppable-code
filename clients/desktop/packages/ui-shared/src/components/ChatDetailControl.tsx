@@ -46,7 +46,6 @@ export function ChatDetailControl({
       value={value}
       onChange={onChange}
       width="control"
-      shape="capsule"
       options={CHAT_DETAILS.map((detail) => ({
         value: detail,
         label: CHAT_DETAIL_COPY[detail].label,

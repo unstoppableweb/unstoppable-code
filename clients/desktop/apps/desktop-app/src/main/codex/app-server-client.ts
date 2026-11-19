@@ -13,7 +13,7 @@ import { randomUUID } from 'node:crypto';
 import type {
   ChatInputAdmission,
   ChatSteeringCapabilities,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import type { ChatInputSubmitResult, SteeringTarget } from '../agents/types';
 import type { CodexTurnLifecycleObservation } from '../agents/codex-turn-lifecycle';
 import type { CodexContractGuard } from '../agents/provider-contract-guard';
@@ -22,7 +22,7 @@ import {
   chatInputRefusal,
   type ChatInputDeliveryFailure,
   type ChatInputRefusal,
-} from '@canopy/protocol/portal/input-delivery';
+} from '@canopy/protocol/remote-control/shell/input-delivery';
 import type { AiGatewayToolSchemaProfile } from '@canopy/protocol/ai-gateway-models';
 import {
   type AgentModelConfig,

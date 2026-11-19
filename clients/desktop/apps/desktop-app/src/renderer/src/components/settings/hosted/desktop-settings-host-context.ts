@@ -11,10 +11,10 @@ import type {
 } from '@canopy/desktop-shared/types';
 import { isGuestAccount } from '@canopy/desktop-shared/lib/guest-account';
 import {
-  authenticatedPortalResultSchema,
-  classifyAuthenticatedPortalPath,
-  normalizeAuthenticatedPortalOrigin,
-} from '@canopy/desktop-shared/lib/authenticated-portal-request';
+  authenticatedCloudPageResultSchema,
+  classifyAuthenticatedCloudPagePath,
+  normalizeAuthenticatedCloudPageOrigin,
+} from '@canopy/desktop-shared/lib/authenticated-cloud-page-request';
 import { toAppError } from '@canopy/protocol/app-errors';
 import { resolveClientAppError } from '@canopy/desktop-instrumentation/client';
 import { settingsActionErrorCopy } from '@canopy/ui-app/settings/errors';
@@ -151,7 +151,7 @@ export async function openHostedSettingsExternalUrl(
   let action = 'open this page';
   try {
     if (!safeHostedSettingsHref(href)) throw new Error('Invalid destination');
-    const origin = normalizeAuthenticatedPortalOrigin(webOrigin);
+    const origin = normalizeAuthenticatedCloudPageOrigin(webOrigin);
     const url =
       origin === null
         ? new URL(href)
@@ -175,13 +175,13 @@ export async function openHostedSettingsExternalUrl(
       return true;
     }
     const path = `${url.pathname}${url.search}${url.hash}`;
-    const kind = classifyAuthenticatedPortalPath(path);
+    const kind = classifyAuthenticatedCloudPagePath(path);
     if (kind === 'payment') action = 'open this payment page';
     // eslint-disable-next-line no-restricted-properties -- This host adapter uses the strict object overload; legacy navigation helpers permit fallback.
-    const openAuthenticated = api?.openAuthenticatedPortalPage;
+    const openAuthenticated = api?.openAuthenticatedCloudPage;
     if (kind === null || account.status !== 'signed_in' || !openAuthenticated)
       throw new Error('Unavailable');
-    const result = authenticatedPortalResultSchema.safeParse(
+    const result = authenticatedCloudPageResultSchema.safeParse(
       await openAuthenticated({
         requireAuthentication: true,
         kind,
@@ -224,7 +224,7 @@ export function followHostedSettingsHref(
     void openHostedSettingsExternalUrl(href, context);
     return;
   }
-  const origin = normalizeAuthenticatedPortalOrigin(context.webOrigin);
+  const origin = normalizeAuthenticatedCloudPageOrigin(context.webOrigin);
   const baseOrigin = origin ?? 'https://settings.invalid';
   const basePath = currentHostedSettingsPath(context.location);
   const base = URL.canParse(basePath, baseOrigin)

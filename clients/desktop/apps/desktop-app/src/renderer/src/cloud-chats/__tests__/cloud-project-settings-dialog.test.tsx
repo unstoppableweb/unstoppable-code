@@ -580,10 +580,12 @@ describe('cloud project settings on desktop (CAN-7053)', () => {
     ];
     await render({ invoker: core });
     await click(tab('Plugins'));
-    const trigger = byTestId('portal-chat-plugins-button');
+    const trigger = byTestId('remote-control-chat-plugins-button');
     if (trigger === null) throw new Error('No plugins trigger');
     await click(trigger);
-    expect(byTestId('portal-plugins-modal')?.textContent).toContain('Linear');
+    expect(byTestId('remote-control-plugins-modal')?.textContent).toContain(
+      'Linear',
+    );
   });
 
   it('keeps defaults that hold only capabilities still waiting to install: an unchanged Save sends no plugins change', async () => {

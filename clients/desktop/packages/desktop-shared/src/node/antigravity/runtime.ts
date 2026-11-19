@@ -1,4 +1,3 @@
-import { hostPlatformOperatingSystem } from '@canopy/core-platform';
 import { mkdir, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -9,10 +8,6 @@ import {
   type AcpClientOptions,
 } from '@canopy/desktop-shared/node/acp';
 import type { ProviderProcessOwner } from '@canopy/desktop-shared/node/provider-process/spawn';
-import {
-  getEnhancedEnv,
-  resolveInstalledBinaryPath,
-} from '@canopy/desktop-shared/pipelines/config-paths';
 import { getCanopyDataDir } from '@canopy/execution-engine/canopy-paths';
 import { brandEnvName } from '@canopy/execution-engine/brand/env';
 import type {
@@ -30,82 +25,18 @@ import {
   writesAntigravityProfile,
 } from './workspace-configuration';
 import { antigravityNativeOperation } from './tool-approval';
+import {
+  antigravityEnvironment,
+  resolveAntigravityExecutable,
+} from './runtime-resolution';
+export {
+  antigravityEnvironment,
+  resolveAntigravityExecutable,
+} from './runtime-resolution';
 export { ANTIGRAVITY_RUNTIME_VERSION } from './runtime-metadata';
 
 export function antigravityProfileDirectory(): string {
   return join(getCanopyDataDir(), 'antigravity');
-}
-
-export function antigravityEnvironment(
-  environment: Record<string, string> = {},
-): NodeJS.ProcessEnv {
-  const env = {
-    ...getEnhancedEnv({
-      environment: false,
-      includeCanopySecrets: false,
-    }),
-    ...Object.fromEntries(
-      Object.entries(environment).filter(
-        ([key]) =>
-          ![
-            'HOME',
-            'USERPROFILE',
-            'HOMEDRIVE',
-            'HOMEPATH',
-            'HOMESHARE',
-            'ANTIGRAVITY_EXECUTABLE',
-          ].includes(key.toUpperCase()),
-      ),
-    ),
-  };
-  for (const key of [
-    'GEMINI_API_KEY',
-    'GOOGLE_API_KEY',
-    'GOOGLE_APPLICATION_CREDENTIALS',
-    'GOOGLE_CLOUD_PROJECT',
-    'GOOGLE_CLOUD_LOCATION',
-    'GOOGLE_GENAI_USE_VERTEXAI',
-    // Neither the launching host nor workflow inputs may inject startup code
-    // into the native process or its force_ask approval hook.
-    'NODE_OPTIONS',
-    'NODE_PATH',
-    'BASH_ENV',
-    'ENV',
-    'SHELLOPTS',
-    'BASHOPTS',
-    'GCONV_PATH',
-    'GLIBC_TUNABLES',
-  ])
-    delete env[key];
-  for (const key of Object.keys(env)) {
-    if (/^(LD_|DYLD_|BASH_FUNC_)/.test(key)) delete env[key];
-  }
-  // Vendor CLI mode, not Canopy's Electron; unaffected by Canopy's fuse.
-  env.ELECTRON_RUN_AS_NODE = '1';
-  // The pinned runtime must not replace itself outside Canopy's qualification.
-  // Neither the host nor workflow inputs may re-enable Google's self-update.
-  env.AGY_CLI_DISABLE_AUTO_UPDATE = 'true';
-  return env;
-}
-
-export async function resolveAntigravityExecutable(): Promise<string> {
-  if (hostPlatformOperatingSystem() !== 'darwin')
-    throw new Error(
-      'Google subscription chats are currently available on macOS.',
-    );
-  const env = antigravityEnvironment();
-  const override = env.ANTIGRAVITY_EXECUTABLE?.trim();
-  const executable = await resolveInstalledBinaryPath(
-    ['agy', 'antigravity'],
-    env,
-    override,
-  );
-  if (executable) return executable;
-  if (override)
-    throw new Error(
-      'The selected Antigravity executable is unavailable. Choose an installed Antigravity CLI.',
-    );
-  throw new Error('Install Antigravity CLI 1.5.1, then refresh Google models.');
 }
 
 async function replacePrivateFile(
@@ -295,6 +226,12 @@ export async function openAntigravityRuntime(input: {
   requestTimeoutMs?: number;
   /** Host-routed MCP servers this process may call; others are denied. */
   mcpServerNames?: readonly string[];
+  /**
+   * Where the managed copy is looked up; defaults to
+   * getAntigravityRuntimeRootDir(). Tests pass an empty directory so a
+   * developer's installed copy cannot replace the file a case launches.
+   */
+  managedRootDir?: string;
 }): Promise<AntigravityRuntime> {
   input.signal?.throwIfAborted();
   await input.assertEnabled();
@@ -306,7 +243,10 @@ export async function openAntigravityRuntime(input: {
   );
   const mcpServers = antigravityMcpServerList(input.mcpServerNames);
   const executable = await verifyAntigravityExecutable(
-    await resolveAntigravityExecutable(),
+    await resolveAntigravityExecutable({
+      managedRootDir: input.managedRootDir,
+      signal: input.signal,
+    }),
     input.signal,
   );
   input.signal?.throwIfAborted();

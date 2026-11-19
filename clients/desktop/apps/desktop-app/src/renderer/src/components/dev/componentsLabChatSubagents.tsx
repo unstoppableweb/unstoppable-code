@@ -37,7 +37,10 @@ const noop = (): void => undefined;
 function SubagentMarksSheet(): JSX.Element {
   return (
     <div className="flex flex-col gap-6">
-      <SpecimenPanel title="Subagent icon (one glyph for every subagent surface)">
+      <SpecimenPanel
+        title="Subagent icon"
+        hint="One glyph for every subagent surface"
+      >
         <SpecimenGrid min={140}>
           <SpecimenCell label="12px">
             <SubagentIcon size={12} />
@@ -80,7 +83,10 @@ function SubagentMarksSheet(): JSX.Element {
 
 function SubagentLineageSheet(): JSX.Element {
   return (
-    <SpecimenPanel title="Lineage: root chat, ancestors, this task, its children, then Alongside">
+    <SpecimenPanel
+      title="Lineage"
+      hint="Root chat, ancestors, this task, its children, then Alongside"
+    >
       <SpecimenGrid min={280}>
         <SpecimenCell label="Middle of a tree, with a child and a sibling" wide>
           <div className="w-full max-w-sm">
@@ -165,7 +171,7 @@ function SubagentWorkflowSheet(): JSX.Element {
 
 function SubagentWorktreeSheet(): JSX.Element {
   return (
-    <SpecimenPanel title="Worktree details: every state">
+    <SpecimenPanel title="Worktree details" hint="Every state">
       <SpecimenGrid min={280}>
         {WORKTREE_SPECIMENS.map((specimen) => (
           <SpecimenCell key={specimen.label} label={specimen.label} wide>

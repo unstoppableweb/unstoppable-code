@@ -38,7 +38,7 @@ import {
 } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import type { Descendant } from 'slate';
-import type { PortalFileReadPayload } from '@canopy/protocol/portal';
+import type { RemoteControlFileReadPayload } from '@canopy/protocol/remote-control/shell';
 import { documentPreviewMaxBytes } from '@canopy/protocol/document-preview';
 import {
   fileViewerKey,
@@ -276,7 +276,9 @@ function DesktopSharedFileViewerImpl({
   trailingHeaderActions,
 }: DesktopSharedFileViewerProps): JSX.Element {
   useWorktreeEffective(projectId, worktreeId);
-  const [request, setRequest] = useState<PortalFileReadPayload | null>(null);
+  const [request, setRequest] = useState<RemoteControlFileReadPayload | null>(
+    null,
+  );
   const [resolvedRoot, setResolvedRoot] = useState<FileTreeRoot | null>(null);
   const [imageSaveSupport, setImageSaveSupport] = useState<
     FileImageSaveSupport | undefined
@@ -538,7 +540,7 @@ function DesktopSharedFileViewerImpl({
           setError('File is outside the available project roots.');
           return;
         }
-        const resolvedRequest: PortalFileReadPayload = {
+        const resolvedRequest: RemoteControlFileReadPayload = {
           projectId,
           worktreeId,
           fileRootLocalId: match.root.repoId,
@@ -1802,6 +1804,12 @@ function DesktopSharedFileViewerImpl({
 
                 <SkippedCommentThreadsNotice
                   count={artifacts.skippedCommentThreads}
+                  annotationCount={
+                    artifacts.review?.annotations?.derivedFromFingerprint ===
+                    artifacts.fingerprint
+                      ? artifacts.review?.annotations?.skippedAnnotations
+                      : undefined
+                  }
                 />
                 {diffError ? (
                   <div className="shrink-0 p-4">

@@ -1,15 +1,15 @@
 import type {
-  PortalChatMessage,
-  PortalChatMessageAttachment,
-} from '@canopy/protocol/portal';
+  RemoteControlChatMessage,
+  RemoteControlChatMessageAttachment,
+} from '@canopy/protocol/remote-control/shell';
 
 /**
  * Optimistic user-echo + reconciliation for the shared chat store.
  *
- * Neutral port of `apps/web/src/components/portal/portal-chat-optimistic.ts`.
+ * Neutral port of `apps/web/src/components/remote-control/remote-control-chat-optimistic.ts`.
  * When the user sends, the UI wants the message to appear instantly rather than
  * waiting for the server round-trip. The store inserts an *optimistic*
- * `PortalChatMessage` (marked by an `optimistic-` id prefix); when the
+ * `RemoteControlChatMessage` (marked by an `optimistic-` id prefix); when the
  * authoritative frame for that turn arrives via `chat.message`, the optimistic
  * echo is pruned so it does not double-render.
  *
@@ -29,7 +29,7 @@ export const OPTIMISTIC_ID_PREFIX = 'optimistic-';
  * Clock skew tolerated when matching an authoritative message to the optimistic
  * echo it supersedes.
  *
- * Divergence from the web original: `portal-chat-optimistic.ts` uses an
+ * Divergence from the web original: `remote-control-chat-optimistic.ts` uses an
  * asymmetric lower-bounded window; this port uses a symmetric `|Δt|` window.
  * Both timestamps are logical *creation* times for the same send (client
  * `createdAtMs` vs. server `createdAtMs`), so they track closely — the symmetric
@@ -39,7 +39,9 @@ export const OPTIMISTIC_ID_PREFIX = 'optimistic-';
 export const RECONCILE_SKEW_MS = 1000;
 
 /** True when a message is a store-generated optimistic echo. */
-export function isOptimisticMessage(message: PortalChatMessage): boolean {
+export function isOptimisticMessage(
+  message: RemoteControlChatMessage,
+): boolean {
   return message.messageId.startsWith(OPTIMISTIC_ID_PREFIX);
 }
 
@@ -57,8 +59,8 @@ export function makeOptimisticUserMessage(args: {
   text: string;
   createdAtMs: number;
   localId?: string;
-  attachments?: readonly PortalChatMessageAttachment[];
-}): PortalChatMessage {
+  attachments?: readonly RemoteControlChatMessageAttachment[];
+}): RemoteControlChatMessage {
   const messageId =
     args.localId === undefined
       ? `${OPTIMISTIC_ID_PREFIX}${args.createdAtMs}-user`
@@ -84,8 +86,8 @@ export function makeOptimisticUserMessage(args: {
  * same role, identical text, within {@link RECONCILE_SKEW_MS}.
  */
 function supersedes(
-  optimistic: PortalChatMessage,
-  authoritative: PortalChatMessage,
+  optimistic: RemoteControlChatMessage,
+  authoritative: RemoteControlChatMessage,
 ): boolean {
   return (
     optimistic.role === authoritative.role &&
@@ -100,9 +102,9 @@ function supersedes(
  * `authoritative` is itself optimistic.
  */
 export function reconcileOptimistic(
-  messages: readonly PortalChatMessage[],
-  authoritative: PortalChatMessage,
-): PortalChatMessage[] {
+  messages: readonly RemoteControlChatMessage[],
+  authoritative: RemoteControlChatMessage,
+): RemoteControlChatMessage[] {
   if (isOptimisticMessage(authoritative)) {
     return [...messages];
   }
@@ -120,8 +122,8 @@ export function reconcileOptimistic(
  * permanently. Callers skip the insert when this returns true.
  */
 export function hasAuthoritativeMatch(
-  messages: readonly PortalChatMessage[],
-  candidate: PortalChatMessage,
+  messages: readonly RemoteControlChatMessage[],
+  candidate: RemoteControlChatMessage,
 ): boolean {
   return messages.some(
     (message) =>

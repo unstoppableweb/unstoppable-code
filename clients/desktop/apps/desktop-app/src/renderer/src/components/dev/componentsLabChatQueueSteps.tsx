@@ -83,7 +83,7 @@ export function PlanCopyActionSpecimen(): JSX.Element {
           </SpecimenGrid>
         </SpecimenPanel>
       ))}
-      <SpecimenPanel title="Feedback (click to try)">
+      <SpecimenPanel title="Feedback" hint="Click to try">
         <SpecimenGrid min={220}>
           <SpecimenCell label="Copy succeeds: the control reads Copied">
             <PlanCopyAction
@@ -137,7 +137,10 @@ export function StatusAnnouncerSpecimen(): JSX.Element {
     setCount(count + 1);
   };
   return (
-    <SpecimenPanel title="A polite live region (invisible: it only speaks)">
+    <SpecimenPanel
+      title="A polite live region"
+      hint="Invisible: it only speaks"
+    >
       <SpecimenGrid min={300}>
         <SpecimenCell
           label="Idle: mounted and empty so assistive technology knows it"

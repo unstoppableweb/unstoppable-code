@@ -26,7 +26,7 @@ export function PendingAttachmentRow({
   return (
     <div
       className="flex gap-2 overflow-x-auto px-3 pb-2"
-      data-testid="portal-pending-attachments"
+      data-testid="remote-control-pending-attachments"
     >
       {attachments.map((attachment) => (
         <Surface

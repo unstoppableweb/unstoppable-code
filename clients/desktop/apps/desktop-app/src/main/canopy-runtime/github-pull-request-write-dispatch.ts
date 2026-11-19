@@ -77,8 +77,8 @@ export type PullRequestCreateStep = (
 
 const STATE_CHANGED = 'PR state changed. Refresh and try again.';
 
-/** Today's direct create; the Portal's `create_auto` keeps it (Phase 6). */
-export function createPullRequestDirectly(
+/** The direct create, for requests the dispatcher route cannot represent. */
+function createPullRequestDirectly(
   input: PullRequestCreateStepInput,
   verifiedRepository?: GitHubRepositoryRef,
 ): Promise<PullRequestCreateStepResult> {
@@ -345,8 +345,8 @@ export type PullRequestMergeStep = (
   input: PullRequestMergeStepInput,
 ) => Promise<MergePrForRepoResult>;
 
-/** Portal and unrepresentable legacy requests retain this bounded compatibility path. */
-export function mergePullRequestDirectly(
+/** Unrepresentable legacy requests retain this bounded compatibility path. */
+function mergePullRequestDirectly(
   input: PullRequestMergeStepInput,
   verifiedRepository?: GitHubRepositoryRef,
 ): Promise<MergePrForRepoResult> {

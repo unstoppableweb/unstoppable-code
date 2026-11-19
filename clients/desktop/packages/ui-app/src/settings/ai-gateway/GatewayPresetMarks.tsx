@@ -42,7 +42,7 @@ export function GatewayPresetMarks({
       {shown.map((preset) => (
         <Tooltip key={preset.id} label={preset.name}>
           <Button
-            variant="ghost-quiet"
+            variant="ghost"
             size="compact"
             iconOnly
             aria-label={preset.name}
@@ -64,7 +64,7 @@ export function GatewayPresetMarks({
       {hidden > 0 ? (
         <Tooltip label="More gateways">
           <Button
-            variant="ghost-quiet"
+            variant="ghost"
             size="compact"
             iconOnly
             aria-label="More gateways"

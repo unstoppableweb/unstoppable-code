@@ -18,7 +18,7 @@ import {
   type SetWorktreePausedHooksRequest,
 } from '@canopy/desktop-shared/types';
 import { validateId } from '../lib/validation';
-import { PortalServiceError } from '../services/portal-service-error';
+import { RemoteControlServiceError } from '../services/remote-control-service-error';
 import { assertWritableScope } from '../lib/read-only-scope';
 import { registerIpcHandler } from './register';
 import {
@@ -196,7 +196,10 @@ export function registerHookHandlers(
         );
         return { ok: true, pausedHookKeys };
       } catch (error) {
-        if (error instanceof PortalServiceError && error.code === 'not_found') {
+        if (
+          error instanceof RemoteControlServiceError &&
+          error.code === 'not_found'
+        ) {
           return { ok: false, code: 'not_found', error: error.message };
         }
         throw error;

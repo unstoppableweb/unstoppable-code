@@ -2,16 +2,16 @@ import type { SessionResumeFailure } from '@canopy/protocol/session-recovery';
 import type {
   AutoResumeMetadata,
   ToolInterruption,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 export type {
   AutoResumeMetadata,
   AutoResumeReason,
   ToolInterruption,
   ToolInterruptionReason,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import type { ApprovalSafetyDeniedInfo } from '@canopy/protocol/approvals';
-import type { OpenCodeReportedUsage } from '@canopy/protocol/portal';
-import type { ReportedTurnUsage } from '@canopy/protocol/portal';
+import type { OpenCodeReportedUsage } from '@canopy/protocol/remote-control/shell';
+import type { ReportedTurnUsage } from '@canopy/protocol/remote-control/shell';
 import type { AgentArtifactReceiptV1 } from '@canopy/protocol/agent-artifacts';
 import type {
   AgentDelegationSnapshot,
@@ -19,7 +19,7 @@ import type {
 } from '@canopy/protocol/delegation';
 import type { PersistedToolOutputReference } from '@canopy/protocol/canopy-core/core';
 import type { ThinkingLevel } from '@canopy/protocol/thinking';
-import type { AgentSentInfo } from '@canopy/protocol/portal/external-agent-sender';
+import type { AgentSentInfo } from '@canopy/protocol/remote-control/shell/external-agent-sender';
 import type { ClaudeAiCreditsFallbackErrorCode } from '@canopy/protocol/llm-gateway';
 import type { CursorReportedUsage } from './lib/cursor-usage';
 /**
@@ -37,11 +37,11 @@ import type {
   AuthDependencyFailure,
   CodexAccountModelAccessFailure,
 } from '@canopy/protocol/auth-recovery';
-import type { ChatWatcherFiredInfo } from '@canopy/protocol/portal';
+import type { ChatWatcherFiredInfo } from '@canopy/protocol/remote-control/shell';
 export type {
   ChatAgentSentInfo,
   ChatWatcherFiredInfo,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 
 /** Model identifier string (canonical model IDs, aliases, and Ollama IDs). */
 export type ChatModel = string;

@@ -245,7 +245,7 @@ export function CustomMcpHeaderRowsEditor({
         <Button
           ref={addRef}
           type="button"
-          variant="ghost-accent"
+          variant="ghost"
           size="sm"
           className="self-start"
           onClick={add}

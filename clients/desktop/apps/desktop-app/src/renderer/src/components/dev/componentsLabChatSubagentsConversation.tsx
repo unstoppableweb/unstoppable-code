@@ -174,7 +174,7 @@ function BannerSpecimen({
 
 export function SubagentBannerSheet(): JSX.Element {
   return (
-    <SpecimenPanel title="Banner: breadcrumb, then the facts line">
+    <SpecimenPanel title="Banner" hint="Breadcrumb, then the facts line">
       <BannerSpecimen
         label="Running, collapsed (press the chevron to open)"
         target={node('b1', 'Port the handlers', 'plan', [], {

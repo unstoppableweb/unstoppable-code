@@ -1,4 +1,4 @@
-import { repositoryCloneErrorMessage } from '@canopy/protocol/portal';
+import { repositoryCloneErrorMessage } from '@canopy/protocol/remote-control/shell';
 import { basename } from 'node:path';
 import type { CloneJobSnapshot } from '@canopy/desktop-shared/types';
 import {

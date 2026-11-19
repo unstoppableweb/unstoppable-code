@@ -58,10 +58,10 @@ import { MAX_ARCHIVE_RETENTION_DAYS } from './archive-retention';
 const appName = BRAND.displayName;
 
 const cloudName = `${appName} Cloud`;
-const portalDisplayName = REMOTE_CONTROL_LABEL;
-// Lowercase form for mid-sentence prose; portalDisplayName stays proper-cased
+const remoteControlDisplayName = REMOTE_CONTROL_LABEL;
+// Lowercase form for mid-sentence prose; remoteControlDisplayName stays proper-cased
 // for sentence-start usage.
-const portalDisplayNameInline = REMOTE_CONTROL_LABEL.toLowerCase();
+const remoteControlDisplayNameInline = REMOTE_CONTROL_LABEL.toLowerCase();
 
 /**
  * Page ids that only survive as compatibility aliases opening another
@@ -10063,7 +10063,7 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
     {
       type: 'canopy_portal.open',
       category: 'portal',
-      summary: `Open the ${portalDisplayNameInline} modal.`,
+      summary: `Open the ${remoteControlDisplayNameInline} modal.`,
       fields: [],
       example: { type: 'canopy_portal.open' },
       keywords: ['portal', 'open', 'modal'],
@@ -10071,7 +10071,7 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
     {
       type: 'canopy_portal.close',
       category: 'portal',
-      summary: `Close the ${portalDisplayNameInline} modal.`,
+      summary: `Close the ${remoteControlDisplayNameInline} modal.`,
       fields: [],
       example: { type: 'canopy_portal.close' },
       keywords: ['portal', 'close', 'modal'],
@@ -10079,7 +10079,7 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
     {
       type: 'canopy_portal.start',
       category: 'portal',
-      summary: `Turn on Allow incoming in ${portalDisplayName}, so paired computers can control this one.`,
+      summary: `Turn on Allow incoming in ${remoteControlDisplayName}, so paired computers can control this one.`,
       fields: [],
       example: { type: 'canopy_portal.start' },
       keywords: [
@@ -10090,13 +10090,13 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
         'remote access',
       ],
       notes: [
-        'The same as remote_control.set_allow_incoming with enabled true; the result is { allowIncoming }.',
+        'Legacy alias of remote_control.set_allow_incoming with enabled true, retained for older callers; new callers should use remote_control.set_allow_incoming. The result is { allowIncoming }.',
       ],
     },
     {
       type: 'canopy_portal.stop',
       category: 'portal',
-      summary: `Turn off Allow incoming in ${portalDisplayName} and end the sessions of computers controlling this one.`,
+      summary: `Turn off Allow incoming in ${remoteControlDisplayName} and end the sessions of computers controlling this one.`,
       fields: [],
       example: { type: 'canopy_portal.stop' },
       keywords: [
@@ -10107,13 +10107,13 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
         'remote access',
       ],
       notes: [
-        'The same as remote_control.set_allow_incoming with enabled false; the result is { allowIncoming }.',
+        'Legacy alias of remote_control.set_allow_incoming with enabled false, retained for older callers; new callers should use remote_control.set_allow_incoming. The result is { allowIncoming }.',
       ],
     },
     {
       type: 'canopy_portal.open_account_settings',
       category: 'portal',
-      summary: `Close ${portalDisplayNameInline} and open Accounts settings.`,
+      summary: `Close ${remoteControlDisplayNameInline} and open Accounts settings.`,
       fields: [],
       example: { type: 'canopy_portal.open_account_settings' },
       keywords: [

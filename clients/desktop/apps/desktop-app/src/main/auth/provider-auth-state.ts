@@ -16,7 +16,7 @@ import { promisify } from 'node:util';
 import {
   type AgentProviderAuthStatus,
   type AgentProviderType,
-  type PortalChatProviderAvailability,
+  type RemoteControlChatProviderAvailability,
   type PreferencesData,
 } from '@canopy/desktop-shared/types';
 import {
@@ -1310,8 +1310,8 @@ export async function isProviderNativelyAuthenticated(
  * hint the portal reconciles against, not an authoritative gate. AI-credit
  * eligibility is renderer/cloud-derived and intentionally not projected here.
  */
-export function peekProviderNativeAuthAvailability(): PortalChatProviderAvailability {
-  const availability: PortalChatProviderAvailability = { ollama: true };
+export function peekProviderNativeAuthAvailability(): RemoteControlChatProviderAvailability {
+  const availability: RemoteControlChatProviderAvailability = { ollama: true };
   // A `probeFailed` status is "unknown", not signed-out: omit the key (like a
   // cold cache) so Portal availability never asserts signed-out from a blip.
   if (
@@ -1361,7 +1361,7 @@ export function peekClaudeAuthInconclusiveWithoutSignIn(): boolean {
  * by provider-keyed billing/routing code that treats `false` as a confirmed
  * native logout.
  */
-export function peekPortalProviderAvailability(): PortalChatProviderAvailability {
+export function peekRemoteControlProviderAvailability(): RemoteControlChatProviderAvailability {
   const availability = peekProviderNativeAuthAvailability();
   availability.antigravity = getAntigravityModelEntries().length > 0;
   const opencode = peekOpenCodeRuntimeAvailability();
@@ -1386,8 +1386,8 @@ export function peekPortalProviderAvailability(): PortalChatProviderAvailability
  * A key is omitted when the cache is cold, when it holds a `probeFailed`
  * (unknown) status, or when the entry has aged past its TTL.
  */
-export function peekFreshProviderNativeAuthAvailability(): PortalChatProviderAvailability {
-  const availability: PortalChatProviderAvailability = { ollama: true };
+export function peekFreshProviderNativeAuthAvailability(): RemoteControlChatProviderAvailability {
+  const availability: RemoteControlChatProviderAvailability = { ollama: true };
   const now = Date.now();
   if (
     claudeAuthStatusCache &&

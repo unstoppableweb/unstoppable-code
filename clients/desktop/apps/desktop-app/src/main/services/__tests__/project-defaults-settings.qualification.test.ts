@@ -217,7 +217,7 @@ describe('Project defaults settings entries on desktop', () => {
       currentSession: () => session,
       signedInAccountId: () => 'account-1',
       subscribeAccountChanges: () => (): void => undefined,
-      openStrictPortalPage: () => Promise.reject(new Error('not used')),
+      openStrictCloudPage: () => Promise.reject(new Error('not used')),
       paymentHandoffAvailable: () => Promise.resolve(false),
       resolveOrchestrated: createSettingsOrchestratedOperations(
         noPromotion,

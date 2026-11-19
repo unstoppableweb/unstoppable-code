@@ -13,7 +13,7 @@
  * tools target the *local Canopy app* itself (UI state, dispatch, debug
  * context), not the user's worktree. They are not exposed via the Canopy
  * Portal wire protocol — see the transport plan and the regression test in
- * `packages/protocol/src/portal/__tests__/portal-contract.test.ts`.
+ * `packages/protocol/src/remote-control/shell/__tests__/shell-contract.test.ts`.
  *
  * The three Agent Ledger tools are the exception that shares its canonical
  * keys with the injected tools: App Advisor advertises them under its own

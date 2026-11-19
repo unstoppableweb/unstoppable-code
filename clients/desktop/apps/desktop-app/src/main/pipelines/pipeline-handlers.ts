@@ -98,11 +98,11 @@ import {
 import { getProjectPipelinesDirCandidates } from './config-paths';
 import type { PreferencesData } from '@canopy/desktop-shared/types';
 import type {
-  PortalPipelineExecutionListResult,
-  PortalPipelineGetResult,
-  PortalPipelineRun,
-  PortalPipelineSummary,
-} from '@canopy/protocol/portal';
+  RemoteControlPipelineExecutionListResult,
+  RemoteControlPipelineGetResult,
+  RemoteControlPipelineRun,
+  RemoteControlPipelineSummary,
+} from '@canopy/protocol/remote-control/shell';
 import type {
   ListPipelineCapabilityRefsRequest,
   ListPipelineCapabilityRefsResponse,
@@ -4084,7 +4084,7 @@ export function registerExecutionHandlers(
     async (
       _event,
       request: { projectId: string; worktreeId?: string },
-    ): Promise<{ pipelines: PortalPipelineSummary[] }> => {
+    ): Promise<{ pipelines: RemoteControlPipelineSummary[] }> => {
       const scope = worktreePipelineScope(request, { optionalWorktree: true });
       const { listPipelines } = await import('../services/pipelines-service');
       return {
@@ -4105,7 +4105,7 @@ export function registerExecutionHandlers(
     async (
       _event,
       request: { projectId: string; worktreeId?: string; pipelineId: string },
-    ): Promise<PortalPipelineGetResult> => {
+    ): Promise<RemoteControlPipelineGetResult> => {
       const scope = worktreePipelineScope(request, { optionalWorktree: true });
       // The service validates the locator and reports a missing pipeline.
       const { getPipeline } = await import('../services/pipelines-service');
@@ -4124,7 +4124,7 @@ export function registerExecutionHandlers(
     async (
       _event,
       request: WorktreePipelineScope,
-    ): Promise<PortalPipelineExecutionListResult> => {
+    ): Promise<RemoteControlPipelineExecutionListResult> => {
       const scope = worktreePipelineScope(request);
       const { listPipelineExecutions } =
         await import('../services/pipelines-service');
@@ -4137,7 +4137,7 @@ export function registerExecutionHandlers(
     async (
       _event,
       request: WorktreePipelineScope & { executionId: string },
-    ): Promise<PortalPipelineRun | null> => {
+    ): Promise<RemoteControlPipelineRun | null> => {
       const scope = worktreePipelineScope(request);
       validateId(request.executionId, 'executionId');
       const { getPipelineExecution } =

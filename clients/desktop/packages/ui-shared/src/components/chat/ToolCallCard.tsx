@@ -8,7 +8,7 @@ import { MODEL_GATEWAY_MAX_DISCOVERED_MODELS } from '@canopy/protocol/canopy-ser
 import {
   readToolInterruption,
   type ToolInterruption,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import { StopIcon } from '../../icons';
 import { ShieldIcon } from '../../icons/AppIcons';
 import {
@@ -31,7 +31,7 @@ import {
 } from './tool-denial';
 import {
   getToolFamilyIcon,
-  type PortalChatToolFamily,
+  type RemoteControlChatToolFamily,
 } from './tool-display-info';
 
 /**
@@ -253,7 +253,7 @@ export interface ToolCallCardProps {
    * Tool family used to dispatch the leading icon. When omitted the renderer
    * falls back to the generic wrench icon (treated as `unknown`).
    */
-  toolFamily?: PortalChatToolFamily;
+  toolFamily?: RemoteControlChatToolFamily;
   /** Raw tool name string. Used as the default label when `label` is unset. */
   toolName: string;
   /**

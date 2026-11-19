@@ -6,7 +6,7 @@ import {
   LIFECYCLE_JOURNAL_ENTRY_NAME_PATTERN,
   journalSchema,
   type DestructiveRecoveryRecord,
-} from '@canopy/protocol/portal/lifecycle-journal';
+} from '@canopy/protocol/remote-control/shell/lifecycle-journal';
 
 /** The validated reader shared by live recovery and cold root relocation. */
 export async function readDestructiveJournal(

@@ -14,6 +14,8 @@ export * from './providerConnectorRows';
 export * from './unifiedPluginEntries';
 export { customizeRowAction } from './customizeRowAction';
 export * from './customizeRelated';
+export * from './customizeCatalogContents';
+export * from './CustomizeManifestPreview';
 export * from './CustomizeRelatedSection';
 export * from './marketplaceBrowse';
 export * from './mcpSharedPluginEntryIds';

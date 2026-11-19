@@ -8,7 +8,7 @@ import {
   type ReactNode,
 } from 'react';
 import { PipelineReadDetail } from '@canopy/ui-app';
-import type { PortalPipelineDefinitionViewModel } from '@canopy/protocol/portal';
+import type { RemoteControlPipelineDefinitionViewModel } from '@canopy/protocol/remote-control/shell';
 import { formatDateOrEmpty } from '@canopy/ui-shared/lib/format-date';
 import { toPipelineDefinitionViewModel } from './pipeline-read-detail-adapter';
 import { toAppError } from '@canopy/protocol/app-errors';
@@ -268,7 +268,7 @@ function PipelineLayoutPage({
   lookup: PipelineLookupRequest | null;
 }): JSX.Element {
   const [definition, setDefinition] =
-    useState<PortalPipelineDefinitionViewModel | null>(null);
+    useState<RemoteControlPipelineDefinitionViewModel | null>(null);
   const [loadError, setLoadError] = useState('');
   const [attempt, setAttempt] = useState(0);
   const [running, setRunning] = useState(false);

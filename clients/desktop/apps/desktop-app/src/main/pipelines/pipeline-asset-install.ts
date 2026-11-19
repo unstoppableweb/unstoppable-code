@@ -1,171 +1,107 @@
-import { createHash } from 'node:crypto';
-import { lstat, mkdir, readFile } from 'node:fs/promises';
+import { mkdir, readFile, rm } from 'node:fs/promises';
+import { flushDirectory } from '@canopy/core-platform/directory-flush';
 import * as path from 'node:path';
-import { isSafeCapabilityRelativePath } from '@canopy/protocol/capability-files';
 import type { PipelinePackageResource } from '@canopy/protocol/pipelines';
-import { PIPELINE_ASSET_ID_PATTERN } from '@canopy/pipeline-interop/assets';
+import {
+  createPipelineAssetStore,
+  type PipelineAssetEnvironment,
+  type PipelineAssetInstallPlan,
+  type PipelineAssetsManifestV1,
+} from '@canopy/core-runtime/node/pipeline/store';
 import type { AutomationPipelineAssetChanges } from '@canopy/desktop-shared/types';
-import type { PipelineAssetInstallMode } from '@canopy/execution-engine/types/pipeline';
 import {
   getPipelineAssetsDir,
   getPipelineAssetsManifestPath,
 } from '../lib/paths';
+import { renameWithRetry } from '../lib/atomic-file';
 import { writeStoreFileDurably } from '../lib/durable-store-write';
+import { logMainProcessWarn } from '../lib/main-process-logging';
 
 /**
  * Installs an automation package's `file_asset` resources into the data dir
  * of the local pipeline that declared them, and records what it wrote in
  * `assets.json`. The package cache keeps the reviewed, immutable copy; the
  * asset dir is the recipient's working copy. Electron-main compatibility path
- * for `core.initiatedWork` installs.
+ * for `core.initiatedWork` installs, over the portable asset store
+ * (CAN-7058).
  */
 
-/** `<data>/pipeline-data/<id>/assets.json`. */
-export interface PipelineAssetsManifestV1 {
-  version: 1;
-  assets: Record<
-    string,
-    {
-      installMode: PipelineAssetInstallMode;
-      /** sha256 of each file install wrote, by asset-relative path. */
-      files: Record<string, string>;
+export type {
+  PipelineAssetFileWrite,
+  PipelineAssetInstallPlan,
+  PipelineAssetsManifestV1,
+} from '@canopy/core-runtime/node/pipeline/store';
+
+/** Electron main's asset files under its data root, installed durably. */
+export const pipelineAssetEnvironment: PipelineAssetEnvironment = {
+  assetsDir: getPipelineAssetsDir,
+  manifestPath: getPipelineAssetsManifestPath,
+  createAssetFolder: async (localPipelineId, relativeFolder) => {
+    const assetsDir = getPipelineAssetsDir(localPipelineId);
+    // Only the asset dir itself gets its parents; every other folder is
+    // created alone, and an existing one fails with EEXIST.
+    await mkdir(
+      path.resolve(assetsDir, ...relativeFolder.split('/')),
+      relativeFolder === '.' ? { recursive: true } : {},
+    );
+  },
+  writeAssetFile: async (localPipelineId, relativePath, bytes, mode) => {
+    const destination = path.resolve(
+      getPipelineAssetsDir(localPipelineId),
+      ...relativePath.split('/'),
+    );
+    await writeStoreFileDurably(
+      destination,
+      bytes,
+      mode === undefined ? {} : { mode },
+    );
+  },
+  moveAssetFile: async (localPipelineId, fromRelativePath, toRelativePath) => {
+    const assetsDir = getPipelineAssetsDir(localPipelineId);
+    const destination = path.resolve(assetsDir, ...toRelativePath.split('/'));
+    await renameWithRetry(
+      path.resolve(assetsDir, ...fromRelativePath.split('/')),
+      destination,
+    );
+    try {
+      await flushDirectory(path.dirname(destination));
+    } catch (error) {
+      logMainProcessWarn(
+        '[storage] Pipeline asset installed, but its folder flush failed',
+        error,
+      );
     }
-  >;
-}
+  },
+  removeAssetFolder: async (localPipelineId, relativeFolder) => {
+    await rm(
+      path.resolve(
+        getPipelineAssetsDir(localPipelineId),
+        ...relativeFolder.split('/'),
+      ),
+      { recursive: true, force: true },
+    );
+  },
+  writeManifest: async (localPipelineId, text) => {
+    const manifestPath = getPipelineAssetsManifestPath(localPipelineId);
+    await mkdir(path.dirname(manifestPath), { recursive: true });
+    await writeStoreFileDurably(manifestPath, text);
+  },
+};
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
+const store = createPipelineAssetStore(pipelineAssetEnvironment);
 
-function isInstallMode(value: unknown): value is PipelineAssetInstallMode {
-  return value === 'seed' || value === 'replace';
-}
-
-function errorCode(error: unknown): unknown {
-  return isRecord(error) ? error.code : undefined;
-}
-
-function parseAssetsManifest(value: unknown): PipelineAssetsManifestV1 {
-  const empty: PipelineAssetsManifestV1 = { version: 1, assets: {} };
-  if (!isRecord(value) || value.version !== 1 || !isRecord(value.assets))
-    return empty;
-  const assets: PipelineAssetsManifestV1['assets'] = {};
-  for (const [assetId, entry] of Object.entries(value.assets)) {
-    if (!isRecord(entry) || !isInstallMode(entry.installMode)) continue;
-    if (!isRecord(entry.files)) continue;
-    const files: Record<string, string> = {};
-    for (const [relativePath, sha256] of Object.entries(entry.files)) {
-      if (typeof sha256 === 'string') files[relativePath] = sha256;
-    }
-    assets[assetId] = { installMode: entry.installMode, files };
-  }
-  return { version: 1, assets };
+/** Reads a file from a verified package cache directory by its sha256. */
+export function packageCacheBlobReader(
+  packagePath: string,
+): (sha256: string) => Promise<Uint8Array> {
+  return (sha256) => readFile(path.join(packagePath, 'blobs', sha256));
 }
 
 /** The recorded install hashes, or an empty record when none are readable. */
-export async function readPipelineAssetsManifest(
+export function readPipelineAssetsManifest(
   localPipelineId: string,
 ): Promise<PipelineAssetsManifestV1> {
-  try {
-    const raw = await readFile(
-      getPipelineAssetsManifestPath(localPipelineId),
-      'utf8',
-    );
-    const value: unknown = JSON.parse(raw);
-    return parseAssetsManifest(value);
-  } catch (error) {
-    if (errorCode(error) === 'ENOENT' || error instanceof SyntaxError)
-      return { version: 1, assets: {} };
-    throw error;
-  }
-}
-
-/** Whether something exists at `target`, without following a symlink. */
-async function pathExists(target: string): Promise<boolean> {
-  try {
-    await lstat(target);
-    return true;
-  } catch (error) {
-    if (errorCode(error) === 'ENOENT') return false;
-    throw error;
-  }
-}
-
-async function fileSha256(target: string): Promise<string | undefined> {
-  try {
-    const stats = await lstat(target);
-    if (!stats.isFile()) return undefined;
-    return createHash('sha256')
-      .update(await readFile(target))
-      .digest('hex');
-  } catch {
-    return undefined;
-  }
-}
-
-/** The validated asset id of a `file_asset` resource. */
-function fileAssetId(resource: PipelinePackageResource): string {
-  const assetId = resource.assetId;
-  if (
-    resource.kind !== 'file_asset' ||
-    assetId === undefined ||
-    !PIPELINE_ASSET_ID_PATTERN.test(assetId)
-  ) {
-    throw new Error('The automation package has an invalid file resource.');
-  }
-  return assetId;
-}
-
-/** Where a packaged asset file goes under its asset dir; refuses escapes. */
-function assetFileDestination(assetRoot: string, entryPath: string): string {
-  if (!isSafeCapabilityRelativePath(entryPath)) {
-    throw new Error('The automation package has an unsafe file path.');
-  }
-  const destination = path.resolve(assetRoot, ...entryPath.split('/'));
-  const relative = path.relative(assetRoot, destination);
-  if (relative.startsWith('..') || path.isAbsolute(relative)) {
-    throw new Error(
-      `The automation package has an unsafe file path (${entryPath}).`,
-    );
-  }
-  return destination;
-}
-
-/** A file {@link installPipelineAssets} writes, under the asset dir. */
-export interface PipelineAssetFileWrite {
-  /** `<assetId>/<path>`, relative to `getPipelineAssetsDir`. */
-  path: string;
-  sha256: string;
-  executable: boolean;
-}
-
-/**
- * What {@link installPipelineAssets} is about to write into a local
- * pipeline's asset dir, worked out before its first write.
- */
-export interface PipelineAssetInstallPlan {
-  files: PipelineAssetFileWrite[];
-  /**
-   * Every folder it makes sure of, relative to the asset dir (`.` is the
-   * asset dir itself), parents first.
-   */
-  directories: string[];
-  /** The ones of {@link directories} that do not exist yet. */
-  createdDirectories: string[];
-  manifest: PipelineAssetsManifestV1;
-  /** The `assets.json` it writes. */
-  manifestText: string;
-}
-
-/** The folder chain from the asset dir down to `relativeDir`, parents first. */
-function folderChain(relativeDir: string): string[] {
-  const chain = ['.'];
-  if (relativeDir === '.') return chain;
-  const segments = relativeDir.split('/');
-  for (let index = 1; index <= segments.length; index += 1) {
-    chain.push(segments.slice(0, index).join('/'));
-  }
-  return chain;
+  return store.readManifest(localPipelineId);
 }
 
 /**
@@ -175,67 +111,12 @@ function folderChain(relativeDir: string): string[] {
  * every file install wrote (for `seed`, a file left in place keeps the hash
  * an earlier install recorded, or its own when it already matches).
  */
-export async function planPipelineAssetInstall(input: {
+export function planPipelineAssetInstall(input: {
   localPipelineId: string;
   /** The package's `file_asset` resources for this pipeline. */
   resources: readonly PipelinePackageResource[];
 }): Promise<PipelineAssetInstallPlan> {
-  const assetsRoot = getPipelineAssetsDir(input.localPipelineId);
-  const previous = await readPipelineAssetsManifest(input.localPipelineId);
-  const manifest: PipelineAssetsManifestV1 = {
-    version: 1,
-    assets: { ...previous.assets },
-  };
-  const files: PipelineAssetFileWrite[] = [];
-  const folders = new Set<string>();
-  for (const resource of input.resources) {
-    const assetId = fileAssetId(resource);
-    const installMode = resource.installMode ?? 'seed';
-    const assetRoot = path.join(assetsRoot, assetId);
-    const previousFiles = previous.assets[assetId]?.files ?? {};
-    const assetFiles: Record<string, string> = {};
-    // An asset with no files (empty, or every file withheld) still installs
-    // its folder, so runs resolve it here instead of the author's path.
-    folderChain(assetId).forEach((folder) => folders.add(folder));
-    for (const tree of resource.trees) {
-      for (const entry of tree.entries) {
-        const destination = assetFileDestination(assetRoot, entry.path);
-        if (installMode === 'seed' && (await pathExists(destination))) {
-          const kept =
-            previousFiles[entry.path] ??
-            ((await fileSha256(destination)) === entry.sha256
-              ? entry.sha256
-              : undefined);
-          if (kept !== undefined) assetFiles[entry.path] = kept;
-          continue;
-        }
-        const relativePath = `${assetId}/${entry.path}`;
-        folderChain(path.posix.dirname(relativePath)).forEach((folder) =>
-          folders.add(folder),
-        );
-        files.push({
-          path: relativePath,
-          sha256: entry.sha256,
-          executable: entry.mode === 'execute',
-        });
-        assetFiles[entry.path] = entry.sha256;
-      }
-    }
-    manifest.assets[assetId] = { installMode, files: assetFiles };
-  }
-  const directories = Array.from(folders);
-  const createdDirectories: string[] = [];
-  for (const folder of directories) {
-    if (!(await pathExists(path.resolve(assetsRoot, folder))))
-      createdDirectories.push(folder);
-  }
-  return {
-    files,
-    directories,
-    createdDirectories,
-    manifest,
-    manifestText: `${JSON.stringify(manifest, null, 2)}\n`,
-  };
+  return store.plan(input);
 }
 
 /**
@@ -246,7 +127,7 @@ export async function planPipelineAssetInstall(input: {
  * keep what it replaces (CAN-5677).
  * Idempotent: a retry writes the same bytes and the same record.
  */
-export async function installPipelineAssets(input: {
+export function installPipelineAssets(input: {
   localPipelineId: string;
   /** The verified cache directory of the package. */
   packagePath: string;
@@ -254,55 +135,11 @@ export async function installPipelineAssets(input: {
   resources: readonly PipelinePackageResource[];
   beforeWrite?: (plan: PipelineAssetInstallPlan) => Promise<void>;
 }): Promise<PipelineAssetsManifestV1> {
-  const assetsRoot = getPipelineAssetsDir(input.localPipelineId);
-  const plan = await planPipelineAssetInstall(input);
-  try {
-    const raw: unknown = JSON.parse(
-      await readFile(
-        getPipelineAssetsManifestPath(input.localPipelineId),
-        'utf8',
-      ),
-    );
-    if (
-      isRecord(raw) &&
-      typeof raw.version === 'number' &&
-      Number.isFinite(raw.version) &&
-      raw.version > 1
-    ) {
-      throw new Error(
-        'The supporting files of this workflow were saved by a newer version of the app. Update the app and try again.',
-      );
-    }
-  } catch (error) {
-    if (errorCode(error) !== 'ENOENT' && !(error instanceof SyntaxError))
-      throw error;
-  }
-  await input.beforeWrite?.(plan);
-  for (const folder of plan.directories) {
-    await mkdir(path.resolve(assetsRoot, folder), { recursive: true });
-  }
-  for (const file of plan.files) {
-    const bytes = await readFile(
-      path.join(input.packagePath, 'blobs', file.sha256),
-    );
-    if (createHash('sha256').update(bytes).digest('hex') !== file.sha256) {
-      throw new Error(
-        `The cached package file ${file.path} failed verification. Install the automation again.`,
-      );
-    }
-    // A script the analyzer accepted as executable stays runnable.
-    const destination = path.resolve(assetsRoot, ...file.path.split('/'));
-    await mkdir(path.dirname(destination), { recursive: true });
-    await writeStoreFileDurably(
-      destination,
-      bytes,
-      file.executable ? { mode: 0o755 } : {},
-    );
-  }
-  const manifestPath = getPipelineAssetsManifestPath(input.localPipelineId);
-  await mkdir(path.dirname(manifestPath), { recursive: true });
-  await writeStoreFileDurably(manifestPath, plan.manifestText);
-  return plan.manifest;
+  const { packagePath, ...rest } = input;
+  return store.install({
+    ...rest,
+    readBlob: packageCacheBlobReader(packagePath),
+  });
 }
 
 /**
@@ -312,45 +149,9 @@ export async function installPipelineAssets(input: {
  * install never recorded it. Files that already match the share are left
  * out.
  */
-export async function previewPipelineAssetChanges(input: {
+export function previewPipelineAssetChanges(input: {
   localPipelineId: string;
   resources: readonly PipelinePackageResource[];
 }): Promise<AutomationPipelineAssetChanges[]> {
-  const assetsRoot = getPipelineAssetsDir(input.localPipelineId);
-  const previous = await readPipelineAssetsManifest(input.localPipelineId);
-  const changes: AutomationPipelineAssetChanges[] = [];
-  for (const resource of input.resources) {
-    const assetId = fileAssetId(resource);
-    const installMode = resource.installMode ?? 'seed';
-    const assetRoot = path.join(assetsRoot, assetId);
-    const recordedFiles = previous.assets[assetId]?.files ?? {};
-    const change: AutomationPipelineAssetChanges = {
-      assetId,
-      installMode,
-      added: [],
-      updated: [],
-      overwritten: [],
-      kept: [],
-    };
-    for (const tree of resource.trees) {
-      for (const entry of tree.entries) {
-        const current = await fileSha256(
-          assetFileDestination(assetRoot, entry.path),
-        );
-        if (current === undefined) {
-          change.added.push(entry.path);
-        } else if (current === entry.sha256) {
-          continue;
-        } else if (installMode === 'seed') {
-          change.kept.push(entry.path);
-        } else if (current === recordedFiles[entry.path]) {
-          change.updated.push(entry.path);
-        } else {
-          change.overwritten.push(entry.path);
-        }
-      }
-    }
-    changes.push(change);
-  }
-  return changes;
+  return store.preview(input);
 }

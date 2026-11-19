@@ -6,6 +6,7 @@ import { act as reactAct } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { CanopyCapabilities } from '@canopy/app-core';
 import type * as OpenBillingPageModule from '@/lib/openBillingPage';
+import type * as WebCoreScopeCapabilitiesModule from '@/lib/web-core-scope-capabilities';
 import type { PersistedChatMessage } from '@canopy/desktop-shared/types';
 import { CanopyClientProvider } from '@canopy/app-state/CanopyClientProvider';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
@@ -19,6 +20,8 @@ import {
   createDesktopCapabilities,
 } from '@/client/ipc-canopy-client';
 import { ipcTranscriptReadClient } from '@/client/ipc-transcript-read-client';
+import { requestManagedDelegationStop } from '@/components/chat/managed-delegation-stop';
+import { LIVE_DELEGATION_POLL_MS } from '@canopy/app-state/core-cowork';
 import { cloudCoworkStore } from '@/cloud-chats/cloud-cowork-store';
 import { discardDeletedCloudTask } from '@/cloud-chats/cloud-task-deletion';
 import {
@@ -88,7 +91,7 @@ import { snapshotHomeTask } from '@/lib/repeat-task-automation/draft';
 import { useRepeatTaskOfferStore } from '@/lib/repeat-task-automation/offerStore';
 import { LOADING_PLACEHOLDER_DELAY_MS } from '@canopy/ui-shared/lib';
 import { ChatMessageList } from '@/components/chat/ChatMessageList';
-import { persistedMessageToPortalMessage } from '@canopy/desktop-shared/portal/persisted-chat-projection';
+import { persistedMessageToRemoteControlMessage } from '@canopy/desktop-shared/remote-control/persisted-chat-projection';
 import { useExperimentalFeaturesStore } from '@/stores/experimentalFeaturesStore';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { useNavigationStore } from '@/stores/navigationStore';
@@ -333,10 +336,32 @@ const mockUnlockModels = jest.fn(
 function lockedRowNamed(label: string): HTMLElement | undefined {
   return Array.from(
     document.querySelectorAll<HTMLElement>(
-      '[data-testid="portal-chat-model-menu"] [data-locked="true"]',
+      '[data-testid="remote-control-chat-model-menu"] [data-locked="true"]',
     ),
   ).find((row) => (row.textContent ?? '').includes(label));
 }
+/**
+ * Whether a cloud scope stops its own delegates through the web core
+ * (CAN-7245). The desktop ships it off; a case turns it on as its switch-on
+ * would.
+ */
+let mockDelegationStop = false;
+jest.mock('@/lib/web-core-scope-capabilities', () => {
+  const actual = jest.requireActual<typeof WebCoreScopeCapabilitiesModule>(
+    '@/lib/web-core-scope-capabilities',
+  );
+  return {
+    ...actual,
+    webCoreScopeCapabilities: (
+      ...[host, options]: Parameters<typeof actual.webCoreScopeCapabilities>
+    ): ReturnType<typeof actual.webCoreScopeCapabilities> =>
+      actual.webCoreScopeCapabilities(host, {
+        ...(options ?? { durableTerminals: false }),
+        ...(mockDelegationStop ? { delegationStop: true } : {}),
+      }),
+  };
+});
+
 jest.mock('@/lib/openBillingPage', () => ({
   ...jest.requireActual<typeof OpenBillingPageModule>('@/lib/openBillingPage'),
   useUnlockModelsAction: (): typeof mockUnlockModels => mockUnlockModels,
@@ -855,6 +880,13 @@ let transcripts: Record<string, unknown[]> = {};
 /** Each delegation's own chat rows, which a delegation target reads. */
 const delegateTranscripts = new Map<string, unknown[]>();
 /**
+ * Each delegation's live state, as core.managedDelegation.list (open ones
+ * only) and .get answer it (CAN-7245).
+ */
+const delegationSnapshots = new Map<string, Record<string, unknown>>();
+/** How the fake web core answers core.managedDelegation.stop (CAN-7245). */
+let delegationStopAnswer: 'accept' | 'not_found' | 'hang' = 'accept';
+/**
  * Holds each task snapshot reply until released. The snapshot is read as the
  * request arrives, so a held reply lands stale.
  */
@@ -1018,6 +1050,52 @@ Object.defineProperty(window, 'canopyCore', {
           method: request.method,
           params: request.params ?? {},
         });
+      }
+      const delegationParams = request.params ?? {};
+      const delegationRefusal = (): Promise<unknown> =>
+        Promise.resolve({
+          ok: false,
+          error: {
+            kind: 'not_found',
+            message: 'The delegation was not found.',
+            retry: { kind: 'never' },
+          },
+        });
+      const stopped = (snapshot: Record<string, unknown>): void => {
+        delegationSnapshots.set(String(snapshot.delegationId), {
+          ...snapshot,
+          status: 'cancelled',
+          phase: 'idle',
+          stopReason: 'user_cancelled',
+          cancelledByUser: true,
+        });
+      };
+      const isOpen = (snapshot: Record<string, unknown>): boolean =>
+        snapshot.status === 'pending' || snapshot.status === 'running';
+      if (request.method === 'core.managedDelegation.list')
+        return ok({
+          items: [...delegationSnapshots.values()].filter(isOpen),
+          nextCursor: null,
+        });
+      if (request.method === 'core.managedDelegation.get') {
+        const snapshot = delegationSnapshots.get(
+          String(delegationParams.delegationId),
+        );
+        return snapshot === undefined ? delegationRefusal() : ok(snapshot);
+      }
+      if (request.method === 'core.managedDelegation.stop') {
+        if (delegationStopAnswer === 'hang') return new Promise(() => {});
+        if (delegationStopAnswer === 'not_found') return delegationRefusal();
+        const snapshot = delegationSnapshots.get(
+          String(delegationParams.delegationId),
+        );
+        if (snapshot !== undefined && isOpen(snapshot)) stopped(snapshot);
+        return ok({ accepted: true });
+      }
+      if (request.method === 'core.managedDelegation.stopAll') {
+        const open = [...delegationSnapshots.values()].filter(isOpen);
+        open.forEach(stopped);
+        return ok({ stopped: open.length });
       }
       const newTask = worktreeOf(request.params);
       // A deleted task's chats are gone, as the web core answers them.
@@ -2323,6 +2401,9 @@ beforeEach(() => {
   cancelledPrompts.length = 0;
   startedPrompts.length = 0;
   delegateTranscripts.clear();
+  delegationSnapshots.clear();
+  delegationStopAnswer = 'accept';
+  mockDelegationStop = false;
   attachmentBytes.clear();
   artifactReads.length = 0;
   deletedPaths.clear();
@@ -3198,7 +3279,9 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
     });
     act(() => {
       doc
-        .querySelector<HTMLButtonElement>('[data-testid="portal-plugins-save"]')
+        .querySelector<HTMLButtonElement>(
+          '[data-testid="remote-control-plugins-save"]',
+        )
         ?.click();
     });
     await settle();
@@ -3289,7 +3372,9 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
     });
     act(() => {
       doc
-        .querySelector<HTMLButtonElement>('[data-testid="portal-plugins-save"]')
+        .querySelector<HTMLButtonElement>(
+          '[data-testid="remote-control-plugins-save"]',
+        )
         ?.click();
     });
     await settle();
@@ -3343,7 +3428,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
     // the picker can't name gets.
     const triggers = Array.from(
       container.querySelectorAll<HTMLElement>(
-        '[data-testid="portal-chat-model-picker"]',
+        '[data-testid="remote-control-chat-model-picker"]',
       ),
     );
     expect(triggers.length).toBeGreaterThan(0);
@@ -3352,7 +3437,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
         (trigger) =>
           trigger
             .querySelector(
-              '[data-testid="portal-chat-model-picker-provider-icon"]',
+              '[data-testid="remote-control-chat-model-picker-provider-icon"]',
             )
             ?.getAttribute('data-provider') ?? null,
       ),
@@ -3370,7 +3455,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
     });
     await settle();
     const menu = document.querySelector(
-      '[data-testid="portal-chat-model-menu"]',
+      '[data-testid="remote-control-chat-model-menu"]',
     );
     expect(menu).not.toBeNull();
     const sections = Array.from(
@@ -3444,14 +3529,14 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
       act(() => {
         container
           .querySelector<HTMLElement>(
-            '[data-testid="portal-chat-model-picker"]',
+            '[data-testid="remote-control-chat-model-picker"]',
           )
           ?.click();
       });
       await settle();
       expect(lockedRowNamed('Locked model')).toBeUndefined();
       expect(
-        document.querySelector('[data-testid="portal-chat-model-menu"]')
+        document.querySelector('[data-testid="remote-control-chat-model-menu"]')
           ?.textContent ?? '',
       ).not.toContain('Locked model');
       act(() => {
@@ -3464,14 +3549,14 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
       restoreContext = withNavigationContext({ kind: 'personal' });
       await settle();
       const trigger = container.querySelector<HTMLElement>(
-        '[data-testid="portal-chat-model-picker"]',
+        '[data-testid="remote-control-chat-model-picker"]',
       );
       act(() => {
         trigger?.click();
       });
       await settle();
       const menu = document.querySelector(
-        '[data-testid="portal-chat-model-menu"]',
+        '[data-testid="remote-control-chat-model-menu"]',
       );
       // Listed, greyed out as locked, with the web's shared unlock label.
       const locked = Array.from(
@@ -3504,7 +3589,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
       act(() => {
         container
           .querySelector<HTMLElement>(
-            '[data-testid="portal-chat-model-picker"]',
+            '[data-testid="remote-control-chat-model-picker"]',
           )
           ?.click();
       });
@@ -3512,7 +3597,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
       act(() => {
         Array.from(
           document.querySelectorAll<HTMLElement>(
-            '[data-testid="portal-chat-model-menu"] [data-locked="true"]',
+            '[data-testid="remote-control-chat-model-menu"] [data-locked="true"]',
           ),
         )
           .find((row) => (row.textContent ?? '').includes('Locked model'))
@@ -3531,7 +3616,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
       act(() => {
         container
           .querySelector<HTMLElement>(
-            '[data-testid="portal-chat-model-picker"]',
+            '[data-testid="remote-control-chat-model-picker"]',
           )
           ?.click();
       });
@@ -3544,14 +3629,14 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
       act(() => {
         container
           .querySelector<HTMLElement>(
-            '[data-testid="portal-chat-model-picker"]',
+            '[data-testid="remote-control-chat-model-picker"]',
           )
           ?.click();
       });
       await settle();
       expect(lockedRowNamed('Locked model')).toBeUndefined();
       expect(
-        document.querySelector('[data-testid="portal-chat-model-menu"]')
+        document.querySelector('[data-testid="remote-control-chat-model-menu"]')
           ?.textContent ?? '',
       ).toContain('Locked model');
     } finally {
@@ -3579,7 +3664,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
         act(() => {
           container
             .querySelector<HTMLElement>(
-              '[data-testid="portal-chat-model-picker"]',
+              '[data-testid="remote-control-chat-model-picker"]',
             )
             ?.click();
         });
@@ -3603,7 +3688,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
       await openPicker();
       expect(lockedRowNamed('Locked model')).toBeUndefined();
       expect(
-        document.querySelector('[data-testid="portal-chat-model-menu"]')
+        document.querySelector('[data-testid="remote-control-chat-model-menu"]')
           ?.textContent ?? '',
       ).toContain('Locked model');
     } finally {
@@ -3713,7 +3798,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
       await settle();
       const doc = container.ownerDocument;
       const trigger = doc.querySelector<HTMLElement>(
-        '[data-testid="portal-chat-model-picker"]',
+        '[data-testid="remote-control-chat-model-picker"]',
       );
       expect(trigger).not.toBeNull();
       act(() => {
@@ -3724,7 +3809,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
       });
       await settle();
       const all = doc.querySelector<HTMLElement>(
-        '[data-testid="portal-chat-model-harness-tab-all"]',
+        '[data-testid="remote-control-chat-model-harness-tab-all"]',
       );
       if (all !== null) {
         act(() => {
@@ -3733,7 +3818,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
         await settle();
       }
       const other = doc.querySelector<HTMLElement>(
-        '[data-testid="portal-chat-model-menu"] [data-model-id="vendor-b-model"]',
+        '[data-testid="remote-control-chat-model-menu"] [data-model-id="vendor-b-model"]',
       );
       // The other harness's model is greyed out, or not listed, as on the web.
       expect(
@@ -3784,7 +3869,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
     const doc = container.ownerDocument;
     const openPicker = async (): Promise<void> => {
       const trigger = doc.querySelector<HTMLElement>(
-        '[data-testid="portal-chat-model-picker"]',
+        '[data-testid="remote-control-chat-model-picker"]',
       );
       expect(trigger).not.toBeNull();
       act(() => {
@@ -3796,7 +3881,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
       await settle();
       // Every harness's models, as the All tab lists them.
       const all = doc.querySelector<HTMLElement>(
-        '[data-testid="portal-chat-model-harness-tab-all"]',
+        '[data-testid="remote-control-chat-model-harness-tab-all"]',
       );
       if (all !== null) {
         act(() => {
@@ -3807,7 +3892,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
     };
     const row = (modelId: string): HTMLElement | null =>
       doc.querySelector<HTMLElement>(
-        `[data-testid="portal-chat-model-menu"] [data-model-id="${modelId}"]`,
+        `[data-testid="remote-control-chat-model-menu"] [data-model-id="${modelId}"]`,
       );
     const offered = (modelId: string): boolean => {
       const element = row(modelId);
@@ -3819,7 +3904,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
     };
     await openPicker();
     expect(
-      doc.querySelector('[data-testid="portal-chat-model-menu"]'),
+      doc.querySelector('[data-testid="remote-control-chat-model-menu"]'),
     ).not.toBeNull();
     expect(offered('cloud-model')).toBe(true);
     // The other harness's model is greyed out, or not listed, as on the web.
@@ -3868,7 +3953,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
     await settle();
     const doc = container.ownerDocument;
     const trigger = doc.querySelector<HTMLElement>(
-      '[data-testid="portal-chat-model-picker"]',
+      '[data-testid="remote-control-chat-model-picker"]',
     );
     act(() => {
       trigger?.dispatchEvent(
@@ -3878,7 +3963,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
     });
     await settle();
     const all = doc.querySelector<HTMLElement>(
-      '[data-testid="portal-chat-model-harness-tab-all"]',
+      '[data-testid="remote-control-chat-model-harness-tab-all"]',
     );
     if (all !== null) {
       act(() => {
@@ -3887,7 +3972,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
       await settle();
     }
     const other = doc.querySelector<HTMLElement>(
-      '[data-testid="portal-chat-model-menu"] [data-model-id="vendor-b-model"]',
+      '[data-testid="remote-control-chat-model-menu"] [data-model-id="vendor-b-model"]',
     );
     expect(other).not.toBeNull();
     expect(other?.getAttribute('aria-disabled')).not.toBe('true');
@@ -3931,7 +4016,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
     const modelBefore = tabModel();
     const doc = container.ownerDocument;
     const trigger = doc.querySelector<HTMLElement>(
-      '[data-testid="portal-chat-model-picker"]',
+      '[data-testid="remote-control-chat-model-picker"]',
     );
     expect(trigger).not.toBeNull();
     act(() => {
@@ -3942,7 +4027,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
     });
     await settle();
     const all = doc.querySelector<HTMLElement>(
-      '[data-testid="portal-chat-model-harness-tab-all"]',
+      '[data-testid="remote-control-chat-model-harness-tab-all"]',
     );
     if (all !== null) {
       act(() => {
@@ -3952,10 +4037,10 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
     }
     const row = (modelId: string): HTMLElement | null =>
       doc.querySelector<HTMLElement>(
-        `[data-testid="portal-chat-model-menu"] [data-model-id="${modelId}"]`,
+        `[data-testid="remote-control-chat-model-menu"] [data-model-id="${modelId}"]`,
       );
     expect(
-      doc.querySelector('[data-testid="portal-chat-model-menu"]'),
+      doc.querySelector('[data-testid="remote-control-chat-model-menu"]'),
     ).not.toBeNull();
     // The other harness's model is greyed out, or not listed, as on the web.
     const other = row('vendor-b-model');
@@ -4330,7 +4415,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
       act(() => {
         doc
           .querySelector<HTMLButtonElement>(
-            '[data-testid="portal-plugins-save"]',
+            '[data-testid="remote-control-plugins-save"]',
           )
           ?.click();
       });
@@ -4752,6 +4837,372 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
     ).toEqual([]);
   });
 
+  /** A delegate's live state as the web core lists it (CAN-7245). */
+  function liveDelegateSnapshot(run: string): Record<string, unknown> {
+    return {
+      delegationId: `cloud-delegate-${run}`,
+      status: 'running',
+      phase: 'running',
+      runGeneration: 1,
+      requestedModelId: 'cloud-model',
+      outputTruncated: false,
+    };
+  }
+
+  /**
+   * Opens the task with running delegate cards in its chat, the first of
+   * them isolated, and unfolds its Worked section (CAN-7245).
+   */
+  async function openDelegateCards(
+    runs: readonly string[] = ['first', 'second'],
+    cards: Readonly<Record<string, Record<string, unknown>>> = {},
+  ): Promise<void> {
+    startedPrompts.push(
+      {
+        id: 'delegating-u',
+        role: 'user',
+        blocks: [{ type: 'text', text: 'Review both halves' }],
+        timestamp: Date.now(),
+      },
+      {
+        id: 'delegating-a',
+        role: 'assistant',
+        blocks: runs.map((run, index) =>
+          index === 0
+            ? {
+                ...runningDelegateCard(run),
+                isolatedWorkspace: {
+                  revision: 'rev-1',
+                  dirtyParentChangesIncluded: false,
+                },
+                ...cards[run],
+              }
+            : { ...runningDelegateCard(run), ...cards[run] },
+        ),
+        timestamp: Date.now(),
+      },
+    );
+    Object.defineProperty(globalThis, 'CSS', {
+      configurable: true,
+      value: { escape: (value: string): string => value },
+    });
+    onCaseEnd(() => {
+      Reflect.deleteProperty(globalThis, 'CSS');
+    });
+    await openTaskChat();
+    await rereadTranscript();
+    act(() => {
+      container
+        .querySelector<HTMLElement>('[data-testid="turn-work-header"] button')
+        ?.click();
+    });
+    await settle();
+  }
+
+  const cardStop = (run: string): HTMLElement | null =>
+    container.querySelector<HTMLElement>(
+      `[data-delegation-id="cloud-delegate-${run}"] [data-testid="delegated-agent-stop"]`,
+    );
+  const cardText = (run: string): string =>
+    container.querySelector(`[data-delegation-id="cloud-delegate-${run}"]`)
+      ?.textContent ?? '';
+  const delegationRequests = (method: string): Record<string, unknown>[] =>
+    coreRequestLog
+      .filter((entry) => entry.method === method)
+      .map((entry) => entry.params);
+  /** A keyed request's params without its key, and the key's type. */
+  const keyedRequests = (
+    method: string,
+  ): { params: Record<string, unknown>; key: string }[] =>
+    delegationRequests(method).map((params) => ({
+      params: Object.fromEntries(
+        Object.entries(params).filter(([field]) => field !== '_meta'),
+      ),
+      key: typeof Reflect.get(Object(params._meta), 'idempotencyKey'),
+    }));
+  const delegationIpcCalls = (): string[] =>
+    calls
+      .filter((call) =>
+        [
+          'api.managedDelegation.stop',
+          'api.managedDelegation.stopAll',
+          'api.managedDelegation.changes',
+        ].includes(call.path),
+      )
+      .map((call) => call.path);
+
+  it("stops a cloud chat's own delegate from its card, and all of them from the drawer, through the web core and never main (CAN-7245)", async () => {
+    mockDelegationStop = true;
+    for (const run of ['first', 'second', 'third'])
+      delegationSnapshots.set(
+        `cloud-delegate-${run}`,
+        liveDelegateSnapshot(run),
+      );
+    await openDelegateCards(['first', 'second', 'third']);
+    await settle();
+    expect(cloudScopeCapabilitiesNow().delegationStop).toBe(true);
+    // The cards read their delegates' live state for that chat.
+    expect(delegationRequests('core.managedDelegation.list')[0]).toEqual({
+      scope: { workspaceId: 'ws-1', worktreeId: 'wt-1' },
+      chatId: 'wt-1',
+    });
+    expect(cardStop('first')).not.toBeNull();
+    expect(cardStop('second')).not.toBeNull();
+    // A cloud delegate has no retained worktree on this computer to diff.
+    act(() => {
+      container
+        .querySelector<HTMLElement>(
+          '[data-delegation-id="cloud-delegate-first"] button[aria-label="Expand delegated task"]',
+        )
+        ?.click();
+    });
+    await settle();
+    expect(shown('delegated-agent-show-changes')).toBe(false);
+
+    act(() => {
+      cardStop('first')?.click();
+    });
+    await settle();
+    await settle();
+    expect(keyedRequests('core.managedDelegation.stop')).toEqual([
+      {
+        params: {
+          scope: { workspaceId: 'ws-1', worktreeId: 'wt-1' },
+          chatId: 'wt-1',
+          delegationId: 'cloud-delegate-first',
+        },
+        key: 'string',
+      },
+    ]);
+    // Only a read that says so shows it stopped.
+    expect(cardText('first')).toContain('Cancelled');
+    expect(cardStop('first')).toBeNull();
+    expect(cardStop('second')).not.toBeNull();
+
+    // The drawer keeps its open state across chats; open it only if shut.
+    const toggle = container.querySelector<HTMLElement>(
+      '[data-testid="background-tray-toggle"]',
+    );
+    if (toggle !== null && !shown('background-tray-stop-all'))
+      act(() => {
+        toggle.click();
+      });
+    await settle();
+    // The stopped delegate leaves the drawer; the two still running stay.
+    expect(
+      container.querySelectorAll('[data-testid="background-tray-agent"]'),
+    ).toHaveLength(2);
+    expect(shown('background-tray-stop-all')).toBe(true);
+    act(() => {
+      container
+        .querySelector<HTMLElement>('[data-testid="background-tray-stop-all"]')
+        ?.click();
+    });
+    await settle();
+    act(() => {
+      document
+        .querySelector<HTMLElement>(
+          '[data-testid="background-tray-stop-all-confirm"]',
+        )
+        ?.click();
+    });
+    await settle();
+    await settle();
+    expect(keyedRequests('core.managedDelegation.stopAll')).toEqual([
+      {
+        params: {
+          scope: { workspaceId: 'ws-1', worktreeId: 'wt-1' },
+          chatId: 'wt-1',
+        },
+        key: 'string',
+      },
+    ]);
+    expect(cardText('second')).toContain('Cancelled');
+    expect(cardText('third')).toContain('Cancelled');
+    expect(delegationIpcCalls()).toEqual([]);
+    expect(callsCarryingWebCoreIds()).toEqual([]);
+  });
+
+  it('offers no Load changes on a cloud delegate the web core reports isolated, as its scope reads no retained worktree here (CAN-7245)', async () => {
+    mockDelegationStop = true;
+    delegationSnapshots.set('cloud-delegate-first', {
+      ...liveDelegateSnapshot('first'),
+      isolatedWorkspace: {
+        revision: 'rev-1',
+        dirtyParentChangesIncluded: false,
+      },
+    });
+    await openDelegateCards(['first']);
+    await settle();
+    act(() => {
+      container
+        .querySelector<HTMLElement>(
+          '[data-delegation-id="cloud-delegate-first"] button[aria-label="Expand delegated task"]',
+        )
+        ?.click();
+    });
+    await settle();
+    expect(cloudScopeCapabilitiesNow().delegationWorktreeDetails === true).toBe(
+      false,
+    );
+    expect(shown('delegated-agent-metadata')).toBe(true);
+    expect(cardStop('first')).not.toBeNull();
+    expect(shown('delegated-agent-show-changes')).toBe(false);
+    expect(delegationIpcCalls()).toEqual([]);
+  });
+
+  it("lists a cloud chat's delegates in the drawer by the web core's live state, as their cards show them (CAN-7245)", async () => {
+    mockDelegationStop = true;
+    // Its card says queued; the web core says it runs.
+    delegationSnapshots.set(
+      'cloud-delegate-started',
+      liveDelegateSnapshot('started'),
+    );
+    // Its card says done; the web core says its second run runs.
+    delegationSnapshots.set('cloud-delegate-resumed', {
+      ...liveDelegateSnapshot('resumed'),
+      runGeneration: 2,
+    });
+    await openDelegateCards(['started', 'resumed'], {
+      started: { status: 'pending' },
+      resumed: { status: 'completed' },
+    });
+    await settle();
+    const toggle = container.querySelector<HTMLElement>(
+      '[data-testid="background-tray-toggle"]',
+    );
+    if (toggle?.getAttribute('data-chevron') === 'up')
+      act(() => {
+        toggle.click();
+      });
+    await settle();
+    const row = (run: string): Element | null =>
+      container.querySelector(
+        `[data-tray-row="agent:managed:cloud-delegate-${run}"]`,
+      );
+    expect(row('started')).not.toBeNull();
+    expect(row('started')?.querySelector('[data-status="queued"]')).toBeNull();
+    expect(row('resumed')).not.toBeNull();
+    expect(cardStop('started')).not.toBeNull();
+    expect(cardStop('resumed')).not.toBeNull();
+  });
+
+  it("refuses to stop a delegate that isn't on a card in that cloud chat, or one asked for another chat, and never shows a refused or unanswered stop as stopped (CAN-7245)", async () => {
+    mockDelegationStop = true;
+    delegationSnapshots.set(
+      'cloud-delegate-first',
+      liveDelegateSnapshot('first'),
+    );
+    delegationSnapshots.set(
+      'cloud-delegate-second',
+      liveDelegateSnapshot('second'),
+    );
+    await openDelegateCards();
+    await settle();
+    const target = {
+      projectId: 'web-core:ws-1',
+      worktreeId: 'web-core:wt-1',
+      chatId: 'web-core:wt-1',
+    };
+    await expect(
+      requestManagedDelegationStop(target, 'not-on-a-card'),
+    ).resolves.toBe(false);
+    await expect(
+      requestManagedDelegationStop(
+        { ...target, chatId: 'web-core:other-chat' },
+        'cloud-delegate-first',
+      ),
+    ).resolves.toBe(false);
+    expect(delegationRequests('core.managedDelegation.stop')).toEqual([]);
+
+    // The web core refuses: the stop fails, and the card still runs.
+    delegationStopAnswer = 'not_found';
+    act(() => {
+      cardStop('first')?.click();
+    });
+    await settle();
+    await settle();
+    expect(delegationRequests('core.managedDelegation.stop')).toHaveLength(1);
+    expect(cardText('first')).not.toContain('Cancelled');
+    expect(cardStop('first')).not.toBeNull();
+
+    // No answer at all: nothing says it stopped.
+    delegationStopAnswer = 'hang';
+    act(() => {
+      cardStop('second')?.click();
+    });
+    await settle();
+    await settle();
+    expect(delegationRequests('core.managedDelegation.stop')).toHaveLength(2);
+    expect(cardText('second')).not.toContain('Cancelled');
+    expect(delegationIpcCalls()).toEqual([]);
+    expect(callsCarryingWebCoreIds()).toEqual([]);
+  });
+
+  it("reads a cloud delegate's current run once the web core reports a newer one, not the card's first (CAN-7245)", async () => {
+    mockDelegationStop = true;
+    transcriptPageDetails = ['delegation'];
+    delegationSnapshots.set('cloud-delegate-first', {
+      ...liveDelegateSnapshot('first'),
+      runGeneration: 2,
+    });
+    delegationSnapshots.set(
+      'cloud-delegate-second',
+      liveDelegateSnapshot('second'),
+    );
+    await openDelegateCards();
+    await settle();
+    act(() => {
+      container
+        .querySelector<HTMLElement>(
+          '[data-delegation-id="cloud-delegate-first"] button[aria-label="Expand delegated task"]',
+        )
+        ?.click();
+    });
+    await settle();
+    await settle();
+    expect(
+      coreRequestLog
+        .filter(
+          (entry) =>
+            entry.method === 'core.chat.transcript.page' &&
+            entry.params.target !== undefined,
+        )
+        .map((entry): unknown =>
+          Reflect.get(Object(entry.params.target), 'runGeneration'),
+        ),
+    ).toEqual([2]);
+  });
+
+  it("keeps reading a cloud chat's settled delegates while its turn runs, so one it resumes shows Stop again (CAN-7245)", async () => {
+    mockDelegationStop = true;
+    runningTurn = 'cloud-turn';
+    onCaseEnd(() => {
+      runningTurn = null;
+    });
+    delegationSnapshots.set('cloud-delegate-first', {
+      ...liveDelegateSnapshot('first'),
+      status: 'completed',
+      phase: 'idle',
+    });
+    await openDelegateCards(['first']);
+    await settle();
+    expect(cardStop('first')).toBeNull();
+    // The parent's agent starts it again under the same delegation id.
+    delegationSnapshots.set(
+      'cloud-delegate-first',
+      liveDelegateSnapshot('first'),
+    );
+    await act(
+      () =>
+        new Promise((resolve) =>
+          setTimeout(resolve, LIVE_DELEGATION_POLL_MS + 500),
+        ),
+    );
+    await settle();
+    expect(cardStop('first')).not.toBeNull();
+  });
+
   /** A running background delegate of the cloud task's chat (CAN-7027). */
   function cloudDelegateCard(delegationId: string): Record<string, unknown> {
     return {
@@ -4912,6 +5363,88 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
     await settle();
     expect(shown('cloud-attachments-add')).toBe(true);
     expect(outsideTheCard()).toBe(false);
+  });
+
+  it("reads a cloud delegate's open pages again once the web core reports its lifecycle changed, so its last messages show (CAN-7245)", async () => {
+    transcriptPageDetails = ['delegation'];
+    mockDelegationStop = true;
+    delegationSnapshots.set(
+      'cloud-delegate-reload',
+      liveDelegateSnapshot('reload'),
+    );
+    const childRow = (id: string, text: string): Record<string, unknown> => ({
+      id,
+      role: 'assistant',
+      blocks: [{ type: 'text', text }],
+      timestamp: Date.now(),
+    });
+    delegateTranscripts.set('cloud-delegate-reload', [
+      childRow('child-1', 'CHILD-ROW-BEFORE-STOP'),
+    ]);
+    await openDelegateCard('cloud-delegate-reload');
+    await settle();
+    const childPages = (): string =>
+      container.querySelector('[data-testid="delegation-child-pages"]')
+        ?.textContent ?? '';
+    expect(childPages()).toContain('CHILD-ROW-BEFORE-STOP');
+    const readsBefore = delegationReads().length;
+    delegateTranscripts.set('cloud-delegate-reload', [
+      childRow('child-1', 'CHILD-ROW-BEFORE-STOP'),
+      childRow('child-2', 'CHILD-ROW-AFTER-STOP'),
+    ]);
+
+    act(() => {
+      cardStop('reload')?.click();
+    });
+    await settle();
+    await settle();
+    expect(cardText('reload')).toContain('Cancelled');
+    expect(delegationReads().length).toBeGreaterThan(readsBefore);
+    expect(childPages()).toContain('CHILD-ROW-AFTER-STOP');
+    expect(delegationIpcCalls()).toEqual([]);
+  });
+
+  it("offers no Stop on a delegate's own delegate shown in a cloud card's pages, which isn't on that chat's cards, and keeps the chat's own card's Stop (CAN-7245)", async () => {
+    transcriptPageDetails = ['delegation'];
+    mockDelegationStop = true;
+    delegationSnapshots.set(
+      'cloud-delegate-parent',
+      liveDelegateSnapshot('parent'),
+    );
+    delegateTranscripts.set('cloud-delegate-parent', [
+      {
+        id: 'child-1',
+        role: 'assistant',
+        blocks: [
+          {
+            ...cloudDelegateCard('cloud-delegate-nested'),
+            routeSnapshot: {
+              selectedModelId: 'cloud-model',
+              runtimeModelId: 'cloud-model',
+              harnessId: 'claude',
+            },
+          },
+          { type: 'text', text: 'NESTED-CARD-ROW' },
+        ],
+        timestamp: Date.now(),
+      },
+    ]);
+    await openDelegateCard('cloud-delegate-parent');
+    await settle();
+    const nested = container.querySelector(
+      '[data-testid="delegation-child-pages"] [data-delegation-id="cloud-delegate-nested"]',
+    );
+    expect(nested).not.toBeNull();
+    expect(
+      nested?.querySelector('[data-testid="delegated-agent-stop"]') ?? null,
+    ).toBeNull();
+    const ownStops = [
+      ...container.querySelectorAll(
+        '[data-delegation-id="cloud-delegate-parent"] [data-testid="delegated-agent-stop"]',
+      ),
+    ].filter((button) => nested === null || !nested.contains(button));
+    expect(ownStops).toHaveLength(1);
+    expect(delegationRequests('core.managedDelegation.stop')).toEqual([]);
   });
 
   it("refuses a delegate that isn't on a card in that cloud chat, or is read for another chat, before asking the web core, and shows a web core refusal as unavailable (CAN-7027)", async () => {
@@ -5458,7 +5991,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
     expect(
       six === undefined
         ? undefined
-        : persistedMessageToPortalMessage({
+        : persistedMessageToRemoteControlMessage({
             scope: 'worktree',
             chatId: TASK_CHAT.chatId,
             message: six,
@@ -5496,7 +6029,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
       const bubbleOf = (text: string): string | undefined =>
         [
           ...list.querySelectorAll(
-            '[data-testid="portal-chat-message-content"]',
+            '[data-testid="remote-control-chat-message-content"]',
           ),
         ]
           .map((bubble) => bubble.textContent ?? '')
@@ -6547,7 +7080,9 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
     });
     act(() => {
       doc
-        .querySelector<HTMLButtonElement>('[data-testid="portal-plugins-save"]')
+        .querySelector<HTMLButtonElement>(
+          '[data-testid="remote-control-plugins-save"]',
+        )
         ?.click();
     });
     await settle();
@@ -7677,9 +8212,11 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
       'chatResetToPoint',
       'chatFileMentions',
       'chatInterfaceModes',
-      // A delegate card's Stop and Load changes, and the drawer's Stop and
-      // Stop all (CAN-7055).
+      // A delegate card's Stop, and the drawer's Stop and Stop all
+      // (CAN-7055).
       'delegationStop',
+      // A delegate card's Load changes, which follows it (CAN-7245).
+      'delegationWorktreeDetails',
     ] as const) {
       expect([key, local[key]]).toEqual([key, true]);
       expect([key, cloud[key] === true]).toEqual([key, false]);
@@ -8345,7 +8882,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
      */
     async function pickModelInComposer(): Promise<boolean> {
       const trigger = container.querySelector<HTMLButtonElement>(
-        '[data-chat-composer-root] [data-testid="portal-chat-model-picker"]',
+        '[data-chat-composer-root] [data-testid="remote-control-chat-model-picker"]',
       );
       if (trigger === null) return false;
       act(() => {
@@ -8354,7 +8891,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
       await settle();
       const option = Array.from(
         container.ownerDocument.querySelectorAll<HTMLElement>(
-          '[data-testid="portal-chat-model-option"]',
+          '[data-testid="remote-control-chat-model-option"]',
         ),
       ).find((row) => row.textContent?.includes('Second model'));
       if (option === undefined) throw new Error('No Second model row.');
@@ -8396,7 +8933,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
       act(() => {
         doc
           .querySelector<HTMLButtonElement>(
-            '[data-testid="portal-plugins-save"]',
+            '[data-testid="remote-control-plugins-save"]',
           )
           ?.click();
       });
@@ -10706,7 +11243,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
     function homeCloudFiles(): readonly (string | null)[] {
       return Array.from(
         container.querySelectorAll(
-          '[data-testid="portal-pending-attachments"] [data-state="staged"]',
+          '[data-testid="remote-control-pending-attachments"] [data-state="staged"]',
         ),
         (chip) => chip.getAttribute('title'),
       );

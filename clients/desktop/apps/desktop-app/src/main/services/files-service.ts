@@ -10,14 +10,14 @@ import type {
   FileTreeRoot,
   FileTreeRootsRequest,
   FileTreeRootsResponse,
-  PortalDirectoryListing,
-  PortalFileReadPayload,
-  PortalFileLinkResolvePayload,
-  PortalFileLinkResolution,
-  PortalFilePreview,
-  PortalFileRoot,
-  PortalFileSavePayload,
-  PortalFileSnapshotPayload,
+  RemoteControlDirectoryListing,
+  RemoteControlFileReadPayload,
+  RemoteControlFileLinkResolvePayload,
+  RemoteControlFileLinkResolution,
+  RemoteControlFilePreview,
+  RemoteControlFileRoot,
+  RemoteControlFileSavePayload,
+  RemoteControlFileSnapshotPayload,
 } from '@canopy/desktop-shared/types';
 import { SHARED_CONTAINER_VIEWER_PROJECT_ID } from '@canopy/desktop-shared/types';
 import {
@@ -37,7 +37,7 @@ import { readPreferencesFile } from '../lib/preferences-store';
 import { validateId, validateOptionalRepoId } from '../lib/validation';
 import { normalizeFileTreeRelativePath as normalizeRelativePath } from './file-tree-relative-path';
 import { assertWritableScope } from '../lib/read-only-scope';
-import { PortalServiceError } from './portal-service-error';
+import { RemoteControlServiceError } from './remote-control-service-error';
 import {
   secretSafeView,
   secretViewFileHoldsSecrets,
@@ -94,9 +94,9 @@ function isPathInsideRoot(pathValue: string, rootPath: string): boolean {
  * sealed viewer it calls the `worker.filesystem.link.resolve` engine as a
  * library, in `transcript` mode, and answers every link failure as `null`.
  */
-export async function resolvePortalFileLink(
-  request: PortalFileLinkResolvePayload,
-): Promise<PortalFileLinkResolution | null> {
+export async function resolveRemoteControlFileLink(
+  request: RemoteControlFileLinkResolvePayload,
+): Promise<RemoteControlFileLinkResolution | null> {
   validateId(request.projectId, 'projectId');
   validateId(request.worktreeId, 'worktreeId');
   const link = decodeTranscriptLink(request.href);
@@ -107,7 +107,7 @@ export async function resolvePortalFileLink(
   );
 
   if (request.projectId === SHARED_CONTAINER_VIEWER_PROJECT_ID) {
-    const matches: PortalFileLinkResolution[] = [];
+    const matches: RemoteControlFileLinkResolution[] = [];
     for (const root of roots) {
       if (link.absolute && !isPathInsideRoot(link.path, root.absolutePath)) {
         continue;
@@ -176,14 +176,14 @@ async function resolveRoot(
   );
   const rootHint = fileRootLocalId ?? repoId;
   if (!rootHint && roots.length !== 1) {
-    throw new PortalServiceError(
+    throw new RemoteControlServiceError(
       'invalid_target',
       'File root is ambiguous; provide fileRootLocalId or repoId.',
     );
   }
   const root = rootHint ? rootMap.get(rootHint) : roots[0];
   if (!root) {
-    throw new PortalServiceError(
+    throw new RemoteControlServiceError(
       'not_found',
       `Unknown file root: ${rootHint ?? 'default'}`,
     );
@@ -200,8 +200,8 @@ function versionFromStat(stats: Awaited<ReturnType<typeof stat>>): string {
   return `${Number(stats.size)}:${Math.round(Number(stats.mtimeMs))}`;
 }
 
-export async function resolvePortalFileTarget(
-  request: PortalFileReadPayload,
+export async function resolveRemoteControlFileTarget(
+  request: RemoteControlFileReadPayload,
 ): Promise<{
   root: FileBrowserRoot;
   rootReal: string;
@@ -222,7 +222,7 @@ export async function resolvePortalFileTarget(
   return { root, rootReal, relativePath, joinedAbsolutePath };
 }
 
-export async function resolvePortalChatAssetFileTarget(input: {
+export async function resolveRemoteControlChatAssetFileTarget(input: {
   projectId: string;
   worktreeId: string;
   path: string;
@@ -252,7 +252,7 @@ async function resolveExistingFileInsideRoot(
 ): Promise<string> {
   const targetReal = await realpath(targetPath);
   if (!isPathInsideRoot(targetReal, rootReal)) {
-    throw new PortalServiceError(
+    throw new RemoteControlServiceError(
       'invalid_target',
       'File is outside the selected worktree root.',
     );
@@ -269,14 +269,14 @@ async function resolveCreatableFileInsideRoot(
     try {
       const ancestorReal = await realpath(cursor);
       if (!isPathInsideRoot(ancestorReal, rootReal)) {
-        throw new PortalServiceError(
+        throw new RemoteControlServiceError(
           'invalid_target',
           'File is outside the selected worktree root.',
         );
       }
       return targetPath;
     } catch (error) {
-      if (error instanceof PortalServiceError) {
+      if (error instanceof RemoteControlServiceError) {
         throw error;
       }
       if (getErrorCode(error) !== 'ENOENT') {
@@ -370,13 +370,13 @@ function rejectUnsupportedText(pathValue: string, content?: string): void {
     '.idx',
   ]);
   if (knownBinaryExtensions.has(extension)) {
-    throw new PortalServiceError(
+    throw new RemoteControlServiceError(
       'invalid_target',
       'Binary files cannot be read or saved.',
     );
   }
   if (content?.includes('\0')) {
-    throw new PortalServiceError(
+    throw new RemoteControlServiceError(
       'invalid_payload',
       'File content cannot contain null bytes.',
     );
@@ -385,7 +385,7 @@ function rejectUnsupportedText(pathValue: string, content?: string): void {
 
 export async function listFileRoots(
   request: FileTreeRootsRequest,
-): Promise<PortalFileRoot[]> {
+): Promise<RemoteControlFileRoot[]> {
   validateId(request.projectId, 'projectId');
   validateId(request.worktreeId, 'worktreeId');
   const { roots } = await getFileBrowserRoots(
@@ -578,7 +578,7 @@ async function walkFileIndexes(
 
 export async function listDirectory(
   request: FileTreeDirectoryRequest,
-): Promise<PortalDirectoryListing> {
+): Promise<RemoteControlDirectoryListing> {
   const root = await resolveRoot(
     request.projectId,
     request.worktreeId,
@@ -604,7 +604,7 @@ export async function listDirectory(
     fileRootLocalId: root.repoId,
     path: relativeDir,
     entries: entries
-      .map((entry): PortalDirectoryListing['entries'][number] => ({
+      .map((entry): RemoteControlDirectoryListing['entries'][number] => ({
         name: entry.name,
         path: entry.relativePath,
         type: entry.kind === 'directory' ? 'directory' : 'file',
@@ -651,7 +651,7 @@ export async function listFileTreeDirectory(
  * (`cut` when it is the file's start only), or a Portal error when it must
  * be withheld.
  */
-async function portalSafeText(
+async function remoteControlSafeText(
   text: string,
   cut: boolean,
   path: string,
@@ -661,14 +661,14 @@ async function portalSafeText(
       .text;
   } catch (error) {
     if (error instanceof SecretViewUnavailableError)
-      throw new PortalServiceError('invalid_target', error.message);
+      throw new RemoteControlServiceError('invalid_target', error.message);
     throw error;
   }
 }
 
-export async function readPortalFilePreview(
-  request: PortalFileReadPayload,
-): Promise<PortalFilePreview> {
+export async function readRemoteControlFilePreview(
+  request: RemoteControlFileReadPayload,
+): Promise<RemoteControlFilePreview> {
   if (request.projectId === SHARED_CONTAINER_VIEWER_PROJECT_ID) {
     const root = await resolveRoot(
       request.projectId,
@@ -684,13 +684,13 @@ export async function readPortalFilePreview(
     );
     const slice = opened.bytes.subarray(0, MAX_PREVIEW_BYTES);
     if (slice.includes(0)) {
-      throw new PortalServiceError(
+      throw new RemoteControlServiceError(
         'invalid_target',
         'Binary files cannot be read.',
       );
     }
     // A shared folder's file reads redacted like a local one.
-    const content = await portalSafeText(
+    const content = await remoteControlSafeText(
       slice.toString('utf8'),
       opened.sizeBytes > MAX_PREVIEW_BYTES,
       join(root.absolutePath, ...relativePath.split('/')),
@@ -709,7 +709,7 @@ export async function readPortalFilePreview(
     };
   }
   const { root, rootReal, relativePath, joinedAbsolutePath } =
-    await resolvePortalFileTarget(request);
+    await resolveRemoteControlFileTarget(request);
   rejectUnsupportedText(relativePath);
 
   const targetReal = await resolveExistingFileInsideRoot(
@@ -718,7 +718,10 @@ export async function readPortalFilePreview(
   );
   const stats = await stat(targetReal);
   if (!stats.isFile()) {
-    throw new PortalServiceError('invalid_target', 'Path is not a file.');
+    throw new RemoteControlServiceError(
+      'invalid_target',
+      'Path is not a file.',
+    );
   }
 
   // Match the save path's O_NOFOLLOW: refuse to follow a final-component
@@ -733,14 +736,14 @@ export async function readPortalFilePreview(
     const { bytesRead } = await fh.read(buffer, 0, maxBytes, 0);
     const slice = buffer.subarray(0, bytesRead);
     if (slice.includes(0)) {
-      throw new PortalServiceError(
+      throw new RemoteControlServiceError(
         'invalid_target',
         'Binary files cannot be read.',
       );
     }
     // Agent secret values read redacted here too, as in the desktop's own
     // views, whichever file holds them (agent secret requests).
-    const content = await portalSafeText(
+    const content = await remoteControlSafeText(
       slice.toString('utf8'),
       stats.size > MAX_PREVIEW_BYTES,
       targetReal,
@@ -762,21 +765,24 @@ export async function readPortalFilePreview(
   }
 }
 
-export async function savePortalFile(
-  request: PortalFileSavePayload,
-): Promise<PortalFilePreview> {
+export async function saveRemoteControlFile(
+  request: RemoteControlFileSavePayload,
+): Promise<RemoteControlFilePreview> {
   assertWritableScope(request.projectId);
   if (Buffer.byteLength(request.content, 'utf8') > MAX_SAVE_BYTES) {
-    throw new PortalServiceError(
+    throw new RemoteControlServiceError(
       'invalid_payload',
       'File content exceeds the 5 MB save limit.',
     );
   }
 
   const { root, rootReal, relativePath, joinedAbsolutePath } =
-    await resolvePortalFileTarget(request);
+    await resolveRemoteControlFileTarget(request);
   if (!relativePath) {
-    throw new PortalServiceError('invalid_target', 'Path is not a file.');
+    throw new RemoteControlServiceError(
+      'invalid_target',
+      'Path is not a file.',
+    );
   }
   rejectUnsupportedText(relativePath, request.content);
   let writePath: string;
@@ -788,10 +794,13 @@ export async function savePortalFile(
     );
     existingStats = await stat(writePath);
     if (!existingStats.isFile()) {
-      throw new PortalServiceError('invalid_target', 'Path is not a file.');
+      throw new RemoteControlServiceError(
+        'invalid_target',
+        'Path is not a file.',
+      );
     }
   } catch (error) {
-    if (error instanceof PortalServiceError) {
+    if (error instanceof RemoteControlServiceError) {
       throw error;
     }
     if (getErrorCode(error) !== 'ENOENT') {
@@ -817,11 +826,11 @@ export async function savePortalFile(
       );
     } catch (error) {
       if (error instanceof SecretViewUnavailableError)
-        throw new PortalServiceError('invalid_target', error.message);
+        throw new RemoteControlServiceError('invalid_target', error.message);
       throw error;
     }
     if (redactedView)
-      throw new PortalServiceError(
+      throw new RemoteControlServiceError(
         'invalid_target',
         'This file holds secrets an agent was given, so it can only be edited outside the app.',
       );
@@ -832,7 +841,7 @@ export async function savePortalFile(
     typeof request.expectedModifiedAtMs === 'number' &&
     Math.abs(existingStats.mtimeMs - request.expectedModifiedAtMs) > 1
   ) {
-    throw new PortalServiceError(
+    throw new RemoteControlServiceError(
       'execution_failed',
       'The document changed after you started editing.',
     );
@@ -865,7 +874,7 @@ export async function savePortalFile(
 
   const savedPath = await realpath(writePath);
   if (!isPathInsideRoot(savedPath, rootReal)) {
-    throw new PortalServiceError(
+    throw new RemoteControlServiceError(
       'invalid_target',
       'Saved file escaped the selected worktree root.',
     );
@@ -887,10 +896,13 @@ export async function savePortalFile(
 
 export async function readFilePreview(
   request: FileContentRequest,
-): Promise<PortalFilePreview> {
+): Promise<RemoteControlFilePreview> {
   const stats = await stat(request.absolutePath);
   if (!stats.isFile()) {
-    throw new PortalServiceError('invalid_target', 'Path is not a file.');
+    throw new RemoteControlServiceError(
+      'invalid_target',
+      'Path is not a file.',
+    );
   }
   const fh = await open(request.absolutePath, 'r');
   try {
@@ -899,13 +911,13 @@ export async function readFilePreview(
     const { bytesRead } = await fh.read(buffer, 0, maxBytes, 0);
     const slice = buffer.subarray(0, bytesRead);
     if (slice.includes(0)) {
-      throw new PortalServiceError(
+      throw new RemoteControlServiceError(
         'invalid_target',
         'Binary files cannot be read.',
       );
     }
     // Agent secret values read redacted, as in every Canopy view.
-    const content = await portalSafeText(
+    const content = await remoteControlSafeText(
       slice.toString('utf8'),
       stats.size > MAX_PREVIEW_BYTES,
       request.absolutePath,
@@ -927,9 +939,9 @@ export async function readFilePreview(
 }
 
 export function toFileSnapshotPayload(
-  listingOrPreview: PortalDirectoryListing | PortalFilePreview,
+  listingOrPreview: RemoteControlDirectoryListing | RemoteControlFilePreview,
   rootScope?: { fileRootLocalId: string },
-): PortalFileSnapshotPayload {
+): RemoteControlFileSnapshotPayload {
   // Transport plan Phase T1.2: snapshots MUST carry `fileRootLocalId`,
   // `workspaceLocalId`, `worktreeLocalId`, and a relative `filePath`.
   // The wire keys two repos with the same relative filename apart via
@@ -943,7 +955,7 @@ export function toFileSnapshotPayload(
       worktreeLocalId: listingOrPreview.worktreeLocalId,
       filePath: listingOrPreview.path,
       tree: listingOrPreview.entries.map(
-        (entry: PortalDirectoryListing['entries'][number]) => ({
+        (entry: RemoteControlDirectoryListing['entries'][number]) => ({
           name: entry.name,
           isDir: entry.type === 'directory',
         }),

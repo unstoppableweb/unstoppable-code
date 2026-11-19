@@ -43,9 +43,9 @@ import type {
   ModelCatalogOption,
 } from '@canopy/protocol/models';
 import {
-  readPortalChatMessageAttachments,
-  type PortalChatUsage,
-} from '@canopy/protocol/portal';
+  readRemoteControlChatMessageAttachments,
+  type RemoteControlChatUsage,
+} from '@canopy/protocol/remote-control/shell';
 import type { ChatUsageAnswer } from '@canopy/protocol/cloud-session';
 import { webCoreLocalId, webCoreScopeId } from '@/lib/chat-authority';
 import { cloudAttachmentPath } from '@/cloud-chats/cloud-chat-attachments';
@@ -166,7 +166,7 @@ function transcriptAttachmentPaths(
   message: PersistedChatMessage,
 ): string[] | undefined {
   if ((message.attachmentPaths?.length ?? 0) > 0) return undefined;
-  const attachments = readPortalChatMessageAttachments(
+  const attachments = readRemoteControlChatMessageAttachments(
     Reflect.get(message, 'attachments'),
   );
   return attachments?.map((attachment) =>
@@ -920,7 +920,7 @@ export function meteredAnswer(value: unknown): MeteredAnswer | null {
  * never shows a zero for a chat that reported nothing.
  */
 export function chatTabUsage(
-  usage: PortalChatUsage | undefined,
+  usage: RemoteControlChatUsage | undefined,
 ): ChatTabUsage | undefined {
   if (usage === undefined) return undefined;
   return {

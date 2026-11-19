@@ -421,7 +421,7 @@ export function SegmentedControlStage(): JSX.Element {
       script={segmentedScript}
       height={232}
     >
-      {(s): JSX.Element => (
+      {(s, _rect, layout): JSX.Element => (
         <LabWindow title="Settings">
           <div className="canopy-lab-body">
             <SettingsRowsGroup>
@@ -432,6 +432,9 @@ export function SegmentedControlStage(): JSX.Element {
                     <SegmentedControl
                       label="Appearance"
                       value={s.mode}
+                      // The phone window has no room for the row's label
+                      // beside a control-width picker of three.
+                      width={layout === 'compact' ? 'content' : 'control'}
                       onChange={noop}
                       options={[
                         { value: 'light', label: 'Light' },

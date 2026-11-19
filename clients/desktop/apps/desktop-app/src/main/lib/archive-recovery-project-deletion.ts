@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { ArchiveRecoveryRefusedError } from '@canopy/desktop-shared/node/archive-recovery-store';
-import type { ProjectDeletionPendingRecovery } from '@canopy/protocol/portal/project-deletion-discard';
+import type { ProjectDeletionPendingRecovery } from '@canopy/protocol/remote-control/shell/project-deletion-discard';
 import { archiveRecoveryStore } from './archive-recovery-refs';
 import { qualifyArchiveRecoveryRefDeletion } from './archived-container-git';
 

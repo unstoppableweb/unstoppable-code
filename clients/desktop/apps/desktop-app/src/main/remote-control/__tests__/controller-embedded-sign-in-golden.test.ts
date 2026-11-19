@@ -17,9 +17,9 @@ jest.mock('../../observability', () => ({
     recordAppDiagnostic: (): void => undefined,
   }),
 }));
-jest.mock('../../canopy-cloud/authenticated-portal', () => ({
-  mintAuthenticatedPortalUrl: jest.fn(),
-  openAuthenticatedPortalPage: jest.fn(),
+jest.mock('../../canopy-cloud/authenticated-cloud-page', () => ({
+  mintAuthenticatedCloudPageUrl: jest.fn(),
+  openAuthenticatedCloudPage: jest.fn(),
 }));
 jest.mock('../../mcp/oauth-client', () => ({ openExternalUrl: jest.fn() }));
 jest.mock('../../canopy-cloud/client', () => ({
@@ -29,9 +29,9 @@ jest.mock('../../canopy-cloud/client', () => ({
   resolveCanopyCloudCredentialContext: jest.fn(),
 }));
 import {
-  mintAuthenticatedPortalUrl,
-  openAuthenticatedPortalPage,
-} from '../../canopy-cloud/authenticated-portal';
+  mintAuthenticatedCloudPageUrl,
+  openAuthenticatedCloudPage,
+} from '../../canopy-cloud/authenticated-cloud-page';
 import {
   requestCanopyCloudJson,
   resolveCanopyCloudCredentialContext,
@@ -72,8 +72,8 @@ const CREDENTIALS = {
 };
 const KINDS: readonly DeviceKind[] = ['desktop', 'browser', 'hosted', 'mobile'];
 
-const mint = jest.mocked(mintAuthenticatedPortalUrl);
-const openPortal = jest.mocked(openAuthenticatedPortalPage);
+const mint = jest.mocked(mintAuthenticatedCloudPageUrl);
+const openCloudPageMock = jest.mocked(openAuthenticatedCloudPage);
 const cloudRequest = jest.mocked(requestCanopyCloudJson);
 
 /** The request the IPC handler would pass on, for the fixtures below. */
@@ -181,7 +181,7 @@ beforeEach(() => {
     signInPath: '/api/mcp-connections/authorize?state=abc',
   });
   mint.mockResolvedValue(MINTED_URL);
-  openPortal.mockResolvedValue(true);
+  openCloudPageMock.mockResolvedValue(true);
 });
 
 afterEach(() => {
@@ -248,7 +248,7 @@ describe('embedded account sign-in from a controller (CAN-7030)', () => {
     expect(current.bridgeCalls).toEqual([START]);
     expect(mint).not.toHaveBeenCalled();
     // The host opens the sign-in in its own browser.
-    expect(openPortal).toHaveBeenCalledTimes(1);
+    expect(openCloudPageMock).toHaveBeenCalledTimes(1);
   });
 
   it('still mints the embedded link for the local window', async () => {

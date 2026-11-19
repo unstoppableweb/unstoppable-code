@@ -27,7 +27,7 @@ const SRC = 'packages/ui-shared/src/components';
 export const GAP_ROOT_3A_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
   {
     id: 'marketplace-type-label',
-    name: 'MarketplaceTypeLabel',
+    name: 'Resource type label',
     group: 'Unified',
     note: 'A quiet icon-and-text label for a Customize resource kind, and the Curated source label with its attributed mark.',
     source: `${SRC}/MarketplaceTypeLabel.tsx`,
@@ -36,7 +36,7 @@ export const GAP_ROOT_3A_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
   },
   {
     id: 'mcp-connection-status-badge',
-    name: 'McpConnectionStatusBadge',
+    name: 'MCP connection status',
     group: 'Unified',
     note: 'Cached connection health for an MCP server: four statuses, with the Agent provider suffix when the provider manages it.',
     source: `${SRC}/McpConnectionStatusBadge.tsx`,
@@ -45,7 +45,7 @@ export const GAP_ROOT_3A_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
   },
   {
     id: 'mcp-server-card-row',
-    name: 'McpServerCardRow',
+    name: 'MCP server row',
     group: 'Unified',
     note: 'One MCP server row for the desktop and web panels: a text, button or link name, metadata, status, details and actions.',
     source: `${SRC}/McpServerCardRow.tsx`,
@@ -54,7 +54,7 @@ export const GAP_ROOT_3A_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
   },
   {
     id: 'code-block',
-    name: 'CodeBlock',
+    name: 'Code block',
     group: 'Unified',
     note: 'The one code block for Markdown, ANSI and plain output. Plain blocks pick a variant by role, ANSI keeps colors and follows the tail, and Markdown adds a copy button that reveals on hover or focus.',
     source: `${SRC}/CodeBlock.tsx`,
@@ -63,7 +63,7 @@ export const GAP_ROOT_3A_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
   },
   {
     id: 'model-unlock-pending-notice',
-    name: 'ModelUnlockPendingNotice',
+    name: 'Model unlock notice',
     group: 'Unified',
     note: 'The composer cue while an advanced-model purchase finishes in the browser: waiting, then timed out with a dismiss.',
     source: `${SRC}/ModelUnlockPendingNotice.tsx`,
@@ -72,7 +72,7 @@ export const GAP_ROOT_3A_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
   },
   {
     id: 'onboarding-tip',
-    name: 'OnboardingTip',
+    name: 'Onboarding tip',
     group: 'Unified',
     note: 'The one onboarding tip: a title, one sentence, a Got it capsule and an always-visible close; inline, in the composer drawer or as a composer notice.',
     source: `${SRC}/OnboardingTip.tsx`,
@@ -90,7 +90,7 @@ export const GAP_ROOT_3A_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
   },
   {
     id: 'opencode-account-card',
-    name: 'OpenCodeAccountCard',
+    name: 'OpenCode accounts',
     group: 'Unified',
     note: 'OpenCode provider accounts as a usage group: a row per account with its sign-in method, plus the empty and unavailable states.',
     source: `${SRC}/OpenCodeAccountCard.tsx`,
@@ -99,7 +99,7 @@ export const GAP_ROOT_3A_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
   },
   {
     id: 'page-column',
-    name: 'PageColumn',
+    name: 'Page column',
     group: 'Unified',
     note: 'The shared page column: centered, a content or wide maximum width, one gutter and the page gap between sections.',
     source: `${SRC}/PageColumn.tsx`,
@@ -108,7 +108,7 @@ export const GAP_ROOT_3A_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
   },
   {
     id: 'pick-list',
-    name: 'PickList',
+    name: 'Pick list with its own input',
     group: 'Unified',
     note: 'The one search-and-pick list: combobox semantics, arrow keys over picker rows, and the empty and loading states.',
     source: `${SRC}/PickList.tsx`,
@@ -117,7 +117,7 @@ export const GAP_ROOT_3A_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
   },
   {
     id: 'pick-list-results',
-    name: 'PickListResults',
+    name: 'Pick list results',
     group: 'Unified',
     note: 'The results of a PickList for a host that owns its input, a palette or a composer: usePickListKeys drives it, and it brings the sections, tabs, disabled rows and row-end controls.',
     source: `${SRC}/PickList.tsx`,
@@ -126,7 +126,7 @@ export const GAP_ROOT_3A_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
   },
   {
     id: 'composer-suggestion-menu',
-    name: 'ComposerSuggestionMenu',
+    name: 'Suggestion menu',
     group: 'Unified',
     note: 'A list that suggests as the user types: above the composer at its width, in the 20px corners, and it never takes focus.',
     source: `${SRC}/ComposerSuggestionMenu.tsx`,
@@ -135,7 +135,7 @@ export const GAP_ROOT_3A_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
   },
   {
     id: 'pipeline-dispatched-time',
-    name: 'PipelineDispatchedTime',
+    name: 'Dispatched time',
     group: 'Unified',
     note: 'Dispatched 2h ago, with the exact local time on hover; renders nothing until the run’s start is known.',
     source: `${SRC}/PipelineDispatchedTime.tsx`,

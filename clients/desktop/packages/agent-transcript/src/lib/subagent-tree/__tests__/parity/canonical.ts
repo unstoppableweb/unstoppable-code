@@ -19,11 +19,11 @@
  * compared as each host produced them.
  */
 import type { BackgroundTask } from '@canopy/protocol/background-tasks';
-import type { PortalChatPart } from '@canopy/protocol/portal';
+import type { RemoteControlChatPart } from '@canopy/protocol/remote-control/shell';
 import type { DisplayBlock } from '../../../../message-display';
 import { isClaudeAgentRunning } from '../../../agent-block-state';
 import type {
-  PortalSubagentChatTranscriptItem,
+  RemoteControlSubagentChatTranscriptItem,
   SubagentChatTranscriptItem,
 } from '../../../subagent-chat-transcript';
 import type { SubagentTree } from '../../index';
@@ -201,7 +201,7 @@ function stringField(data: Record<string, unknown>, key: string): string {
 }
 
 function partRows(
-  part: PortalChatPart,
+  part: RemoteControlChatPart,
   describeTool: DescribeTool,
 ): CanonicalRow[] {
   const data = isRecord(part.data) ? part.data : {};
@@ -237,7 +237,10 @@ function partRows(
         ? data['subBlocks'].flatMap((child: unknown) =>
             isRecord(child) && typeof child['kind'] === 'string'
               ? partRows(
-                  { kind: portalKind(child['kind']), data: child['data'] },
+                  {
+                    kind: remoteControlKind(child['kind']),
+                    data: child['data'],
+                  },
                   describeTool,
                 )
               : [],
@@ -281,7 +284,7 @@ function partRows(
   }
 }
 
-const PORTAL_PART_KINDS: readonly PortalChatPart['kind'][] = [
+const REMOTE_CONTROL_PART_KINDS: readonly RemoteControlChatPart['kind'][] = [
   'text',
   'tool_use',
   'tool_result',
@@ -296,8 +299,10 @@ const PORTAL_PART_KINDS: readonly PortalChatPart['kind'][] = [
   'account_switch',
 ];
 
-function portalKind(kind: string): PortalChatPart['kind'] {
-  return PORTAL_PART_KINDS.find((candidate) => candidate === kind) ?? 'text';
+function remoteControlKind(kind: string): RemoteControlChatPart['kind'] {
+  return (
+    REMOTE_CONTROL_PART_KINDS.find((candidate) => candidate === kind) ?? 'text'
+  );
 }
 
 /** A desktop subagent transcript (`buildSubagentChatTranscript`). */
@@ -330,9 +335,9 @@ export function canonicalDesktopTranscript(
   );
 }
 
-/** A Portal or cloud subagent transcript (`buildPortalSubagentChatTranscript`). */
-export function canonicalPortalTranscript(
-  items: readonly PortalSubagentChatTranscriptItem[],
+/** A Portal or cloud subagent transcript (`buildRemoteControlSubagentChatTranscript`). */
+export function canonicalRemoteControlTranscript(
+  items: readonly RemoteControlSubagentChatTranscriptItem[],
   describeTool: DescribeTool,
 ): Json {
   return toJson(

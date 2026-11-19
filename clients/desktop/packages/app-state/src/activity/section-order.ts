@@ -56,7 +56,7 @@ export function isActivitySectionId(value: string): value is ActivitySectionId {
 
 /**
  * Workspace classification, mirroring the portal protocol's
- * `PortalSessionShellState.workspaces[].type`. PURE CLASSIFICATION — what the
+ * `RemoteControlSessionShellState.workspaces[].type`. PURE CLASSIFICATION — what the
  * workspace IS, never how it lays out.
  */
 export type ActivityWorkspaceType = 'single-repo' | 'multi-repo' | 'cowork';

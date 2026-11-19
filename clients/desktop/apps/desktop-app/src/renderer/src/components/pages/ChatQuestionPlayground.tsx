@@ -105,7 +105,7 @@ export function ChatQuestionPlayground(): JSX.Element {
             Playground controls
           </Heading>
           <Button
-            variant="outline"
+            variant="secondary"
             aria-pressed={compact}
             onClick={() => setCompact(!compact)}
           >
@@ -113,7 +113,7 @@ export function ChatQuestionPlayground(): JSX.Element {
           </Button>
         </div>
         <Button
-          variant="outline"
+          variant="secondary"
           aria-pressed={turnRunning}
           data-testid="playground-turn-running"
           onClick={() => {
@@ -177,21 +177,21 @@ export function ChatQuestionPlayground(): JSX.Element {
               </div>
               <div className="flex flex-wrap gap-2">
                 <Button
-                  variant="outline"
+                  variant="secondary"
                   disabled={!inFlight}
                   onClick={() => dispatch({ type: 'resolve' })}
                 >
                   Resolve request
                 </Button>
                 <Button
-                  variant="outline"
+                  variant="secondary"
                   disabled={!inFlight}
                   onClick={() => dispatch({ type: 'fail' })}
                 >
                   Fail request
                 </Button>
                 <Button
-                  variant="outline"
+                  variant="secondary"
                   disabled={inFlight || terminal}
                   onClick={() =>
                     dispatch({
@@ -207,7 +207,7 @@ export function ChatQuestionPlayground(): JSX.Element {
                     : 'Disconnect'}
                 </Button>
                 <Button
-                  variant="outline"
+                  variant="secondary"
                   onClick={() => startConversation(preset.id)}
                 >
                   Start again

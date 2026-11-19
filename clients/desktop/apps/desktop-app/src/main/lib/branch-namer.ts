@@ -51,6 +51,7 @@ import {
   resolveHelperInvocation,
   resolveHelperWorkOwner,
 } from '../ollama/helper-invocation';
+import { isHelperNoBillingSourceError } from '../agents/helper-no-billing-source';
 import { markObservedHelperTaskAiCreditsRouted } from './helper-observed-task';
 import { withResolvedHelperPlugins } from './helper-plugin-resolution';
 import { recordWorktreeBranchChange } from './worktree-branch-watcher';
@@ -578,7 +579,12 @@ async function generateBranchName(
       });
     } catch (error) {
       throwIfBranchNamingAborted(abortController);
-      if (isTransientAgentRetryExhaustedError(error)) {
+      // A signed-out provider with no billing source never started, and a
+      // second attempt would be refused the same way (CAN-7062).
+      if (
+        isTransientAgentRetryExhaustedError(error) ||
+        isHelperNoBillingSourceError(error)
+      ) {
         throw error;
       }
       lastFailure = errorMessage(error);

@@ -166,7 +166,7 @@ export function BaseBranchDriftWarning({
       }
     >
       <Button
-        variant="warning"
+        variant="secondary"
         size="sm"
         iconOnly
         data-testid="pr-status-base-branch-drift-warning"

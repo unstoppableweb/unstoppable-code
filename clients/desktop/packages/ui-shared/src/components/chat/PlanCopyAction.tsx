@@ -14,7 +14,6 @@ import { Button } from '../Button';
 import { CLEAN_ICON_BUTTON_VARIANT } from '../chat-look';
 import { CopyStatusRegion, useAnnouncedCopy } from '../copy-feedback';
 import { Tooltip } from '../Tooltip';
-import { ComposerIconButton } from './ComposerIconButton';
 import type { PlanTurnResolution } from './exit-plan-mode-plan';
 
 /** The action's name on every surface (CAN-5354). */
@@ -209,8 +208,7 @@ function renderPlanCopyControl({
 }): JSX.Element {
   const visibleLabel = copied ? 'Copied' : COPY_PLAN_VISIBLE_LABEL;
   // An inert action keeps its geometry and stays reachable; it only reads
-  // as unavailable. `Button` and `ComposerIconButton` style `aria-disabled`
-  // themselves.
+  // as unavailable. `Button` styles `aria-disabled` itself.
   switch (appearance) {
     case 'footer':
       return (
@@ -225,10 +223,10 @@ function renderPlanCopyControl({
       );
     case 'composer':
       return (
-        <ComposerIconButton capsule autoWidth tone="strong" {...buttonProps}>
+        <Button size="compact" variant="ghost" {...buttonProps}>
           {planCopyGlyph(copied)}
           <span>{visibleLabel}</span>
-        </ComposerIconButton>
+        </Button>
       );
     case 'card':
       return (

@@ -24,9 +24,12 @@ import {
   clearWorktreeActivity,
 } from '../../renderer/src/stores/changedFilesRefreshRuntime';
 
-// Each test builds a git fixture before its 750ms readiness race; on a
-// loaded CI runner (a large shard of git-heavy goldens) the first one takes
-// over Jest's default 5s.
+// Real Git reads on a loaded CI runner (a large shard of git-heavy goldens)
+// can take over Jest's default 5s. The explicit-refresh tests also await their
+// read while an older sample is held, so a refresh that waited on that sample
+// would never settle and fail at this timeout. A timeout in those tests most
+// likely means the explicit path waits on the in-flight batch: check
+// requestChangedFilesRefreshInternal before raising this.
 jest.setTimeout(15_000);
 
 type Reader = (
@@ -163,22 +166,6 @@ async function installReader(read: Reader): Promise<ActivityStore> {
   return useActivityStore;
 }
 
-async function prompt<T>(
-  read: Promise<T>,
-): Promise<{ ready: true; value: T } | { ready: false }> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      read.then((value) => ({ ready: true as const, value })),
-      new Promise<{ ready: false }>((resolve) => {
-        timer = setTimeout(() => resolve({ ready: false }), 750);
-      }),
-    ]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 function drainPublication(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
@@ -198,18 +185,23 @@ it('explicit refresh publishes a real edit before an older sample can finish', a
     const explicit = requestChangedFilesRefresh(SINGLE_WS, WORKTREE, {
       kind: 'explicit',
     });
-    const immediate = await prompt(explicit);
+    // The older sample stays held until the explicit read settles. Ordering,
+    // not a wall-clock window, proves the explicit refresh does not wait on it.
+    const files = await explicit;
+    const hasFresh = (
+      list: ActivityChangedFilesResponse | undefined,
+    ): boolean =>
+      list?.uncommitted.some(
+        (file) => file.path === 'fresh-after-sample.txt',
+      ) ?? false;
+    expect(hasFresh(files)).toBe(true);
+    // Published before the older sample is released...
+    expect(hasFresh(store.getState().changedFiles[key])).toBe(true);
     held.release();
-    await Promise.all([old, explicit]);
+    await old;
     await drainPublication();
-    expect(immediate.ready).toBe(true);
-    expect(
-      store
-        .getState()
-        .changedFiles[
-          key
-        ]?.uncommitted.some((file) => file.path === 'fresh-after-sample.txt'),
-    ).toBe(true);
+    // ...and the released older sample does not overwrite it.
+    expect(hasFresh(store.getState().changedFiles[key])).toBe(true);
   } finally {
     held.release();
     await old;
@@ -278,19 +270,17 @@ it('an explicit failure refuses the older response and permits a fresh retry', a
     const explicit = requestChangedFilesRefresh(SINGLE_WS, WORKTREE, {
       kind: 'explicit',
     });
-    const outcome = await prompt(
-      explicit.then(
-        () => null,
-        (error: unknown) => error,
-      ),
+    // Settles while the older sample is still held, as in the first test.
+    const outcome = await explicit.then(
+      () => null,
+      (error: unknown) => error,
     );
     held.release();
     await old;
     await drainPublication();
-    expect(outcome).toEqual({
-      ready: true,
-      value: new Error('Checkout unavailable during explicit refresh'),
-    });
+    expect(outcome).toEqual(
+      new Error('Checkout unavailable during explicit refresh'),
+    );
     expect(store.getState().changedFiles[key]).toEqual({
       uncommitted: [],
       committed: [],

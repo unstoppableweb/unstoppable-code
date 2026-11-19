@@ -102,7 +102,7 @@ import {
   type WorktreeGitFailedEvent,
 } from '@canopy/desktop-shared/types';
 import type { PipelineShareInstallPin } from '@canopy/protocol/pipelines';
-import type { PortalChatScheduledMessages } from '@canopy/protocol/portal';
+import type { RemoteControlChatScheduledMessages } from '@canopy/protocol/remote-control/shell';
 import { CLOUD_MODEL_UNCONFIRMED_CODE } from '@canopy/protocol/canopy-core';
 import type {
   CloudModelPreflightResult,
@@ -2074,7 +2074,9 @@ export class AutomationsService {
   /** Undefined when the automations file cannot be read: the count is unknown. */
   async getScheduledMessagesIndex(
     now?: Date,
-  ): Promise<ReadonlyMap<string, PortalChatScheduledMessages> | undefined> {
+  ): Promise<
+    ReadonlyMap<string, RemoteControlChatScheduledMessages> | undefined
+  > {
     let file: AutomationsFile;
     try {
       file = await this.ensureFile();
@@ -2082,7 +2084,7 @@ export class AutomationsService {
       return undefined;
     }
     const after = now ?? new Date();
-    const index = new Map<string, PortalChatScheduledMessages>();
+    const index = new Map<string, RemoteControlChatScheduledMessages>();
     for (const activity of file.activities) {
       if (
         !activity.enabled ||

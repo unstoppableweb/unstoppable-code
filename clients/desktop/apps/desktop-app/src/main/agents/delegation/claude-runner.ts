@@ -37,7 +37,7 @@ import {
 } from '@anthropic-ai/claude-agent-sdk';
 import { redactSecrets } from '@canopy/execution-engine/lib/redaction';
 import { ClaudeInputDelivery } from '../claude-input-delivery';
-import { chatInputRefusal } from '@canopy/protocol/portal/input-delivery';
+import { chatInputRefusal } from '@canopy/protocol/remote-control/shell/input-delivery';
 import type { AgentDelegationUsage } from '@canopy/protocol/delegation';
 import { buildClaudeThinkingOptions } from '@canopy/desktop-shared/types';
 import {

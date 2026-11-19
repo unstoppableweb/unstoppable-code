@@ -1,4 +1,4 @@
-import type { AutoDeleteAttention } from '../portal/auto-delete-attention';
+import type { AutoDeleteAttention } from '../remote-control/shell/auto-delete-attention';
 
 /**
  * Portable contract for agent-armed work entry auto-delete: an agent arms its

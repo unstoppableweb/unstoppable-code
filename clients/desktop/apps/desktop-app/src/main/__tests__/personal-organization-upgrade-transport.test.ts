@@ -185,7 +185,6 @@ it('preflights the whole batch and retains a terminal failure through restart un
         return items;
       },
       previewProjects: () => Promise.resolve(projects),
-      sessionCurrent: () => true,
       destination: () => Promise.resolve(true),
       promote: unused,
       suppress: unused,
@@ -366,7 +365,6 @@ it('returns lightweight rows before repository eligibility is checked', async ()
       identity,
       workspaces,
       previewProjects,
-      sessionCurrent: () => true,
       destination: unused,
       promote: unused,
       suppress: unused,

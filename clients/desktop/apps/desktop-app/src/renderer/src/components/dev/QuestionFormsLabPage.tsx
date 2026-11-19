@@ -18,7 +18,7 @@ import {
   answersToDisplay,
   type AskUserQuestionCardProps,
 } from '@canopy/ui-shared/components';
-import type { PortalAskUserQuestionState } from '@canopy/protocol/portal';
+import type { RemoteControlAskUserQuestionState } from '@canopy/protocol/remote-control/shell';
 import {
   QUESTION_PRESETS,
   initialPlaygroundMachine,
@@ -166,7 +166,7 @@ export function QuestionFormsLabPage(): JSX.Element {
   );
   const onDismiss = useCallback((): void => dispatch({ type: 'dismiss' }), []);
 
-  const state: PortalAskUserQuestionState = {
+  const state: RemoteControlAskUserQuestionState = {
     requestId: `lab-${machine.generation}`,
     questions: preset.questions,
     answered: false,

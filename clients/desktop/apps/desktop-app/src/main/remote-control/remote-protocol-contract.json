@@ -1,5 +1,5 @@
 {
-  "protocolVersion": 24,
+  "protocolVersion": 25,
   "tunneledChannels": [
     "account-proxy:changed",
     "account-proxy:connect",
@@ -47,6 +47,7 @@
     "agents:shared:update",
     "agents:uninstall-public",
     "ai-gateway-model-catalog:retry",
+    "antigravity-runtime:status",
     "app-advisor:get-state",
     "app-advisor:load-claude-md",
     "app-advisor:open-agent-artifact",
@@ -762,7 +763,6 @@
     "settings:load-canopy-cloud-entitlements",
     "settings:load-cloud-digest-preferences",
     "settings:load-cloud-release-notes",
-    "settings:load-daily-credit-drip",
     "settings:load-install-update-email-preference",
     "settings:load-native-ai-credits-availability",
     "settings:provider-carryover",
@@ -770,7 +770,6 @@
     "settings:refresh-github-credentials",
     "settings:save-canopy-cloud-api-key",
     "settings:save-cloud-digest-preferences",
-    "settings:save-daily-credit-drip",
     "settings:save-github-pat",
     "settings:save-install-update-email-preference",
     "settings:save-linear-token",

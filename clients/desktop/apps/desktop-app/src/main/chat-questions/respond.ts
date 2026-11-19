@@ -15,7 +15,7 @@ import type {
 import {
   validateQuestionControlAnswers,
   type ExternalAgentSender,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import { getDesktopChatWaits } from '../chat-waits/desktop-chat-waits';
 import { getChatStateCommandPort } from '../ipc/chat-state';
 

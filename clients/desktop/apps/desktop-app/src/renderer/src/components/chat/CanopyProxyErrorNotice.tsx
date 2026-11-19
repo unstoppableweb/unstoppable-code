@@ -151,8 +151,8 @@ function noticeCopy(code: CanopyProxyErrorCode): NoticeCopy {
       };
     case 'model_locked':
       // CAN-4028: the fourth documented exception. The account is signed in
-      // and may well hold spendable credits — the daily free credits do not
-      // unlock advanced models — so this is NOT the `billing` action. That
+      // and may well hold spendable credits that do not unlock advanced
+      // models, so this is NOT the `billing` action. That
       // action's coverage read treats the problem as solved whenever any
       // credit is spendable, which here would tell a non-payer the same and
       // send them into the same refusal.

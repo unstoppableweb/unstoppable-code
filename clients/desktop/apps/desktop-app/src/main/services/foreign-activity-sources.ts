@@ -7,7 +7,7 @@ import type {
   PersistedChatTab,
   UsageLimitedChatTarget,
 } from '@canopy/desktop-shared/types';
-import type { PortalScriptRun } from '@canopy/protocol/portal';
+import type { RemoteControlScriptRun } from '@canopy/protocol/remote-control/shell';
 import type { ExecutionEvent } from '@canopy/execution-engine/types/pipeline';
 import type { ForeignActivityOperation } from './foreign-activity-ledger';
 
@@ -363,7 +363,9 @@ export function publishForeignPipelineActivity(event: ExecutionEvent): void {
         : resultToken,
   });
 }
-export function publishForeignScriptActivity(run: PortalScriptRun): void {
+export function publishForeignScriptActivity(
+  run: RemoteControlScriptRun,
+): void {
   const active = run.status === 'running';
   const resultToken = active
     ? null

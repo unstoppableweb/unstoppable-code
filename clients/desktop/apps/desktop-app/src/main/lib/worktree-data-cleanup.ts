@@ -16,7 +16,7 @@ import {
 import { cancelCodeGraphFingerprint } from '../code-graph/fingerprint-runner';
 import { cancelCodeGraphBuilds } from './code-graph-scheduler';
 import { purgePersistedWorktreeObservabilityData } from '../observability/worktree-cleanup';
-import { clearPortalPrTracking } from '../services/pr-creation-progress';
+import { clearRemoteControlPrTracking } from '../services/pr-creation-progress';
 import { clearPrMergeTracking } from '../services/pr-merge-progress';
 import { cleanupWorktreeChatPluginDirs } from '../plugins/plugin-cleanup';
 import { getBrowserService } from '../browser/browser-service-registry';
@@ -459,7 +459,7 @@ async function cleanupPersistedWorktreeDataAsHolder(
         // Synchronous map cleanup: drop the worktree's main-side portal PR
         // tracking (creation feed + last projected payload) so deleted worktrees
         // do not pin entries for the process lifetime (CAN-1528 L2).
-        clearPortalPrTracking(projectId, worktreeId);
+        clearRemoteControlPrTracking(projectId, worktreeId);
         clearPrMergeTracking(projectId, worktreeId);
         const normalizedOptions: NormalizedCleanupPersistedWorktreeDataOptions =
           {

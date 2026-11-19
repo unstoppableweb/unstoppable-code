@@ -57,7 +57,7 @@ export const PENDING_UNIFICATIONS: readonly PendingUnification[] = [
       'Popover (7 files)',
     ],
     copies: [
-      `${UI_APP}/code/composer/PortalDirectoryPicker.tsx`,
+      `${UI_APP}/code/composer/RemoteControlDirectoryPicker.tsx`,
       `${UI_APP}/sharing/InviteTeammateDialog.tsx`,
       `${DESKTOP}/shared/invite-teammate/LinkSharingSection.tsx`,
     ],

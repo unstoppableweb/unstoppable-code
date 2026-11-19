@@ -7,14 +7,14 @@ export { isUsageInitiationSource } from '@canopy/protocol/observability';
 export type { TurnSummaryCounts } from '@canopy/agent-transcript/transcript-storage';
 import type { PersistedUserMessageSource } from '@canopy/agent-transcript/types';
 import { isUserTurnBoundary } from '@canopy/agent-transcript/lib/turn-boundary';
-import type { AgentSentInfo } from '@canopy/protocol/portal/external-agent-sender';
+import type { AgentSentInfo } from '@canopy/protocol/remote-control/shell/external-agent-sender';
 import type {
   TurnOutcomeCounts,
   TurnOutcomeStepDetail,
   TurnOutcomeEvidence,
   ToolInterruption,
-} from '@canopy/protocol/portal';
-import { classifyTurnStepOutcome } from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
+import { classifyTurnStepOutcome } from '@canopy/protocol/remote-control/shell';
 import type {
   AgentUsage,
   ChatWatcherFiredInfo,

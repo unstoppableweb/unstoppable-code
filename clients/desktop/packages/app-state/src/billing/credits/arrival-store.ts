@@ -75,14 +75,10 @@ export const CREDITS_ARRIVAL_READ_TIMEOUT_MS = 4_000;
 /**
  * One classified balance read. `definitive` is organization funding;
  * `reading` is the buyer's comparable personal reading, when there is one.
- * A grant of the daily drip during the read is reported with its amount, or
- * `null` for a grant reported without one; `0` when none was granted.
  */
 export interface CreditsArrivalBalanceRead {
   readonly outcome: 'usable' | 'definitive' | 'retry';
   readonly reading: CreditsBalanceReading | null;
-  readonly dripReported: boolean;
-  readonly dripGrantedCredits: number | null;
 }
 
 /** Reads and classifies once; never rejects. */
@@ -362,12 +358,6 @@ export function createCreditsArrivalStore<TOrigin extends string = string>(
 
     let attempts = 0;
     let firstStartedAt: number | null = null;
-    // The contract identifies a grant minted during a read, but has no grant
-    // id. Retain one adjustment; repeated grant reports are ambiguous rather
-    // than evidence of multiple grants to accumulate.
-    let grantedSinceBaseline = 0;
-    let grantReported = baseline?.reportedGrant ?? false;
-    let grantAmbiguous = false;
     let bestBalance: number | null = null;
 
     const finish = (
@@ -415,13 +405,6 @@ export function createCreditsArrivalStore<TOrigin extends string = string>(
       }
       const reading = answer.reading;
       if (reading !== null) {
-        const granted = answer.dripGrantedCredits;
-        if (granted === null) grantAmbiguous = true;
-        else if (answer.dripReported) {
-          if (grantReported) grantAmbiguous = true;
-          else grantedSinceBaseline = granted;
-          grantReported = true;
-        }
         if (reading.credits > 0) bestBalance = reading.credits;
         if (baseline === null) {
           if (reading.credits > 0) {
@@ -429,14 +412,11 @@ export function createCreditsArrivalStore<TOrigin extends string = string>(
             return;
           }
         } else if (
-          !grantAmbiguous &&
           reading.source === baseline.source &&
           reading.email === baseline.email
         ) {
           const added =
-            Math.round(
-              (reading.credits - baseline.credits - grantedSinceBaseline) * 100,
-            ) / 100;
+            Math.round((reading.credits - baseline.credits) * 100) / 100;
           if (added > 0 && reading.credits > 0) {
             finish(added, reading.credits);
             return;

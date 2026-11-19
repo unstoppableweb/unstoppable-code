@@ -504,6 +504,9 @@ try {
       __CANOPY_OPENCODE_CLI__: JSON.stringify(
         rootPackage['opencode-cli'] ?? { version: 'unknown', artifacts: {} },
       ),
+      __CANOPY_ANTIGRAVITY_CLI__: JSON.stringify(
+        rootPackage['antigravity-cli'] ?? { version: 'unknown', artifacts: {} },
+      ),
     };
   }
 

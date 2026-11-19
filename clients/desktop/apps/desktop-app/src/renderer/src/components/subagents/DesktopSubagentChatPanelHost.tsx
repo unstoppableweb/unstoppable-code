@@ -388,9 +388,18 @@ function DesktopSubagentChatContent({
   const stopControls = useMemo(
     () =>
       capabilities.stop
-        ? { target: stopTarget, withLiveDescendants: liveDescendantIds }
+        ? {
+            target: stopTarget,
+            withLiveDescendants: liveDescendantIds,
+            worktreeDetails: baseCapabilities.worktreeDetails,
+          }
         : null,
-    [capabilities.stop, liveDescendantIds, stopTarget],
+    [
+      baseCapabilities.worktreeDetails,
+      capabilities.stop,
+      liveDescendantIds,
+      stopTarget,
+    ],
   );
 
   const onDetailsExpandedChange = useCallback((expanded: boolean): void => {

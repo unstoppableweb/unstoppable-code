@@ -1,6 +1,6 @@
 import type {
   ChatTabsFile,
-  PortalTarget,
+  RemoteControlTarget,
   WorktreeData,
 } from '@canopy/desktop-shared/types';
 import {
@@ -268,7 +268,7 @@ export function stopWorktreeRuntimeStatusService(): void {
 
 export function getWorktreeRuntimeStatuses(
   inputs: WorktreeRuntimeStatusInput[],
-  target?: PortalTarget,
+  target?: RemoteControlTarget,
 ): Promise<Map<string, WorktreeRuntimeStatus>> {
   // A read answers its caller alone: the Portal snapshot, the desktop session
   // snapshot or auto-archive.

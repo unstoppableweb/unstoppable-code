@@ -34,7 +34,7 @@ import {
   emptyCatalogSelectionRefs,
   type CanopyCallerDescriptor,
 } from '@canopy/protocol/canopy-core';
-import type { PortalPluginMutationResult } from '@canopy/protocol/portal';
+import type { RemoteControlPluginMutationResult } from '@canopy/protocol/remote-control/shell';
 import type {
   MarketplaceInfo,
   MarketplaceProviderStatus,
@@ -51,9 +51,9 @@ import { installBuiltInPlugin } from '../../plugins/plugin-service';
 import type * as PluginService from '../../plugins/plugin-service';
 import { publishPluginPackageToCloud } from '../../plugins/publish-plugin-to-cloud';
 import {
-  addPortalMarketplace,
-  installPortalBuiltInPluginWithOutcomes,
-  installPortalExternalPlugin,
+  addRemoteControlMarketplace,
+  installRemoteControlBuiltInPluginWithOutcomes,
+  installRemoteControlExternalPlugin,
 } from '../../services/plugin-catalog-service';
 import {
   createDesktopCatalogMutationHost,
@@ -186,7 +186,7 @@ function deferred(): { promise: Promise<void>; resolve(): void } {
   return { promise, resolve: () => done() };
 }
 
-const row: PortalPluginMutationResult = {
+const row: RemoteControlPluginMutationResult = {
   plugin: {
     name: 'p',
     marketplaceId: 'builtin-id',
@@ -265,8 +265,8 @@ function fakeDeps(): DesktopCatalogMutationDeps & {
       ),
     },
     portal: {
-      addPortalMarketplace: jest.fn(),
-      installPortalBuiltInPluginWithOutcomes: jest.fn(
+      addRemoteControlMarketplace: jest.fn(),
+      installRemoteControlBuiltInPluginWithOutcomes: jest.fn(
         (_marketplaceId: string, _pluginName: string, providers: string[]) =>
           runSerializedPluginMutation(async () => {
             await state.installGate.promise;
@@ -277,7 +277,7 @@ function fakeDeps(): DesktopCatalogMutationDeps & {
             };
           }),
       ),
-      installPortalExternalPlugin: jest.fn(),
+      installRemoteControlExternalPlugin: jest.fn(),
     },
     cloud: {
       addCloudPluginMarketplace: jest.fn(() =>
@@ -391,9 +391,12 @@ describe('desktop catalog mutations (CAN-4123)', () => {
     const host = createDesktopCatalogMutationHost(baseHost(), {
       runSerialized: runSerializedPluginMutation,
       portal: {
-        addPortalMarketplace,
-        installPortalBuiltInPluginWithOutcomes,
-        installPortalExternalPlugin: async (marketplaceId, pluginName) => {
+        addRemoteControlMarketplace,
+        installRemoteControlBuiltInPluginWithOutcomes,
+        installRemoteControlExternalPlugin: async (
+          marketplaceId,
+          pluginName,
+        ) => {
           const result = await service.installPlugin(
             marketplaceId,
             pluginName,
@@ -650,11 +653,11 @@ describe('desktop catalog mutations (CAN-4123)', () => {
 
     await Promise.all([install(), install()]);
     expect(
-      deps.portal.installPortalBuiltInPluginWithOutcomes,
+      deps.portal.installRemoteControlBuiltInPluginWithOutcomes,
     ).toHaveBeenCalledTimes(1);
     await install();
     expect(
-      deps.portal.installPortalBuiltInPluginWithOutcomes,
+      deps.portal.installRemoteControlBuiltInPluginWithOutcomes,
     ).toHaveBeenCalledTimes(1);
   });
 
@@ -670,8 +673,8 @@ describe('desktop catalog mutations (CAN-4123)', () => {
       },
     });
     const deps = fakeDeps();
-    deps.portal.installPortalBuiltInPluginWithOutcomes =
-      installPortalBuiltInPluginWithOutcomes;
+    deps.portal.installRemoteControlBuiltInPluginWithOutcomes =
+      installRemoteControlBuiltInPluginWithOutcomes;
     const dispatcher = compose(deps);
 
     await expect(
@@ -699,7 +702,8 @@ describe('desktop catalog mutations (CAN-4123)', () => {
 
   it('refuses an external plugin whose source is not a public https URL before cloning', async () => {
     const deps = fakeDeps();
-    deps.portal.installPortalExternalPlugin = installPortalExternalPlugin;
+    deps.portal.installRemoteControlExternalPlugin =
+      installRemoteControlExternalPlugin;
     const dispatcher = compose(deps);
 
     await expect(
@@ -788,9 +792,9 @@ describe('desktop catalog mutations (CAN-4123)', () => {
 
   it('adds a GitHub source through core.catalog.source.upsert and refuses a pinned ref', async () => {
     const deps = fakeDeps();
-    deps.portal.addPortalMarketplace = jest.fn(() =>
+    deps.portal.addRemoteControlMarketplace = jest.fn(() =>
       Promise.resolve({ marketplace: { id: 'gh' } }),
-    ) as unknown as DesktopCatalogMutationDeps['portal']['addPortalMarketplace'];
+    ) as unknown as DesktopCatalogMutationDeps['portal']['addRemoteControlMarketplace'];
     const dispatcher = compose(deps);
     const params = {
       sourceId: null,
@@ -808,7 +812,9 @@ describe('desktop catalog mutations (CAN-4123)', () => {
         { caller, metadata: keyed('k1') },
       ),
     ).resolves.toEqual(gitSource);
-    expect(deps.portal.addPortalMarketplace).toHaveBeenCalledWith('owner/gh');
+    expect(deps.portal.addRemoteControlMarketplace).toHaveBeenCalledWith(
+      'owner/gh',
+    );
     await expect(
       dispatcher.instruction(
         'core.catalog.source.upsert',
@@ -965,7 +971,7 @@ describe('desktop catalog mutations (CAN-4123)', () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
 
     expect(
-      deps.portal.installPortalBuiltInPluginWithOutcomes,
+      deps.portal.installRemoteControlBuiltInPluginWithOutcomes,
     ).toHaveBeenCalledTimes(2);
     deps.installGate.resolve();
     await Promise.all([first, second]);
@@ -992,7 +998,7 @@ describe('desktop catalog mutations (CAN-4123)', () => {
       failedProviders: [],
     });
     expect(
-      deps.portal.installPortalBuiltInPluginWithOutcomes,
+      deps.portal.installRemoteControlBuiltInPluginWithOutcomes,
     ).toHaveBeenCalledWith('builtin-id', 'p', ['claude']);
   });
 });

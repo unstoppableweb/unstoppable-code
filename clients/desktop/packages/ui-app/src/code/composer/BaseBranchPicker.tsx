@@ -1,7 +1,7 @@
 import {
   encodeWorktreeBaseBranch,
   type WorktreeBaseBranchTarget,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import {
   BranchPickerOptionContent,
   DelayedLoadingPlaceholder,
@@ -426,7 +426,7 @@ function BaseBranchPickerTabState({
         {onRetryBranches ? (
           <Button
             type="button"
-            variant="ghost-accent"
+            variant="ghost"
             size="compact"
             ref={retryRef}
             onKeyDown={onRetryKeyDown}

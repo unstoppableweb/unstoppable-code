@@ -68,7 +68,10 @@ function Consumer(): JSX.Element {
 /** PrHoverCardsProvider and usePrHoverCards: unset, on, off and nested. */
 export function PrHoverCardsSpecimen(): JSX.Element {
   return (
-    <SpecimenPanel title="Pull request cards presentation (a provider and a hook, shown through the hover card that reads it)">
+    <SpecimenPanel
+      title="Pull request cards presentation"
+      hint="A provider and a hook, shown through the hover card that reads it"
+    >
       <SpecimenGrid min={320}>
         <SpecimenCell label="No provider: the classic card">
           <Consumer />

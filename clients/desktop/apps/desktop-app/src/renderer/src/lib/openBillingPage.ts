@@ -769,9 +769,9 @@ async function openUnlockCheckout(
  *
  * That action's coverage check answers "can this account pay for a turn?",
  * and reports success whenever any spendable credit exists. Library access is
- * a different fact: the daily free credits are spendable and do not unlock
- * anything, so routing a locked model through the credits flow would tell a
- * non-payer their problem was solved.
+ * a different fact: spendable credits do not by themselves unlock anything,
+ * so routing a locked model through the credits flow would tell a non-payer
+ * their problem was solved.
  *
  * Opens the owner's billing page in the browser with the top-up already
  * open, and remembers the attempt so the desktop can confirm it. A guest goes

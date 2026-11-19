@@ -59,7 +59,7 @@ function StepButton({
     <ListRow
       selected={active}
       aria-pressed={active}
-      data-testid={`portal-pipeline-step-${entry.job_id}-${entry.step.step_id}`}
+      data-testid={`remote-control-pipeline-step-${entry.job_id}-${entry.step.step_id}`}
       onClick={(): void =>
         onSelect({ job_id: entry.job_id, step_id: entry.step.step_id })
       }

@@ -22,7 +22,7 @@ import { usePlanModeSuggestion } from './composer/usePlanModeSuggestion';
 import { usePlanModeHintStore } from './composer/PlanModeHintContext';
 import { PlanModeHint } from './composer/PlanModeHint';
 import { useComposerHintActivity } from './composer/useComposerHintActivity';
-import type { PortalChatThinkingLevel } from '@canopy/protocol/portal';
+import type { RemoteControlChatThinkingLevel } from '@canopy/protocol/remote-control/shell';
 import {
   normalizeThinkingForUi,
   THINKING_LEVEL_LABELS,
@@ -78,7 +78,7 @@ export interface ChatComposerProps {
   readonly onEnablePlanMode?: () => boolean | Promise<boolean>;
   readonly draftKey?: string;
   readonly planAvailable?: boolean;
-  readonly thinkingLevel?: PortalChatThinkingLevel;
+  readonly thinkingLevel?: RemoteControlChatThinkingLevel;
   readonly onCycleThinking?: () => void;
   /**
    * Provider type for the thinking-level display clamp: Codex has no `max`

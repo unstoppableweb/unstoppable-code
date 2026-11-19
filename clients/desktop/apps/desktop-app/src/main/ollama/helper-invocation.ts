@@ -99,6 +99,16 @@ export interface ResolveHelperInvocationOptions {
    */
   allowNoNativeAuthFallback?: boolean;
   /**
+   * Throw `HelperNoBillingSourceError` before any spawn when the provider is
+   * confirmed signed out, AI Credits routing is `off`, and nothing chose
+   * credits for this helper (CAN-7062). Forwarded to
+   * `resolveAiCreditsRoutingOverride`; see that option's docs.
+   *
+   * Defaults to `true`: such a spawn can only fail on sign-in. Delegation
+   * passes `false` because its launch path has its own refusal.
+   */
+  refuseNoBillingSource?: boolean;
+  /**
    * Workspace this helper will spawn for, forwarded to the user-supplied-
    * credential guard.
    *
@@ -186,6 +196,7 @@ export async function resolveHelperInvocation(
         ...(options.allowNoNativeAuthFallback !== undefined
           ? { allowNoNativeAuthFallback: options.allowNoNativeAuthFallback }
           : {}),
+        refuseNoBillingSource: options.refuseNoBillingSource ?? true,
         ...(options.workspaceId !== undefined
           ? { workspaceId: options.workspaceId }
           : {}),

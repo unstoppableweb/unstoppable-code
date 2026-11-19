@@ -15,7 +15,7 @@ import type {
 } from '@canopy/desktop-shared/types';
 import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
 import { preserveRuntimeCauseError } from '../canopy-runtime/runtime-cause-error';
-import { PortalServiceError } from '../services/portal-service-error';
+import { RemoteControlServiceError } from '../services/remote-control-service-error';
 import { toScriptSourceLayer } from './script-resolver';
 import { validateId } from './validation';
 import { ScriptHookSettingsRefusedError } from '@canopy/core-runtime/node/w5/workspace-metadata/settings';
@@ -42,7 +42,10 @@ export function scriptSourceInfoTarget(request: ScriptSourceInfoRequest): {
 } {
   const name = normalizeScriptName(request.scriptName);
   if (!name) {
-    throw new PortalServiceError('invalid_payload', 'scriptName is required.');
+    throw new RemoteControlServiceError(
+      'invalid_payload',
+      'scriptName is required.',
+    );
   }
   const worktree = request.worktreeId ? { worktreeId: request.worktreeId } : {};
   if (request.target === 'project') {

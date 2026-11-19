@@ -506,9 +506,7 @@ export function SettingsOptionCard({
  * below them.
  */
 export function SettingsSegmentedControl<T extends string>(
-  props: Omit<SegmentedControlProps<T>, 'width' | 'shape'>,
+  props: Omit<SegmentedControlProps<T>, 'width'>,
 ): JSX.Element {
-  // Early access: the capsule of the compact Settings buttons.
-  const shape = 'capsule';
-  return <SegmentedControl {...props} width="control" shape={shape} />;
+  return <SegmentedControl {...props} width="control" />;
 }

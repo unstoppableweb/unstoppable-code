@@ -109,9 +109,9 @@ import {
 } from '../canopy-cloud/session-status';
 import { parseAuthoritativeOrganizationSnapshot } from '../canopy-cloud/organization-snapshot';
 import { normalizeCanopyOrganizationSummaries } from '../canopy-cloud/organization-summary';
-import { openAuthenticatedPortalPage } from '../canopy-cloud/authenticated-portal';
-import { openAuthenticatedPortalRequest } from '../services/authenticated-portal-open';
-import type { AuthenticatedPortalResult } from '@canopy/desktop-shared/lib/authenticated-portal-request';
+import { openAuthenticatedCloudPage } from '../canopy-cloud/authenticated-cloud-page';
+import { openAuthenticatedCloudPageRequest } from '../services/authenticated-cloud-page-open';
+import type { AuthenticatedCloudPageResult } from '@canopy/desktop-shared/lib/authenticated-cloud-page-request';
 import {
   getUnstoppableDomainsAiCreditsManageUrl,
   getUnstoppableDomainsAiCreditsPurchaseUrl,
@@ -126,11 +126,6 @@ import {
   subscribeModelLibraryAccess,
 } from '../canopy-cloud/model-library-access';
 import { sendToWebContents } from '../lib/web-contents-send';
-import {
-  captureDailyCreditGrantAccount,
-  clearDailyCreditGrantStatus,
-  recordDailyCreditGrantFromBalance,
-} from '../lib/daily-credit-grant-telemetry';
 import {
   loadCloudDigestPreferences,
   saveCloudDigestPreferences,
@@ -1019,7 +1014,6 @@ export async function loadCanopyCloudAiCredits(
     await loadCanopyCloudAccount(),
   );
   if (!account.hasApiKey) {
-    clearDailyCreditGrantStatus();
     return disconnectedAiCreditsState();
   }
 
@@ -1027,7 +1021,6 @@ export async function loadCanopyCloudAiCredits(
   const purchaseUrl = getUnstoppableDomainsAiCreditsPurchaseUrl();
   const manageUrl = getUnstoppableDomainsAiCreditsManageUrl();
 
-  const grantAccount = captureDailyCreditGrantAccount();
   const [subscriptionResult, balanceResult] = await Promise.allSettled([
     requestCanopyCloudJson<AiCreditsSubscription>(
       '/api/v1/ai-credits/subscription',
@@ -1042,14 +1035,6 @@ export async function loadCanopyCloudAiCredits(
         : {}),
     }),
   ] as const);
-  // The balance can mint a grant even if subscription loading fails.
-  if (balanceResult.status === 'fulfilled') {
-    recordDailyCreditGrantFromBalance(
-      balanceResult.value,
-      undefined,
-      grantAccount,
-    );
-  }
   if (
     subscriptionResult.status === 'rejected' ||
     balanceResult.status === 'rejected'
@@ -2770,15 +2755,15 @@ export function registerSettingsHandlers(runtime: {
   );
 
   registerIpcHandler(
-    IPC_CHANNELS.settingsOpenAuthenticatedPortalPage,
+    IPC_CHANNELS.settingsOpenAuthenticatedCloudPage,
     // Preserve legacy strings. Every other payload must pass strict validation.
     async (
       _event,
       value: unknown,
-    ): Promise<boolean | AuthenticatedPortalResult> =>
+    ): Promise<boolean | AuthenticatedCloudPageResult> =>
       typeof value === 'string'
-        ? openAuthenticatedPortalPage(value)
-        : openAuthenticatedPortalRequest(value),
+        ? openAuthenticatedCloudPage(value)
+        : openAuthenticatedCloudPageRequest(value),
   );
 
   registerIpcHandler(

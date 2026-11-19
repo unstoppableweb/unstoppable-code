@@ -301,7 +301,6 @@ export function AddRepositoryDialog<TOption extends WorkspacePickerOption>({
                 label="Worktrees to add"
                 value={pickerMode}
                 width="content"
-                shape="capsule"
                 options={PICKER_MODE_OPTIONS}
                 onChange={onPickerModeChange}
               />

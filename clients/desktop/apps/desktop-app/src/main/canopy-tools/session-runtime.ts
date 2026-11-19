@@ -11,7 +11,6 @@ import {
   PIPELINE_EDITOR_WORKTREE_ID,
   type AgentProviderType,
   type ChatModel,
-  type CodeReviewUpdatedEvent,
   type McpAskUserEvent,
   type McpQuestion,
   type McpQuestionAnswer,
@@ -20,7 +19,6 @@ import {
 } from '@canopy/desktop-shared/types';
 import { isBotProjectId } from '@canopy/protocol/chat-targets';
 import {
-  sendToAllWindows,
   sendToWindow,
   sendToWindowDetailed,
   type SendableBrowserWindow,
@@ -55,18 +53,13 @@ import {
 } from './plan-comment-threads';
 import { getCodeReviewTarget } from '../lib/code-review-registry';
 import {
-  appendReviewCommentReply,
   readReviewCommentThread,
-  skippedCommentThreadsField,
-} from '../lib/code-review-persistence';
+  replyToReviewCommentThread,
+} from './review-comment-core-client';
 import {
   readFileCommentThreads,
   respondToFileComment,
 } from './file-comment-core-client';
-import {
-  computeReviewFingerprint,
-  listReviewRepos,
-} from '../lib/code-review-diff';
 import {
   readWorktreePipelineYaml,
   type PipelineYamlReadRequest,
@@ -697,19 +690,10 @@ export async function respondToFileCommentInSession(options: {
         resolved: false,
         error: 'Comment thread has not been submitted.',
       };
-    const reply = await appendReviewCommentReply(scopedOptions);
+    // The core.review adapter publishes the committed reply.
+    const reply = await replyToReviewCommentThread(scopedOptions);
     if (!reply.ok || !reply.review)
       return { ok: false, resolved: false, error: reply.error };
-    const event: CodeReviewUpdatedEvent = {
-      projectId: scope.projectId,
-      worktreeId: scope.worktreeId,
-      fingerprint: await computeReviewFingerprint(
-        await listReviewRepos(scope.projectId, scope.worktreeId),
-      ),
-      review: reply.review,
-      ...skippedCommentThreadsField(scope.projectId, scope.worktreeId),
-    };
-    sendToAllWindows(IPC_CHANNELS.codeReviewUpdated, event);
     return { ok: true, resolved: options.resolve, store: 'review' };
   }
   // The core.annotation adapter publishes the committed reply.
@@ -817,8 +801,9 @@ export async function getFileCommentsInSession(options: {
  * Post an agent reply to a code-review comment thread, optionally resolving
  * it. The code-review sentinel's `worktreeId` is the composite scope key
  * (`projectId--worktreeId`); the code-review registry supplies the real
- * `(projectId, worktreeId)` pair used for persistence and event emission. Emits
- * `codeReviewUpdated` after persisting so the review modal updates live.
+ * `(projectId, worktreeId)` pair the reply is dispatched for. The review
+ * adapter emits `codeReviewUpdated` after it commits, so the review modal
+ * updates live.
  */
 export async function respondToReviewCommentInSession(options: {
   worktreeId: string;
@@ -836,7 +821,8 @@ export async function respondToReviewCommentInSession(options: {
     };
   }
 
-  const result = await appendReviewCommentReply({
+  // The core.review adapter publishes the committed reply.
+  const result = await replyToReviewCommentThread({
     projectId: ref.projectId,
     worktreeId: ref.worktreeId,
     threadId: options.threadId,
@@ -850,16 +836,6 @@ export async function respondToReviewCommentInSession(options: {
       error: result.error ?? 'Failed to post comment reply.',
     };
   }
-
-  const repos = await listReviewRepos(ref.projectId, ref.worktreeId);
-  const event: CodeReviewUpdatedEvent = {
-    projectId: ref.projectId,
-    worktreeId: ref.worktreeId,
-    fingerprint: await computeReviewFingerprint(repos),
-    review: result.review,
-    ...skippedCommentThreadsField(ref.projectId, ref.worktreeId),
-  };
-  sendToAllWindows(IPC_CHANNELS.codeReviewUpdated, event);
 
   return { ok: true, resolved: options.resolve };
 }

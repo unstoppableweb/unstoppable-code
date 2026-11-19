@@ -1,7 +1,7 @@
 import type {
-  PortalChatMessageView,
-  PortalChatPart,
-} from '@canopy/protocol/portal';
+  RemoteControlChatMessageView,
+  RemoteControlChatPart,
+} from '@canopy/protocol/remote-control/shell';
 
 /**
  * Host-neutral contract for a bound cloud conversation: what the client and
@@ -26,13 +26,13 @@ export type ConversationHostStatus =
   | 'revoked';
 
 export interface ConversationProjectedMessage extends Omit<
-  PortalChatMessageView,
+  RemoteControlChatMessageView,
   'parts'
 > {
   readonly canonicalMessageId: string;
   readonly clientRequestId?: string;
   readonly turnId: string | null;
-  readonly parts?: PortalChatPart[];
+  readonly parts?: RemoteControlChatPart[];
 }
 
 export interface ConversationPresentationRow {

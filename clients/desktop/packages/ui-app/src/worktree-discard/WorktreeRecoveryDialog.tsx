@@ -3,11 +3,11 @@ import type {
   WorktreeRecoveryResolveResult,
 } from '@canopy/protocol/canopy-core';
 import type { JSX } from 'react';
-import type { WorktreeRecoveryDescription } from '@canopy/protocol/portal/worktree-recovery';
+import type { WorktreeRecoveryDescription } from '@canopy/protocol/remote-control/shell/worktree-recovery';
 import {
   formatWorktreeRecoveryReason,
   worktreeRecoveryResolutionAction,
-} from '@canopy/protocol/portal/worktree-recovery';
+} from '@canopy/protocol/remote-control/shell/worktree-recovery';
 import {
   Button,
   CodeBlock,

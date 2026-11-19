@@ -56,13 +56,14 @@ export const PIPELINE_DEFINITION_DESKTOP_CALLER: CanopyCallerDescriptor = {
 };
 
 /** The Portal reading definitions for a paired browser. */
-export const PIPELINE_DEFINITION_PORTAL_CALLER: CanopyCallerDescriptor = {
-  principalId: 'local-desktop-user',
-  clientInstanceId: 'electron-main-portal',
-  authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
-  interfaceKind: 'portal',
-  grants: [PIPELINE_GRANTS.read],
-};
+export const PIPELINE_DEFINITION_REMOTE_CONTROL_CALLER: CanopyCallerDescriptor =
+  {
+    principalId: 'local-desktop-user',
+    clientInstanceId: 'electron-main-portal',
+    authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
+    interfaceKind: 'portal',
+    grants: [PIPELINE_GRANTS.read],
+  };
 
 /** An agent pipeline action through the injected Canopy tools. */
 export const PIPELINE_DEFINITION_AGENT_CALLER: CanopyCallerDescriptor = {

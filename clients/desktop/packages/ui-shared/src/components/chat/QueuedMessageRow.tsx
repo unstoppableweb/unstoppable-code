@@ -16,7 +16,7 @@ import type {
   ChatWatcherFiredInfo,
   QueuedMessageRetryBlockedReason,
   SettingsHeldChange,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import type { QueuedMessageForceKind } from '../../lib/queued-message-force';
 import {
   DragHandleIcon,
@@ -156,15 +156,6 @@ export const QUEUED_MESSAGE_EDITING_TOOLTIP =
 /** The agent is between steps (handing over a message, recovering). */
 export const QUEUED_MESSAGE_BUSY_TOOLTIP =
   'Available when the current step finishes';
-
-/**
- * A row action that can't run now keeps its place and stays quiet: the
- * quiet ghost draws it disabled as a dimmed label with no grey fill, and its
- * reason shows on hover.
- */
-function actionVariant(unavailable: boolean): 'ghost-overlay' | 'ghost-quiet' {
-  return unavailable ? 'ghost-quiet' : 'ghost-overlay';
-}
 
 /** How many attachments a row shows before it counts the rest. */
 const VISIBLE_ATTACHMENTS = 3;
@@ -345,7 +336,7 @@ function QueuedMessageMoreMenu({
       <Tooltip label="More actions" suppressed={open} delay="long">
         <Button
           ref={triggerRef}
-          variant="ghost-overlay"
+          variant="ghost"
           size="sm"
           iconOnly
           aria-label="More actions"
@@ -548,9 +539,7 @@ export const QueuedMessageRow = forwardRef<
   const steerButton =
     !sendBlock && (onSteer || steerReason || steerBlockedByCapabilityChange) ? (
       <Button
-        variant={actionVariant(
-          steerBlockedByCapabilityChange || steerReason !== undefined,
-        )}
+        variant="ghost"
         // In the drawer, the compact size of every drawer row action.
         size={surface === 'drawer' ? 'compact' : 'sm'}
         aria-description={
@@ -568,7 +557,7 @@ export const QueuedMessageRow = forwardRef<
   const sendNowButton =
     onInterrupt || interruptReason ? (
       <Button
-        variant={actionVariant(interruptReason !== undefined)}
+        variant="ghost"
         size="sm"
         {...(InterruptIcon
           ? { iconOnly: true, 'aria-label': forceLabel }
@@ -631,7 +620,7 @@ export const QueuedMessageRow = forwardRef<
           delay="long"
         >
           <Button
-            variant={actionVariant(reorder.unavailableReason !== undefined)}
+            variant="ghost"
             size="sm"
             iconOnly
             aria-label="Reorder queued message"
@@ -706,7 +695,7 @@ export const QueuedMessageRow = forwardRef<
           >
             {/* `aria-disabled` keeps the explanation reachable by keyboard. */}
             <Button
-              variant="ghost-overlay"
+              variant="ghost"
               size="sm"
               data-testid={`queued-message-${forceKind}`}
               aria-disabled="true"

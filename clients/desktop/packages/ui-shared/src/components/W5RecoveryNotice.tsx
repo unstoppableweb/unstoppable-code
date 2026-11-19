@@ -1,6 +1,6 @@
 'use client';
 import type { JSX } from 'react';
-import type { W5RecoveryStatus } from '@canopy/protocol/portal';
+import type { W5RecoveryStatus } from '@canopy/protocol/remote-control/shell';
 import {
   w5RecoveryGuidance,
   W5_RECOVERY_QUIT_ALL_GUIDANCE,
@@ -14,6 +14,9 @@ import { Notice, NoticeButton } from './Notice';
 
 export interface W5RecoveryNoticeProps {
   readonly status?: W5RecoveryStatus;
+  /** Cold notice visibility is UI policy owned by the feature host. */
+  readonly dismissed?: boolean;
+  readonly onDismiss?: () => void;
   /**
    * The background service failure behind blocked changes (CAN-7061),
    * shown as its own notice above this one; `recovery` is this `status`.
@@ -49,11 +52,14 @@ export function W5RecoveryNotice({
 function BlockedChangesNotice({
   status,
   archiveRecovery,
+  dismissed = false,
+  onDismiss,
   canRecover = false,
   onRecover,
   busy = false,
 }: Omit<W5RecoveryNoticeProps, 'service'>): JSX.Element | null {
-  const cold = status && status.state !== 'hidden' ? status : null;
+  const cold =
+    status && status.state !== 'hidden' && !dismissed ? status : null;
   if (!cold && !archiveRecovery) return null;
   const restart = cold?.state === 'restart-required';
   const complete = cold?.state === 'complete';
@@ -74,8 +80,22 @@ function BlockedChangesNotice({
                 : 'Some workspace changes are blocked'
       }
       className="pointer-events-auto"
-      onDismiss={archiveRecovery?.onDismiss}
-      dismissLabel="Dismiss archive recovery notice"
+      onDismiss={
+        (cold && onDismiss) || archiveRecovery?.onDismiss
+          ? () => {
+              if (cold) onDismiss?.();
+              archiveRecovery?.onDismiss?.();
+            }
+          : undefined
+      }
+      dismissDisabled={busy && Boolean(cold)}
+      dismissLabel={
+        cold
+          ? archiveRecovery
+            ? 'Dismiss workspace and archive recovery notice'
+            : 'Dismiss workspace recovery notice'
+          : 'Dismiss archive recovery notice'
+      }
       data-testid="w5-recovery-notice"
       actions={
         archiveRecovery || (canRecover && cold?.canRecover && onRecover) ? (

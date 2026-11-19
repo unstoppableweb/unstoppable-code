@@ -2213,7 +2213,6 @@ export function McpServerDialog({
         label="Server type"
         value={serverType}
         width="content"
-        shape="capsule"
         options={[
           {
             value: 'command',

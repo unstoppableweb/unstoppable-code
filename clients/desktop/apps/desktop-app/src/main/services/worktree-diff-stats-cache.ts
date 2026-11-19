@@ -1,5 +1,5 @@
 import { isWorktreeReadAvailable } from '../lib/worktree-read-availability';
-import { portalSnapshotWorkBudget } from '../remote-projection/worktree-work-budget';
+import { remoteControlSnapshotWorkBudget } from '../remote-projection/worktree-work-budget';
 import {
   getWorktreeDiffStatsOnly,
   type WorktreeRepoDiffStatsReader,
@@ -368,7 +368,7 @@ function warmRegisteredWorktreeDiffStats(
   { generation, epoch }: WarmTarget,
 ): Promise<CachedWorktreeDiffStats | undefined> {
   const cacheKey = key(workspaceId, worktreeId);
-  return portalSnapshotWorkBudget.warm(() =>
+  return remoteControlSnapshotWorkBudget.warm(() =>
     epoch === warmingEpoch && generations.get(cacheKey) === generation
       ? refreshWorktreeDiffStats(workspaceId, worktreeId)
       : Promise.resolve(undefined),

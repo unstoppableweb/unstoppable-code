@@ -463,7 +463,7 @@ describe('single-repository worktree', () => {
           }),
         ).resolves.toEqual({
           rendered:
-            'PortalServiceError: File is outside the selected worktree root.',
+            'RemoteControlServiceError: File is outside the selected worktree root.',
           code: 'invalid_target',
         });
         expect(await fs.readdir(join(tempRoot, 'outside'))).toEqual([]);
@@ -612,7 +612,7 @@ describe('single-repository worktree', () => {
           }),
         ).resolves.toEqual({
           rendered:
-            'PortalServiceError: File is outside the selected worktree root.',
+            'RemoteControlServiceError: File is outside the selected worktree root.',
           code: 'invalid_target',
         });
         expect(await fs.readdir(join(tempRoot, 'outside'))).toEqual([]);
@@ -624,7 +624,7 @@ describe('single-repository worktree', () => {
     it('refuses a request without a target as invalid_payload', async () => {
       for (const operation of ['create-file', 'create-directory']) {
         await expect(failure({ ...scope, operation })).resolves.toEqual({
-          rendered: 'PortalServiceError: Mutation target is missing.',
+          rendered: 'RemoteControlServiceError: Mutation target is missing.',
           code: 'invalid_payload',
         });
       }
@@ -778,7 +778,7 @@ describe('single-repository worktree', () => {
             conflict: 'error',
           }),
         ).resolves.toEqual({
-          rendered: `PortalServiceError: A file or folder already exists at ${target}.`,
+          rendered: `RemoteControlServiceError: A file or folder already exists at ${target}.`,
           code: 'invalid_target',
         });
       }
@@ -797,7 +797,7 @@ describe('single-repository worktree', () => {
           }),
         ).resolves.toEqual({
           rendered:
-            'PortalServiceError: A folder cannot be moved or copied into itself.',
+            'RemoteControlServiceError: A folder cannot be moved or copied into itself.',
           code: 'invalid_target',
         });
       }
@@ -1043,7 +1043,7 @@ describe('single-repository worktree', () => {
         }),
       ).resolves.toEqual({
         rendered:
-          'PortalServiceError: A file or folder already exists at docs/guide/intro.md.',
+          'RemoteControlServiceError: A file or folder already exists at docs/guide/intro.md.',
         code: 'invalid_target',
       });
       expect(await fs.readFile(join(repo, 'docs/guide/intro.md'), 'utf8')).toBe(
@@ -1110,7 +1110,7 @@ describe('single-repository worktree', () => {
         }),
       ).resolves.toEqual({
         rendered:
-          'PortalServiceError: A file or folder already exists at published.ts.',
+          'RemoteControlServiceError: A file or folder already exists at published.ts.',
         code: 'invalid_target',
       });
       expect(await fs.readFile(target, 'utf8')).toBe('concurrent\n');
@@ -1267,7 +1267,7 @@ describe('single-repository worktree', () => {
             }),
           ).resolves.toEqual({
             rendered:
-              'PortalServiceError: File is outside the selected worktree root.',
+              'RemoteControlServiceError: File is outside the selected worktree root.',
             code: 'invalid_target',
           });
         }
@@ -1399,7 +1399,7 @@ describe('single-repository worktree', () => {
             }),
           ).resolves.toEqual({
             rendered:
-              'PortalServiceError: Cross-root transfers cannot contain symlinks.',
+              'RemoteControlServiceError: Cross-root transfers cannot contain symlinks.',
             code: 'invalid_target',
           });
         }
@@ -1493,7 +1493,7 @@ describe('single-repository worktree', () => {
         failure({ ...scope, operation: 'delete', target: ref('src') }),
       ).resolves.toEqual({
         rendered:
-          'PortalServiceError: Managed file-tree target could not be resolved.',
+          'RemoteControlServiceError: Managed file-tree target could not be resolved.',
         code: 'invalid_target',
       });
       await expect(
@@ -1517,13 +1517,13 @@ describe('single-repository worktree', () => {
         }),
       ).resolves.toEqual({
         rendered:
-          'PortalServiceError: Unsupported file-tree mutation operation.',
+          'RemoteControlServiceError: Unsupported file-tree mutation operation.',
         code: 'invalid_payload',
       });
       await expect(
         failure({ ...scope, operation: 'move', target: ref('x') }),
       ).resolves.toEqual({
-        rendered: 'PortalServiceError: Mutation source is missing.',
+        rendered: 'RemoteControlServiceError: Mutation source is missing.',
         code: 'invalid_payload',
       });
       expect(await fs.readdir(join(repo, 'src'))).toEqual(['index.ts']);
@@ -1538,13 +1538,13 @@ describe('single-repository worktree', () => {
         }),
       ).resolves.toEqual({
         rendered:
-          'PortalServiceError: File root is ambiguous; provide fileRootLocalId or repoId.',
+          'RemoteControlServiceError: File root is ambiguous; provide fileRootLocalId or repoId.',
         code: 'invalid_target',
       });
       await expect(
         failure({ ...scope, operation: 'delete', target: ref('src', 'nope') }),
       ).resolves.toEqual({
-        rendered: 'PortalServiceError: Unknown file root: nope',
+        rendered: 'RemoteControlServiceError: Unknown file root: nope',
         code: 'not_found',
       });
     });
@@ -1562,7 +1562,7 @@ describe('single-repository worktree', () => {
         await expect(
           failure({ ...scope, operation: 'delete', target: ref(relativePath) }),
         ).resolves.toEqual({
-          rendered: `PortalServiceError: ${message}`,
+          rendered: `RemoteControlServiceError: ${message}`,
           code: 'invalid_target',
         });
       }
@@ -1574,7 +1574,8 @@ describe('single-repository worktree', () => {
           target: ref('x'),
         }),
       ).resolves.toEqual({
-        rendered: 'PortalServiceError: Source cannot be a file-tree root.',
+        rendered:
+          'RemoteControlServiceError: Source cannot be a file-tree root.',
         code: 'invalid_target',
       });
       await expect(
@@ -1586,7 +1587,7 @@ describe('single-repository worktree', () => {
         }),
       ).resolves.toMatchObject({
         rendered:
-          'PortalServiceError: Path cannot traverse outside the worktree.',
+          'RemoteControlServiceError: Path cannot traverse outside the worktree.',
       });
       expect(await tree(repo)).toEqual({
         'docs/': 'dir',
@@ -1626,7 +1627,7 @@ describe('single-repository worktree', () => {
         ];
         for (const [request, label] of requests) {
           await expect(failure({ ...scope, ...request })).resolves.toEqual({
-            rendered: `PortalServiceError: ${label} cannot contain a backslash.`,
+            rendered: `RemoteControlServiceError: ${label} cannot contain a backslash.`,
             code: 'invalid_target',
           });
         }
@@ -1652,7 +1653,7 @@ describe('single-repository worktree', () => {
             await expect(
               failure({ ...scope, operation, target: ref(relativePath) }),
             ).resolves.toEqual({
-              rendered: `PortalServiceError: ${message}`,
+              rendered: `RemoteControlServiceError: ${message}`,
               code: 'invalid_target',
             });
         expect(await fs.readdir(repo)).toEqual(['docs', 'src']);
@@ -1718,7 +1719,7 @@ describe('multi-repository worktree', () => {
       ref(relativePath, WORKSPACE_ROOT_REPO_ID);
     const refused = {
       rendered:
-        'PortalServiceError: Path belongs to another file-tree root; use that root instead.',
+        'RemoteControlServiceError: Path belongs to another file-tree root; use that root instead.',
       code: 'invalid_target',
     };
     for (const relativePath of ['repos', 'repos/app', 'repos/app/child.txt']) {
@@ -1777,7 +1778,7 @@ describe('multi-repository worktree', () => {
         failure({ ...multiScope, operation, target: parent(relativePath) }),
       ).resolves.toEqual({
         rendered:
-          'PortalServiceError: Path belongs to another file-tree root; use that root instead.',
+          'RemoteControlServiceError: Path belongs to another file-tree root; use that root instead.',
         code: 'invalid_target',
       });
     }
@@ -1811,7 +1812,7 @@ describe('multi-repository worktree', () => {
         }),
       ).resolves.toEqual({
         rendered:
-          'PortalServiceError: Path belongs to another file-tree root; use that root instead.',
+          'RemoteControlServiceError: Path belongs to another file-tree root; use that root instead.',
         code: 'invalid_target',
       });
       expect(await tree(child)).toEqual({ 'child.txt': 'child\n' });
@@ -1885,7 +1886,7 @@ describe('Cowork project', () => {
     const workspaceRef = (relativePath: string): ReturnType<typeof ref> =>
       ref(relativePath, COWORK_WORKSPACE_FILE_ROOT_ID);
     const belongs =
-      'PortalServiceError: Path belongs to another file-tree root; use that root instead.';
+      'RemoteControlServiceError: Path belongs to another file-tree root; use that root instead.';
     for (const managedDir of ['notes', 'prompts', 'attachments']) {
       await expect(
         failure({
@@ -1925,7 +1926,8 @@ describe('Cowork project', () => {
           useTrash: true,
         }),
       ).resolves.toEqual({
-        rendered: 'PortalServiceError: Path contains another file-tree root.',
+        rendered:
+          'RemoteControlServiceError: Path contains another file-tree root.',
         code: 'invalid_target',
       });
     }
@@ -1959,7 +1961,7 @@ describe('Cowork project', () => {
         }),
       ).resolves.toEqual({
         rendered:
-          'PortalServiceError: Path belongs to another file-tree root; use that root instead.',
+          'RemoteControlServiceError: Path belongs to another file-tree root; use that root instead.',
         code: 'invalid_target',
       });
     }

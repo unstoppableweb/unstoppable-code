@@ -34,11 +34,11 @@ import type {
   ChatInputAdmission,
   ChatInputRefusal,
   ChatSteeringCapabilities,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import {
   chatInputDeliveryFailure,
   chatInputRefusal,
-} from '@canopy/protocol/portal/input-delivery';
+} from '@canopy/protocol/remote-control/shell/input-delivery';
 import type {
   ChatCommandEnvelope,
   ChatCommandResult,

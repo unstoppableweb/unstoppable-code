@@ -39,6 +39,8 @@ const mockEntries: { id: string }[] = [];
 const mockOrder: string[] = [];
 // The sidebar group each new Work Entry was assigned to.
 const mockGroups = new Map<string, string>();
+// Set to refuse the next Orchestrator send, as the chat service would.
+const mockRefusal: { next: Error | undefined } = { next: undefined };
 let mockRevision = 0;
 
 function mockPublishInitiated(
@@ -202,6 +204,9 @@ jest.mock('../../services/chat-service', () => ({
   sendWorktreeChatMessage: (
     request: ChatSendMessageRequest,
   ): Promise<{ ok: true }> => {
+    const refusal = mockRefusal.next;
+    mockRefusal.next = undefined;
+    if (refusal) return Promise.reject(refusal);
     mockOrder.push(`send:${request.chatId}`);
     mockBotSends.push(request);
     mockPublishInitiated(
@@ -224,6 +229,8 @@ jest.mock('../../lib/cowork-work-entries', () => ({
   },
   removeUnstartedWorkEntry: (): Promise<void> => Promise.resolve(),
   removeWorkEntryRow: (): Promise<void> => Promise.resolve(),
+  listWorkEntryIds: (): Promise<string[]> =>
+    Promise.resolve(mockEntries.map((entry) => entry.id)),
 }));
 let mockDirectory = '';
 jest.mock('../../lib/paths', () => ({
@@ -345,6 +352,7 @@ async function withReaction(
 beforeEach(() => {
   mockOrder.length = 0;
   mockGroups.clear();
+  mockRefusal.next = undefined;
   mockWarn.mockClear();
   mockBotSends.length = 0;
   mockCommands.length = 0;
@@ -675,7 +683,7 @@ const ID = 'automation-1';
 async function runAutomation(
   action: AutomationAction,
   direct: string[],
-  window: { opening?: 'fails' } = {},
+  window: { opening?: 'fails'; configured?: false } = {},
 ): Promise<ScheduledActivityRun> {
   const activity: ScheduledActivity = {
     version: 1,
@@ -699,20 +707,22 @@ async function runAutomation(
   );
   const { AutomationsService } = await import('../../automations/service');
   const service = new AutomationsService();
-  service.configure({
-    getMainWindow: () => null,
-    getAppAdvisorWindow: () => null,
-    openAppAdvisorWindow: () => Promise.resolve({ open: true, focused: true }),
-    // The service's own window calls: only the native-path one is left.
-    ensureAppAdvisorWindow: (request) => {
-      direct.push(`window:${request?.chatId ?? 'any'}`);
-      mockOrder.push(`direct:${request?.chatId ?? 'any'}`);
-      if (window.opening === 'fails')
-        return Promise.reject(new Error('no display'));
-      return Promise.resolve({ open: true, focused: true });
-    },
-    sendAppAdvisorWindowCommand: () => undefined,
-  });
+  if (window.configured !== false)
+    service.configure({
+      getMainWindow: () => null,
+      getAppAdvisorWindow: () => null,
+      openAppAdvisorWindow: () =>
+        Promise.resolve({ open: true, focused: true }),
+      // The service's own window calls: only the native-path one is left.
+      ensureAppAdvisorWindow: (request) => {
+        direct.push(`window:${request?.chatId ?? 'any'}`);
+        mockOrder.push(`direct:${request?.chatId ?? 'any'}`);
+        if (window.opening === 'fails')
+          return Promise.reject(new Error('no display'));
+        return Promise.resolve({ open: true, focused: true });
+      },
+      sendAppAdvisorWindowCommand: () => undefined,
+    });
   const started = await service.runNow({ id: ID });
   if (!started.ok) throw new Error(`Run now refused: ${started.error}`);
   const deadline = Date.now() + 20_000;
@@ -927,4 +937,328 @@ describe("an automation's own run, with the reaction registered (CAN-4174)", () 
     expect(mockOrder).toEqual(['direct:any']);
     expect(mockBotSends).toEqual([]);
   });
+});
+
+// CAN-4174 PR 5: the window outcome of every automation path, as captured on
+// develop before the window became a reaction (PR 4's first commit, 957481f,
+// and #9721), set against what the reaction path does now. A row is either
+// equal on its end state or one of the three named deviations: D1, the window
+// comes after the accepted send (so a refused send brings up none); D2, a
+// window that fails no longer fails the run; D3, a created chat is selected
+// right after the commit, which can be before its Work Entry joins a sidebar
+// group. Any other difference fails.
+describe('the window outcome of every automation path, develop against the reaction (CAN-4174 equivalence)', () => {
+  interface Outcome {
+    /** The window's end state: none, up with no chat selected, or on a chat. */
+    window: 'none' | 'open' | 'chat';
+    /** How many times a chat was selected. */
+    selections: number;
+    /** The run's status; absent for a send made straight through the port. */
+    status?: 'success' | 'failure';
+    /** Whether the message was accepted. */
+    accepted: boolean;
+    /** The sidebar group the run's new Work Entry joined, if any. */
+    group?: string;
+  }
+
+  type Verdict =
+    | { kind: 'equal' }
+    | { kind: 'D1'; differs: (keyof Outcome)[] }
+    | { kind: 'D2'; differs: (keyof Outcome)[] }
+    | { kind: 'D3'; differs: (keyof Outcome)[] };
+
+  interface Row {
+    name: string;
+    develop: Outcome;
+    verdict: Verdict;
+    /** The window calls that run and succeed; failing ones leave no window. */
+    windowsFail?: boolean;
+    /** The send must come before any window call on the reaction path. */
+    windowAfterSend?: boolean;
+    run: () => Promise<{ status?: 'success' | 'failure'; group?: string }>;
+  }
+
+  const reaction: { fails: boolean } = { fails: false };
+  let runtime: ReturnType<typeof createDesktopRuntime>;
+  let registration: ReturnType<typeof registerInitiatedPresentation>;
+  beforeEach(async () => {
+    reaction.fails = false;
+    mockTabs.splice(0, mockTabs.length, { id: 'chat-1', kind: 'chat' });
+    mockEntries.splice(0, mockEntries.length, { id: 'task-1' });
+    mockDirectory = await mkdtemp(join(tmpdir(), 'automation-equivalence-'));
+    runtime = createDesktopRuntime({ getChatStatePort: () => mockPort });
+    registration = registerInitiatedPresentation({
+      dispatcher: runtime,
+      surfaces: {
+        ensureAppAdvisorWindow: (request) => {
+          mockOrder.push(`window:${request?.chatId ?? 'any'}`);
+          return reaction.fails
+            ? Promise.reject(new Error('no display'))
+            : Promise.resolve({ open: true, focused: true });
+        },
+      },
+    });
+    await registration.ready;
+  });
+  afterEach(async () => {
+    registration.stop();
+    await runtime.shutdown();
+    await rm(mockDirectory, { recursive: true, force: true });
+  });
+
+  const session = (
+    extra: Partial<
+      Extract<AutomationAction, { type: 'worktree_session_prompt' }>
+    > = {},
+  ): AutomationAction => ({
+    type: 'worktree_session_prompt',
+    workspaceId: 'app-advisor',
+    worktreeId: 'task-1',
+    chatId: 'chat-1',
+    prompt: 'Summarize my day',
+    ...extra,
+  });
+
+  const newEntry = (): void => {
+    mockTabs.length = 0;
+    mockEntries.length = 0;
+  };
+
+  const automationRun = async (
+    action: AutomationAction,
+    options: { opening?: 'fails'; configured?: false } = {},
+  ): Promise<{ status: 'success' | 'failure'; group?: string }> => {
+    const run = await runAutomation(action, [], options);
+    const taskId = mockEntries[0]?.id;
+    const group = taskId === undefined ? undefined : mockGroups.get(taskId);
+    return {
+      status: run.status === 'success' ? 'success' : 'failure',
+      ...(group === undefined ? {} : { group }),
+    };
+  };
+
+  const rows: Row[] = [
+    {
+      name: 'app_advisor_prompt in a new Work Entry',
+      develop: {
+        window: 'chat',
+        selections: 1,
+        status: 'success',
+        accepted: true,
+      },
+      verdict: { kind: 'equal' },
+      windowAfterSend: true,
+      run: () => {
+        newEntry();
+        return automationRun({
+          type: 'app_advisor_prompt',
+          prompt: 'Summarize my day',
+        });
+      },
+    },
+    {
+      name: 'app_advisor_prompt in an existing Work Entry',
+      develop: {
+        window: 'chat',
+        selections: 1,
+        status: 'success',
+        accepted: true,
+      },
+      verdict: { kind: 'equal' },
+      windowAfterSend: true,
+      run: () =>
+        automationRun({
+          type: 'app_advisor_prompt',
+          prompt: 'Summarize my day',
+          workEntryId: 'task-1',
+        }),
+    },
+    {
+      name: 'app_advisor_prompt into a sidebar group',
+      develop: {
+        window: 'chat',
+        selections: 1,
+        status: 'success',
+        accepted: true,
+        group: 'Mornings',
+      },
+      verdict: { kind: 'D3', differs: [] },
+      run: () => {
+        newEntry();
+        return automationRun({
+          type: 'app_advisor_prompt',
+          prompt: 'Summarize my day',
+          sidebarGroupName: 'Mornings',
+        });
+      },
+    },
+    {
+      name: 'app_advisor_prompt whose message is refused',
+      develop: {
+        window: 'open',
+        selections: 0,
+        status: 'failure',
+        accepted: false,
+      },
+      verdict: { kind: 'D1', differs: ['window'] },
+      run: () => {
+        newEntry();
+        mockRefusal.next = new Error('The Orchestrator refused this message.');
+        return automationRun({
+          type: 'app_advisor_prompt',
+          prompt: 'Summarize my day',
+        });
+      },
+    },
+    {
+      name: 'app_advisor_prompt whose window fails to open',
+      develop: {
+        window: 'none',
+        selections: 0,
+        status: 'failure',
+        accepted: false,
+      },
+      verdict: { kind: 'D2', differs: ['status', 'accepted'] },
+      windowsFail: true,
+      run: () => {
+        newEntry();
+        reaction.fails = true;
+        return automationRun(
+          { type: 'app_advisor_prompt', prompt: 'Summarize my day' },
+          { opening: 'fails' },
+        );
+      },
+    },
+    {
+      name: 'worktree_session_prompt to an Orchestrator chat through the port',
+      develop: {
+        window: 'open',
+        selections: 0,
+        status: 'success',
+        accepted: true,
+      },
+      verdict: { kind: 'equal' },
+      windowAfterSend: true,
+      run: () => automationRun(session()),
+    },
+    {
+      name: 'worktree_session_prompt to an Orchestrator chat on the native path',
+      develop: {
+        window: 'open',
+        selections: 0,
+        status: 'success',
+        accepted: true,
+      },
+      verdict: { kind: 'equal' },
+      run: () => automationRun(session({ purpose: 'scheduled_send' })),
+    },
+    {
+      name: "a workflow step's send to an Orchestrator chat",
+      develop: { window: 'none', selections: 0, accepted: true },
+      verdict: { kind: 'equal' },
+      run: async () => {
+        await runPipelineProjectBotAction(
+          {
+            type: 'bots.send_message',
+            botId: 'app_advisor',
+            taskId: 'task-1',
+            chatId: 'chat-1',
+            text: 'Summarize my day',
+          },
+          workflowCaller,
+          { automationDispatch: dispatch('foreground') },
+        );
+        return {};
+      },
+    },
+    {
+      name: "an automation's foreground and background sends to a project chat",
+      develop: { window: 'none', selections: 0, accepted: true },
+      verdict: { kind: 'equal' },
+      run: async () => {
+        for (const presentation of ['foreground', 'background'] as const)
+          await runPipelineProjectBotAction(
+            {
+              type: 'projects.send_message',
+              projectId: 'cowork-project',
+              taskId: 'entry-1',
+              chatId: 'chat-1',
+              text: 'Summarize my day',
+            },
+            automationCaller,
+            { automationDispatch: dispatch(presentation) },
+          );
+        return {};
+      },
+    },
+    {
+      name: 'app_advisor_prompt when the service is not configured',
+      develop: {
+        window: 'none',
+        selections: 0,
+        status: 'failure',
+        accepted: false,
+      },
+      verdict: { kind: 'equal' },
+      run: () => {
+        newEntry();
+        return automationRun(
+          { type: 'app_advisor_prompt', prompt: 'Summarize my day' },
+          { configured: false },
+        );
+      },
+    },
+  ];
+
+  const observe = (
+    result: { status?: 'success' | 'failure'; group?: string },
+    windowsFail: boolean,
+  ): Outcome => {
+    const calls = windowsFail
+      ? []
+      : mockOrder.filter(
+          (entry) => entry.startsWith('window:') || entry.startsWith('direct:'),
+        );
+    const selections = calls.filter((entry) => !entry.endsWith(':any')).length;
+    const accepted =
+      mockBotSends.length > 0 ||
+      mockCommands.some(
+        (envelope) => envelope.command.type === 'chat.send_message',
+      );
+    return {
+      window: selections > 0 ? 'chat' : calls.length > 0 ? 'open' : 'none',
+      selections,
+      ...(result.status === undefined ? {} : { status: result.status }),
+      accepted,
+      ...(result.group === undefined ? {} : { group: result.group }),
+    };
+  };
+
+  it.each(rows.map((row) => [row.name, row] as const))(
+    '%s: equal to develop or a named deviation',
+    async (_name, row) => {
+      const result = await row.run();
+      await settle();
+      const now = observe(result, row.windowsFail === true);
+      const keys = new Set<keyof Outcome>([
+        ...(Object.keys(row.develop) as (keyof Outcome)[]),
+        ...(Object.keys(now) as (keyof Outcome)[]),
+      ]);
+      const differs = [...keys].filter((key) => row.develop[key] !== now[key]);
+      expect({ verdict: row.verdict.kind, differs }).toEqual({
+        verdict: row.verdict.kind,
+        differs: row.verdict.kind === 'equal' ? [] : row.verdict.differs,
+      });
+      if (row.windowAfterSend) {
+        const firstWindow = mockOrder.findIndex(
+          (entry) => entry.startsWith('window:') || entry.startsWith('direct:'),
+        );
+        const firstSend = mockOrder.findIndex((entry) =>
+          entry.startsWith('send:'),
+        );
+        expect(firstSend).toBeGreaterThanOrEqual(0);
+        expect(firstWindow).toBeGreaterThan(firstSend);
+      }
+    },
+  );
 });

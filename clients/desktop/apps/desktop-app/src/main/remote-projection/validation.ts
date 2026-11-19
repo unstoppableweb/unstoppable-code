@@ -1,6 +1,6 @@
 import { readCoworkFolderMissing } from '@canopy/protocol/canopy-core';
-import type { PortalCommandEnvelope } from '@canopy/desktop-shared/types';
-import type { PortalAdapterContext } from './adapter-context';
+import type { RemoteControlCommandEnvelope } from '@canopy/desktop-shared/types';
+import type { RemoteControlAdapterContext } from './adapter-context';
 import {
   isModelGatewayRefusal,
   ModelGatewayRefusedError,
@@ -11,8 +11,8 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export function requireWorktreeTarget(
-  command: PortalCommandEnvelope,
-  context: PortalAdapterContext,
+  command: RemoteControlCommandEnvelope,
+  context: RemoteControlAdapterContext,
 ): { workspaceLocalId: string; worktreeLocalId: string } | null {
   const target = command.target;
   if (
@@ -34,8 +34,8 @@ export function requireWorktreeTarget(
 }
 
 export function requireStandaloneChatTarget(
-  command: PortalCommandEnvelope,
-  context: PortalAdapterContext,
+  command: RemoteControlCommandEnvelope,
+  context: RemoteControlAdapterContext,
 ): { standaloneChatLocalId: string } | null {
   const target = command.target;
   if (!target || typeof target.standaloneChatLocalId !== 'string') {
@@ -50,8 +50,8 @@ export function requireStandaloneChatTarget(
 }
 
 export function failServiceError(
-  command: PortalCommandEnvelope,
-  context: PortalAdapterContext,
+  command: RemoteControlCommandEnvelope,
+  context: RemoteControlAdapterContext,
   error: unknown,
 ): void {
   const missing = readCoworkFolderMissing(error);

@@ -212,7 +212,7 @@ export function RemotePathPicker({
         </ul>
         <div className="flex items-center justify-end gap-2">
           <Button
-            variant="outline"
+            variant="secondary"
             size="lg"
             onClick={() => onResolve(null)}
             data-testid="remote-path-picker-cancel"

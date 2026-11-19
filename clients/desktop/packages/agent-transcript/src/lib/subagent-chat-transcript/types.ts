@@ -1,5 +1,5 @@
-import type { PortalChatPart } from '@canopy/protocol/portal';
-import type { AgentSentInfo } from '@canopy/protocol/portal/external-agent-sender';
+import type { RemoteControlChatPart } from '@canopy/protocol/remote-control/shell';
+import type { AgentSentInfo } from '@canopy/protocol/remote-control/shell/external-agent-sender';
 import type { DisplayBlock, DisplayMessage } from '../../message-display';
 import type { PersistedChatMessage } from '../../types';
 
@@ -52,7 +52,7 @@ interface SubagentChatTruncatedItem {
 interface SubagentChatPartItem {
   readonly kind: 'part';
   readonly key: string;
-  readonly part: PortalChatPart;
+  readonly part: RemoteControlChatPart;
 }
 
 /** One row of a transcript built from persisted chat messages (desktop). */
@@ -64,7 +64,7 @@ export type SubagentChatTranscriptItem =
   | SubagentChatBlocksItem;
 
 /** One row of a transcript built from Portal chat parts (Portal, cloud). */
-export type PortalSubagentChatTranscriptItem =
+export type RemoteControlSubagentChatTranscriptItem =
   | SubagentChatTaskItem
   | SubagentChatDividerItem
   | SubagentChatFollowUpItem
@@ -75,7 +75,7 @@ export type PortalSubagentChatTranscriptItem =
 /** Any transcript row, for helpers shared by both builders. */
 export type AnySubagentChatTranscriptItem =
   | SubagentChatTranscriptItem
-  | PortalSubagentChatTranscriptItem;
+  | RemoteControlSubagentChatTranscriptItem;
 
 export interface SubagentChatTranscript {
   readonly items: readonly SubagentChatTranscriptItem[];
@@ -83,8 +83,8 @@ export interface SubagentChatTranscript {
   readonly missingBeginning: boolean;
 }
 
-export interface PortalSubagentChatTranscript {
-  readonly items: readonly PortalSubagentChatTranscriptItem[];
+export interface RemoteControlSubagentChatTranscript {
+  readonly items: readonly RemoteControlSubagentChatTranscriptItem[];
 }
 
 /** Root-chat and paged messages that can supply one managed run. */
@@ -101,12 +101,12 @@ export interface SubagentTranscriptRunSource {
  * One observed managed-run card in Portal parts. A run observed more than
  * once contributes one entry per observation; the latest wins.
  */
-export interface PortalSubagentRunObservation {
+export interface RemoteControlSubagentRunObservation {
   readonly runGeneration: number;
   readonly prompt?: string;
   readonly finalText?: string;
   /** Child parts in transcript order. */
-  readonly subBlocks: readonly PortalChatPart[];
+  readonly subBlocks: readonly RemoteControlChatPart[];
   /** True when the producer dropped earlier child parts. */
   readonly subBlocksTruncated: boolean;
   /** How many earlier child parts were dropped; 0 when unknown. */

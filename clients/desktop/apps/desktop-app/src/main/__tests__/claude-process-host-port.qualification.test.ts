@@ -5,10 +5,15 @@ import {
 import { EventEmitter } from 'node:events';
 import {
   existsSync,
+  lstatSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
+  rmdirSync,
   rmSync,
+  symlinkSync,
+  writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
@@ -67,14 +72,79 @@ const ROOT = path.resolve(__dirname, '../../../../..');
 const ENTRY = 'claude-process-host-worker.js';
 const CASE_TIMEOUT_MS = 30_000;
 const REAP_WITHIN_MS = 8_000;
+const FIXTURE_DEADLINE_MS = 60_000;
+// Cleanup includes sequential exit waits, process queries and failure diagnostics.
+// This hook limit does not extend a case or its product reaping assertion.
+const CLEANUP_TIMEOUT_MS = 60_000;
 const HOST_EXIT_ERROR =
   /^Claude process host exited before the Claude process \(code -?\d+\)\.$/;
 
 let dir = '';
-const strays = new Set<number>();
+let ownedRoot: { path: string; dev: number; ino: number } | undefined;
+let cleanupConfirmed = true;
+const observedPids = new Set<number>();
+const cleanupMarkers = new Map<string, string>();
+const streamPidFiles = new Set<string>();
 const hostPids = new Set<number>();
 /** Idle children that a case started to give a fake process a real pid. */
 const ownedChildren = new Set<ChildProcess>();
+const signalRequested = new WeakSet<ChildProcess>();
+const signalledFixtureExits = new Map<
+  ChildProcess,
+  Array<[number | null, NodeJS.Signals | null]>
+>();
+
+function validPid(pid: unknown): pid is number {
+  return (
+    typeof pid === 'number' &&
+    Number.isInteger(pid) &&
+    pid > 1 &&
+    pid <= 2_147_483_647
+  );
+}
+
+interface SignalEligibility {
+  readonly owned: boolean;
+  readonly pid: unknown;
+  readonly exitCode: number | null;
+  readonly signalCode: NodeJS.Signals | null;
+  readonly requested: boolean;
+}
+
+function childSignalState(child: ChildProcess): SignalEligibility {
+  return {
+    owned: ownedChildren.has(child),
+    pid: child.pid,
+    exitCode: child.exitCode,
+    signalCode: child.signalCode,
+    requested: signalRequested.has(child),
+  };
+}
+
+function maySignal(state: SignalEligibility): boolean {
+  return (
+    state.owned &&
+    validPid(state.pid) &&
+    state.exitCode === null &&
+    state.signalCode === null &&
+    !state.requested
+  );
+}
+
+/** The only direct signal delivery in this test. Never accepts a numeric target. */
+function signalOwnedChild(
+  child: ChildProcess,
+  signaller: (child: ChildProcess) => boolean = (owned) =>
+    owned.kill('SIGKILL'),
+  eligibility = childSignalState(child),
+): boolean {
+  // Guard rows can supply immutable refusal states with an inert signaller.
+  // Delivery still requires the handle's current ownership and lifecycle state.
+  if (!maySignal(eligibility) || !maySignal(childSignalState(child)))
+    return false;
+  signalRequested.add(child);
+  return signaller(child);
+}
 
 /**
  * Starts an idle child that this test owns. A fake process handed to the
@@ -82,30 +152,51 @@ const ownedChildren = new Set<ChildProcess>();
  * escapes the mocks can reach only a process the test started. afterEach
  * stops it by its own handle.
  */
-async function startOwnedIdleChild(): Promise<number> {
+async function startOwnedIdleChild(register = true): Promise<ChildProcess> {
   const child = spawnOwnedChild(
     process.execPath,
-    ['-e', 'setInterval(() => undefined, 1 << 30)'],
-    { stdio: 'ignore' },
+    [
+      '-e',
+      `process.stdin.resume();
+       process.stdin.once('end', () => process.exit(0));
+       setTimeout(() => process.exit(0), ${FIXTURE_DEADLINE_MS});`,
+    ],
+    { stdio: ['pipe', 'ignore', 'ignore'] },
   );
-  ownedChildren.add(child);
+  if (register) ownedChildren.add(child);
   await new Promise<void>((resolve, reject) => {
     child.once('spawn', () => resolve());
     child.once('error', reject);
   });
   const { pid } = child;
-  if (pid === undefined || pid <= 1) throw new Error('owned child has no pid');
-  return pid;
+  if (!validPid(pid)) throw new Error('owned child has no valid pid');
+  return child;
 }
 
 /** Stops a child this test started, by its own handle, and waits for it. */
 async function stopOwnedChild(child: ChildProcess): Promise<void> {
   if (child.exitCode !== null || child.signalCode !== null) return;
-  const exited = new Promise<void>((resolve) => {
-    child.once('exit', () => resolve());
-  });
-  child.kill('SIGKILL');
-  await exited;
+  if (child.pid === undefined) return; // A failed spawn created no process.
+  if (!signalOwnedChild(child))
+    throw new Error(`owned child cleanup was refused (pid ${child.pid})`);
+  await until(
+    () => child.exitCode !== null || child.signalCode !== null,
+    REAP_WITHIN_MS,
+    () => `owned child did not exit (pid ${child.pid})`,
+  );
+}
+
+/** Guard-row children exit cooperatively, even after an inert signal record. */
+async function endIdleChild(child: ChildProcess): Promise<void> {
+  child.stdin?.end();
+  try {
+    await until(() => child.exitCode !== null, REAP_WITHIN_MS);
+  } catch (error) {
+    cleanupConfirmed = false;
+    throw new Error(`idle fixture did not exit (pid ${child.pid})`, {
+      cause: error,
+    });
+  }
 }
 
 /** Linux only: a process's state letter and parent, from /proc. */
@@ -113,41 +204,154 @@ function procStat(pid: number): { state: string; parent: number } | undefined {
   if (os !== 'linux') return undefined;
   try {
     const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
-    const [state, parent] = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+    const end = stat.lastIndexOf(')');
+    const [state, parent] = stat.slice(end + 2).split(' ');
+    if (
+      end < 0 ||
+      !/^[A-Za-z]$/.test(state) ||
+      !Number.isInteger(Number(parent)) ||
+      Number(parent) < 0
+    )
+      throw new Error('invalid process stat observation');
     return { state, parent: Number(parent) };
-  } catch {
-    return undefined;
+  } catch (error) {
+    if (
+      error !== null &&
+      typeof error === 'object' &&
+      'code' in error &&
+      (error.code === 'ENOENT' || error.code === 'ESRCH')
+    )
+      return undefined;
+    throw error;
   }
 }
 
-/** Whether `pid` exists at all, a zombie included. */
-function alive(pid: number): boolean {
+/** A bounded, read-only command. Timeout cleanup uses the same owned handle gate. */
+async function processObservation(
+  command: string,
+  args: string[],
+  beforeSignalFallback?: Promise<unknown>,
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  const child = spawnOwnedChild(command, args, {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
+  });
+  ownedChildren.add(child);
+  let closed = false;
+  let failure: Error | undefined;
+  let stdout = '';
+  let stderr = '';
+  child.once('close', () => {
+    closed = true;
+  });
+  child.on('error', (error) => {
+    failure = error;
+  });
+  const collect = (stream: 'stdout' | 'stderr', chunk: Buffer): void => {
+    if (stdout.length + stderr.length + chunk.length > 256 * 1024) {
+      failure = new Error('process observation exceeded its output limit');
+      return;
+    }
+    if (stream === 'stdout') stdout += chunk.toString('utf8');
+    else stderr += chunk.toString('utf8');
+  };
+  child.stdout?.on('data', (chunk: Buffer) => collect('stdout', chunk));
+  child.stderr?.on('data', (chunk: Buffer) => collect('stderr', chunk));
   try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error instanceof Error && Reflect.get(error, 'code') === 'EPERM';
+    await until(() => closed || failure !== undefined, 2_000);
+    if (failure) throw failure;
+    return { code: child.exitCode, stdout, stderr };
+  } finally {
+    if (beforeSignalFallback && maySignal(childSignalState(child)))
+      await beforeSignalFallback;
+    await stopOwnedChild(child);
+    ownedChildren.delete(child);
   }
 }
 
 /** This process, the hosts it launched, and the CLIs and grandchildren. */
 function underTest(pid: number): boolean {
-  return pid === process.pid || hostPids.has(pid) || strays.has(pid);
+  return pid === process.pid || hostPids.has(pid) || observedPids.has(pid);
 }
 
-function present(pid: number): boolean {
+function windowsObserverCommand(systemRoot: string | undefined): string {
+  if (!systemRoot || !/^[A-Za-z]:\\/.test(systemRoot))
+    throw new Error('Windows system root is not a local absolute drive path');
+  return path.win32.join(systemRoot, 'System32', 'tasklist.exe');
+}
+
+async function presentPids(
+  pids: readonly number[],
+  beforeSignalFallback?: Promise<unknown>,
+): Promise<number[]> {
+  if (!pids.every(validPid)) throw new Error('invalid observation pid');
+  if (pids.length === 0) return [];
   // An orphaned zombie has exited and waits on a reaper outside the tree
-  // under test, which the host does not control; `kill(pid, 0)` still
-  // succeeds on it. A zombie whose parent is in the tree is not yet reaped.
-  const stat = procStat(pid);
-  if (stat?.state === 'Z' && !underTest(stat.parent)) return false;
-  return alive(pid);
+  // under test. A zombie whose parent is in the tree is not yet reaped.
+  if (os === 'linux') {
+    if (!procStat(process.pid))
+      throw new Error('process observations unavailable');
+    return pids.filter((pid) => {
+      const stat = procStat(pid);
+      return (
+        stat !== undefined && (stat.state !== 'Z' || underTest(stat.parent))
+      );
+    });
+  }
+  let observerCommand = '/bin/ps';
+  if (os === 'win32') {
+    observerCommand = windowsObserverCommand(process.env.SystemRoot);
+  }
+  const result = await processObservation(
+    observerCommand,
+    os === 'win32'
+      ? ['/FO', 'CSV', '/NH']
+      : ['-p', pids.join(','), '-o', 'pid='],
+    beforeSignalFallback,
+  );
+  if (
+    os !== 'win32' &&
+    result.code === 1 &&
+    result.stdout.trim() === '' &&
+    result.stderr.trim() === ''
+  )
+    return [];
+  if (result.code !== 0 || result.stderr.trim() !== '')
+    throw new Error(`process observation failed (exit ${result.code})`);
+  const found = result.stdout
+    .split(/\r?\n/)
+    .filter((line) => line.trim() !== '')
+    .map((line) => {
+      const match =
+        os === 'win32'
+          ? /^"(?:[^"]|"")*","(\d+)"/.exec(line)
+          : /^\s*(\d+)\s*$/.exec(line);
+      if (!match) throw new Error('invalid process observation output');
+      const pid = Number(match[1]);
+      if (
+        !Number.isInteger(pid) ||
+        pid < 0 ||
+        pid > 2_147_483_647 ||
+        (os !== 'win32' && !pids.includes(pid))
+      )
+        throw new Error('invalid process observation pid');
+      return pid;
+    });
+  if (found.length === 0)
+    throw new Error('empty successful process observation');
+  return pids.filter((pid) => found.includes(pid));
+}
+
+async function nonePresent(
+  pids: readonly number[],
+  beforeSignalFallback?: Promise<unknown>,
+): Promise<boolean> {
+  return (await presentPids(pids, beforeSignalFallback)).length === 0;
 }
 
 /** The remaining pids, with their state and parent where /proc has them. */
-function remaining(pids: readonly number[]): string {
-  return pids
-    .filter(alive)
+async function remaining(pids: readonly number[]): Promise<string> {
+  return (await presentPids(pids))
     .map((pid) => {
       const stat = procStat(pid);
       return stat ? `${pid} (${stat.state}, parent ${stat.parent})` : `${pid}`;
@@ -156,16 +360,18 @@ function remaining(pids: readonly number[]): string {
 }
 
 async function until(
-  check: () => boolean,
+  check: () => boolean | Promise<boolean>,
   timeoutMs = 10_000,
-  explain?: () => string,
+  explain?: () => string | Promise<string>,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
-  while (!check()) {
+  while (true) {
+    const satisfied = await check();
     if (Date.now() > deadline)
       throw new Error(
-        `condition not met in time${explain ? `: ${explain()}` : ''}`,
+        `condition not met in time${explain ? `: ${await explain()}` : ''}`,
       );
+    if (satisfied) return;
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
 }
@@ -189,13 +395,22 @@ function delay(ms: number): Promise<void> {
  */
 function waitingScript(pidFile: string, ignoreTerm: boolean): string {
   const ignore = ignoreTerm ? "process.on('SIGTERM', () => undefined);" : '';
-  return `${ignore}
+  const marker = `${pidFile}.stop`;
+  cleanupMarkers.set(pidFile, marker);
+  const selfExit = `
+    setTimeout(() => process.exit(0), ${FIXTURE_DEADLINE_MS});
+    const stopIfRequested = () => {
+      const { existsSync } = require('node:fs');
+      if (existsSync(${JSON.stringify(marker)}) || !existsSync(${JSON.stringify(dir)})) process.exit(0);
+    };
+    stopIfRequested();
+    setInterval(stopIfRequested, 25);`;
+  return `${ignore}${selfExit}
     const { spawn } = require('node:child_process');
     const child = spawn(process.execPath, ['-e', ${JSON.stringify(
-      `${ignore} setInterval(() => undefined, 1 << 30);`,
+      `${ignore}${selfExit}`,
     )}], { stdio: 'ignore' });
-    require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, process.pid + ' ' + child.pid);
-    setInterval(() => undefined, 1 << 30);`;
+    require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, process.pid + ' ' + child.pid);`;
 }
 
 async function pidsOf(pidFile: string): Promise<[number, number]> {
@@ -203,12 +418,71 @@ async function pidsOf(pidFile: string): Promise<[number, number]> {
     () =>
       existsSync(pidFile) && /^\d+ \d+$/.test(readFileSync(pidFile, 'utf8')),
   );
-  const [cli, grandchild] = readFileSync(pidFile, 'utf8')
-    .split(' ')
-    .map(Number);
-  strays.add(cli);
-  strays.add(grandchild);
+  return recordFixturePids(pidFile);
+}
+
+function recordFixturePids(pidFile: string): [number, number] {
+  const value = readFileSync(pidFile, 'utf8');
+  if (!/^\d+ \d+$/.test(value))
+    throw new Error('incomplete fixture pid record');
+  const [cli, grandchild] = value.split(' ').map(Number);
+  if (!validPid(cli) || !validPid(grandchild))
+    throw new Error('fixture reported an invalid pid');
+  observedPids.add(cli);
+  observedPids.add(grandchild);
   return [cli, grandchild];
+}
+
+function recordStreamFixturePid(pidFile: string): number {
+  const value = readFileSync(pidFile, 'utf8');
+  if (!/^\d+$/.test(value))
+    throw new Error('incomplete streaming fixture pid record');
+  const pid = Number(value);
+  if (!validPid(pid)) throw new Error('fixture reported an invalid pid');
+  observedPids.add(pid);
+  return pid;
+}
+
+function checkedRoot(): string {
+  if (!ownedRoot) throw new Error('no owned fixture root');
+  const stat = lstatSync(ownedRoot.path);
+  if (
+    !stat.isDirectory() ||
+    stat.isSymbolicLink() ||
+    stat.dev !== ownedRoot.dev ||
+    stat.ino !== ownedRoot.ino ||
+    realpathSync.native(ownedRoot.path) !== ownedRoot.path
+  )
+    throw new Error('owned fixture root identity changed');
+  return ownedRoot.path;
+}
+
+function checkedFixturePath(target: string): string {
+  const root = checkedRoot();
+  const prefix = root + path.sep;
+  if (!path.resolve(target).startsWith(prefix))
+    throw new Error('fixture removal target is outside the owned root');
+  const realTarget = realpathSync.native(target);
+  if (!realTarget.startsWith(prefix))
+    throw new Error('fixture removal target is outside the owned root');
+  return realTarget;
+}
+
+function writeCleanupMarker(target: string): void {
+  const parent = checkedFixturePath(path.dirname(target));
+  writeFileSync(path.join(parent, path.basename(target)), 'stop', {
+    encoding: 'utf8',
+    flag: 'wx',
+    mode: 0o600,
+  });
+}
+
+function removeOwnedFixture(
+  target: string,
+  remove: (target: string) => void = (owned) =>
+    rmSync(owned, { recursive: true, force: true }),
+): void {
+  remove(checkedFixturePath(target));
 }
 
 interface Observed {
@@ -319,9 +593,13 @@ function inProcessPort(
 }
 
 beforeAll(() => {
-  dir = realpathSync.native(
+  const root = realpathSync.native(
     mkdtempSync(path.join(realpathSync.native(tmpdir()), 'claude-host-')),
   );
+  const stat = lstatSync(root);
+  ownedRoot = { path: root, dev: stat.dev, ino: stat.ino };
+  dir = path.join(root, 'fixtures');
+  mkdirSync(dir);
   if (os === 'win32') return;
   buildSync({
     entryPoints: [
@@ -342,16 +620,256 @@ beforeAll(() => {
 });
 
 afterEach(async () => {
-  for (const pid of Array.from(strays))
-    if (present(pid)) process.kill(pid, 'SIGKILL');
-  strays.clear();
-  hostPids.clear();
-  await Promise.all(Array.from(ownedChildren, stopOwnedChild));
-  ownedChildren.clear();
-});
+  try {
+    // Markers follow the case's lifecycle assertions and product shutdown.
+    // They cannot satisfy the product's reaping assertions on its behalf.
+    const cleanupErrors: unknown[] = [];
+    for (const marker of cleanupMarkers.values()) {
+      try {
+        writeCleanupMarker(marker);
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    // Request every owned idle fixture's cooperative exit, even when another
+    // fixture's marker could not be written. Do not signal before these waits.
+    for (const child of ownedChildren) {
+      try {
+        child.stdin?.end();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    // A case can fail before pidsOf. Missing or partial records cannot prove
+    // that its fixtures exited, so they fail cleanup and retain the root.
+    for (const pidFile of [...cleanupMarkers.keys(), ...streamPidFiles]) {
+      try {
+        if (streamPidFiles.has(pidFile)) recordStreamFixturePid(pidFile);
+        else recordFixturePids(pidFile);
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    const cooperativeWaits = Promise.allSettled(
+      Array.from(ownedChildren, (child) =>
+        until(
+          () => child.exitCode !== null || child.signalCode !== null,
+          REAP_WITHIN_MS,
+        ),
+      ),
+    );
+    // Poll during the cooperative waits; only a live observer's signal fallback
+    // waits for every cooperative wait to settle. Closed observers do not wait.
+    const observedExits = await Promise.allSettled([
+      until(
+        () => nonePresent(Array.from(observedPids), cooperativeWaits),
+        REAP_WITHIN_MS,
+      ),
+    ]);
+    const cooperativeExits = await cooperativeWaits;
+    for (const result of [...cooperativeExits, ...observedExits]) {
+      if (result.status === 'rejected') cleanupErrors.push(result.reason);
+    }
+    // The fallback is only for a still-live owned idle handle, after EVERY
+    // fixture has received its cooperative request and its bounded exit wait.
+    await Promise.all(Array.from(ownedChildren, stopOwnedChild));
+    for (const [child, exits] of signalledFixtureExits) {
+      await until(() => exits.length === 1, REAP_WITHIN_MS);
+      expect(exits).toEqual([[null, 'SIGKILL']]);
+      expect(child.exitCode).toBeNull();
+      expect(child.signalCode).toBe('SIGKILL');
+      // Read the real handle's state. Only request history is cleared in this
+      // immutable snapshot; the real signalCode is now the only refusal input.
+      const lifecycleState = { ...childSignalState(child), requested: false };
+      expect(lifecycleState).toMatchObject({
+        owned: true,
+        exitCode: null,
+        signalCode: 'SIGKILL',
+        requested: false,
+      });
+      expect(validPid(lifecycleState.pid)).toBe(true);
+      expect(maySignal(lifecycleState)).toBe(false);
+      const calls: ChildProcess[] = [];
+      expect(
+        signalOwnedChild(child, (owned) => {
+          calls.push(owned);
+          return true;
+        }),
+      ).toBe(false);
+      expect(calls).toEqual([]);
+    }
+    await until(
+      () => nonePresent(Array.from(observedPids)),
+      REAP_WITHIN_MS,
+      () => remaining(Array.from(observedPids)),
+    );
+    if (cleanupErrors.length > 0)
+      throw new AggregateError(
+        cleanupErrors,
+        'cooperative fixture cleanup failed',
+      );
+  } catch (error) {
+    cleanupConfirmed = false;
+    const children = Array.from(ownedChildren, (child) => child.pid).filter(
+      validPid,
+    );
+    throw new Error(
+      `fixture cleanup unconfirmed; retained ${ownedRoot?.path}; observed pids [${Array.from(observedPids).join(', ')}]; owned pids [${children.join(', ')}]`,
+      { cause: error },
+    );
+  } finally {
+    observedPids.clear();
+    hostPids.clear();
+    cleanupMarkers.clear();
+    streamPidFiles.clear();
+    ownedChildren.clear();
+    signalledFixtureExits.clear();
+  }
+}, CLEANUP_TIMEOUT_MS);
 
 afterAll(() => {
-  rmSync(dir, { recursive: true, force: true });
+  if (!ownedRoot) return;
+  if (!cleanupConfirmed)
+    throw new Error(
+      `cleanup unconfirmed; retained fixtures at ${ownedRoot.path}`,
+    );
+  removeOwnedFixture(dir);
+  rmdirSync(checkedRoot()); // Empty owned root only; never recursive.
+});
+
+describe('qualification fixture cleanup guards', () => {
+  it('resolves the Windows observer only from a local absolute drive root', () => {
+    expect(windowsObserverCommand('C:\\Windows')).toBe(
+      'C:\\Windows\\System32\\tasklist.exe',
+    );
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['drive-relative', 'C:Windows'],
+    ['current-drive-rooted', '\\Windows'],
+    ['UNC network', '\\\\server\\share'],
+    ['extended device', '\\\\?\\C:\\Windows'],
+    ['device namespace', '\\\\.\\C:\\Windows'],
+  ])('refuses a %s Windows observer root', (_name, root) => {
+    expect(() => windowsObserverCommand(root)).toThrow(
+      'Windows system root is not a local absolute drive path',
+    );
+  });
+
+  it('refuses a second signal after its owned fixture exits from a signal', async () => {
+    const child = await startOwnedIdleChild();
+    expect(validPid(child.pid)).toBe(true);
+    const exits: Array<[number | null, NodeJS.Signals | null]> = [];
+    signalledFixtureExits.set(child, exits);
+    child.once('exit', (code, signal) => exits.push([code, signal]));
+    expect(signalOwnedChild(child)).toBe(true);
+    // afterEach waits for the real exit event before checking inert refusal.
+  });
+
+  it('records only a live owned handle and refuses unsafe or reaped targets', async () => {
+    const child = await startOwnedIdleChild();
+    const records: Array<{
+      child: ChildProcess;
+      pid: number | undefined;
+      signal: 'SIGKILL';
+    }> = [];
+    const inertSignaller = (owned: ChildProcess): boolean => {
+      records.push({ child: owned, pid: owned.pid, signal: 'SIGKILL' });
+      return true;
+    };
+    try {
+      const state = childSignalState(child);
+      const refusals: SignalEligibility[] = [
+        ...[
+          undefined,
+          null,
+          NaN,
+          Infinity,
+          -2,
+          -1,
+          0,
+          1,
+          1.5,
+          2_147_483_648,
+        ].map((pid) => ({ ...state, pid })),
+        { ...state, owned: false },
+        { ...state, exitCode: 0 },
+        { ...state, signalCode: 'SIGKILL' },
+        { ...state, requested: true },
+      ];
+      // Invalid numbers stay in immutable guard inputs. No handle field changes,
+      // and every guard row uses the inert signaller, never a system signal.
+      for (const refusal of refusals) {
+        expect(signalOwnedChild(child, inertSignaller, refusal)).toBe(false);
+        expect(records).toEqual([]);
+      }
+      expect(signalOwnedChild(child, inertSignaller)).toBe(true);
+      expect(records).toEqual([{ child, pid: child.pid, signal: 'SIGKILL' }]);
+      expect(signalOwnedChild(child, inertSignaller)).toBe(false);
+      expect(records).toHaveLength(1);
+    } finally {
+      await endIdleChild(child);
+    }
+
+    const reaped = await startOwnedIdleChild();
+    await endIdleChild(reaped);
+    records.length = 0;
+    expect(signalOwnedChild(reaped, inertSignaller)).toBe(false);
+    expect(records).toEqual([]);
+
+    const unregistered = await startOwnedIdleChild(false);
+    try {
+      expect(signalOwnedChild(unregistered, inertSignaller)).toBe(false);
+      expect(records).toEqual([]);
+    } finally {
+      await endIdleChild(unregistered);
+    }
+  });
+
+  it('records only a contained removal and refuses root, prefix and symlink escapes', () => {
+    const root = checkedRoot();
+    const target = path.join(dir, 'removal-guard');
+    mkdirSync(target);
+    const escape = path.join(dir, 'removal-escape');
+    symlinkSync(root, escape, 'junction');
+    const removals: string[] = [];
+    const inertRemover = (candidate: string): void => {
+      removals.push(candidate);
+    };
+    for (const outside of [
+      root,
+      `${root}-sibling`,
+      path.dirname(root),
+      escape,
+    ]) {
+      expect(() => removeOwnedFixture(outside, inertRemover)).toThrow(
+        'fixture removal target is outside the owned root',
+      );
+      expect(removals).toEqual([]);
+    }
+    removeOwnedFixture(target, inertRemover);
+    expect(removals).toEqual([realpathSync.native(target)]);
+    expect(existsSync(target)).toBe(true);
+
+    const marker = path.join(target, 'cleanup.stop');
+    writeCleanupMarker(marker);
+    expect(readFileSync(marker, 'utf8')).toBe('stop');
+    expect(() => writeCleanupMarker(marker)).toThrow();
+    const sentinel = path.join(target, 'marker-sentinel');
+    writeFileSync(sentinel, 'unchanged', 'utf8');
+    const linkedMarker = path.join(target, 'linked.stop');
+    symlinkSync(
+      os === 'win32' ? target : sentinel,
+      linkedMarker,
+      os === 'win32' ? 'junction' : 'file',
+    );
+    expect(() => writeCleanupMarker(linkedMarker)).toThrow();
+    expect(readFileSync(sentinel, 'utf8')).toBe('unchanged');
+    expect(() => writeCleanupMarker(path.join(escape, 'cleanup.stop'))).toThrow(
+      'fixture removal target is outside the owned root',
+    );
+  });
 });
 
 describe.each(['in-process', 'owned-process'] as const)(
@@ -408,9 +926,13 @@ describe.each(['in-process', 'owned-process'] as const)(
           const expected = Buffer.alloc(size);
           for (let i = 0; i < size; i += 1) expected[i] = i % 251;
           const pidFile = path.join(dir, `${mode}-stream.pid`);
+          // Enroll the record before launch, so any early failure still makes
+          // cleanup recover the pid or fail closed and retain the artifacts.
+          streamPidFiles.add(pidFile);
           const proxy = startCli(spawnClaudeCodeProcessOffMain, [
             '-e',
-            `const b = Buffer.alloc(${size});
+            `setTimeout(() => process.exit(3), ${FIXTURE_DEADLINE_MS}).unref();
+             const b = Buffer.alloc(${size});
              for (let i = 0; i < b.length; i += 1) b[i] = i % 251;
              require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
              process.stdout.write(b);`,
@@ -428,9 +950,8 @@ describe.each(['in-process', 'owned-process'] as const)(
           expect(Buffer.concat(chunks).equals(expected)).toBe(true);
           expect(observed.exits).toEqual([[0, null]]);
           expect(observed.errors).toEqual([]);
-          const pid = Number(readFileSync(pidFile, 'utf8'));
-          strays.add(pid);
-          await until(() => !present(pid));
+          const pid = recordStreamFixturePid(pidFile);
+          await until(() => nonePresent([pid]));
         },
         CASE_TIMEOUT_MS,
       );
@@ -447,10 +968,7 @@ describe.each(['in-process', 'owned-process'] as const)(
           const [cli, grandchild] = await pidsOf(pidFile);
 
           expect(proxy.kill('SIGTERM')).toBe(true);
-          await until(
-            () => !present(cli) && !present(grandchild),
-            REAP_WITHIN_MS,
-          );
+          await until(() => nonePresent([cli, grandchild]), REAP_WITHIN_MS);
           await until(() => observed.exits.length > 0);
           expect(observed.exits).toHaveLength(1);
         },
@@ -489,10 +1007,10 @@ describe.each(['in-process', 'owned-process'] as const)(
           else expect(host.kill()).toBe(true);
 
           await until(
-            () => pids.every((pid) => !present(pid)),
+            () => nonePresent(pids),
             REAP_WITHIN_MS,
-            () =>
-              `still present: ${remaining(pids)}; proxies ended: ${
+            async () =>
+              `still present: ${await remaining(pids)}; proxies ended: ${
                 observed.filter((o) => o.exits.length > 0).length
               } of ${observed.length}`,
           );
@@ -515,7 +1033,7 @@ describe('Claude process host in-process: a post-spawn error', () => {
     'a child that errors after it spawned stays tracked until it exits',
     async () => {
       const fake = Object.assign(new EventEmitter(), {
-        pid: await startOwnedIdleChild(),
+        pid: (await startOwnedIdleChild()).pid,
         stdin: new PassThrough(),
         stdout: new PassThrough(),
         stderr: new PassThrough(),
@@ -664,7 +1182,7 @@ describe('Claude process host served over a launched channel', () => {
 
       if (!disconnect) throw new Error('the host registered no disconnect');
       disconnect();
-      await until(() => !present(cli) && !present(grandchild), REAP_WITHIN_MS);
+      await until(() => nonePresent([cli, grandchild]), REAP_WITHIN_MS);
       await until(() => exit.mock.calls.length > 0);
       expect(posted).toContainEqual({ type: 'shutdown-complete' });
       expect(exit).toHaveBeenCalledTimes(1);

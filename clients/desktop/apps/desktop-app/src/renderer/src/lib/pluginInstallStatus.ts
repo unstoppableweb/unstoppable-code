@@ -1,5 +1,8 @@
 import { installedItemKey } from '@canopy/protocol/installed-items';
-import type { MarketplaceInfo } from '@canopy/protocol/plugins';
+import {
+  parseHarnessCompatibility,
+  type MarketplaceInfo,
+} from '@canopy/protocol/plugins';
 import {
   pluginInfoHarnessRows,
   type PluginHarnessId,
@@ -49,6 +52,8 @@ export function projectDesktopMarketplaceInventory(
               // A listing with cached content isn't installed for a harness:
               // only an install status or a recorded install says so.
               false,
+              pluginNeedsInstall(plugin),
+              parseHarnessCompatibility(plugin.harnessCompatibility),
             ),
           }
         : {}),

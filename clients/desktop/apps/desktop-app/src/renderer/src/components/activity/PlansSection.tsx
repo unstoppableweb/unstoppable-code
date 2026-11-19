@@ -152,7 +152,7 @@ function PlanCard({
       {!readOnly && (
         <div className="absolute right-2 top-2 opacity-0 transition-opacity focus-within:opacity-100 group-hover/plan:opacity-100">
           <Button
-            variant="ghost-overlay"
+            variant="ghost"
             size="compact"
             iconOnly
             data-testid={`activity-plan-toggle-hidden-${plan.id}`}

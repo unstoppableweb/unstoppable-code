@@ -749,7 +749,7 @@ export function useCanopyCloudAuth({
           // Announce AFTER clearing the pending-flush latch and dispatching the
           // account-changed event: the unmount cleanup would otherwise re-fire
           // `saveCanopyCloudApiKey`, and every listener (CloudSyncStatus,
-          // CanopyPortalModal, useSubscriptionStatus) must have refreshed
+          // RemoteControlModal, useSubscriptionStatus) must have refreshed
           // before a host closes itself in response to this callback.
           announceConnectSuccess(
             'api_key',

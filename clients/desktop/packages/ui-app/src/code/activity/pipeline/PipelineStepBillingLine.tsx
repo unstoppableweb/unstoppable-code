@@ -8,7 +8,7 @@ import { CoinsIcon } from '@canopy/ui-shared/icons/AppIcons';
  * How a workflow step's last finished attempt was billed (CAN-7256). Declared
  * here rather than imported: `ui-app` must not depend on the execution engine.
  * The engine's `StepBillingRoute` and the Portal's
- * `PortalPipelineStepBillingRoute` carry the same literals, and each mount
+ * `RemoteControlPipelineStepBillingRoute` carry the same literals, and each mount
  * passes the value straight through so the compiler catches drift.
  */
 export type PipelineStepBillingRoute =

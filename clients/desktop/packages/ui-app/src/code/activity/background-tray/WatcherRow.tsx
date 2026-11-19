@@ -93,7 +93,7 @@ export function WatcherRow({
           onDelete ? (
             <Tooltip label="Delete watcher">
               <Button
-                variant="ghost-overlay"
+                variant="ghost"
                 size="compact"
                 iconOnly
                 aria-label="Delete watcher"

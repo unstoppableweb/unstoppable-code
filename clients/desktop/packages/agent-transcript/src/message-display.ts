@@ -1,7 +1,7 @@
 import type {
   AutoResumeMetadata,
   ToolInterruption,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import type {
   AgentUsage,
   ChatWatcherFiredInfo,
@@ -13,7 +13,7 @@ import type {
   PersistedVisualReference,
 } from './types';
 import type { AuthDependencyFailure } from '@canopy/protocol/auth-recovery';
-import type { AgentSentInfo } from '@canopy/protocol/portal/external-agent-sender';
+import type { AgentSentInfo } from '@canopy/protocol/remote-control/shell/external-agent-sender';
 
 export type ToolResult = {
   output: string;

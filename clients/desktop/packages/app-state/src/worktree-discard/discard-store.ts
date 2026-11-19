@@ -8,14 +8,14 @@ import type {
   WorktreeDiscardDescription,
   WorktreeDiscardRefusal,
   WorktreeDiscardResult,
-} from '@canopy/protocol/portal/worktree-discard';
+} from '@canopy/protocol/remote-control/shell/worktree-discard';
 import type { WorktreeDiscardOffer } from './discard-offer';
-import { WorktreeRecoveryDescriptionSchema } from '@canopy/protocol/portal/worktree-discard-schemas';
+import { WorktreeRecoveryDescriptionSchema } from '@canopy/protocol/remote-control/shell/worktree-discard-schemas';
 import {
   unavailableWorktreeRecovery,
   worktreeRecoveryResolutionAction,
   type WorktreeRecoveryDescription,
-} from '@canopy/protocol/portal/worktree-recovery';
+} from '@canopy/protocol/remote-control/shell/worktree-recovery';
 import { offerLifecycleJournalQuarantine } from '../lifecycle-journal/quarantine-offer';
 
 /**

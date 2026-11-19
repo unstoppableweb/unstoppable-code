@@ -4,9 +4,9 @@ import { useId, useState, type JSX } from 'react';
 import type { WorkspaceCreateResult } from '@canopy/app-core';
 import {
   normalizeRepositoryCloneUrl,
-  portalRepositoryCloneErrorMessage,
-  type PortalWorkspaceCreatePayload,
-} from '@canopy/protocol/portal';
+  remoteControlRepositoryCloneErrorMessage,
+  type RemoteControlWorkspaceCreatePayload,
+} from '@canopy/protocol/remote-control/shell';
 import {
   Button,
   DialogFormField,
@@ -26,7 +26,7 @@ export interface CreateWorkspaceDialogTestIds {
 export interface CreateWorkspaceDialogProps {
   readonly mode: 'remote-clone';
   readonly onCreate?: (
-    payload: PortalWorkspaceCreatePayload,
+    payload: RemoteControlWorkspaceCreatePayload,
   ) => Promise<WorkspaceCreateResult>;
   readonly onClose: () => void;
   readonly testIds?: CreateWorkspaceDialogTestIds;
@@ -62,7 +62,7 @@ export function CreateWorkspaceDialog({
       });
       onClose();
     } catch (createError: unknown) {
-      setError(portalRepositoryCloneErrorMessage(createError));
+      setError(remoteControlRepositoryCloneErrorMessage(createError));
       setSubmitting(false);
     }
   };

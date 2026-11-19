@@ -68,18 +68,18 @@ import {
   TerminalIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
 import type {
-  PortalCodeViewerSelection,
-  PortalChangedFilesGroup,
-  PortalHookDescriptor,
-  PortalHookRunProjection,
-  PortalMcpServerEntity,
-  PortalPlan,
-  PortalScriptDescriptor,
-  PortalScriptRunProjection,
-  PortalTerminalSessionEntity,
-  PortalChatTodoProjection,
-  PortalWorktreeSummaryEntity,
-} from '@canopy/protocol/portal';
+  RemoteControlCodeViewerSelection,
+  RemoteControlChangedFilesGroup,
+  RemoteControlHookDescriptor,
+  RemoteControlHookRunProjection,
+  RemoteControlMcpServerEntity,
+  RemoteControlPlan,
+  RemoteControlScriptDescriptor,
+  RemoteControlScriptRunProjection,
+  RemoteControlTerminalSessionEntity,
+  RemoteControlChatTodoProjection,
+  RemoteControlWorktreeSummaryEntity,
+} from '@canopy/protocol/remote-control/shell';
 import type { BackgroundTask } from '@canopy/protocol/background-tasks';
 import { BackgroundTasksList } from './BackgroundTasksList';
 import {
@@ -101,7 +101,7 @@ import {
 import { FilesTab, type FilesTabRoot } from './FilesTab';
 import { SummarySectionBody } from './SummarySectionBody';
 import { ActivitySectionSkeleton } from './ActivitySectionSkeleton';
-import { portalSummaryToSectionBodyProps } from './portal-summary-section-mapper';
+import { remoteControlSummaryToSectionBodyProps } from './remote-control-summary-section-mapper';
 import {
   ChangedFilesSection,
   type ChangedFilesSectionProps,
@@ -118,13 +118,13 @@ import {
   ScriptsSectionBody,
   type ScriptsSectionBodyProps,
 } from './scripts/ScriptsSectionBody';
-import { portalScriptsToSectionModel } from './portal-scripts-section-mapper';
+import { remoteControlScriptsToSectionModel } from './remote-control-scripts-section-mapper';
 import {
   HooksSectionBody,
   PauseToggleButton,
   type HooksSectionBodyProps,
 } from './hooks/HooksSectionBody';
-import { portalHooksToSectionModel } from './portal-hooks-section-mapper';
+import { remoteControlHooksToSectionModel } from './remote-control-hooks-section-mapper';
 import { TodoSectionBody, type TodoSectionBodyItem } from './TodoSectionBody';
 import {
   McpServersSectionBody,
@@ -197,8 +197,8 @@ interface KeyedRun {
   readonly startedAt?: string;
 }
 
-function portalMcpServerToSectionItem(
-  server: PortalMcpServerEntity,
+function remoteControlMcpServerToSectionItem(
+  server: RemoteControlMcpServerEntity,
 ): McpServersSectionItem {
   return {
     key: server.localId,
@@ -259,7 +259,7 @@ const EMPTY_BACKGROUND_TASKS: readonly BackgroundTask[] = [];
 interface ActivitySectionContext {
   readonly backgroundTasks: readonly BackgroundTask[];
   readonly snapshot: SessionViewModel | null;
-  readonly worktreeSummaries?: readonly PortalWorktreeSummaryEntity[];
+  readonly worktreeSummaries?: readonly RemoteControlWorktreeSummaryEntity[];
   readonly workspaceLocalId: string;
   readonly worktreeLocalId: string;
   readonly selectedChatId?: string;
@@ -691,34 +691,36 @@ export function getActivitySectionDescriptor(
  */
 /** Optional host behavior. Missing handlers remove their corresponding controls. */
 export interface ActivityPanelHostActions {
-  readonly onOpenCode?: (selection: PortalCodeViewerSelection) => void;
+  readonly onOpenCode?: (selection: RemoteControlCodeViewerSelection) => void;
   readonly onRevertFile?: (filePath: string) => void;
   readonly onRunScript?: (
-    script: PortalScriptDescriptor,
+    script: RemoteControlScriptDescriptor,
   ) => void | Promise<void>;
   readonly onCancelScript?: (
-    run: PortalScriptRunProjection,
+    run: RemoteControlScriptRunProjection,
   ) => void | Promise<void>;
-  readonly onRunHook?: (hook: PortalHookDescriptor) => void;
-  readonly onCancelHook?: (run: PortalHookRunProjection) => void;
-  readonly onToggleHookPause?: (hook: PortalHookDescriptor) => void;
+  readonly onRunHook?: (hook: RemoteControlHookDescriptor) => void;
+  readonly onCancelHook?: (run: RemoteControlHookRunProjection) => void;
+  readonly onToggleHookPause?: (hook: RemoteControlHookDescriptor) => void;
   /** Receives the desired paused state for every configured hook. */
   readonly onToggleAllHooksPause?: (paused: boolean) => void;
   readonly onReviewChanges?: () => void;
   readonly onRefreshSummary?: () => void;
-  readonly onGetPlan?: (plan: PortalPlan) => void;
-  readonly onImplementPlan?: (plan: PortalPlan) => void;
+  readonly onGetPlan?: (plan: RemoteControlPlan) => void;
+  readonly onImplementPlan?: (plan: RemoteControlPlan) => void;
   /**
    * Dispatch a `plan_ready` pipeline from a finished plan (CAN-3019). Supplied
    * by the web portal only; desktop replaces the `'plans'` body wholesale
    * through `sectionOverrides` and never renders the shared `PlansSection`.
    */
-  readonly onRunPlanPipeline?: (plan: PortalPlan) => void;
-  readonly onOpenTerminal?: (terminal: PortalTerminalSessionEntity) => void;
+  readonly onRunPlanPipeline?: (plan: RemoteControlPlan) => void;
+  readonly onOpenTerminal?: (
+    terminal: RemoteControlTerminalSessionEntity,
+  ) => void;
   /** Load the next Portal-paged changed-files group. */
   readonly onLoadMoreChangedFiles?: (
     worktreeLocalId: string,
-    group: PortalChangedFilesGroup,
+    group: RemoteControlChangedFilesGroup,
   ) => void;
   readonly onListDirectory?: (name: string) => void;
   /** Host switches the Files tab to another file root (multi-repo). */
@@ -746,9 +748,9 @@ export interface ActivityPanelProps {
   /** Active chat whose projected agent tasks populate the Todo section. */
   readonly selectedChatId?: string;
   /** Host-projected summaries; falls back to the hydrated session snapshot. */
-  readonly worktreeSummaries?: readonly PortalWorktreeSummaryEntity[];
+  readonly worktreeSummaries?: readonly RemoteControlWorktreeSummaryEntity[];
   /** Host-projected todos; falls back to the hydrated session snapshot. */
-  readonly todoLists?: readonly PortalChatTodoProjection[];
+  readonly todoLists?: readonly RemoteControlChatTodoProjection[];
   /** Whether the host currently permits manual summary refresh. */
   readonly summaryRefreshEnabled?: boolean;
   /** Host-projected generation state, including before a summary exists. */
@@ -761,7 +763,7 @@ export interface ActivityPanelProps {
   readonly changedFilesSection?: ChangedFilesSectionHostModel;
   /** Per-group Portal page reads currently in flight. */
   readonly loadingMoreChangedFiles?: Partial<
-    Record<PortalChangedFilesGroup, boolean>
+    Record<RemoteControlChangedFilesGroup, boolean>
   >;
   /** Host-projected tasks and actions. Absent means the empty state. */
   readonly backgroundTasksSection?: BackgroundTasksSectionHostModel;
@@ -963,8 +965,8 @@ export interface ActivitySectionPresenceInput {
   readonly workspaceLocalId: string;
   readonly worktreeLocalId: string;
   readonly selectedChatId?: string;
-  readonly worktreeSummaries?: readonly PortalWorktreeSummaryEntity[];
-  readonly todoLists?: readonly PortalChatTodoProjection[];
+  readonly worktreeSummaries?: readonly RemoteControlWorktreeSummaryEntity[];
+  readonly todoLists?: readonly RemoteControlChatTodoProjection[];
   /**
    * The sections this target's client implements
    * ({@link CanopyCapabilities.activitySectionIds}), resolved per target by
@@ -1431,7 +1433,7 @@ export function ActivityPanel({
   const selectChangedFile =
     hostActions?.onOpenCode ??
     (onSelectFile
-      ? (selection: PortalCodeViewerSelection): void =>
+      ? (selection: RemoteControlCodeViewerSelection): void =>
           onSelectFile(selection.title)
       : undefined);
   const visibleOrder = order.filter((id) =>
@@ -1504,7 +1506,7 @@ export function ActivityPanel({
         const projectedGenerating = projectedSummary.generating === true;
         return (
           <SummarySectionBody
-            {...portalSummaryToSectionBodyProps(projectedSummary)}
+            {...remoteControlSummaryToSectionBodyProps(projectedSummary)}
             generating={summaryGenerating ?? projectedGenerating}
             refreshEnabled={
               summaryRefreshEnabled ??
@@ -1619,11 +1621,11 @@ export function ActivityPanel({
           snapshot?.scriptDescriptors,
           worktreeLocalId,
         );
-        const model = portalScriptsToSectionModel(descriptors, runs);
+        const model = remoteControlScriptsToSectionModel(descriptors, runs);
         const descriptorsByKey = new Map(
           descriptors.map((descriptor) => [descriptor.scriptKey, descriptor]),
         );
-        const latestRuns = latestRunsByKey<PortalScriptRunProjection>(
+        const latestRuns = latestRunsByKey<RemoteControlScriptRunProjection>(
           runs,
           (run) => run.scriptKey,
         );
@@ -1678,11 +1680,11 @@ export function ActivityPanel({
           snapshot?.hookDescriptors,
           worktreeLocalId,
         );
-        const model = portalHooksToSectionModel(descriptors, runs);
+        const model = remoteControlHooksToSectionModel(descriptors, runs);
         const descriptorsByKey = new Map(
           descriptors.map((descriptor) => [descriptor.hookKey, descriptor]),
         );
-        const latestRuns = latestRunsByKey<PortalHookRunProjection>(
+        const latestRuns = latestRunsByKey<RemoteControlHookRunProjection>(
           runs,
           (run) => run.hookKey,
         );
@@ -1755,7 +1757,7 @@ export function ActivityPanel({
             servers={selectWorktreeItems(
               snapshot?.mcpServers,
               worktreeLocalId,
-            ).map(portalMcpServerToSectionItem)}
+            ).map(remoteControlMcpServerToSectionItem)}
             warnings={[]}
             loading={false}
             error={null}

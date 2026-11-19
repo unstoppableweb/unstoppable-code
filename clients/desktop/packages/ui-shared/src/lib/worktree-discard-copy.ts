@@ -6,7 +6,7 @@ import {
   formatWorktreeRecoveryReason,
   type WorktreeRecoveryAsset,
   type WorktreeRecoveryDescription,
-} from '@canopy/protocol/portal/worktree-recovery';
+} from '@canopy/protocol/remote-control/shell/worktree-recovery';
 import type {
   WorktreeDiscardDeletedData,
   WorktreeDiscardDescription,
@@ -14,7 +14,7 @@ import type {
   WorktreeDiscardRetry,
   WorktreeDiscardTarget,
   WorktreeDiscardTargetKind,
-} from '@canopy/protocol/portal/worktree-discard';
+} from '@canopy/protocol/remote-control/shell/worktree-discard';
 
 /**
  * CAN-5336: every sentence of the worktree discard confirmation, shared by

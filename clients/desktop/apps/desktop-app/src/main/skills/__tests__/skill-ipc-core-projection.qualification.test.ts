@@ -66,7 +66,7 @@ jest.mock('../skill-install-context', () => ({
 }));
 
 import { SkillServiceResultError } from '../../canopy-runtime/core-skill-catalog-host';
-import { readPortalSkill } from '../../services/plugin-catalog-service';
+import { readRemoteControlSkill } from '../../services/plugin-catalog-service';
 import {
   installSkills,
   readSkillContent,
@@ -313,7 +313,9 @@ describe('skill IPC and Portal through core (CAN-4124)', () => {
       body: 'hi',
       truncated: false,
     });
-    await expect(readPortalSkill('custom:app', 'x')).resolves.toMatchObject({
+    await expect(
+      readRemoteControlSkill('custom:app', 'x'),
+    ).resolves.toMatchObject({
       frontmatter: { name: 'x' },
       body: 'hi',
     });
@@ -324,7 +326,9 @@ describe('skill IPC and Portal through core (CAN-4124)', () => {
         new SkillServiceResultError('SKILL.md not found for "x".'),
       ),
     );
-    await expect(readPortalSkill('custom:app', 'x')).rejects.toMatchObject({
+    await expect(
+      readRemoteControlSkill('custom:app', 'x'),
+    ).rejects.toMatchObject({
       code: 'not_found',
       message: 'SKILL.md not found for "x".',
     });
@@ -363,7 +367,9 @@ describe('skill IPC and Portal through core (CAN-4124)', () => {
       body: 'hi',
       truncated: false,
     });
-    await expect(readPortalSkill('custom:app', 'x')).resolves.toMatchObject({
+    await expect(
+      readRemoteControlSkill('custom:app', 'x'),
+    ).resolves.toMatchObject({
       frontmatter: { notes },
       body: 'hi',
     });
@@ -388,7 +394,7 @@ describe('skill IPC and Portal through core (CAN-4124)', () => {
         ),
     };
     try {
-      await expect(readPortalSkill('custom:app', 'x')).rejects.toBe(
+      await expect(readRemoteControlSkill('custom:app', 'x')).rejects.toBe(
         hostFailure,
       );
     } finally {
@@ -402,9 +408,9 @@ describe('skill IPC and Portal through core (CAN-4124)', () => {
       body: 'hi',
       truncated: false,
     });
-    await expect(readPortalSkill('custom:app', 'x')).rejects.toBeInstanceOf(
-      CanopyOperationError,
-    );
+    await expect(
+      readRemoteControlSkill('custom:app', 'x'),
+    ).rejects.toBeInstanceOf(CanopyOperationError);
     expect(readSkillContent).not.toHaveBeenCalled();
   });
 

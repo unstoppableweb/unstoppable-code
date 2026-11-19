@@ -130,6 +130,9 @@ function open(
     owner: { kind: 'discovery', id: 'runtime-integrity' },
     onUpdate: () => undefined,
     signal,
+    // An empty root: a developer's installed managed copy must not replace
+    // the file each case launches through ANTIGRAVITY_EXECUTABLE.
+    managedRootDir: join(root, 'no-managed-runtime'),
   });
 }
 

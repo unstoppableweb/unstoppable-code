@@ -15,10 +15,10 @@ import type { TranscriptPage } from '@canopy/agent-transcript/transcript-storage
 import type { CanopyQueryOptions } from '@canopy/core-runtime';
 import { getActiveDesktopRuntime } from '../canopy-runtime/desktop-runtime';
 import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
-import type { PortalAdapterContext } from './adapter-context';
+import type { RemoteControlAdapterContext } from './adapter-context';
 
-export function createPortalReadOptions(
-  context: PortalAdapterContext,
+export function createRemoteControlReadOptions(
+  context: RemoteControlAdapterContext,
   canRead: (() => boolean) | undefined,
   unavailableMessage = 'Portal transcript authorization is unavailable.',
   signal?: AbortSignal,
@@ -37,8 +37,8 @@ export function createPortalReadOptions(
   };
 }
 
-export async function queryPortalChatTranscriptPage(
-  context: PortalAdapterContext,
+export async function queryRemoteControlChatTranscriptPage(
+  context: RemoteControlAdapterContext,
   request: ChatTranscriptPageRequest,
 ): Promise<TranscriptPage> {
   const { projectId, worktreeId, chatId, standaloneHistory, ...params } =
@@ -50,7 +50,7 @@ export async function queryPortalChatTranscriptPage(
         ...(standaloneHistory ? { standaloneHistory: true as const } : {}),
         scope: { workspaceId: projectId, worktreeId, chatId },
       },
-      createPortalReadOptions(
+      createRemoteControlReadOptions(
         context,
         context.canReadAssets,
         'Portal asset authorization is unavailable.',
@@ -61,14 +61,14 @@ export async function queryPortalChatTranscriptPage(
   return legacyResult;
 }
 
-export async function queryPortalChatSendReceipt(
-  context: PortalAdapterContext,
+export async function queryRemoteControlChatSendReceipt(
+  context: RemoteControlAdapterContext,
   request: CoreChatSendReceiptParams,
 ): Promise<CoreChatSendReceiptResult> {
   const result = await getActiveDesktopRuntime().query(
     'core.chat.send.receipt',
     request,
-    createPortalReadOptions(
+    createRemoteControlReadOptions(
       context,
       context.canReadAssets,
       'Portal asset authorization is unavailable.',
@@ -79,15 +79,15 @@ export async function queryPortalChatSendReceipt(
   return result;
 }
 
-export async function queryPortalDelegationTranscriptPage(
-  context: PortalAdapterContext,
+export async function queryRemoteControlDelegationTranscriptPage(
+  context: RemoteControlAdapterContext,
   request: CoreChatTranscriptPageParams,
   signal: AbortSignal,
 ): Promise<CoreChatTranscriptPageResult> {
   const result = await getActiveDesktopRuntime().query(
     'core.chat.transcript.page',
     request,
-    createPortalReadOptions(
+    createRemoteControlReadOptions(
       context,
       context.canReadTranscripts,
       undefined,
@@ -99,15 +99,15 @@ export async function queryPortalDelegationTranscriptPage(
   return result;
 }
 
-export async function queryPortalTranscriptBlocksPage(
-  context: PortalAdapterContext,
+export async function queryRemoteControlTranscriptBlocksPage(
+  context: RemoteControlAdapterContext,
   request: CoreChatTranscriptBlocksPageParams,
   signal: AbortSignal,
 ): Promise<CoreChatTranscriptBoundedBlocksPageResult> {
   const result = await getActiveDesktopRuntime().query(
     'core.chat.transcript.blocks.page',
     request,
-    createPortalReadOptions(
+    createRemoteControlReadOptions(
       context,
       context.canReadTranscripts,
       undefined,
@@ -119,15 +119,15 @@ export async function queryPortalTranscriptBlocksPage(
   return CoreChatTranscriptBoundedBlocksPageResultSchema.parse(result);
 }
 
-export async function queryPortalTranscriptContent(
-  context: PortalAdapterContext,
+export async function queryRemoteControlTranscriptContent(
+  context: RemoteControlAdapterContext,
   request: CoreChatContentReadParams,
   signal: AbortSignal,
 ): Promise<CoreChatContentReadResult> {
   const result = await getActiveDesktopRuntime().query(
     'core.chat.content.read',
     request,
-    createPortalReadOptions(
+    createRemoteControlReadOptions(
       context,
       context.canReadTranscripts,
       undefined,
@@ -139,8 +139,8 @@ export async function queryPortalTranscriptContent(
   return result;
 }
 
-export async function queryPortalChatState(
-  context: PortalAdapterContext,
+export async function queryRemoteControlChatState(
+  context: RemoteControlAdapterContext,
   request: { projectId: string; worktreeId: string },
 ): Promise<ChatStateSnapshot> {
   if (!context.sessionId) throw new Error('Portal session is unavailable.');

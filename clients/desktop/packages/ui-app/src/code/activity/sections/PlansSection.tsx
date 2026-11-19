@@ -2,7 +2,7 @@
 
 import { Badge } from '@canopy/ui-shared/components/Badge';
 import type { JSX } from 'react';
-import type { PortalPlan } from '@canopy/protocol/portal';
+import type { RemoteControlPlan } from '@canopy/protocol/remote-control/shell';
 import { isCursorPlanExecutionUnavailable } from '@canopy/app-core/client';
 import {
   Stack,
@@ -28,14 +28,14 @@ import {
 import { Surface } from '@canopy/ui-shared/components';
 
 export interface PlansSectionProps {
-  readonly plans: readonly PortalPlan[];
-  readonly onGetPlan?: (plan: PortalPlan) => void;
-  readonly onImplementPlan?: (plan: PortalPlan) => void;
+  readonly plans: readonly RemoteControlPlan[];
+  readonly onGetPlan?: (plan: RemoteControlPlan) => void;
+  readonly onImplementPlan?: (plan: RemoteControlPlan) => void;
   /**
    * Hand the finished plan to a `plan_ready` pipeline (CAN-3019). Desktop
    * overrides this section body entirely, so this action is web-only today.
    */
-  readonly onRunPlanPipeline?: (plan: PortalPlan) => void;
+  readonly onRunPlanPipeline?: (plan: RemoteControlPlan) => void;
   /**
    * Open the host's plan import. Without it the empty state only explains
    * where plans come from; no web host can import yet.
@@ -54,7 +54,7 @@ function PlanCard({
   onGetPlan,
   onImplementPlan,
   onRunPlanPipeline,
-}: PlansSectionProps & { readonly plan: PortalPlan }): JSX.Element {
+}: PlansSectionProps & { readonly plan: RemoteControlPlan }): JSX.Element {
   const body = stripPlanTitleLine(plan.content);
   const revision = plan.revisionNumber ?? plan.latestRevisionNumber;
   // List summaries carry the stored review in `status`; loaded details also

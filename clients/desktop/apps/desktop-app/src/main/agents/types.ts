@@ -7,7 +7,7 @@ import type {
   ChatInputAdmission,
   ChatInputWithdrawal,
   ChatSteeringCapabilities,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import type {
   AgentProviderType,
   AgentModelConfig,

@@ -110,7 +110,6 @@ function CreateFromControl({
         options={options}
         onChange={onChange}
         width="content"
-        shape="capsule"
       />
     </div>
   );

@@ -24,12 +24,12 @@ import {
   type ProjectableCloudModelOption,
 } from '@canopy/protocol/models';
 import type {
-  PortalChatTabPluginSelections,
-  PortalPluginCatalog,
-  PortalPluginCatalogMcpServer,
-  PortalPluginCatalogPlugin,
-  PortalPluginCatalogSkill,
-} from '@canopy/protocol/portal';
+  RemoteControlChatTabPluginSelections,
+  RemoteControlPluginCatalog,
+  RemoteControlPluginCatalogMcpServer,
+  RemoteControlPluginCatalogPlugin,
+  RemoteControlPluginCatalogSkill,
+} from '@canopy/protocol/remote-control/shell';
 import { parseHarnessCompatibility } from '@canopy/protocol/plugins';
 import {
   CoreCoworkRequestError,
@@ -49,13 +49,13 @@ export type CloudChatCatalogStatus = 'loading' | 'ready' | 'error';
 export interface CloudChatCatalogState {
   status: CloudChatCatalogStatus;
   models: ModelCatalog;
-  plugins: PortalPluginCatalog | null;
+  plugins: RemoteControlPluginCatalog | null;
   /**
    * MCP servers the web core won't run now (signed out, not connected, off),
    * which the picker leaves out; a surface showing a chat's servers with
    * their state lists them from here (CAN-6608).
    */
-  unavailableMcpServers: readonly PortalPluginCatalogMcpServer[];
+  unavailableMcpServers: readonly RemoteControlPluginCatalogMcpServer[];
   /**
    * The snapshot's entries as read, for a surface that matches this
    * computer's items to the cloud's (CAN-6176).
@@ -67,7 +67,7 @@ export interface CloudChatCatalogState {
    * a web core that predates the mark.
    */
   thisDesktopUploads: boolean;
-  selections: PortalChatTabPluginSelections;
+  selections: RemoteControlChatTabPluginSelections;
   /** The selection revision of the last read (`core.catalog.selection.get`). */
   selectionRevision: number | null;
   /** A write met a newer selection; the store re-read it. */
@@ -87,7 +87,7 @@ export interface CloudChatCatalog {
    * `core.catalog.selection.update`, and takes no expected revision; a
    * `core.chat.revisionConflict` re-reads and flags the conflict.
    */
-  setSelections(next: PortalChatTabPluginSelections): Promise<void>;
+  setSelections(next: RemoteControlChatTabPluginSelections): Promise<void>;
 }
 
 const MODEL_ENTRY_PREFIX = 'model:';
@@ -108,7 +108,7 @@ const SKILL_SOURCE_LABELS: Readonly<Record<CatalogEntry['source'], string>> = {
   remote: 'Curated',
 };
 
-const emptySelections = (): PortalChatTabPluginSelections => ({
+const emptySelections = (): RemoteControlChatTabPluginSelections => ({
   collectionIds: [],
   skillRefs: [],
   pluginRefs: [],
@@ -205,11 +205,14 @@ export function cloudChatPickerModels(cloudModels?: CatalogCloudModels): {
 
 interface MappedCatalog {
   readonly models: ModelCatalog;
-  readonly plugins: PortalPluginCatalog;
+  readonly plugins: RemoteControlPluginCatalog;
   /** MCP servers with a ref that the web core won't run now. */
-  readonly unavailableMcpServers: readonly PortalPluginCatalogMcpServer[];
+  readonly unavailableMcpServers: readonly RemoteControlPluginCatalogMcpServer[];
   /** Selection refs by entry id, from the entries' own `selectionRef`. */
-  readonly refs: ReadonlyMap<string, Partial<PortalChatTabPluginSelections>>;
+  readonly refs: ReadonlyMap<
+    string,
+    Partial<RemoteControlChatTabPluginSelections>
+  >;
   readonly withoutRef: number;
 }
 
@@ -232,11 +235,11 @@ function mapCloudChatCatalog(
   cloudModels?: CatalogCloudModels,
 ): MappedCatalog {
   const selected = new Set(selectedEntryIds);
-  const skills: PortalPluginCatalogSkill[] = [];
-  const plugins: PortalPluginCatalogPlugin[] = [];
-  const mcpServers: PortalPluginCatalogMcpServer[] = [];
-  const unavailableMcpServers: PortalPluginCatalogMcpServer[] = [];
-  const refs = new Map<string, Partial<PortalChatTabPluginSelections>>();
+  const skills: RemoteControlPluginCatalogSkill[] = [];
+  const plugins: RemoteControlPluginCatalogPlugin[] = [];
+  const mcpServers: RemoteControlPluginCatalogMcpServer[] = [];
+  const unavailableMcpServers: RemoteControlPluginCatalogMcpServer[] = [];
+  const refs = new Map<string, Partial<RemoteControlChatTabPluginSelections>>();
   let withoutRef = 0;
   for (const entry of entries) {
     const { content } = entry;
@@ -346,7 +349,7 @@ function mapCloudChatCatalog(
 function selectionsOf(
   ids: readonly string[],
   refs: MappedCatalog['refs'],
-): PortalChatTabPluginSelections {
+): RemoteControlChatTabPluginSelections {
   const selections = emptySelections();
   for (const id of ids) {
     const ref = refs.get(id);
@@ -416,8 +419,8 @@ async function readCatalogSnapshotReply(
 export async function readCloudProjectPluginCatalog(
   invoker: CoreCoworkInvoker,
   workspaceId: string,
-  selections: PortalChatTabPluginSelections | null,
-): Promise<PortalPluginCatalog> {
+  selections: RemoteControlChatTabPluginSelections | null,
+): Promise<RemoteControlPluginCatalog> {
   const reply = await readCatalogSnapshotReply(invoker, workspaceId, {
     compatibilityRefused: false,
   });

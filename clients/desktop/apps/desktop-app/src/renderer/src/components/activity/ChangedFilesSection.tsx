@@ -14,9 +14,9 @@ import {
   type ChangedFilesSectionHostModel,
 } from '@canopy/ui-app';
 import type {
-  PortalChangedFile,
-  PortalChangedFiles,
-} from '@canopy/protocol/portal';
+  RemoteControlChangedFile,
+  RemoteControlChangedFiles,
+} from '@canopy/protocol/remote-control/shell';
 import type {
   ActivityChangedFilesResponse,
   TurnDiffData,
@@ -62,7 +62,9 @@ const EMPTY_CHANGED_FILES: ActivityChangedFilesResponse = {
 };
 
 // eslint-disable-next-line react-refresh/only-export-components
-export function toPortalFile(file: ChangedFileInfo): PortalChangedFile {
+export function toRemoteControlFile(
+  file: ChangedFileInfo,
+): RemoteControlChangedFile {
   return {
     filePath: file.repoName ? `${file.repoName}/${file.path}` : file.path,
     status: file.status,
@@ -81,14 +83,14 @@ export function toPortalFile(file: ChangedFileInfo): PortalChangedFile {
   };
 }
 
-function toPortalChangedFiles(
+function toRemoteControlChangedFiles(
   changedFiles: ActivityChangedFilesResponse,
   worktreeId: string,
-): PortalChangedFiles {
+): RemoteControlChangedFiles {
   return {
     worktreeLocalId: worktreeId,
-    uncommitted: changedFiles.uncommitted.map(toPortalFile),
-    committed: changedFiles.committed.map(toPortalFile),
+    uncommitted: changedFiles.uncommitted.map(toRemoteControlFile),
+    committed: changedFiles.committed.map(toRemoteControlFile),
   };
 }
 
@@ -284,7 +286,7 @@ export function ChangedFilesSection({
   );
   const changedFiles = useMemo(
     () =>
-      toPortalChangedFiles(
+      toRemoteControlChangedFiles(
         {
           uncommitted: filter.visibleUncommitted,
           committed: filter.visibleCommitted,
@@ -642,9 +644,9 @@ export function useChangedFilesSectionHostModel({
     () => ({ workspaceLocalId: projectId, worktreeLocalId: worktreeId }),
     [projectId, worktreeId],
   );
-  const portalChangedFiles = useMemo(
+  const remoteControlChangedFiles = useMemo(
     () =>
-      toPortalChangedFiles(
+      toRemoteControlChangedFiles(
         {
           uncommitted: filter.visibleUncommitted,
           committed: filter.visibleCommitted,
@@ -656,7 +658,7 @@ export function useChangedFilesSectionHostModel({
   const total = filter.totalCount;
 
   return {
-    changedFiles: portalChangedFiles,
+    changedFiles: remoteControlChangedFiles,
     workspaceLocalId: scope.workspaceLocalId,
     worktreeLocalId: scope.worktreeLocalId,
     canRevert: !readOnly,

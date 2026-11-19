@@ -1,5 +1,5 @@
 import * as yaml from 'js-yaml';
-import type { PortalPipelineDefinitionViewModel } from '@canopy/protocol/portal';
+import type { RemoteControlPipelineDefinitionViewModel } from '@canopy/protocol/remote-control/shell';
 import { normalizePipelineScopes } from '@canopy/execution-engine/pipelines/scope';
 import {
   getTriggerTypes,
@@ -52,7 +52,7 @@ function projectStep(
   jobId: string,
   index: number,
   includeRunSummary: boolean,
-): PortalPipelineDefinitionViewModel['jobs'][number]['steps'][number] {
+): RemoteControlPipelineDefinitionViewModel['jobs'][number]['steps'][number] {
   // Parsed YAML can carry alias-expanded non-string values despite the Step
   // type, so only string fields may reach the serialized view model; anything
   // else falls back to bounded copy.
@@ -74,7 +74,7 @@ function projectStep(
 }
 
 type ProjectedDefinition = Omit<
-  PortalPipelineDefinitionViewModel,
+  RemoteControlPipelineDefinitionViewModel,
   'canonicalYaml' | 'canonicalYamlTruncated'
 >;
 
@@ -147,7 +147,7 @@ function pipelineWithRowLimit(
 function withCanonicalYaml(
   pipeline: ReadDetailSource,
   projected: ProjectedDefinition,
-): PortalPipelineDefinitionViewModel {
+): RemoteControlPipelineDefinitionViewModel {
   // Keep references enabled: repository-controlled alias graphs otherwise
   // expand recursively when `noRefs` is used and can exhaust the renderer or
   // Electron main process before the portal result budget is applied. The
@@ -166,7 +166,7 @@ function withCanonicalYaml(
 
 export function toPipelineDefinitionViewModel(
   pipeline: Pipeline,
-): PortalPipelineDefinitionViewModel {
+): RemoteControlPipelineDefinitionViewModel {
   return withCanonicalYaml(pipeline, projectPipeline(pipeline, true));
 }
 
@@ -178,14 +178,14 @@ export function toPipelineDefinitionViewModel(
  */
 export function toPipelineRunDefinitionViewModel(
   snapshot: NormalizedPipeline,
-): PortalPipelineDefinitionViewModel {
+): RemoteControlPipelineDefinitionViewModel {
   return withCanonicalYaml(snapshot, projectSource(snapshot, '', true));
 }
 
 export function toPipelineDefinitionViewModelWithoutCanonicalYaml(
   pipeline: Pipeline,
 ): Omit<
-  PortalPipelineDefinitionViewModel,
+  RemoteControlPipelineDefinitionViewModel,
   'canonicalYaml' | 'canonicalYamlTruncated'
 > {
   return projectPipeline(pipeline, false);

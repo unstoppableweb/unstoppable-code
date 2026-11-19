@@ -109,12 +109,13 @@ jest.mock('../models/model-registry', () => ({
   setModelRegistryBroadcastHandler: (): void => undefined,
   broadcastModelRegistryUpdated: (): void => undefined,
 }));
-const mockPortalCatalogChanged = jest.fn(() => Promise.resolve());
+const mockRemoteControlCatalogChanged = jest.fn(() => Promise.resolve());
 jest.mock('../remote-projection/agent-catalog-compatibility', () => ({
   ...jest.requireActual<typeof AgentCatalogCompatibility>(
     '../remote-projection/agent-catalog-compatibility',
   ),
-  notifyModelCatalogChanged: (): Promise<void> => mockPortalCatalogChanged(),
+  notifyModelCatalogChanged: (): Promise<void> =>
+    mockRemoteControlCatalogChanged(),
 }));
 const mockRefresh = jest.fn(async (): Promise<void> => {
   await Promise.resolve();
@@ -255,5 +256,5 @@ it('explicit model refresh probes through worker.agent.provider.list', async () 
     { scope: {}, probe: true },
     expect.anything(),
   );
-  expect(mockPortalCatalogChanged).toHaveBeenCalledTimes(1);
+  expect(mockRemoteControlCatalogChanged).toHaveBeenCalledTimes(1);
 });

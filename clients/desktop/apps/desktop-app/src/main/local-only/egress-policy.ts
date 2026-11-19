@@ -48,7 +48,7 @@ export const GITHUB_CONNECTED_HOSTS: readonly string[] = Object.freeze([
 
 /**
  * Provider hosts main contacts for a connected provider (keyed like
- * `PortalChatProviderAvailability`), allowed only while it is connected:
+ * `RemoteControlChatProviderAvailability`), allowed only while it is connected:
  * the Anthropic API for Claude (profile and plan usage), and the OpenAI API
  * and ChatGPT backend for Codex (plan usage).
  */

@@ -387,16 +387,16 @@ export function cloudRunDestinationOf(
  * cloud needs the push warning only this computer's Run dialog shows
  * (CAN-6869), so the Portal can't start one yet.
  */
-export const PORTAL_CLOUD_RUN_UNAVAILABLE =
+export const REMOTE_CONTROL_CLOUD_RUN_UNAVAILABLE =
   "Cloud runs of a task start from this computer's Run dialog for now. Run on this computer, or start it there.";
 
 /**
  * Why a Portal run with a `targetId` is refused: it never runs on this
  * computer instead.
  */
-export function portalRunLocationRefusal(targetId: string): string {
+export function remoteControlRunLocationRefusal(targetId: string): string {
   return targetId === CLOUD_PIPELINE_RUN_TARGET_ID
-    ? PORTAL_CLOUD_RUN_UNAVAILABLE
+    ? REMOTE_CONTROL_CLOUD_RUN_UNAVAILABLE
     : CLOUD_RUN_TARGET_UNAVAILABLE;
 }
 

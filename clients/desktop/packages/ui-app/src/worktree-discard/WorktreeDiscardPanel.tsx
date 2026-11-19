@@ -6,7 +6,7 @@ import {
   worktreeRemovalRetryable,
   type WorktreeDiscardAttemptError,
 } from '@canopy/app-state/worktree-discard';
-import type { WorktreeDiscardDescription } from '@canopy/protocol/portal/worktree-discard';
+import type { WorktreeDiscardDescription } from '@canopy/protocol/remote-control/shell/worktree-discard';
 import { WorktreeDiscardDialog } from '@canopy/ui-shared/components/WorktreeDiscardDialog';
 import {
   WORKTREE_DISCARD_FAILED,

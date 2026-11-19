@@ -7,7 +7,7 @@ import {
   presentationChatKey,
 } from '../canopy-tools/presentation-state';
 import { browserHandoffs } from '../browser/browser-handoffs';
-import { chatAgentSent } from '@canopy/protocol/portal/external-agent-sender';
+import { chatAgentSent } from '@canopy/protocol/remote-control/shell/external-agent-sender';
 import { assertCopilotModelAvailable } from '../copilot/connection';
 import { isCopilotRuntimeAvailable } from '../copilot/runtime-availability';
 import { getChatQueueService } from '../services/chat-queue-service';
@@ -139,7 +139,7 @@ import {
  * Visible turns started per chat (sends and starting pickups), so a delayed
  * synthetic cancel can tell a newer turn began before it projected a frame.
  */
-const portalTurnEpochs = new Map<string, number>();
+const remoteControlTurnEpochs = new Map<string, number>();
 
 type AdvisorChatObservation = {
   address: CanonicalChatAddress;
@@ -181,8 +181,11 @@ async function captureAdvisorChatObservation(
   }
 }
 
-function bumpPortalTurnEpoch(chatId: string): void {
-  portalTurnEpochs.set(chatId, (portalTurnEpochs.get(chatId) ?? 0) + 1);
+function bumpRemoteControlTurnEpoch(chatId: string): void {
+  remoteControlTurnEpochs.set(
+    chatId,
+    (remoteControlTurnEpochs.get(chatId) ?? 0) + 1,
+  );
 }
 
 type AppAdvisorChatDispatchRequest = ChatSendMessageRequest & {
@@ -857,7 +860,7 @@ export async function dispatchAppAdvisorChatMessage(
             // Capture the terminal's role before queued persistence. The reload
             // coordinator can finish starting the continuation while this event
             // waits for disk, but the old terminal must still keep its timer open.
-            const preservePortalTimerForDeferredReload =
+            const preserveRemoteControlTimerForDeferredReload =
               !isLateAtReceipt &&
               isTerminalRuntimeChatEvent(data) &&
               deferredToolsReloadCoordinator.hasActiveReload({
@@ -892,7 +895,7 @@ export async function dispatchAppAdvisorChatMessage(
             );
             // At receipt, before the commit tail: a cancel still awaiting its
             // lookup must already see that a newer turn began.
-            if (isStartingPickup) bumpPortalTurnEpoch(request.chatId);
+            if (isStartingPickup) bumpRemoteControlTurnEpoch(request.chatId);
             const sequence = eventSequence;
             eventSequence += 1;
             eventCommitTail = eventCommitTail
@@ -1079,7 +1082,7 @@ export async function dispatchAppAdvisorChatMessage(
                   eventData &&
                   isRootTerminalChatEventData(eventData, codexRootThreadId)
                 ) {
-                  if (preservePortalTimerForDeferredReload) {
+                  if (preserveRemoteControlTimerForDeferredReload) {
                     return;
                   }
                   const status = getChatTurnAuditStatus(eventData);
@@ -1393,7 +1396,7 @@ export async function dispatchAppAdvisorChatMessage(
       await parkBehindWake(request, parked);
     }
     if (!isDeferredToolsReloadContinuation) {
-      bumpPortalTurnEpoch(request.chatId);
+      bumpRemoteControlTurnEpoch(request.chatId);
       const occurredAt = new Date(Date.now()).toISOString();
       observation = await captureAdvisorChatObservation(
         request,
@@ -1552,9 +1555,9 @@ export interface AppAdvisorSyntheticResultOptions {
 export function captureAppAdvisorSyntheticResultFence(
   chatId: string,
 ): AppAdvisorSyntheticResultFence {
-  const epoch = portalTurnEpochs.get(chatId);
+  const epoch = remoteControlTurnEpochs.get(chatId);
   return {
-    isCurrent: (): boolean => portalTurnEpochs.get(chatId) === epoch,
+    isCurrent: (): boolean => remoteControlTurnEpochs.get(chatId) === epoch,
   };
 }
 

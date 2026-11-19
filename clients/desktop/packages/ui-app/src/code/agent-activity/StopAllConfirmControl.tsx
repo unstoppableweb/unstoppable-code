@@ -138,7 +138,7 @@ export function StopAllConfirmControl({
         </div>
       ) : appearance === 'section' ? (
         <Button
-          variant="ghost-overlay"
+          variant="ghost"
           size="compact"
           aria-label={
             stoppingOnly ? DELEGATED_AGENT_STOPPING_LABEL : accessibleLabel

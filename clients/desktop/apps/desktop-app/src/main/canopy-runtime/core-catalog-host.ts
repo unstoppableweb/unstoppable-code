@@ -39,9 +39,9 @@ import {
 } from '@canopy/protocol/canopy-core';
 import type { InstalledItemRef } from '@canopy/protocol/installed-items';
 import type {
-  PortalPluginCatalog,
-  PortalPluginCatalogMcpServer,
-} from '@canopy/protocol/portal';
+  RemoteControlPluginCatalog,
+  RemoteControlPluginCatalogMcpServer,
+} from '@canopy/protocol/remote-control/shell';
 import {
   chatInheritsProjectDefaults,
   chatSurfaceUsesGlobalPluginDefaults,
@@ -71,7 +71,7 @@ import { runningCatalogRefresh } from './core-catalog-mutation-host';
 
 /** What the desktop catalog host reads and writes; tests inject fakes. Defaults load lazily. */
 export interface DesktopCatalogHostDeps {
-  buildCachedPluginCatalog(): Promise<PortalPluginCatalog>;
+  buildCachedPluginCatalog(): Promise<RemoteControlPluginCatalog>;
   readCollection(id: string): Promise<{
     skills: { sourceId: string; skillName: string }[];
     plugins: { marketplaceId: string; pluginName: string }[];
@@ -318,7 +318,7 @@ async function readPluginFacts(
 }
 
 function mcpAvailability(
-  server: PortalPluginCatalogMcpServer,
+  server: RemoteControlPluginCatalogMcpServer,
   disabled: boolean,
 ): CatalogEntry['availability'] {
   if (disabled || server.connectionEnabled === false) return 'disabled';

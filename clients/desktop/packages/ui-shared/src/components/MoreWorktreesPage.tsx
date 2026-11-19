@@ -397,7 +397,7 @@ function MoreWorktreeActions({
         <Button
           ref={triggerRef}
           id={triggerId}
-          variant="ghost-overlay"
+          variant="ghost"
           size="sm"
           iconOnly
           disabled={menuActions.length === 0}

@@ -98,8 +98,8 @@ import {
   type CanopyCloudAccountEntry,
 } from '../../lib/canopy-cloud-account-store';
 import type { JsonValue } from '@canopy/protocol';
-import type { ChatInputAdmission } from '@canopy/protocol/portal/input-delivery';
-import type { ManagedDelegateSender } from '@canopy/protocol/portal/external-agent-sender';
+import type { ChatInputAdmission } from '@canopy/protocol/remote-control/shell/input-delivery';
+import type { ManagedDelegateSender } from '@canopy/protocol/remote-control/shell/external-agent-sender';
 import type {
   AgentDelegationSpawnRequest,
   AgentDelegationTranscript,

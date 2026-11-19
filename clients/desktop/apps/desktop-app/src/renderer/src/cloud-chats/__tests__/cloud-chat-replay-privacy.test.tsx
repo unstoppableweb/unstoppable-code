@@ -2,10 +2,10 @@
 import { act, type ReactElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type {
-  PortalAskUserQuestion,
-  PortalChatMessage,
-  PortalChatPart,
-} from '@canopy/protocol/portal';
+  RemoteControlAskUserQuestion,
+  RemoteControlChatMessage,
+  RemoteControlChatPart,
+} from '@canopy/protocol/remote-control/shell';
 import { createSurfacedErrorRecorder } from '@canopy/protocol/app-errors';
 import {
   AskUserQuestionCard,
@@ -79,7 +79,10 @@ function recording(): string {
 }
 
 /** One or more parts of each kind, with SECRET in every field it shows. */
-const FIXTURES: Record<PortalChatPart['kind'], readonly PortalChatPart[]> = {
+const FIXTURES: Record<
+  RemoteControlChatPart['kind'],
+  readonly RemoteControlChatPart[]
+> = {
   mcp_activation: [{ kind: 'mcp_activation', data: { record: SECRET } }],
   text: [
     {
@@ -254,7 +257,7 @@ describe('Session replay records no desktop cloud chat content (CAN-5975)', () =
   });
 
   const kinds = Object.keys(CHAT_PART_REPLAY_POLICY).filter(
-    (kind): kind is PortalChatPart['kind'] => kind in FIXTURES,
+    (kind): kind is RemoteControlChatPart['kind'] => kind in FIXTURES,
   );
 
   it('covers every part kind', () => {
@@ -318,7 +321,9 @@ describe('Session replay records no desktop cloud chat content (CAN-5975)', () =
   });
 
   it('a user and an assistant message record none of their text, links or code', () => {
-    const message = (role: PortalChatMessage['role']): PortalChatMessage => ({
+    const message = (
+      role: RemoteControlChatMessage['role'],
+    ): RemoteControlChatMessage => ({
       messageId: `m-${role}`,
       chatId: 'chat-1',
       role,
@@ -337,15 +342,15 @@ describe('Session replay records no desktop cloud chat content (CAN-5975)', () =
   });
 
   const question = (
-    fields: Partial<PortalAskUserQuestion>,
-  ): PortalAskUserQuestion => ({
+    fields: Partial<RemoteControlAskUserQuestion>,
+  ): RemoteControlAskUserQuestion => ({
     header: `Header ${SECRET}`,
     question: `Question ${SECRET}?`,
     options: [],
     ...fields,
   });
 
-  const renderQuestion = (q: PortalAskUserQuestion): void => {
+  const renderQuestion = (q: RemoteControlAskUserQuestion): void => {
     act(() =>
       root.render(
         <AskUserQuestionCard

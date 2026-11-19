@@ -21,18 +21,18 @@ import {
   type ReactNode,
 } from 'react';
 import type {
-  PortalChatMessage,
-  PortalChatSummaryEntity,
-  PortalChatTurnGroup,
-  PortalAskUserQuestionState,
-} from '@canopy/protocol/portal';
+  RemoteControlChatMessage,
+  RemoteControlChatSummaryEntity,
+  RemoteControlChatTurnGroup,
+  RemoteControlAskUserQuestionState,
+} from '@canopy/protocol/remote-control/shell';
 import {
   ChatToolStepGroup,
   ThinkingSpinner,
   TurnWorkHeader,
   TurnFooterRow,
   isAskUserQuestionToolName,
-  portalAskUserQuestionRecordState,
+  remoteControlAskUserQuestionRecordState,
   parseAskUserQuestionTexts,
   readToolCallResult,
   resolveTurnStartingStatus,
@@ -85,8 +85,8 @@ export interface ChatTranscriptProps {
   readonly initialized?: boolean;
   /** Affirmative host evidence that the snapshot contains every tool result. */
   readonly resultsComplete?: boolean;
-  readonly messages: readonly PortalChatMessage[];
-  readonly turnGroups: readonly PortalChatTurnGroup[];
+  readonly messages: readonly RemoteControlChatMessage[];
+  readonly turnGroups: readonly RemoteControlChatTurnGroup[];
   /**
    * Dedupe keys of the runs the host lists live elsewhere (the composer's
    * background drawer): no turn lists them until they finish (CAN-4690).
@@ -97,11 +97,11 @@ export interface ChatTranscriptProps {
   readonly appIcon?: ReactNode;
   /** Overrides the default empty-state placeholder. */
   readonly emptyState?: ReactNode;
-  readonly forkContext?: PortalChatSummaryEntity['forkContext'];
+  readonly forkContext?: RemoteControlChatSummaryEntity['forkContext'];
   /**
    * Renders the turn-level thumbs up/down control (CAN-1521) for one turn,
    * keyed by the turn's `localMessageId` (the desktop renderer's per-turn
-   * `userMessageId`, which `PortalChatMessage.localMessageId` already
+   * `userMessageId`, which `RemoteControlChatMessage.localMessageId` already
    * persists). Omitted by hosts without the `turnFeedback` capability.
    */
   readonly renderTurnFeedback?: (localMessageId: string) => ReactNode;
@@ -134,7 +134,7 @@ export interface ChatTranscriptProps {
    * prompts after the transcript, with the working row under them, until the
    * transcript itself carries them.
    */
-  readonly deliveringMessages?: readonly PortalChatMessage[];
+  readonly deliveringMessages?: readonly RemoteControlChatMessage[];
   /**
    * Prompts the person has queued in `footerSlot`, excluding host entries.
    * Queuing a prompt is a send, so it re-arms bottom-follow.
@@ -160,14 +160,14 @@ export interface ChatTranscriptWorktreeSetup {
   readonly projectName?: string;
 }
 
-const EMPTY_DELIVERING_MESSAGES: readonly PortalChatMessage[] = [];
+const EMPTY_DELIVERING_MESSAGES: readonly RemoteControlChatMessage[] = [];
 
 // Presentation memory follows the injected client, including keyed panel
 // remounts. It carries no transcript or execution state and is never persisted.
 const pendingFirstSendPresentations = new WeakMap<CanopyClient, Set<string>>();
 
 export function getLatestMessageSignal(
-  messages: readonly PortalChatMessage[],
+  messages: readonly RemoteControlChatMessage[],
 ): string {
   const latestMessage = messages[messages.length - 1];
   return latestMessage
@@ -187,8 +187,8 @@ const CALL_FOCUS_MAX_FRAMES = 30;
 
 /** Use the same legacy Claude correlation as the interactive card itself. */
 function pendingQuestionToolUseId(
-  messages: readonly PortalChatMessage[],
-  question: PortalAskUserQuestionState,
+  messages: readonly RemoteControlChatMessage[],
+  question: RemoteControlAskUserQuestionState,
 ): string | undefined {
   if (question.toolUseId !== undefined) return question.toolUseId;
   for (const message of messages) {
@@ -215,7 +215,7 @@ function pendingQuestionToolUseId(
           : undefined;
       if (
         toolUseId !== undefined &&
-        portalAskUserQuestionRecordState([question], {
+        remoteControlAskUserQuestionRecordState([question], {
           toolName: data.toolName,
           toolUseId,
           questionTexts: parseAskUserQuestionTexts(input),
@@ -229,8 +229,8 @@ function pendingQuestionToolUseId(
 
 /** Whether a turn holds the tool call (or Agent call) with this id. */
 function turnHoldsToolCall(
-  turnGroup: PortalChatTurnGroup,
-  messagesById: Readonly<Record<string, PortalChatMessage | undefined>>,
+  turnGroup: RemoteControlChatTurnGroup,
+  messagesById: Readonly<Record<string, RemoteControlChatMessage | undefined>>,
   toolUseId: string,
 ): boolean {
   return [
@@ -264,8 +264,8 @@ const INITIAL_VIEWPORT_HEIGHT_PX = 600;
  * shows the error. Anything else keeps the error line.
  */
 function latestTurnShowsError(
-  turnGroups: readonly PortalChatTurnGroup[],
-  messagesById: Readonly<Record<string, PortalChatMessage | undefined>>,
+  turnGroups: readonly RemoteControlChatTurnGroup[],
+  messagesById: Readonly<Record<string, RemoteControlChatMessage | undefined>>,
   error: string,
 ): boolean {
   const latest = turnGroups[turnGroups.length - 1];
@@ -355,7 +355,7 @@ export function ChatTranscript({
   });
   const virtualHeight = virtualizer.getTotalSize();
   const messagesById = useMemo(() => {
-    const byId: Record<string, PortalChatMessage> = {};
+    const byId: Record<string, RemoteControlChatMessage> = {};
     for (const message of messages) {
       byId[message.messageId] = message;
     }

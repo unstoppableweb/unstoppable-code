@@ -8,7 +8,7 @@ import {
   type WorkerAgentUsageLimitsGetParams,
 } from '@canopy/protocol/canopy-core';
 import type { UsageLimitsSnapshot } from '@canopy/protocol/provider-usage';
-import { PortalProviderUsageLimitsGetPayloadSchema } from '@canopy/protocol/portal';
+import { RemoteControlProviderUsageLimitsGetPayloadSchema } from '@canopy/protocol/remote-control/shell';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
 import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
@@ -39,9 +39,8 @@ export function registerProviderUsageLimitsHandlers(
           retry: { kind: 'never' },
         });
       }
-      const request = PortalProviderUsageLimitsGetPayloadSchema.safeParse(
-        rawArgs[0],
-      );
+      const request =
+        RemoteControlProviderUsageLimitsGetPayloadSchema.safeParse(rawArgs[0]);
       if (!request.success) {
         throw new CanopyOperationError({
           kind: 'invalid_argument',

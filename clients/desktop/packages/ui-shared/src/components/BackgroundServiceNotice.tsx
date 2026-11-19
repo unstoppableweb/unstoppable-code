@@ -3,7 +3,7 @@ import { useState, type JSX } from 'react';
 import type {
   BackgroundServiceStatus,
   W5RecoveryStatus,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import {
   BACKGROUND_SERVICE_COPY_DIAGNOSTICS_LABEL,
   BACKGROUND_SERVICE_RESTART_LABEL,

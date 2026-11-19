@@ -2,18 +2,18 @@ import { isPlanFileWrite } from '@canopy/protocol/plan-tool-input';
 import { isClaudeAiCreditsFallbackErrorCode } from '@canopy/protocol/llm-gateway';
 import { isCodexAccountModelAccessFailure } from '@canopy/protocol/auth-recovery';
 import type {
-  PortalChatMessage,
-  PortalChatToolFamily,
-  PortalChatTurnGroup,
+  RemoteControlChatMessage,
+  RemoteControlChatToolFamily,
+  RemoteControlChatTurnGroup,
   TurnOutcomeCounts,
   TurnOutcomeStepDetail,
   TurnOutcomeEvidence,
   ToolInterruption,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import {
   classifyTurnStepOutcome,
   readToolInterruption,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 
 /**
  * Neutral turn-grouping for the shared chat store.
@@ -23,7 +23,7 @@ import {
  * rich-block types (`DisplayBlock`, `groupIntoTurns`/`AgentUsage`) which live in
  * `@canopy/desktop-shared` and the desktop renderer — both forbidden imports for
  * `@canopy/app-state`. So this module re-derives the grouping over the neutral
- * {@link PortalChatMessage} shape from `@canopy/protocol`, preserving the one
+ * {@link RemoteControlChatMessage} shape from `@canopy/protocol`, preserving the one
  * behaviour the shared UI depends on: **referential identity of completed turn
  * groups**, so a downstream `React.memo` can skip re-rendering settled turns
  * while only the streaming tail changes.
@@ -42,7 +42,7 @@ export interface TurnGroupCache {
   /** Which chat this cache belongs to; a mismatch invalidates the cache. */
   chatId: string;
   /** Completed groups from the previous computation, keyed by user message id. */
-  completedGroups: Map<string, PortalChatTurnGroup>;
+  completedGroups: Map<string, RemoteControlChatTurnGroup>;
 }
 
 /** A fresh, empty cache; callers own one per chat thread. */
@@ -51,7 +51,7 @@ export function createEmptyTurnGroupCache(): TurnGroupCache {
 }
 
 /** A message whose status is no longer streaming. */
-function isTerminalStatus(status: PortalChatMessage['status']): boolean {
+function isTerminalStatus(status: RemoteControlChatMessage['status']): boolean {
   return status !== 'streaming';
 }
 
@@ -70,7 +70,7 @@ function isTerminalStatus(status: PortalChatMessage['status']): boolean {
  * or a message could suppress the fallback spinner while never rendering a
  * visible timer row.
  */
-export function isTurnTimerMessage(message: PortalChatMessage): boolean {
+export function isTurnTimerMessage(message: RemoteControlChatMessage): boolean {
   if (message.role !== 'system') {
     return false;
   }
@@ -98,7 +98,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * starts at the tail and stops at the first `user` message.
  */
 export function hasLiveTurnTimer(
-  messages: readonly PortalChatMessage[],
+  messages: readonly RemoteControlChatMessage[],
 ): boolean {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
@@ -118,11 +118,11 @@ export function hasLiveTurnTimer(
   return false;
 }
 
-/** Maps a tool family to its `PortalChatTurnGroup.summary` count field. */
+/** Maps a tool family to its `RemoteControlChatTurnGroup.summary` count field. */
 const TOOL_FAMILY_TO_SUMMARY_FIELD: Readonly<
   Record<
-    PortalChatToolFamily,
-    keyof NonNullable<PortalChatTurnGroup['summary']>
+    RemoteControlChatToolFamily,
+    keyof NonNullable<RemoteControlChatTurnGroup['summary']>
   >
 > = {
   read: 'readCount',
@@ -151,8 +151,8 @@ const TOOL_FAMILY_TO_SUMMARY_FIELD: Readonly<
 
 /** Tally visible prose, thinking, and tool parts across intermediate messages. */
 function summarizeIntermediate(
-  intermediate: readonly PortalChatMessage[],
-): PortalChatTurnGroup['summary'] {
+  intermediate: readonly RemoteControlChatMessage[],
+): RemoteControlChatTurnGroup['summary'] {
   const counts: Record<string, number> = {};
   for (const message of intermediate) {
     if (message.text.trim().length > 0) {
@@ -198,7 +198,7 @@ function summarizeIntermediate(
 }
 
 /** A tool result's error flag and text, as far as it is readable. */
-interface PortalToolResult {
+interface RemoteControlToolResult {
   isError: boolean;
   output?: string;
   interruption?: ToolInterruption;
@@ -217,7 +217,7 @@ function readResultText(value: Record<string, unknown>): string | undefined {
  * Reads a tool result carried as an object or, in persisted projections, as
  * its JSON text. `undefined` when there is no readable result.
  */
-function readToolResult(value: unknown): PortalToolResult | undefined {
+function readToolResult(value: unknown): RemoteControlToolResult | undefined {
   let result: unknown = value;
   if (typeof result === 'string') {
     try {
@@ -241,7 +241,7 @@ function readToolResult(value: unknown): PortalToolResult | undefined {
  * frames carry it stringified; persisted projections keep a (truncated)
  * object, which is serialized here.
  */
-function readPortalToolInput(data: Record<string, unknown>): string {
+function readRemoteControlToolInput(data: Record<string, unknown>): string {
   const raw = data['input'];
   if (typeof raw === 'string') return raw;
   if (raw === undefined || raw === null) return '';
@@ -253,10 +253,10 @@ function readPortalToolInput(data: Record<string, unknown>): string {
 }
 
 /** One counted call and its latest known result. */
-interface PortalCountedCall {
+interface RemoteControlCountedCall {
   toolName: string;
   input: string;
-  result?: PortalToolResult;
+  result?: RemoteControlToolResult;
 }
 
 /**
@@ -274,9 +274,9 @@ interface PortalCountedCall {
  * when `isDenial` recognizes its error text, as desktop's step line does.
  * Helper agent outcomes are not derived.
  */
-export function computePortalTurnOutcomes(
-  countedMessages: readonly PortalChatMessage[],
-  resultMessages: readonly PortalChatMessage[] = countedMessages,
+export function computeRemoteControlTurnOutcomes(
+  countedMessages: readonly RemoteControlChatMessage[],
+  resultMessages: readonly RemoteControlChatMessage[] = countedMessages,
   evidence?: TurnOutcomeEvidence,
   isDenial: (output: string) => boolean = () => false,
 ): TurnOutcomeCounts {
@@ -299,14 +299,14 @@ export function computePortalTurnOutcomes(
 }
 
 /**
- * The outcome steps behind {@link computePortalTurnOutcomes}, in transcript
+ * The outcome steps behind {@link computeRemoteControlTurnOutcomes}, in transcript
  * order, each with its display call and latest result text for the outcome
  * tooltip. Calls without an id are counted there but cannot be listed or
  * jumped to, so they are left out here.
  */
-export function getPortalTurnOutcomeSteps(
-  countedMessages: readonly PortalChatMessage[],
-  resultMessages: readonly PortalChatMessage[] = countedMessages,
+export function getRemoteControlTurnOutcomeSteps(
+  countedMessages: readonly RemoteControlChatMessage[],
+  resultMessages: readonly RemoteControlChatMessage[] = countedMessages,
   evidence?: TurnOutcomeEvidence,
   isDenial: (output: string) => boolean = () => false,
 ): TurnOutcomeStepDetail[] {
@@ -336,7 +336,7 @@ export function getPortalTurnOutcomeSteps(
 
 /** An errored result whose text the host recognizes as a denial. */
 function deniedResult(
-  result: PortalToolResult | undefined,
+  result: RemoteControlToolResult | undefined,
   isDenial: (output: string) => boolean,
 ): boolean {
   return result?.isError === true && isDenial(result.output ?? '');
@@ -344,7 +344,7 @@ function deniedResult(
 
 /** The `data` of each part of `kind` across `messages`, in order. */
 function partData(
-  messages: readonly PortalChatMessage[],
+  messages: readonly RemoteControlChatMessage[],
   kind: 'tool_use' | 'tool_result',
 ): Record<string, unknown>[] {
   return messages.flatMap((message) =>
@@ -360,14 +360,14 @@ function partData(
  * folded failures are tallied apart.
  */
 function collectCountedCalls(
-  messages: readonly PortalChatMessage[],
+  messages: readonly RemoteControlChatMessage[],
   evidence?: TurnOutcomeEvidence,
 ): {
-  byId: Map<string, PortalCountedCall>;
+  byId: Map<string, RemoteControlCountedCall>;
   failedWithoutId: number;
   interruptedWithoutId: number;
 } {
-  const byId = new Map<string, PortalCountedCall>();
+  const byId = new Map<string, RemoteControlCountedCall>();
   let failedWithoutId = 0;
   let interruptedWithoutId = 0;
   for (const data of partData(messages, 'tool_use')) {
@@ -382,7 +382,7 @@ function collectCountedCalls(
         toolName:
           previous?.toolName ??
           (typeof toolName === 'string' ? toolName : 'tool'),
-        input: previous?.input ?? readPortalToolInput(data),
+        input: previous?.input ?? readRemoteControlToolInput(data),
         ...(resolved ? { result: resolved } : {}),
       });
     } else {
@@ -396,8 +396,8 @@ function collectCountedCalls(
 
 /** Apply folded and separate results in transcript order, latest wins. */
 function applyTurnResults(
-  byId: Map<string, PortalCountedCall>,
-  messages: readonly PortalChatMessage[],
+  byId: Map<string, RemoteControlCountedCall>,
+  messages: readonly RemoteControlChatMessage[],
 ): void {
   for (const message of messages) {
     for (const part of message.parts ?? []) {
@@ -420,7 +420,7 @@ function applyTurnResults(
 /** A `tool_result` part's result; it only applies with a boolean `isError`. */
 function readSeparateResult(
   data: Record<string, unknown>,
-): PortalToolResult | undefined {
+): RemoteControlToolResult | undefined {
   const isError = data['isError'];
   if (typeof isError !== 'boolean') return undefined;
   const output = readResultText(data);
@@ -440,9 +440,9 @@ function readSeparateResult(
  * anchors on the same block, so without this the shared transcript buries a
  * finished plan behind the collapsed "N steps" chip (CAN-3019).
  */
-function isExitPlanModeMessage(message: PortalChatMessage): boolean {
+function isExitPlanModeMessage(message: RemoteControlChatMessage): boolean {
   return (message.parts ?? []).some((part) => {
-    // `PortalChatPart.data` is `unknown` by contract, so narrow rather than
+    // `RemoteControlChatPart.data` is `unknown` by contract, so narrow rather than
     // assert: both producers (`runtime-chat-projection` for live frames and
     // `persisted-chat-projection` for a reloaded/seeded transcript) put the
     // raw provider tool name on `data.toolName`.
@@ -459,7 +459,7 @@ function isExitPlanModeMessage(message: PortalChatMessage): boolean {
   });
 }
 
-function hasDisplayText(message: PortalChatMessage): boolean {
+function hasDisplayText(message: RemoteControlChatMessage): boolean {
   return (
     message.text.trim().length > 0 ||
     (message.parts ?? []).some(
@@ -480,7 +480,7 @@ function hasDisplayText(message: PortalChatMessage): boolean {
  * another account, or the line where a launch skipped Claude Mods. Mirrors
  * desktop's `splitFinalMessages`.
  */
-function isSystemTextMessage(message: PortalChatMessage): boolean {
+function isSystemTextMessage(message: RemoteControlChatMessage): boolean {
   return (
     message.role === 'system' &&
     (hasDisplayText(message) ||
@@ -499,11 +499,11 @@ const TASK_MANAGEMENT_TOOLS = new Set([
   'TodoWrite',
 ]);
 
-function hasImagePart(message: PortalChatMessage): boolean {
+function hasImagePart(message: RemoteControlChatMessage): boolean {
   return (message.parts ?? []).some((part) => part.kind === 'image');
 }
 
-function isTaskManagementMessage(message: PortalChatMessage): boolean {
+function isTaskManagementMessage(message: RemoteControlChatMessage): boolean {
   const parts = message.parts ?? [];
   return (
     message.text.trim().length === 0 &&
@@ -536,9 +536,9 @@ function isTaskManagementMessage(message: PortalChatMessage): boolean {
  * collapsed summary's counts — again matching desktop, whose `computeTurnSummary`
  * tallies intermediate and trailing tool messages together.
  */
-function splitFinal(assistant: readonly PortalChatMessage[]): {
-  intermediate: PortalChatMessage[];
-  final: PortalChatMessage[];
+function splitFinal(assistant: readonly RemoteControlChatMessage[]): {
+  intermediate: RemoteControlChatMessage[];
+  final: RemoteControlChatMessage[];
 } {
   const hasNotices = assistant.some(isSystemTextMessage);
   let finalStart = assistant.length;
@@ -605,8 +605,8 @@ const SAVED_ERROR_PREFIX = 'Error: ';
  * would render. A row with parts shows more than that text, so it always stays.
  */
 function withoutFailureEchoes(
-  assistant: PortalChatMessage[],
-): PortalChatMessage[] {
+  assistant: RemoteControlChatMessage[],
+): RemoteControlChatMessage[] {
   const failures = new Set<string>();
   for (const message of assistant) {
     if (message.role === 'assistant' && message.status === 'failed') {
@@ -625,7 +625,10 @@ function withoutFailureEchoes(
 }
 
 /** Structural equality for two completed groups (id lists + summary). */
-function groupsEqual(a: PortalChatTurnGroup, b: PortalChatTurnGroup): boolean {
+function groupsEqual(
+  a: RemoteControlChatTurnGroup,
+  b: RemoteControlChatTurnGroup,
+): boolean {
   if (a.userMessageId !== b.userMessageId) return false;
   if (a.complete !== b.complete) return false;
   if (a.revertedAt !== b.revertedAt) return false;
@@ -655,18 +658,20 @@ function arraysEqual(a: readonly string[], b: readonly string[]): boolean {
 
 interface RawTurn {
   userMessageId: string;
-  assistant: PortalChatMessage[];
+  assistant: RemoteControlChatMessage[];
   /** Turn-timer messages, floated after the final answer for display. */
-  timers: PortalChatMessage[];
+  timers: RemoteControlChatMessage[];
   complete: boolean;
-  wake?: NonNullable<PortalChatTurnGroup['wake']>;
+  wake?: NonNullable<RemoteControlChatTurnGroup['wake']>;
 }
 
 /**
  * A canonical timer's turn anchor, or undefined for a legacy timer (no
  * `turnId`) or a canonical execution with no prompt.
  */
-function canonicalTimerAnchor(message: PortalChatMessage): string | undefined {
+function canonicalTimerAnchor(
+  message: RemoteControlChatMessage,
+): string | undefined {
   const data = isRecord(message.parts?.[0]?.data) ? message.parts[0].data : {};
   return typeof data['turnId'] === 'string' &&
     typeof data['userMessageId'] === 'string'
@@ -686,7 +691,7 @@ function readString(value: unknown, field: string): string | undefined {
  * continuation after a tools load heads its own turn under its prompt's anchor.
  */
 function wakeCause(
-  message: PortalChatMessage,
+  message: RemoteControlChatMessage,
   turnsByUserMessageId: ReadonlyMap<string, RawTurn>,
 ): Record<string, unknown> | undefined {
   if (!isTurnTimerMessage(message)) return undefined;
@@ -712,7 +717,7 @@ function wakeCause(
 
 /** Each tool call's label and the prompt whose turn made it, by tool id. */
 function toolCallsById(
-  messages: readonly PortalChatMessage[],
+  messages: readonly RemoteControlChatMessage[],
 ): Map<string, { taskLabel?: string; userMessageId?: string }> {
   const calls = new Map<
     string,
@@ -749,12 +754,14 @@ function toolCallsById(
 }
 
 /** Projected child/steering input retains the root prompt's turn ownership. */
-function startsRootTurn(message: PortalChatMessage): boolean {
+function startsRootTurn(message: RemoteControlChatMessage): boolean {
   return message.role === 'user' && message.continuesTurn !== true;
 }
 
 /** Partition an ordered message list into user-anchored turns. */
-function partitionTurns(messages: readonly PortalChatMessage[]): RawTurn[] {
+function partitionTurns(
+  messages: readonly RemoteControlChatMessage[],
+): RawTurn[] {
   const turns: RawTurn[] = [];
   let toolCalls:
     | Map<string, { taskLabel?: string; userMessageId?: string }>
@@ -853,26 +860,26 @@ function partitionTurns(messages: readonly PortalChatMessage[]): RawTurn[] {
  */
 export function computeIncrementalTurnGroups(
   chatId: string,
-  messages: readonly PortalChatMessage[],
+  messages: readonly RemoteControlChatMessage[],
   cache: TurnGroupCache,
   latestTurnActive = false,
-): PortalChatTurnGroup[] {
+): RemoteControlChatTurnGroup[] {
   if (cache.chatId !== chatId) {
     cache.chatId = chatId;
     cache.completedGroups = new Map();
   }
 
   const turns = partitionTurns(messages);
-  const nextCompleted = new Map<string, PortalChatTurnGroup>();
+  const nextCompleted = new Map<string, RemoteControlChatTurnGroup>();
 
-  const result = turns.map((turn, index): PortalChatTurnGroup => {
+  const result = turns.map((turn, index): RemoteControlChatTurnGroup => {
     const complete =
       turn.complete && (!latestTurnActive || index < turns.length - 1);
     const dedupedAssistant = withoutFailureEchoes(turn.assistant);
     const { intermediate, final } = splitFinal(dedupedAssistant);
     const visibleIntermediate = complete ? intermediate : [];
     const visibleFinal = complete ? final : dedupedAssistant;
-    const group: PortalChatTurnGroup = {
+    const group: RemoteControlChatTurnGroup = {
       userMessageId: turn.userMessageId,
       ...(turn.wake === undefined ? {} : { wake: turn.wake }),
       intermediateMessageIds: visibleIntermediate.map((m) => m.messageId),

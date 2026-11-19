@@ -1,7 +1,7 @@
 import type { AppError } from '@canopy/protocol/app-errors';
 import type { McpRemovalRecovery } from '@canopy/protocol/mcp-removal';
 import type { CopilotHostSelection } from '@canopy/protocol/copilot-selection';
-import type { ProjectDeletionPendingRecovery } from '@canopy/protocol/portal/project-deletion-discard';
+import type { ProjectDeletionPendingRecovery } from '@canopy/protocol/remote-control/shell/project-deletion-discard';
 import type { AntigravityModelEntry } from '@canopy/execution-engine/lib/antigravity-models';
 import type { OrganizationLayerView } from './lib/organization-capabilities';
 import type { AssistantMode } from '@canopy/execution-engine/types/assistant-mode';
@@ -241,9 +241,9 @@ import type {
 } from '@canopy/protocol/model-gateway';
 import type { AiGatewayConnectionResult } from '@canopy/protocol/model-gateway/discovery';
 import type {
-  PortalChatCloudAttachmentRef,
+  RemoteControlChatCloudAttachmentRef,
   W5RecoveryApi,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import type {
   FileImageSaveSupport,
   FileSaveOptions,
@@ -253,7 +253,7 @@ export type {
   ClaudeModAdmission,
   SkippedClaudeMod,
 } from '@canopy/execution-engine/types/claude-mod-admission';
-import type { WorktreeRecoveryRequest } from '@canopy/protocol/portal/worktree-recovery';
+import type { WorktreeRecoveryRequest } from '@canopy/protocol/remote-control/shell/worktree-recovery';
 import type { CloudProjectBinding } from '@canopy/protocol/memory-sync';
 import type {
   SharedMultiRepoCreateCommand,
@@ -267,18 +267,18 @@ import type {
   WorktreeArchiveTypedRefusal,
   WorktreeDiscardDescription,
   WorktreeDiscardResult,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 export type {
   ProjectDeletionDiscardDescription,
   WorktreeArchiveTypedRefusal,
   WorktreeDiscardDescription,
   WorktreeDiscardResult,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import type {
-  PortalAppAdvisorSettings,
-  PortalAppAdvisorSettingsSavePayload,
-  PortalEntityEnvelope,
-} from '@canopy/protocol/portal';
+  RemoteControlAppAdvisorSettings,
+  RemoteControlAppAdvisorSettingsSavePayload,
+  RemoteControlEntityEnvelope,
+} from '@canopy/protocol/remote-control/shell';
 import type { ScriptPreferencesAction } from '@canopy/agent-actions/families/settings/script-preferences';
 import type {
   ScriptActionsClient,
@@ -297,19 +297,19 @@ import type {
 } from './lib/chat-send-actions';
 import type { AgentBrowserAction } from '@canopy/agent-actions/families/browser/types';
 import type {
-  AuthenticatedPortalRequest,
-  AuthenticatedPortalResult,
-} from './lib/authenticated-portal-request';
+  AuthenticatedCloudPageRequest,
+  AuthenticatedCloudPageResult,
+} from './lib/authenticated-cloud-page-request';
 export type {
-  AuthenticatedPortalRequest,
-  AuthenticatedPortalResult,
-} from './lib/authenticated-portal-request';
-import type { AgentSentInfo } from '@canopy/protocol/portal/external-agent-sender';
+  AuthenticatedCloudPageRequest,
+  AuthenticatedCloudPageResult,
+} from './lib/authenticated-cloud-page-request';
+import type { AgentSentInfo } from '@canopy/protocol/remote-control/shell/external-agent-sender';
 import type {
   LifecycleJournalInspection,
   LifecycleJournalQuarantineRequest,
   LifecycleJournalQuarantineResult,
-} from '@canopy/protocol/portal/lifecycle-journal';
+} from '@canopy/protocol/remote-control/shell/lifecycle-journal';
 import type { UnifiedEntryRef } from '@canopy/protocol/unified-entry';
 import type {
   PlanDetectionRule,
@@ -374,7 +374,7 @@ import type {
   TrackedPlanImplementationInput,
   TrackedPlanImplementation,
   ChatPlanReviewApproval,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import type { McpActivationRecord } from '@canopy/protocol/mcp-servers';
 import type { AppAdvisorCodeGraphAction } from './types/app-advisor-code-graph';
 import type { DataSharingOptInFeature } from '@canopy/protocol/canopy-server';
@@ -409,11 +409,12 @@ import type {
 } from '@canopy/protocol/canopy-core';
 import type {
   ChatAgentSentInfo,
-  PortalQuestionControl,
-} from '@canopy/protocol/portal';
-export type { ChatAgentSentInfo } from '@canopy/protocol/portal';
+  RemoteControlQuestionControl,
+} from '@canopy/protocol/remote-control/shell';
+export type { ChatAgentSentInfo } from '@canopy/protocol/remote-control/shell';
 import type { ReferenceEnrichmentMode } from '@canopy/protocol/reference-previews';
 import type { OpenCodeConnectionApi } from './types/opencode-connection';
+import type { AntigravityRuntimeApi } from './types/antigravity-runtime';
 import type {
   AccountProxyApi,
   AccountProxyConnection,
@@ -431,6 +432,10 @@ export type {
   OpenCodeConnectionApi,
   OpenCodeConnectionStatus,
 } from './types/opencode-connection';
+export type {
+  AntigravityRuntimeApi,
+  AntigravityRuntimeStatus,
+} from './types/antigravity-runtime';
 import type { ShareTarget } from './lib/skill-share-nudge';
 export type {
   ShareTarget,
@@ -562,12 +567,12 @@ import type {
   QueuedMessageRetryBlockedReason,
   QueuedMessageWaitingReason,
   SettingsHeldChange,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import type { PersistedChatTurnState } from '@canopy/agent-transcript/turn';
-export type { ChatTurnPhase } from '@canopy/protocol/portal';
-export type { QueuedMessageWaitingReason } from '@canopy/protocol/portal';
-export type { QueuedMessageRetryBlockedReason } from '@canopy/protocol/portal';
-export type { SettingsHeldChange } from '@canopy/protocol/portal';
+export type { ChatTurnPhase } from '@canopy/protocol/remote-control/shell';
+export type { QueuedMessageWaitingReason } from '@canopy/protocol/remote-control/shell';
+export type { QueuedMessageRetryBlockedReason } from '@canopy/protocol/remote-control/shell';
+export type { SettingsHeldChange } from '@canopy/protocol/remote-control/shell';
 import type { OrgProjectSetupProgress } from '@canopy/protocol/org-projects';
 import type {
   GitHubOriginRepository,
@@ -640,7 +645,6 @@ import type {
 } from '@canopy/protocol/canopy-server';
 import type {
   BillingPresentation,
-  DailyCreditDripPreference,
   DesktopBillingDeepLink,
   EntitlementSource,
 } from '@canopy/protocol/billing';
@@ -863,7 +867,7 @@ import type {
   BrowserActionError,
   BrowserActionReceipt,
 } from '@canopy/execution-engine/types/browser';
-import type { PortalSessionShellState } from '@canopy/protocol/portal';
+import type { RemoteControlSessionShellState } from '@canopy/protocol/remote-control/shell';
 import type {
   RunShareScope,
   SharedRunCommentAnchor,
@@ -1218,11 +1222,11 @@ export type {
   WorkspaceEnvironmentAssignment,
 } from '@canopy/execution-engine/types/user-environment';
 
-export * from '@canopy/protocol/portal';
+export * from '@canopy/protocol/remote-control/shell';
 export type {
-  HostPortalChatFileReference,
-  HostPortalChatSendPayload,
-  HostPortalEditorFileMentionOption,
+  HostRemoteControlChatFileReference,
+  HostRemoteControlChatSendPayload,
+  HostRemoteControlEditorFileMentionOption,
 } from './types/host-file-references';
 export type {
   CanopyOrganizationSummary,
@@ -2025,7 +2029,7 @@ export type CloudChatAttachmentUploadResult =
       ok: true;
       attachmentId: string;
       /** The uploaded attachment as a message send references it. */
-      attachment: PortalChatCloudAttachmentRef;
+      attachment: RemoteControlChatCloudAttachmentRef;
     }
   | {
       ok: false;
@@ -2498,7 +2502,7 @@ export {
  * assistant). Lives alongside `STANDALONE_CHAT_PROJECT_ID` so that storage
  * keyed by `(projectId, worktreeId)` keeps the App Advisor isolated from
  * real projects. The App Advisor is *not* exposed via the Canopy Portal wire
- * protocol — see `packages/protocol/src/portal/index.ts`.
+ * protocol — see `packages/protocol/src/remote-control/shell/index.ts`.
  */
 export { APP_ADVISOR_PROJECT_ID } from '@canopy/protocol/chat-targets';
 
@@ -3172,32 +3176,6 @@ export interface CloudDigestPreferencesState {
 }
 
 /**
- * Result of the tunneled `settings:load-daily-credit-drip` channel — the
- * connected cloud account's daily free-credit drip opt-in, read from
- * `GET /api/v1/ai-credits/daily-drip`. Never throws across IPC. Kept only so
- * older remote controllers can still call this host until CAN-4773 removes the
- * channel.
- *
- * `available` is false when no cloud credential is connected or the server
- * does not offer the route (404, 401/403). `resolved` is false on a transient
- * failure (offline, 5xx, malformed body). `preference` is a placeholder (opted
- * out, undecided, default cap) unless both flags are true.
- */
-export interface CloudDailyCreditDripState {
-  available: boolean;
-  resolved: boolean;
-  preference: DailyCreditDripPreference;
-}
-
-/**
- * Payload of the tunneled `settings:save-daily-credit-drip` channel, kept for
- * older remote controllers until CAN-4773.
- */
-export interface SaveDailyCreditDripRequest {
-  enabled: boolean;
-}
-
-/**
  * Personal model-library access as the desktop currently knows it.
  *
  * Personal context only. Organization-owned work has its own owner-scoped
@@ -3242,9 +3220,8 @@ export interface CanopyCloudEntitlementsState {
    * True only when the `remote_control` capability is confirmed present.
    * Billing-on-only: under billing-off the `/api/v1/entitlements` mirror never
    * emits `remote_control`, so this is `false` even though Remote Control is
-   * available to everyone (the server fails open and mints `portal-v1`). This is
-   * NOT the availability gate — the authoritative desktop signal is the account
-   * `portal-v1` capability. Provided for completeness/telemetry.
+   * available to everyone. This is NOT an availability gate. Provided for
+   * completeness/telemetry.
    */
   canRemoteControl: boolean;
   /**
@@ -8969,6 +8946,11 @@ export interface ArchiveWorktreeResponse {
   removedTemporaryWorkspaceName?: string;
   /** Only with `typedRefusal`: why nothing was removed (CAN-5334). */
   refusal?: WorktreeArchiveTypedRefusal;
+  /**
+   * With the data cleanup warning: the failure's allowlisted errno, or
+   * `other`. Never its message or path (CAN-7117).
+   */
+  cleanupErrorCode?: string;
 }
 
 /** `worktree:discard-describe`: read-only. */
@@ -12188,7 +12170,7 @@ export interface PersistedCommandReceipt {
   reason?: string;
   /** The `archivedAt` of the archive entries an archiving command wrote. */
   archivedAt?: string;
-  portalSend?: PortalChatSendIdentity;
+  portalSend?: RemoteControlChatSendIdentity;
   /**
    * Host-only acceptance facts for a trusted agent send, so a replayed or
    * already-applied command returns the same receipt. Never portable.
@@ -12201,13 +12183,13 @@ export interface PersistedCommandReceipt {
   agentSteeringActor?: ChatAgentSentInfo['sender'];
 }
 
-export interface PortalChatSendIdentity {
+export interface RemoteControlChatSendIdentity {
   chatId: string;
   userMessageId: string;
   fingerprint: string;
 }
 
-export type PortalChatSendReceiptProbe =
+export type RemoteControlChatSendReceiptProbe =
   | { outcome: 'missing' | 'conflict' }
   | { outcome: 'matched'; receipt: PersistedCommandReceipt };
 
@@ -12920,7 +12902,7 @@ export type ChatCommandResponse = ChatCommandResult;
 export interface ChatCommandExecutionOptions {
   canCommitCreate?: () => boolean;
   canCommitSend?: () => boolean;
-  portalSend?: PortalChatSendIdentity;
+  portalSend?: RemoteControlChatSendIdentity;
   /**
    * Host-only: reports the queue's acceptance decision for a trusted agent
    * send, under the accepting command. Never on a portable receipt.
@@ -12942,12 +12924,12 @@ export interface ChatStateLoadError {
 
 /** Structural backend seam consumed by IPC and Portal transport adapters. */
 export interface ChatStateCommandPort {
-  getPortalSendReceipt?(request: {
+  getRemoteControlSendReceipt?(request: {
     projectId: string;
     worktreeId: string;
     commandId: string;
-    identity: PortalChatSendIdentity;
-  }): Promise<PortalChatSendReceiptProbe>;
+    identity: RemoteControlChatSendIdentity;
+  }): Promise<RemoteControlChatSendReceiptProbe>;
   /** Read a durable command receipt without replaying the command's effects. */
   getCommandReceipt?(request: {
     projectId: string;
@@ -14096,7 +14078,7 @@ export interface CursorApprovalCheckApi {
 // MCP interaction types
 // ---------------------------------------------------------------------------
 
-export interface McpQuestion extends PortalQuestionControl {
+export interface McpQuestion extends RemoteControlQuestionControl {
   id?: string;
   header?: string;
   question: string;
@@ -16335,10 +16317,10 @@ export interface AppAdvisorSettingsSaveRequest {
 export type AppAdvisorSettingsSaveResponse = AppAdvisorWorkspaceSettingsFile;
 
 /** `app-advisor:settings-view`: the settings Portal's settings get serves. */
-export type AppAdvisorSettingsViewResponse = PortalAppAdvisorSettings;
-/** `app-advisor:settings-patch`: a `PortalAppAdvisorSettingsSavePayload`. */
+export type AppAdvisorSettingsViewResponse = RemoteControlAppAdvisorSettings;
+/** `app-advisor:settings-patch`: a `RemoteControlAppAdvisorSettingsSavePayload`. */
 export type AppAdvisorSettingsPatchRequest =
-  PortalAppAdvisorSettingsSavePayload;
+  RemoteControlAppAdvisorSettingsSavePayload;
 /** Saved, or refused whole before any store was written. */
 export type AppAdvisorSettingsPatchResponse =
   | { ok: true }
@@ -17500,7 +17482,7 @@ export interface WorktreeActivityEntitiesRequest {
  * snapshot carries for the worktree, built by the same readers.
  */
 export interface WorktreeActivityEntitiesResponse {
-  entities: PortalEntityEnvelope[];
+  entities: RemoteControlEntityEnvelope[];
 }
 
 export interface ScriptRunSnapshot extends ScriptStartedEvent {
@@ -20015,7 +19997,7 @@ export interface CanopyApi {
   loadProjects: () => Promise<SidebarItemsFile>;
   getDesktopSessionSnapshot: (
     args: DesktopSessionSnapshotArgs,
-  ) => Promise<PortalSessionShellState>;
+  ) => Promise<RemoteControlSessionShellState>;
   onDesktopSessionSnapshotStale: (cb: () => void) => () => void;
   /** Subscribe to validated share deep links. Returns an unsubscribe function. */
   onDeepLinkShareOpen: (
@@ -21001,10 +20983,12 @@ export interface CanopyApi {
    * branch on this boolean or it will strand the user on a page that was
    * never opened.
    */
-  openAuthenticatedPortalPage: {
+  openAuthenticatedCloudPage: {
     (path: string): Promise<boolean>;
     /** Main-bound authenticated opening; typed failure, no fallback or retry. */
-    (request: AuthenticatedPortalRequest): Promise<AuthenticatedPortalResult>;
+    (
+      request: AuthenticatedCloudPageRequest,
+    ): Promise<AuthenticatedCloudPageResult>;
   };
   /**
    * Load the connected account's UD AI Credits subscription + balance from the
@@ -21248,6 +21232,7 @@ export interface CanopyApi {
   cursorConnection?: CursorConnectionApi;
   copilotConnection?: CopilotConnectionApi;
   opencodeConnection?: OpenCodeConnectionApi;
+  antigravityRuntime?: AntigravityRuntimeApi;
   accountProxy?: AccountProxyApi;
   chatProject: ChatProjectApi;
   standaloneChat: StandaloneChatApi;
@@ -25641,7 +25626,7 @@ export interface AppAdvisorActionResponse extends AgentActionResponse<AppAdvisor
  * Transport-only — the backend prepares the question; the renderer answers
  * via {@link AppAdvisorRendererToolResponse}.
  */
-export interface AppAdvisorAskUserQuestion extends PortalQuestionControl {
+export interface AppAdvisorAskUserQuestion extends RemoteControlQuestionControl {
   id?: string;
   header?: string;
   question: string;
@@ -27069,58 +27054,60 @@ export type AppAdvisorWindowCommand =
  * updates live and the committed canonical change re-projects back to the
  * portal. Targets a worktree chat; standalone/cowork composers stay local.
  */
-type PortalChatComposerTarget = {
+type RemoteControlChatComposerTarget = {
   projectId: string;
   worktreeId: string;
   chatId: string;
 };
 
-export type PortalChatComposerSetterCommand = PortalChatComposerTarget &
-  (
-    | { kind: 'model'; model: ChatModel; executionHarness?: ModelHarness }
-    | { kind: 'thinking'; thinkingLevel: ThinkingLevel }
-    | { kind: 'plan'; planMode: boolean }
-    | { kind: 'fast'; fastMode: boolean }
-    | {
-        kind: 'plugins';
-        selections: ChatTabPluginSelections;
-        deferredToolsAllowed?: boolean;
-      }
-  );
+export type RemoteControlChatComposerSetterCommand =
+  RemoteControlChatComposerTarget &
+    (
+      | { kind: 'model'; model: ChatModel; executionHarness?: ModelHarness }
+      | { kind: 'thinking'; thinkingLevel: ThinkingLevel }
+      | { kind: 'plan'; planMode: boolean }
+      | { kind: 'fast'; fastMode: boolean }
+      | {
+          kind: 'plugins';
+          selections: ChatTabPluginSelections;
+          deferredToolsAllowed?: boolean;
+        }
+    );
 
-export type PortalChatComposerLifecycleCommand = PortalChatComposerTarget &
-  // CAN-1233: create a new empty worktree chat tab with the given `chatId`
-  // (the portal `+` tab button). Unlike the composer setters, the target tab
-  // does NOT yet exist — the renderer appends it (see App.tsx).
-  (| { kind: 'create' }
-    // Close an existing worktree chat tab (the portal tab close button). The
-    // renderer drives its own `closeTab` (honoring the streaming/queued/
-    // pending-plan guard), and the subsequent persist emits a `chat_summary`
-    // removal delta so the portal evicts the tab.
-    | { kind: 'close' }
-    // Fork a worktree chat into a NEW tab, carrying the transcript up to (and
-    // including) `forkAfterUserMessageId`. The renderer drives its own
-    // `forkTab`, so the portal inherits the desktop's fork semantics —
-    // provider-normalized model config and clamped thinking level included —
-    // rather than reimplementing them (CAN-2527).
-    | { kind: 'fork'; forkAfterUserMessageId?: string }
-    // Branch a worktree chat into a NEW worktree, carrying the transcript up to
-    // (and including) `forkAfterUserMessageId`. The renderer drives its own
-    // `branchTab`, so the portal inherits the desktop's branch semantics — the
-    // cloned tab and plan-approval state included — rather than reimplementing
-    // them (CAN-2528).
-    | { kind: 'branch'; forkAfterUserMessageId?: string }
-    | {
-        kind: 'share';
-        shareScope: 'private' | 'team' | 'organization';
-        teamId?: string;
-        organizationId?: string;
-      }
-  );
+export type RemoteControlChatComposerLifecycleCommand =
+  RemoteControlChatComposerTarget &
+    // CAN-1233: create a new empty worktree chat tab with the given `chatId`
+    // (the portal `+` tab button). Unlike the composer setters, the target tab
+    // does NOT yet exist — the renderer appends it (see App.tsx).
+    (| { kind: 'create' }
+      // Close an existing worktree chat tab (the portal tab close button). The
+      // renderer drives its own `closeTab` (honoring the streaming/queued/
+      // pending-plan guard), and the subsequent persist emits a `chat_summary`
+      // removal delta so the portal evicts the tab.
+      | { kind: 'close' }
+      // Fork a worktree chat into a NEW tab, carrying the transcript up to (and
+      // including) `forkAfterUserMessageId`. The renderer drives its own
+      // `forkTab`, so the portal inherits the desktop's fork semantics —
+      // provider-normalized model config and clamped thinking level included —
+      // rather than reimplementing them (CAN-2527).
+      | { kind: 'fork'; forkAfterUserMessageId?: string }
+      // Branch a worktree chat into a NEW worktree, carrying the transcript up to
+      // (and including) `forkAfterUserMessageId`. The renderer drives its own
+      // `branchTab`, so the portal inherits the desktop's branch semantics — the
+      // cloned tab and plan-approval state included — rather than reimplementing
+      // them (CAN-2528).
+      | { kind: 'branch'; forkAfterUserMessageId?: string }
+      | {
+          kind: 'share';
+          shareScope: 'private' | 'team' | 'organization';
+          teamId?: string;
+          organizationId?: string;
+        }
+    );
 
-export type PortalChatComposerCommand =
-  | PortalChatComposerSetterCommand
-  | PortalChatComposerLifecycleCommand;
+export type RemoteControlChatComposerCommand =
+  | RemoteControlChatComposerSetterCommand
+  | RemoteControlChatComposerLifecycleCommand;
 
 export type ChatWindowCommand = {
   /**
@@ -27923,6 +27910,10 @@ export const IPC_CHANNELS = {
   copilotConnectionChangeAccount: 'copilot-connection:change-account',
   copilotConnectionProgress: 'copilot-connection:progress',
   opencodeConnectionProgress: 'opencode-connection:progress',
+  antigravityRuntimeStatus: 'antigravity-runtime:status',
+  antigravityRuntimeInstall: 'antigravity-runtime:install',
+  antigravityRuntimeCancel: 'antigravity-runtime:cancel',
+  antigravityRuntimeProgress: 'antigravity-runtime:progress',
   accountProxyStatus: 'account-proxy:status',
   accountProxyConnect: 'account-proxy:connect',
   accountProxyDisconnect: 'account-proxy:disconnect',
@@ -28467,13 +28458,10 @@ export const IPC_CHANNELS = {
   settingsCanopyCloudSessionStatusChanged:
     'settings:canopy-cloud-session-status-changed',
   settingsGetCanopyCloudBaseUrl: 'settings:get-canopy-cloud-base-url',
-  settingsOpenAuthenticatedPortalPage:
-    'settings:open-authenticated-portal-page',
+  settingsOpenAuthenticatedCloudPage: 'settings:open-authenticated-cloud-page',
   settingsLoadCanopyCloudAiCredits: 'settings:load-canopy-cloud-ai-credits',
   settingsLoadCanopyCloudEntitlements:
     'settings:load-canopy-cloud-entitlements',
-  settingsLoadDailyCreditDrip: 'settings:load-daily-credit-drip',
-  settingsSaveDailyCreditDrip: 'settings:save-daily-credit-drip',
   settingsLoadCloudReleaseNotes: 'settings:load-cloud-release-notes',
   settingsLoadCloudDigestPreferences: 'settings:load-cloud-digest-preferences',
   settingsSaveCloudDigestPreferences: 'settings:save-cloud-digest-preferences',

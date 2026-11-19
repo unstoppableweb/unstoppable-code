@@ -646,9 +646,14 @@ export function Tooltip({
             {shortcut ? (
               <span className="inline-flex items-center gap-2">
                 <span className={labelClassName}>{label}</span>
-                {/* One capsule per key; its 4px inset from the tooltip's
-                    top, bottom and end matches the vertical padding. */}
-                <Kbd shortcut={shortcut} data-testid="tooltip-shortcut" />
+                {/* One cap per key, nested in the tooltip: its 4px inset
+                    from the top, bottom and end matches the vertical
+                    padding, and its corner is the tooltip's less that. */}
+                <Kbd
+                  shortcut={shortcut}
+                  nest="tooltip"
+                  data-testid="tooltip-shortcut"
+                />
               </span>
             ) : (
               <span className={labelClassName}>{label}</span>

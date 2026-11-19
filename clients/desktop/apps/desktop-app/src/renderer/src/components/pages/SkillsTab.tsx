@@ -1624,7 +1624,6 @@ function SkillEditorBody({
           label="Skill editor view"
           value={state.showPreview ? 'preview' : 'edit'}
           width="content"
-          shape="capsule"
           options={SKILL_EDITOR_VIEW_OPTIONS}
           onChange={(next) => state.setShowPreview(next === 'preview')}
         />

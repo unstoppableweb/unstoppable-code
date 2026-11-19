@@ -11,7 +11,7 @@ import { AgentIcon, QuestionMarkIcon } from '@canopy/ui-shared/icons';
 import { isAskUserQuestionToolName } from '@/lib/canopy-tool-aliases';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { brand } from '@/lib/brand';
-import type { TurnOutcomeEvidence } from '@canopy/protocol/portal';
+import type { TurnOutcomeEvidence } from '@canopy/protocol/remote-control/shell';
 import {
   cleanBlockRole,
   describeCleanSteps,

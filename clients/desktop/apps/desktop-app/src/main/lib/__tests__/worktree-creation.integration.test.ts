@@ -1,4 +1,5 @@
 import { isArchivedContainerManifest } from '@canopy/desktop-shared/lib/archived-container-contracts';
+import { deleteRoutedCliWorktree } from '@canopy/desktop-shared/node/w5-routed-writes/worktree-delete';
 import { settleDetachedWork } from '@canopy/desktop-shared/node/lib/detached-work';
 import {
   startPolling,
@@ -85,6 +86,7 @@ import {
 } from '../../terminal/worker-terminal';
 import { execFileSync } from 'node:child_process';
 import {
+  lstat,
   mkdir,
   mkdtemp,
   readdir,
@@ -113,6 +115,7 @@ import {
   getWorkspaceWorktreeRepoDir,
   getWorkspaceWorktreesFilePath,
   getWorktreeDir,
+  getWorktreeDataDir,
 } from '../paths';
 import {
   readWorkspaceConfig,
@@ -225,9 +228,13 @@ describe('worktree creation boundary round trips (real git and fs)', () => {
   });
 
   let closeW5Store: (() => Promise<void>) | undefined;
+  let routedStore: W5CommitLogFileStore;
   let repairCommitFailure: Error | undefined;
   let afterRepairDecision: (() => Promise<void>) | undefined;
   let repairDecisions: number;
+  let finalDecisionFailure: 'before' | 'after' | 'retry-after' | undefined;
+  let finalDecisionAttempts: number;
+  let publicationFailure: { afterDispatch: boolean; error: Error } | undefined;
 
   async function startupOrphan(list: 'absent' | 'empty' = 'empty'): Promise<{
     config: WorkspaceConfigFile;
@@ -295,10 +302,41 @@ describe('worktree creation boundary round trips (real git and fs)', () => {
     repairCommitFailure = undefined;
     afterRepairDecision = undefined;
     repairDecisions = 0;
+    finalDecisionFailure = undefined;
+    finalDecisionAttempts = 0;
+    publicationFailure = undefined;
     closeW5Store = await installRoutedW5GoldenStore({
+      onStore: (store) => {
+        routedStore = store;
+      },
       wrapTransport: (transport) => ({
         ...transport,
         commit: async (request): ReturnType<typeof transport.commit> => {
+          if (
+            request.operation === 'core.worktree.create' &&
+            !request.receipt &&
+            request.files.length > 0 &&
+            publicationFailure
+          ) {
+            const failure = publicationFailure;
+            publicationFailure = undefined;
+            if (failure.afterDispatch) await transport.commit(request);
+            throw failure.error;
+          }
+          if (
+            request.operation === 'core.worktree.create' &&
+            request.receipt &&
+            request.files.length === 0
+          ) {
+            finalDecisionAttempts += 1;
+            if (finalDecisionFailure) {
+              const failure = finalDecisionFailure;
+              finalDecisionFailure =
+                failure === 'retry-after' ? 'after' : undefined;
+              if (failure === 'after') await transport.commit(request);
+              throw new Error(`Lost final decision ${failure} dispatch`);
+            }
+          }
           if (
             request.operation !==
             'internal.worktree.recovery.repair-registration'
@@ -1090,7 +1128,337 @@ describe('worktree creation boundary round trips (real git and fs)', () => {
     TEST_TIMEOUT_MS,
   );
 
+  it.each([false, true])(
+    'releases a failed keyed create on a missing registered checkout before an unrelated routed delete; replaced symlink parent=%s',
+    async (replacedParent) => {
+      // Keep delete's existing alias guard out of the availability assertion.
+      const otherWorkspace = replacedParent ? MULTI : SINGLE;
+      const other = await createWorktreeFromSelection({
+        workspaceId: otherWorkspace,
+        workspaceKind: replacedParent ? 'multi-repo' : 'single-repo',
+        branch: { kind: 'default' },
+        base: { kind: 'repository-default' },
+      });
+      if (other.status !== 'created') throw new Error('Expected a create');
+      const availableName = ANIMAL_NAMES.find(
+        (name) =>
+          `${getWorktreeIdClaimPrefix()}${name}` !== other.record.worktreeId,
+      );
+      if (!availableName) throw new Error('No independent checkout name');
+      const claimed = `${getWorktreeIdClaimPrefix()}${availableName}`;
+      const checkout = getWorktreeDir(SINGLE, claimed);
+      const foreignBranch = `foreign-${path.basename(process.env.CANOPY_DATA_DIR ?? '')}`;
+      const parent = path.dirname(checkout);
+      const registrationParent = replacedParent ? `${parent}-moved` : parent;
+      const registeredCheckout = path.join(
+        registrationParent,
+        path.basename(checkout),
+      );
+      await mkdir(registrationParent, { recursive: true });
+      git(singleRepo, [
+        'worktree',
+        'add',
+        '-b',
+        foreignBranch,
+        registeredCheckout,
+        'main',
+      ]);
+      await rm(registeredCheckout, { recursive: true });
+      if (replacedParent) {
+        await symlink(registrationParent, parent, 'junction');
+        const registeredPaths =
+          await worktreeGit.listRegisteredWorktreePaths(singleRepo);
+        expect(registeredCheckout).not.toBe(checkout);
+        expect(registeredPaths.has(checkout)).toBe(false);
+        expect(
+          registeredPaths.has(
+            await canonicalizePossiblyMissingPath(registeredCheckout),
+          ),
+        ).toBe(true);
+        expect(await canonicalizePossiblyMissingPath(registeredCheckout)).toBe(
+          await canonicalizePossiblyMissingPath(checkout),
+        );
+      }
+      const request = {
+        workspaceId: SINGLE,
+        workspaceKind: 'single-repo',
+        branch: { kind: 'new', branchName: `attempt-${foreignBranch}` },
+        base: { kind: 'repository-default' },
+        claimedWorktreeId: claimed,
+        idempotencyKey: 'failed-create',
+      } satisfies Parameters<typeof createWorktreeFromSelection>[0];
+      await expect(createWorktreeFromSelection(request)).rejects.toThrow(
+        'already in use',
+      );
+      expect(await routedStore.readReservations()).toEqual([]);
+      await expect(
+        readdir(getWorktreeDataDir(SINGLE, claimed)),
+      ).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(await registeredWorktrees(singleRepo)).toContain(
+        await canonicalizePossiblyMissingPath(checkout),
+      );
+      expect(git(singleRepo, ['branch', '--list', foreignBranch])).toContain(
+        foreignBranch,
+      );
+      expect(
+        git(singleRepo, ['branch', '--list', `attempt-${foreignBranch}`]),
+      ).toBe('');
+      await expect(
+        deleteRoutedCliWorktree(
+          { workspaceId: otherWorkspace, worktreeId: other.record.worktreeId },
+          {
+            store: routedStore,
+            idempotencyKey: 'delete-after-failed-create',
+            signal: new AbortController().signal,
+          },
+        ),
+      ).resolves.toMatchObject({ success: true });
+      expect(await readWorkspaceWorktrees(otherWorkspace)).toEqual([]);
+      expect(await readWorkspaceWorktrees(SINGLE)).toEqual([]);
+      if (replacedParent)
+        expect((await lstat(path.dirname(checkout))).isSymbolicLink()).toBe(
+          true,
+        );
+    },
+    TEST_TIMEOUT_MS,
+  );
+
   describe('single-repository', () => {
+    it.each([false, true])(
+      'retains publication uncertainty and identity; authority applied=%s',
+      async (afterDispatch) => {
+        const claimed = `${getWorktreeIdClaimPrefix()}${ANIMAL_NAMES[5]}`;
+        const branchName = `uncertain-${path.basename(process.env.CANOPY_DATA_DIR ?? '')}`;
+        const original = new Error('Lost reservation publication reply');
+        publicationFailure = { afterDispatch, error: original };
+        await expect(
+          createWorktreeFromSelection({
+            workspaceId: SINGLE,
+            workspaceKind: 'single-repo',
+            branch: { kind: 'new', branchName },
+            base: { kind: 'repository-default' },
+            claimedWorktreeId: claimed,
+            idempotencyKey: 'uncertain-publication',
+          }),
+        ).rejects.toBe(original);
+        const reservations = await routedStore.readReservations();
+        expect(reservations).toHaveLength(1);
+        expect(reservations[0]).toMatchObject({
+          operation: 'core.worktree.create',
+          state: 'recovery-required',
+          diagnostics: { workspaceId: SINGLE, ownedPaths: [] },
+        });
+        expect(await readdir(getWorktreeDataDir(SINGLE, claimed))).toEqual([]);
+        const rows = await readWorkspaceWorktrees(SINGLE);
+        if (afterDispatch) {
+          expect(rows).toHaveLength(1);
+          expect(rows[0]).toMatchObject({
+            id: claimed,
+            setupPhase: 'git-pending',
+            creation: { operationId: reservations[0]?.reservationId },
+          });
+        } else {
+          expect(rows).toEqual([]);
+        }
+        expect(git(singleRepo, ['branch', '--list', branchName])).toBe('');
+        expect(await registeredWorktrees(singleRepo)).not.toContain(
+          await canonicalizePossiblyMissingPath(
+            getWorktreeDir(SINGLE, claimed),
+          ),
+        );
+        const other = await createWorktreeFromSelection({
+          workspaceId: MULTI,
+          workspaceKind: 'multi-repo',
+          branch: { kind: 'default' },
+          base: { kind: 'repository-default' },
+        });
+        if (other.status !== 'created')
+          throw new Error('Unrelated create needs repair');
+        await expect(
+          deleteRoutedCliWorktree(
+            { workspaceId: MULTI, worktreeId: other.record.worktreeId },
+            {
+              store: routedStore,
+              idempotencyKey: 'delete-after-uncertain-publication',
+              signal: new AbortController().signal,
+            },
+          ),
+        ).resolves.toMatchObject({ success: true });
+      },
+      TEST_TIMEOUT_MS,
+    );
+    it(
+      'releases a canonical branch refusal before publication dispatch',
+      async () => {
+        const other = await createWorktreeFromSelection({
+          workspaceId: SINGLE,
+          workspaceKind: 'single-repo',
+          branch: { kind: 'new', branchName: 'held-in-list' },
+          base: { kind: 'repository-default' },
+          claimedWorktreeId: `${getWorktreeIdClaimPrefix()}${ANIMAL_NAMES[3]}`,
+        });
+        git(singleRepo, [
+          'worktree',
+          'remove',
+          '--force',
+          getWorktreeDir(SINGLE, other.record.worktreeId),
+        ]);
+        git(singleRepo, ['branch', '-D', 'held-in-list']);
+        const before = await readFile(
+          getWorkspaceWorktreesFilePath(SINGLE),
+          'utf8',
+        );
+        const claimed = `${getWorktreeIdClaimPrefix()}${ANIMAL_NAMES[4]}`;
+        await expect(
+          createWorktreeFromSelection({
+            workspaceId: SINGLE,
+            workspaceKind: 'single-repo',
+            branch: { kind: 'new', branchName: 'held-in-list' },
+            base: { kind: 'repository-default' },
+            claimedWorktreeId: claimed,
+            idempotencyKey: 'canonical-branch-refusal',
+          }),
+        ).rejects.toThrow('already in use or invalid');
+        expect(
+          await readFile(getWorkspaceWorktreesFilePath(SINGLE), 'utf8'),
+        ).toBe(before);
+        expect(await routedStore.readReservations()).toEqual([]);
+        await expect(
+          readdir(getWorktreeDataDir(SINGLE, claimed)),
+        ).rejects.toMatchObject({ code: 'ENOENT' });
+      },
+      TEST_TIMEOUT_MS,
+    );
+    it.each([
+      { failure: 'before', deferGitSetup: false },
+      { failure: 'after', deferGitSetup: false },
+      { failure: 'before', deferGitSetup: true },
+      { failure: 'after', deferGitSetup: true },
+      { failure: 'retry-after', deferGitSetup: false },
+      { failure: 'retry-after', deferGitSetup: true },
+    ] as const)(
+      'settles a final receipt failure $failure dispatch, deferred=$deferGitSetup, without recreating Git',
+      async ({ failure, deferGitSetup }) => {
+        finalDecisionFailure = failure;
+        let finishSetup: (outcome: string) => void = () => {};
+        const setupSettled = new Promise<string>((resolve) => {
+          finishSetup = resolve;
+        });
+        const request = {
+          workspaceId: SINGLE,
+          workspaceKind: 'single-repo',
+          branch: { kind: 'default' },
+          base: { kind: 'repository-default' },
+          idempotencyKey: 'final-decision',
+          deferGitSetup,
+          onGitSetupSettled: (event): void => finishSetup(event.outcome),
+        } satisfies Parameters<typeof createWorktreeFromSelection>[0];
+        const created = await createWorktreeFromSelection(request);
+        const replay = await createWorktreeFromSelection(request);
+        expect(replay).toEqual(created);
+        expect(finalDecisionAttempts).toBe(failure === 'after' ? 1 : 2);
+        if (deferGitSetup) {
+          expect(created.record.setupPhase).toBe('git-pending');
+          await expect(setupSettled).resolves.toBe('ready');
+        }
+        const rows = await readWorkspaceWorktrees(SINGLE);
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toMatchObject({
+          id: created.record.worktreeId,
+          setupPhase: 'git-ready',
+        });
+        expect(await routedStore.readReservations()).toEqual([]);
+        expect(
+          git(getWorktreeDir(SINGLE, created.record.worktreeId), [
+            'branch',
+            '--show-current',
+          ]),
+        ).toBe(created.record.branchName);
+      },
+      TEST_TIMEOUT_MS,
+    );
+
+    it(
+      'releases a failed remote-base admission',
+      async () => {
+        await expect(
+          createWorktreeFromSelection({
+            workspaceId: SINGLE,
+            workspaceKind: 'single-repo',
+            branch: { kind: 'default' },
+            base: {
+              kind: 'branch',
+              baseBranch: 'origin/can-7251-missing-base',
+            },
+            idempotencyKey: 'missing-base',
+          }),
+        ).rejects.toThrow('was not found');
+        expect(await routedStore.readReservations()).toEqual([]);
+      },
+      TEST_TIMEOUT_MS,
+    );
+
+    it(
+      'retains foreign metadata after a probe failure while unrelated writes succeed',
+      async () => {
+        const claimed = `${getWorktreeIdClaimPrefix()}${ANIMAL_NAMES[1]}`;
+        const metadata = getWorktreeDataDir(SINGLE, claimed);
+        const original = new Error('Read-only registration probe failed');
+        const probe = jest
+          .spyOn(worktreeGit, 'isRegisteredWorktreePath')
+          .mockImplementationOnce(async () => {
+            await writeFile(path.join(metadata, 'foreign.txt'), 'keep');
+            throw original;
+          });
+        try {
+          await expect(
+            createWorktreeFromSelection({
+              workspaceId: SINGLE,
+              workspaceKind: 'single-repo',
+              branch: { kind: 'default' },
+              base: { kind: 'repository-default' },
+              claimedWorktreeId: claimed,
+              idempotencyKey: 'probe-failure',
+            }),
+          ).rejects.toBe(original);
+          const reservations = await routedStore.readReservations();
+          expect(reservations).toHaveLength(1);
+          expect(reservations[0]).toMatchObject({
+            state: 'recovery-required',
+            diagnostics: {
+              kind: 'local-workspace-create',
+              workspaceId: SINGLE,
+              ownedPaths: [],
+            },
+          });
+          expect(
+            await readFile(path.join(metadata, 'foreign.txt'), 'utf8'),
+          ).toBe('keep');
+          const other = await createWorktreeFromSelection({
+            workspaceId: MULTI,
+            workspaceKind: 'multi-repo',
+            branch: { kind: 'default' },
+            base: { kind: 'repository-default' },
+          });
+          if (other.status !== 'created')
+            throw new Error('Unrelated create needs repair');
+          await expect(
+            deleteRoutedCliWorktree(
+              { workspaceId: MULTI, worktreeId: other.record.worktreeId },
+              {
+                store: routedStore,
+                idempotencyKey: 'delete-other-workspace',
+                signal: new AbortController().signal,
+              },
+            ),
+          ).resolves.toMatchObject({ success: true });
+        } finally {
+          probe.mockRestore();
+        }
+      },
+      TEST_TIMEOUT_MS,
+    );
+
     describe('client-claimed worktree id', () => {
       const claim = (name: string): string =>
         `${getWorktreeIdClaimPrefix()}${name}`;

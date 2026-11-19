@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { BUILTIN_SOURCE_ID, CUSTOM_SOURCE_ID } from './paths';
+import { parseInstalledSkillLocalId } from './installed-skill-cloud-copy';
 import { withPackageVersionNegotiation } from '../canopy-cloud/package-version-negotiation';
 import {
   assertSkillContext,
@@ -136,31 +137,62 @@ export async function getSharedSkill(
   return detail;
 }
 
+/**
+ * How a share is authorized. Only a cloud copy of an installed-source skill
+ * (CAN-6943), from main's own publish, sets `allowInstalledSource`; it never
+ * comes from a renderer request.
+ */
+export interface SkillShareSourceOptions {
+  readonly allowInstalledSource?: boolean;
+}
+
 async function authorizedSkillSource(
   sourceSkillId: string | undefined,
   owner: unknown,
+  options: SkillShareSourceOptions = {},
 ): Promise<string> {
+  const installed =
+    options.allowInstalledSource === true &&
+    sourceSkillId !== undefined &&
+    parseInstalledSkillLocalId(sourceSkillId) !== null;
   if (
     !sourceSkillId ||
     (!sourceSkillId.startsWith(`${CUSTOM_SOURCE_ID}/`) &&
-      !sourceSkillId.startsWith(`${BUILTIN_SOURCE_ID}/`))
+      !sourceSkillId.startsWith(`${BUILTIN_SOURCE_ID}/`) &&
+      !installed)
   )
     throw new Error('A source-qualified local skill is required.');
   // Break the cycle: stored-origin authorization reuses this cloud client.
   const { assertStoredSkillContext, assertSkillShareOrigin } =
     await import('./skill-install-context');
-  const { readRawSkill } = await import('./skill-service');
+  const { readRawSkill, readInstalledSkillForCloudCopy } =
+    await import('./skill-service');
   await assertStoredSkillContext(sourceSkillId);
   await assertSkillShareOrigin(sourceSkillId, owner);
   // Read the authorized local file; caller-supplied bytes cannot select content.
-  return readRawSkill(sourceSkillId);
+  return installed
+    ? readInstalledSkillForCloudCopy(sourceSkillId)
+    : readRawSkill(sourceSkillId);
+}
+
+/** An installed-source skill's copy is private only (CAN-6943). */
+function assertInstalledSourceScope(
+  shareScope: string | undefined,
+  options: SkillShareSourceOptions,
+  creating: boolean,
+): void {
+  if (options.allowInstalledSource !== true) return;
+  if (creating ? shareScope !== 'private' : shareScope !== undefined)
+    throw new Error('A copy of an installed skill stays private.');
 }
 
 export async function createSharedSkill(
   request: CreateSharedSkillRequest,
   credentialContext?: CanopyCloudCredentialContext,
+  options: SkillShareSourceOptions = {},
 ): Promise<SharedSkillDetail> {
   assertShareScopeTarget(request, 'a skill');
+  assertInstalledSourceScope(request.shareScope, options, true);
   let rawSkill = request.rawSkill;
   if (skillResourceContextEnabled()) {
     const { listSharedTeams } =
@@ -180,7 +212,11 @@ export async function createSharedSkill(
             : undefined
           : { type: 'user', id: 'local', name: null };
     await assertSkillContext({ owner });
-    rawSkill = await authorizedSkillSource(request.sourceSkillId, owner);
+    rawSkill = await authorizedSkillSource(
+      request.sourceSkillId,
+      owner,
+      options,
+    );
   }
   assertCheckedSource(rawSkill, request.expectedSourceSha256);
   const body: {
@@ -221,8 +257,10 @@ export async function updateSharedSkill(
   credentialContext?: CanopyCloudCredentialContext,
   /** Runs just before the PUT, after any reads; throwing sends nothing. */
   beforeWrite?: () => void,
+  options: SkillShareSourceOptions = {},
 ): Promise<SharedSkillDetail> {
   assertShareScopeTarget(request, 'a skill');
+  assertInstalledSourceScope(request.shareScope, options, false);
   let rawSkill = request.rawSkill;
   if (skillResourceContextEnabled()) {
     // The caller's account, so a switch mid-update can't read another's copy.
@@ -246,6 +284,7 @@ export async function updateSharedSkill(
     rawSkill = await authorizedSkillSource(
       request.sourceSkillId,
       destinationOwner,
+      options,
     );
   }
   assertCheckedSource(rawSkill, request.expectedSourceSha256);

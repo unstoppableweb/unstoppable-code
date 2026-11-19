@@ -349,9 +349,9 @@ const WorkersPage = lazy(() =>
   })),
 );
 
-const CanopyPortalModal = lazy(() =>
-  import('./components/portal/CanopyPortalModal').then((m) => ({
-    default: m.CanopyPortalModal,
+const RemoteControlModal = lazy(() =>
+  import('./components/remote-control/RemoteControlModal').then((m) => ({
+    default: m.RemoteControlModal,
   })),
 );
 
@@ -503,9 +503,11 @@ function App(): JSX.Element {
   );
   const prPickerOpen = useNavigationStore((s) => s.prPickerOpen);
   const prPickerOptions = useNavigationStore((s) => s.prPickerOptions);
-  const canopyPortalOpen = useNavigationStore((s) => s.canopyPortalOpen);
-  // The Remote Control dialog follows device Remote Control; Portal only
-  // follows its opt-in (CAN-5985). Unknown until main's first snapshot.
+  const remoteControlDialogOpen = useNavigationStore(
+    (s) => s.remoteControlDialogOpen,
+  );
+  // The Remote Control dialog follows device Remote Control availability.
+  // Unknown until main's first snapshot.
   const remoteControlAvailable = useRemoteControlStore(
     (s) => s.state.available,
   );
@@ -653,7 +655,9 @@ function App(): JSX.Element {
     (s) => s.closeFileSearchPalette,
   );
   const closePrPicker = useNavigationStore((s) => s.closePrPicker);
-  const closeCanopyPortal = useNavigationStore((s) => s.closeCanopyPortal);
+  const closeRemoteControlDialog = useNavigationStore(
+    (s) => s.closeRemoteControlDialog,
+  );
   const previousActivePageRef = useRef(activePage);
   const watcherDeliverySchedulerRef = useRef(new WatcherDeliveryScheduler());
   const watcherDeliveryDeduplicatorRef = useRef(
@@ -744,14 +748,18 @@ function App(): JSX.Element {
   // dialog. The conditional render below ALSO gates on availability so the
   // dialog never paints between snapshot broadcasts and this effect.
   useEffect(() => {
-    if (remoteControlHydrated && !remoteControlAvailable && canopyPortalOpen) {
-      closeCanopyPortal();
+    if (
+      remoteControlHydrated &&
+      !remoteControlAvailable &&
+      remoteControlDialogOpen
+    ) {
+      closeRemoteControlDialog();
     }
   }, [
     remoteControlHydrated,
     remoteControlAvailable,
-    canopyPortalOpen,
-    closeCanopyPortal,
+    remoteControlDialogOpen,
+    closeRemoteControlDialog,
   ]);
 
   useEffect(() => {
@@ -1345,7 +1353,7 @@ function App(): JSX.Element {
 
   useEffect(() => {
     return window.api.onDeepLinkRemoteControlOpen(() => {
-      useNavigationStore.getState().openCanopyPortal();
+      useNavigationStore.getState().openRemoteControlDialog();
     });
   }, []);
 
@@ -1369,7 +1377,7 @@ function App(): JSX.Element {
       const navigation = useNavigationStore.getState();
       switch (event.destination.kind) {
         case 'canopy-portal':
-          navigation.openCanopyPortal();
+          navigation.openRemoteControlDialog();
           return;
         case 'add-workspace':
           navigation.openAddWorkspaceModal();
@@ -1583,7 +1591,7 @@ function App(): JSX.Element {
             dispatchUiAction({ type: 'navigation.open_settings' })
           }
           settingsOpen={sidebarPageOpen}
-          onCanopyPortalClick={() =>
+          onRemoteControlClick={() =>
             dispatchUiAction({ type: 'canopy_portal.open' })
           }
           ledgerEnabled={ledgerEnabled}
@@ -1800,10 +1808,10 @@ function App(): JSX.Element {
           <PrPicker options={prPickerOptions} onClose={closePrPicker} />
         </Suspense>
       )}
-      {canopyPortalOpen && remoteControlAvailable && (
+      {remoteControlDialogOpen && remoteControlAvailable && (
         <Suspense fallback={null}>
-          <CanopyPortalModal
-            onClose={closeCanopyPortal}
+          <RemoteControlModal
+            onClose={closeRemoteControlDialog}
             onOpenAccountSettings={() => {
               dispatchUiAction({ type: 'canopy_portal.open_account_settings' });
             }}
@@ -1821,7 +1829,7 @@ function App(): JSX.Element {
                   toastMessage: `You're connected. You can now enable ${REMOTE_CONTROL_LABEL}.`,
                 },
                 () => {
-                  useNavigationStore.getState().openCanopyPortal();
+                  useNavigationStore.getState().openRemoteControlDialog();
                 },
               );
             }}

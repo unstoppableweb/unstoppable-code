@@ -598,7 +598,7 @@ function FolderRow({
         absolutePath && onOpenInFileManager ? (
           <Tooltip label={pt(uiText.fileManager.openItem)}>
             <Button
-              variant="ghost-quiet"
+              variant="ghost"
               size="sm"
               iconOnly
               data-testid="files-tree-row-open-in-file-manager"
@@ -728,7 +728,7 @@ const FileNodeRow = memo(function FileNodeRow({
         onOpenInFileManager ? (
           <Tooltip label={pt(uiText.fileManager.openItem)}>
             <Button
-              variant="ghost-quiet"
+              variant="ghost"
               size="sm"
               iconOnly
               data-testid="files-tree-row-open-in-file-manager"
@@ -3699,7 +3699,7 @@ export function FilesTreeTab({
               </Tooltip>
               <Tooltip label="Search files">
                 <Button
-                  variant="ghost-quiet"
+                  variant="ghost"
                   size="compact"
                   iconOnly
                   onClick={handleToggleSearch}

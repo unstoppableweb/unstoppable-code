@@ -20,12 +20,12 @@
 // filesystem, no network, no Prisma, no React) so it is safe to import from the
 // renderer, the desktop main process, and the web service alike. It mirrors the
 // dependency-free banner of `telemetry/index.ts` and `feed/index.ts`. The only
-// sibling protocol import it takes is the pure `PortalChatMessage` wire type
+// sibling protocol import it takes is the pure `RemoteControlChatMessage` wire type
 // (CAN-396): the run viewer now assembles a structured, projected transcript in
 // addition to the per-turn plaintext fallback CAN-395 shipped.
 // ---------------------------------------------------------------------------
 
-import type { PortalChatMessage } from '../portal';
+import type { RemoteControlChatMessage } from '../remote-control/shell';
 
 // ===========================================================================
 // Wire version.
@@ -353,7 +353,7 @@ export interface SharedRunDetail extends SharedRunRef {
    * parsing each turn's decrypted provider JSONL. Empty when nothing could be
    * parsed; the per-turn `transcript` plaintext remains the fallback.
    */
-  messages: PortalChatMessage[];
+  messages: RemoteControlChatMessage[];
   /** Decrypted run diff; empty string when absent / not decryptable. */
   diff: string;
   /** Rollup summed server-side over the referenced turn columns. */

@@ -98,7 +98,7 @@ export function SuggestionCard({
             {permanentDismiss ? (
               <div className="basis-full">
                 <Button
-                  variant="ghost-quiet"
+                  variant="ghost"
                   size="sm"
                   disabled={permanentDismiss.disabled}
                   aria-busy={permanentDismiss.busy}

@@ -2,7 +2,7 @@ import type {
   CanopyErrorPayload,
   CatalogEntry,
 } from '@canopy/protocol/canopy-core';
-import type { PortalChatTabPluginSelections } from '@canopy/protocol/portal';
+import type { RemoteControlChatTabPluginSelections } from '@canopy/protocol/remote-control/shell';
 import { readCloudProjectPluginCatalog } from '../cloud-chat-catalog';
 import {
   readCloudProjectSandboxRoutes,
@@ -93,7 +93,7 @@ class FakeWebCore implements CoreCoworkInvoker {
 // Jest's asymmetric matchers are typed `any`; held as `unknown` here.
 const ANY_KEY: unknown = expect.any(String);
 
-const SELECTIONS: PortalChatTabPluginSelections = {
+const SELECTIONS: RemoteControlChatTabPluginSelections = {
   collectionIds: [],
   skillRefs: [{ sourceId: 'cloud-curated', skillName: 'review' }],
   pluginRefs: [{ marketplaceId: 'marketplace:a', pluginName: 'lint' }],

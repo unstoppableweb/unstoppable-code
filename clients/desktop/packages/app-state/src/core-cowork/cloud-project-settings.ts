@@ -9,7 +9,7 @@ import {
   isCapabilityUnavailable,
   type CapabilityUnavailable,
 } from '@canopy/protocol/capability-bundle';
-import type { PortalChatTabPluginSelections } from '@canopy/protocol/portal';
+import type { RemoteControlChatTabPluginSelections } from '@canopy/protocol/remote-control/shell';
 import {
   CoreCoworkRequestError,
   type CanopyCoreRelayLikeReply,
@@ -32,7 +32,7 @@ export interface CloudProjectSettings {
   /** The project's instructions; empty when it has none. */
   readonly instructions: string;
   /** The project's default plugins, or null when it has none. */
-  readonly defaultPluginSelections: PortalChatTabPluginSelections | null;
+  readonly defaultPluginSelections: RemoteControlChatTabPluginSelections | null;
   /** The defaults' revision, which guards the next defaults save. */
   readonly defaultPluginSelectionsRevision: number | undefined;
   /** Default plugins the project's chats can't use, with their status. */
@@ -71,7 +71,7 @@ const unreadable = (message: string): CoreCoworkRequestError =>
  */
 function pluginSelectionsOf(
   value: unknown,
-): PortalChatTabPluginSelections | null {
+): RemoteControlChatTabPluginSelections | null {
   if (value === null || value === undefined) return null;
   if (!isRecord(value))
     throw unreadable("This project's default plugins can't be read here.");
@@ -175,7 +175,7 @@ export async function saveCloudProjectInstructions(
 export async function saveCloudProjectDefaultPlugins(
   invoker: CoreCoworkInvoker,
   workspaceId: string,
-  defaultPluginSelections: PortalChatTabPluginSelections | null,
+  defaultPluginSelections: RemoteControlChatTabPluginSelections | null,
   expectedRevision: number | undefined,
 ): Promise<readonly string[]> {
   const idempotencyKey = globalThis.crypto.randomUUID();

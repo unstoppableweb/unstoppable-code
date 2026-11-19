@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { basename } from 'node:path';
 import { isVisiblePersistedChatMessage } from '@canopy/agent-transcript';
-import { persistedMessageToPortalMessage } from '@canopy/agent-transcript/portal/persisted-chat-projection';
+import { persistedMessageToRemoteControlMessage } from '@canopy/agent-transcript/remote-control/persisted-chat-projection';
 import {
   MAX_SHARED_CONTAINER_TITLE_LENGTH,
   sharedContainerPublishedLayoutHasWebPage,
@@ -114,7 +114,7 @@ export function buildCoworkRevisionArtifacts(
           .filter(isVisiblePersistedChatMessage)
           .map((message) =>
             appendPublishedAttachmentPaths(
-              persistedMessageToPortalMessage(
+              persistedMessageToRemoteControlMessage(
                 { scope: 'standalone', chatId: chat.id, message },
                 {
                   textMaxChars: Infinity,

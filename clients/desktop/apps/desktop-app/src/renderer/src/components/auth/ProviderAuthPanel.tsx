@@ -40,6 +40,7 @@ import { subscriptionLabelForPlanType } from '@canopy/protocol/telemetry';
 import {
   Stack,
   Button,
+  FieldButton,
   FormField,
   Notice,
   ProviderRowLabel,
@@ -992,20 +993,19 @@ function GitHubAuthPanel({
               placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
               data-testid="auth-panel-github-pat-input"
               trailing={
-                <Button
-                  variant="ghost"
-                  size="compact"
-                  iconOnly
+                <FieldButton
+                  tone="ghost"
                   data-settings-control="field"
                   onClick={(): void => setPatVisible((prev) => !prev)}
                   aria-label={patVisible ? 'Hide token' : 'Show token'}
-                >
-                  {patVisible ? (
-                    <EyeOffIcon size={16} aria-hidden />
-                  ) : (
-                    <EyeIcon size={16} aria-hidden />
-                  )}
-                </Button>
+                  icon={
+                    patVisible ? (
+                      <EyeOffIcon size={16} aria-hidden />
+                    ) : (
+                      <EyeIcon size={16} aria-hidden />
+                    )
+                  }
+                />
               }
             />
           )}

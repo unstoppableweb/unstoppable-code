@@ -6,12 +6,12 @@
  */
 import { isThinkingLevel } from '@canopy/protocol/thinking';
 import type {
-  PortalHookRunPayload,
-  PortalPipelineRunPayload,
-  PortalPlanDetail,
-  PortalPlanUpdatePayload,
-  PortalScriptRunPayload,
-} from '@canopy/protocol/portal';
+  RemoteControlHookRunPayload,
+  RemoteControlPipelineRunPayload,
+  RemoteControlPlanDetail,
+  RemoteControlPlanUpdatePayload,
+  RemoteControlScriptRunPayload,
+} from '@canopy/protocol/remote-control/shell';
 import type {
   WireAgentModelConfig,
   WireHookRunRequest,
@@ -136,7 +136,7 @@ export function joinRootPath(
  * union, throwing when the target's routing ids are missing.
  */
 export function toScriptRunRequest(
-  args: PortalScriptRunPayload,
+  args: RemoteControlScriptRunPayload,
 ): WireScriptRunRequest {
   if (args.target === 'project') {
     const projectId = args.projectId ?? args.workspaceId;
@@ -184,7 +184,7 @@ export function toScriptRunRequest(
 
 /** Same narrowing as {@link toScriptRunRequest} for the hook-run union. */
 export function toHookRunRequest(
-  args: PortalHookRunPayload,
+  args: RemoteControlHookRunPayload,
 ): WireHookRunRequest {
   if (args.target === 'project') {
     const projectId = args.projectId ?? args.workspaceId;
@@ -231,12 +231,12 @@ export function toHookRunRequest(
 }
 
 /**
- * Mirror of the pipelines-service `normalizePortalModelConfig`: fold the
+ * Mirror of the pipelines-service `normalizeRemoteControlModelConfig`: fold the
  * portal model config (plus the deprecated `codexFastModeEnabled`) into the
  * desktop `AgentModelConfig`, or `undefined` when nothing is set.
  */
 export function toAgentModelConfig(
-  args: PortalPipelineRunPayload,
+  args: RemoteControlPipelineRunPayload,
 ): WireAgentModelConfig | undefined {
   const modelConfig: WireAgentModelConfig = {};
   if (isThinkingLevel(args.modelConfig?.thinkingLevel)) {
@@ -258,7 +258,9 @@ export function toAgentModelConfig(
  * Mirror of the plans-service `toPlanDetail` projection (`content`
  * canonical, `body` retained for legacy consumers).
  */
-export function toPortalPlanDetail(plan: WireTrackedPlan): PortalPlanDetail {
+export function toRemoteControlPlanDetail(
+  plan: WireTrackedPlan,
+): RemoteControlPlanDetail {
   return {
     workspaceLocalId: plan.projectId,
     worktreeLocalId: plan.worktreeId,
@@ -283,11 +285,11 @@ export function toPortalPlanDetail(plan: WireTrackedPlan): PortalPlanDetail {
  * `revisionNumber` returns that revision or `null`, never the latest in its
  * place (CAN-5354).
  */
-export function toRequestedPortalPlanDetail(
+export function toRequestedRemoteControlPlanDetail(
   plan: WireTrackedPlan,
   revisionNumber: number | undefined,
-): PortalPlanDetail | null {
-  const detail = toPortalPlanDetail(plan);
+): RemoteControlPlanDetail | null {
+  const detail = toRemoteControlPlanDetail(plan);
   if (
     revisionNumber === undefined ||
     revisionNumber === plan.latestRevisionNumber
@@ -317,7 +319,7 @@ export function toRequestedPortalPlanDetail(
  * loudly instead of corrupting the persisted plan.
  */
 export function toUpdateTrackedPlanRequest(
-  args: PortalPlanUpdatePayload,
+  args: RemoteControlPlanUpdatePayload,
 ): WireUpdateTrackedPlanRequest {
   const request: WireUpdateTrackedPlanRequest = {
     projectId: args.projectId,

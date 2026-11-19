@@ -41,11 +41,11 @@ export {
   setTranscriptModelResolver,
   type TranscriptModelResolver,
 } from './lib/model-resolver';
-export * from './portal/persisted-chat-projection';
-export { portalPartHasVisual } from './portal/portal-part-visual';
+export * from './remote-control/persisted-chat-projection';
+export { remoteControlPartHasVisual } from './remote-control/remote-control-part-visual';
 export {
-  portalChatAttachmentPaths,
-  portalChatAttachmentIdForPath,
-  portalChatMessageAttachmentsFromPaths,
-} from './portal/message-attachments';
+  remoteControlChatAttachmentPaths,
+  remoteControlChatAttachmentIdForPath,
+  remoteControlChatMessageAttachmentsFromPaths,
+} from './remote-control/message-attachments';
 export * from './lib/child-tool-liveness';

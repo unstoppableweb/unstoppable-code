@@ -1,8 +1,8 @@
 import { useCallback, useRef, useState } from 'react';
 import type {
-  PortalAskUserQuestion,
-  PortalAskUserQuestionAnswer,
-} from '@canopy/protocol/portal';
+  RemoteControlAskUserQuestion,
+  RemoteControlAskUserQuestionAnswer,
+} from '@canopy/protocol/remote-control/shell';
 import { useChatSurfaceScope } from '@/stores/chat/surface-store';
 import { useChatStore } from '@/stores/chatStore';
 import {
@@ -13,7 +13,7 @@ import {
 /** A waiting request the composer asks: one or more questions. */
 export interface ComposerPendingQuestion {
   readonly requestId: string;
-  readonly questions: readonly PortalAskUserQuestion[];
+  readonly questions: readonly RemoteControlAskUserQuestion[];
 }
 
 /**
@@ -23,7 +23,7 @@ export interface ComposerPendingQuestion {
 export interface ComposerQuestionDelivery {
   readonly answer: (
     requestId: string,
-    answers: PortalAskUserQuestionAnswer[],
+    answers: RemoteControlAskUserQuestionAnswer[],
   ) => Promise<unknown>;
   readonly dismiss: (requestId: string) => Promise<unknown>;
 }
@@ -38,7 +38,7 @@ export interface ComposerQuestionPrompt {
   readonly retry: () => void;
 }
 
-const NO_QUESTIONS: readonly PortalAskUserQuestion[] = [];
+const NO_QUESTIONS: readonly RemoteControlAskUserQuestion[] = [];
 
 /**
  * Connects a pending question to the composer's question prompt: the
@@ -59,11 +59,11 @@ export function useComposerQuestionPrompt(
   const disconnected = useChatSurfaceScope()?.disconnected === true;
   const [busy, setBusy] = useState<'answer' | 'dismiss' | null>(null);
   const [errorKind, setErrorKind] = useState<'submit' | 'dismiss' | null>(null);
-  const lastAnswers = useRef<PortalAskUserQuestionAnswer[] | null>(null);
+  const lastAnswers = useRef<RemoteControlAskUserQuestionAnswer[] | null>(null);
   const requestId = pending?.requestId ?? '';
 
   const submit = useCallback(
-    (answers: PortalAskUserQuestionAnswer[]): void => {
+    (answers: RemoteControlAskUserQuestionAnswer[]): void => {
       if (!requestId) return;
       lastAnswers.current = answers;
       setBusy('answer');

@@ -9,9 +9,9 @@ import { act } from 'react';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { createRoot, type Root } from 'react-dom/client';
 import type {
-  PortalChatMessage,
-  PortalChatTurnGroup,
-} from '@canopy/protocol/portal';
+  RemoteControlChatMessage,
+  RemoteControlChatTurnGroup,
+} from '@canopy/protocol/remote-control/shell';
 import { ChatTranscript } from '../ChatTranscript';
 
 (
@@ -23,7 +23,7 @@ const RECEIPT_ID = 'transcript-msg-9';
 /** The send's own messageId, which the web core does not keep. */
 const SEND_ID = 'msg-1';
 
-const messages: PortalChatMessage[] = [
+const messages: RemoteControlChatMessage[] = [
   {
     messageId: RECEIPT_ID,
     chatId: 'chat-1',
@@ -33,7 +33,7 @@ const messages: PortalChatMessage[] = [
     createdAtMs: Date.UTC(2026, 10, 10, 18),
   },
 ];
-const turnGroups: PortalChatTurnGroup[] = [
+const turnGroups: RemoteControlChatTurnGroup[] = [
   {
     userMessageId: RECEIPT_ID,
     intermediateMessageIds: [],
@@ -41,7 +41,7 @@ const turnGroups: PortalChatTurnGroup[] = [
     expandedMessageIds: [],
     complete: true,
     summary: null,
-  } as unknown as PortalChatTurnGroup,
+  } as unknown as RemoteControlChatTurnGroup,
 ];
 const NOTE = [{ kind: 'capability_copy_stale' as const, name: 'helper' }];
 

@@ -1,6 +1,6 @@
 import type { IpcMainInvokeEvent } from 'electron';
 import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
-import type { W5RecoveryStatus } from '@canopy/protocol/portal';
+import type { W5RecoveryStatus } from '@canopy/protocol/remote-control/shell';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import { getDesktopW5RecoveryController } from '../canopy-runtime/desktop-w5-recovery';
 import { registerIpcHandler } from './register';

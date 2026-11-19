@@ -28,6 +28,7 @@ import {
 } from './consolidation-state';
 import type { RunConsolidationResult } from './consolidation-task';
 import { resolveLocalMemoryRunModel } from './helper-model';
+import { isHelperNoBillingSourceError } from '../../agents/helper-no-billing-source';
 import { resolveMemoryWorkspaceId } from './workspace-scope';
 
 export const LOCAL_MEMORY_CONSOLIDATION_DEBOUNCE_MS = 5 * 60_000;
@@ -439,11 +440,17 @@ async function attemptScopeConsolidation(
   } catch (error) {
     lastRunAt.set(scope.scopeDir, Date.now());
     const reason = error instanceof Error ? error.message : String(error);
-    process.emitWarning(reason, {
-      code: 'LOCAL_MEMORY_CONSOLIDATION_SCHEDULER_FAILED',
-    });
+    // Refused before any spawn: the provider is signed out with no billing
+    // source (CAN-7062). A skip, not a failure: nothing was consumed and the
+    // next idle transition tries again.
+    const noBillingSource = isHelperNoBillingSourceError(error);
+    if (!noBillingSource) {
+      process.emitWarning(reason, {
+        code: 'LOCAL_MEMORY_CONSOLIDATION_SCHEDULER_FAILED',
+      });
+    }
     await recordConsolidationRun(scope.scopeDir, {
-      result: 'failed',
+      result: noBillingSource ? 'skipped' : 'failed',
       reason,
     }).catch(() => undefined);
     broadcastLocalMemoryChanged(scopeRequest(scope));

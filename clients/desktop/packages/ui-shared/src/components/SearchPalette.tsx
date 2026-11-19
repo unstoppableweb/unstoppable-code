@@ -64,7 +64,6 @@ export function SearchPaletteLayout<T extends string>({
           onChange={onScopeChange}
           label={scopeLabel}
           semantics="tabs"
-          shape="capsule"
           width="fill"
           dataTestId={scopesTestId}
         />

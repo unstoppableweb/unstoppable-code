@@ -44,6 +44,14 @@ import {
 } from './summary-projection';
 import { resolutionInputsTransferable } from './resolve/ts-module-resolver';
 import type { CodeGraphRepositoryDiagnostics } from './types/code-graph';
+import {
+  CodeGraphIoError,
+  codeGraphFailureClass,
+  codeGraphIoError,
+  errnoOf,
+  isMissingPathError,
+  type CodeGraphFailureClass,
+} from './io-failure';
 
 export interface CodeGraphBaseIdentity {
   repoId: string;
@@ -82,6 +90,26 @@ export interface ValidatedCodeGraphBase {
   recovered: boolean;
 }
 
+/** Why a repository built cold instead of from a seed: a closed set. */
+export type CodeGraphColdFallbackReason =
+  | 'no-seed-source'
+  | 'no-canonical-source'
+  | 'no-compatible-base'
+  | 'seed-copy-failed'
+  | 'seed-preparation-failed'
+  | 'duplicate-repository'
+  | 'invalid-seed-source'
+  | 'seed-import-failed'
+  | 'worktree-graph-busy'
+  | 'seed-flush-failed';
+
+export interface CodeGraphColdFallback {
+  repoId: string;
+  reason: CodeGraphColdFallbackReason;
+  /** Present when an I/O or database failure caused the fallback. */
+  failureClass?: CodeGraphFailureClass;
+}
+
 export type CodeGraphSeedOutcome =
   | {
       repoId: string;
@@ -89,7 +117,7 @@ export type CodeGraphSeedOutcome =
       generationId?: string;
       gitHead?: string | null;
     }
-  | { repoId: string; status: 'cold-fallback'; reason: string }
+  | ({ status: 'cold-fallback' } & CodeGraphColdFallback)
   | { repoId: string; status: 'existing-graph-reused' };
 
 export interface SeedCodeGraphResult {
@@ -104,8 +132,6 @@ export interface CloneCodeGraphResult {
   busy?: true;
   durationMs: number;
 }
-
-const WORKTREE_GRAPH_BUSY_REASON = 'worktree graph is being written';
 
 const BASE_MANIFEST_VERSION = 1;
 const GRAPH_RELATIVE_PATH_PATTERN = /^generations\/([^/]+)\/graph\.db$/;
@@ -760,15 +786,32 @@ export async function hasPublishedCodeGraphBaseForRepository(input: {
   return false;
 }
 
-async function fsyncPath(targetPath: string): Promise<void> {
-  const handle = await open(targetPath, 'r').catch(() => null);
-  if (handle === null) {
-    return;
+/**
+ * Flushes a file or directory. Every open, sync or close error rejects with a
+ * typed `flush` failure; a flush is never a silent no-op. `writeHandle` is the
+ * host fact that flushing needs a handle opened for writing (Windows
+ * `FlushFileBuffers` refuses a read-only one).
+ */
+async function fsyncPath(
+  targetPath: string,
+  writeHandle: boolean,
+): Promise<void> {
+  let handle: Awaited<ReturnType<typeof open>>;
+  try {
+    handle = await open(targetPath, writeHandle ? 'r+' : 'r');
+  } catch (error) {
+    throw codeGraphIoError('flush', error);
   }
   try {
-    await handle.sync().catch(() => undefined);
-  } finally {
+    await handle.sync();
+  } catch (error) {
     await handle.close().catch(() => undefined);
+    throw codeGraphIoError('flush', error);
+  }
+  try {
+    await handle.close();
+  } catch (error) {
+    throw codeGraphIoError('flush', error);
   }
 }
 
@@ -825,6 +868,8 @@ interface CodeGraphBasePublicationInput {
   >;
   gitHead: string | null;
   generationId?: string;
+  /** Host fact: flushing needs a write handle, as on Windows. */
+  flushRequiresWriteHandle?: boolean;
 }
 
 /**
@@ -838,6 +883,8 @@ export async function finalizeCodeGraphBaseStaging(input: {
   dbPath: string;
   identity: CodeGraphBasePublicationInput['identity'];
   gitHead: string | null;
+  /** Host fact: flushing needs a write handle, as on Windows. */
+  flushRequiresWriteHandle?: boolean;
 }): Promise<void> {
   const writer = new DatabaseSync(input.dbPath, {
     timeout: CODE_GRAPH_BUSY_TIMEOUT_MS,
@@ -852,7 +899,7 @@ export async function finalizeCodeGraphBaseStaging(input: {
   } finally {
     writer.close();
   }
-  await fsyncPath(input.dbPath);
+  await fsyncPath(input.dbPath, input.flushRequiresWriteHandle === true);
   if (
     validateBaseDatabase(input.dbPath, {
       ...input.identity,
@@ -871,6 +918,7 @@ export async function publishCodeGraphBase(
     dbPath: path.join(input.stagingDir, 'graph.db'),
     identity: input.identity,
     gitHead: input.gitHead,
+    flushRequiresWriteHandle: input.flushRequiresWriteHandle,
   });
   return installCodeGraphBaseGeneration(input);
 }
@@ -887,10 +935,9 @@ export async function installCodeGraphBaseGeneration(
   const generationId = input.generationId ?? randomUUID();
   const generationsDir = path.join(input.variantDir, 'generations');
   const generationDir = path.join(generationsDir, generationId);
+  const writeHandle = input.flushRequiresWriteHandle === true;
   await mkdir(generationsDir, { recursive: true });
   await rename(input.stagingDir, generationDir);
-  await fsyncPath(generationDir);
-  await fsyncPath(generationsDir);
   const manifest: PublishedCodeGraphBase = {
     manifestVersion: 1,
     repoId: input.identity.repoId,
@@ -908,14 +955,36 @@ export async function installCodeGraphBaseGeneration(
     input.variantDir,
     `.current-${randomUUID()}.json`,
   );
-  await writeFile(
-    temporaryManifestPath,
-    JSON.stringify(manifest, null, 2),
-    'utf8',
-  );
-  await fsyncPath(temporaryManifestPath);
+  try {
+    await fsyncPath(generationDir, writeHandle);
+    await fsyncPath(generationsDir, writeHandle);
+    await writeFile(
+      temporaryManifestPath,
+      JSON.stringify(manifest, null, 2),
+      'utf8',
+    );
+    await fsyncPath(temporaryManifestPath, writeHandle);
+  } catch (error) {
+    // Nothing was switched: `current.json` still names the prior generation.
+    // Recovery scans `generations/`, so move this unreferenced one back out
+    // (a rename needs no read access) before a removal that may itself fail.
+    await rm(temporaryManifestPath, { force: true }).catch(() => undefined);
+    const removable = await rename(generationDir, input.stagingDir).then(
+      () => input.stagingDir,
+      () => generationDir,
+    );
+    await rm(removable, { recursive: true, force: true }).catch(
+      () => undefined,
+    );
+    throw error;
+  }
   await rename(temporaryManifestPath, currentPath);
-  await fsyncPath(input.variantDir);
+  try {
+    await fsyncPath(input.variantDir, writeHandle);
+  } catch (error) {
+    // The switch already happened; it is published but not known durable.
+    throw codeGraphIoError('durability-unverified', error);
+  }
   await pruneGenerations(input.variantDir, generationId);
   return {
     manifest,
@@ -965,23 +1034,101 @@ export function isPublishedCodeGraphBaseDatabaseValid(
   );
 }
 
-export function hasCompletedCodeGraph(dbPath: string): boolean {
+export type CodeGraphCompletion =
+  | { state: 'completed' }
+  | { state: 'not-completed' }
+  | {
+      state: 'unreadable';
+      failureClass: CodeGraphFailureClass;
+      errno?: string;
+    };
+
+function unreadableCompletion(error: unknown): CodeGraphCompletion {
+  const errno = errnoOf(error);
+  return {
+    state: 'unreadable',
+    failureClass: codeGraphFailureClass(error),
+    ...(errno === undefined ? {} : { errno }),
+  };
+}
+
+/**
+ * The completion a stat of `dbPath` decides: `not-completed` when the path is
+ * missing, `unreadable` for any other stat error, null when it can be stat'ed.
+ */
+async function statCompletion(
+  dbPath: string,
+): Promise<CodeGraphCompletion | null> {
+  try {
+    await stat(dbPath);
+    return null;
+  } catch (error) {
+    return isMissingPathError(error)
+      ? { state: 'not-completed' }
+      : unreadableCompletion(error);
+  }
+}
+
+/**
+ * Whether a graph completed: `not-completed` when the file is absent or has no
+ * completion marker, `unreadable` (with its class) when it exists but cannot
+ * be read. SQLite reports a missing and an unreadable file alike, so the file
+ * is stat'ed to tell them apart.
+ */
+export async function readCodeGraphCompletion(
+  dbPath: string,
+): Promise<CodeGraphCompletion> {
+  const statted = await statCompletion(dbPath);
+  if (statted !== null) return statted;
   let db: CodeGraphDatabase | undefined;
   try {
     db = openReadonlyDatabase(dbPath);
-    return (
-      getMetadataValue(db, 'completed_build_at') !== null ||
+    return getMetadataValue(db, 'completed_build_at') !== null ||
       getMetadataValue(db, 'last_build_at') !== null
-    );
-  } catch {
-    return false;
+      ? { state: 'completed' }
+      : { state: 'not-completed' };
+  } catch (error) {
+    // Removed after the stat: absent, not unreadable.
+    return (await statCompletion(dbPath)) ?? unreadableCompletion(error);
   } finally {
     try {
       db?.close();
     } catch {
-      // Treat an unreadable database as incomplete.
+      // The completion state is already decided.
     }
   }
+}
+
+/**
+ * Failures of the machine, not of the graph (permissions, I/O, space): a
+ * graph that fails this way is kept, never replaced, and the failure
+ * propagates. A corrupt, foreign or busy graph stays replaceable, as before.
+ */
+function isEnvironmentalFailure(failureClass: CodeGraphFailureClass): boolean {
+  return (
+    failureClass === 'permission-denied' ||
+    failureClass === 'io' ||
+    failureClass === 'no-space'
+  );
+}
+
+/**
+ * Whether a seed target already holds a completed graph. A target that exists
+ * but cannot be read for an environmental reason is kept: this rejects with
+ * its typed `unreadable-graph` failure instead of seeding over it.
+ */
+export async function hasCompletedSeedTarget(dbPath: string): Promise<boolean> {
+  const completion = await readCodeGraphCompletion(dbPath);
+  if (
+    completion.state === 'unreadable' &&
+    isEnvironmentalFailure(completion.failureClass)
+  )
+    throw new CodeGraphIoError(
+      'unreadable-graph',
+      completion.failureClass,
+      completion.errno,
+    );
+  return completion.state === 'completed';
 }
 
 type WorktreeGraphInstallOutcome = 'installed' | 'existing-graph' | 'busy';
@@ -1008,8 +1155,10 @@ function hasCompletionMarker(db: CodeGraphDatabase): boolean {
       getMetadataValue(db, 'completed_build_at') !== null ||
       getMetadataValue(db, 'last_build_at') !== null
     );
-  } catch {
-    return false;
+  } catch (error) {
+    // A corrupt or foreign database is replaced; an unreadable one is kept.
+    if (!isEnvironmentalFailure(codeGraphFailureClass(error))) return false;
+    throw codeGraphIoError('unreadable-graph', error);
   }
 }
 
@@ -1082,8 +1231,12 @@ function replaceGraphFilesKeepingTarget(
 async function installWorktreeGraphDatabase(
   temporaryDbPath: string,
   targetDbPath: string,
-  openFilesBlockReplacement: boolean,
+  facts: {
+    openFilesBlockReplacement: boolean;
+    flushRequiresWriteHandle: boolean;
+  },
 ): Promise<WorktreeGraphInstallOutcome> {
+  const { openFilesBlockReplacement } = facts;
   let guard: DatabaseSync | undefined;
   try {
     guard = new DatabaseSync(targetDbPath, { timeout: 0 });
@@ -1091,8 +1244,11 @@ async function installWorktreeGraphDatabase(
   } catch (error) {
     if (guard !== undefined) releaseInstallGuard(guard);
     guard = undefined;
-    // An unreadable target is replaced, as before; only a writer keeps it.
+    // A writer keeps the target. A corrupt or foreign target is replaced, as
+    // before; one that cannot be opened for another reason is kept.
     if (isSqliteBusy(error)) return 'busy';
+    if (isEnvironmentalFailure(codeGraphFailureClass(error)))
+      throw codeGraphIoError('unreadable-graph', error);
   }
   try {
     if (guard !== undefined && hasCompletionMarker(guard)) {
@@ -1115,7 +1271,12 @@ async function installWorktreeGraphDatabase(
   } finally {
     if (guard !== undefined) releaseInstallGuard(guard);
   }
-  await fsyncPath(path.dirname(targetDbPath));
+  try {
+    await fsyncPath(path.dirname(targetDbPath), facts.flushRequiresWriteHandle);
+  } catch (error) {
+    // The graph is already in place; it is installed but not known durable.
+    throw codeGraphIoError('durability-unverified', error);
+  }
   return 'installed';
 }
 
@@ -1124,14 +1285,36 @@ function uninstalledSeedOutcome(
   install: Exclude<WorktreeGraphInstallOutcome, 'installed'>,
 ): CodeGraphSeedOutcome {
   return install === 'busy'
-    ? { repoId, status: 'cold-fallback', reason: WORKTREE_GRAPH_BUSY_REASON }
+    ? { repoId, status: 'cold-fallback', reason: 'worktree-graph-busy' }
     : { repoId, status: 'existing-graph-reused' };
+}
+
+function seedFlushFailedOutcome(
+  repoId: string,
+  error: unknown,
+): CodeGraphSeedOutcome {
+  return {
+    repoId,
+    status: 'cold-fallback',
+    reason: 'seed-flush-failed',
+    failureClass: codeGraphFailureClass(error),
+  };
+}
+
+function installFacts(input: {
+  openFilesBlockReplacement?: boolean;
+  flushRequiresWriteHandle?: boolean;
+}): { openFilesBlockReplacement: boolean; flushRequiresWriteHandle: boolean } {
+  return {
+    openFilesBlockReplacement: input.openFilesBlockReplacement === true,
+    flushRequiresWriteHandle: input.flushRequiresWriteHandle === true,
+  };
 }
 
 function validateSeedSource(
   source: CodeGraphSeedSource,
   customLanguagesFingerprint: string,
-): string | null {
+): 'invalid-seed-source' | null {
   return validateBaseDatabase(source.dbPath, {
     repoId: source.repoId,
     canonicalRepoRoot: source.canonicalRepoRoot,
@@ -1140,7 +1323,7 @@ function validateSeedSource(
       ? { gitHead: source.gitHead }
       : {}),
   }) === null
-    ? 'base validation failed'
+    ? 'invalid-seed-source'
     : null;
 }
 
@@ -1380,9 +1563,11 @@ export async function seedCodeGraphDatabase(input: {
    * on Windows. Replacing the worktree graph then releases its write lock
    * first and keeps the prior graph if another connection opens it. */
   openFilesBlockReplacement?: boolean;
+  /** Host fact: flushing needs a write handle, as on Windows. */
+  flushRequiresWriteHandle?: boolean;
 }): Promise<SeedCodeGraphResult> {
   const startedAt = Date.now();
-  if (hasCompletedCodeGraph(input.targetDbPath)) {
+  if (await hasCompletedSeedTarget(input.targetDbPath)) {
     return {
       installed: false,
       outcomes: input.sources.map((source) => ({
@@ -1414,7 +1599,7 @@ export async function seedCodeGraphDatabase(input: {
         outcomes.push({
           repoId: source.repoId,
           status: 'cold-fallback',
-          reason: 'duplicate repository id',
+          reason: 'duplicate-repository',
         });
         continue;
       }
@@ -1443,7 +1628,8 @@ export async function seedCodeGraphDatabase(input: {
         outcomes.push({
           repoId: source.repoId,
           status: 'cold-fallback',
-          reason: error instanceof Error ? error.message : String(error),
+          reason: 'seed-import-failed',
+          failureClass: codeGraphFailureClass(error),
         });
       }
     }
@@ -1525,12 +1711,27 @@ export async function seedCodeGraphDatabase(input: {
     db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
     db.close();
     db = undefined;
-    await fsyncPath(temporaryDbPath);
+    const facts = installFacts(input);
+    try {
+      await fsyncPath(temporaryDbPath, facts.flushRequiresWriteHandle);
+    } catch (error) {
+      // An unflushed seed is never installed; every repository builds cold,
+      // and one that already fell back keeps its own reason.
+      return {
+        installed: false,
+        outcomes: outcomes.map((outcome) =>
+          outcome.status === 'seeded'
+            ? seedFlushFailedOutcome(outcome.repoId, error)
+            : outcome,
+        ),
+        durationMs: Date.now() - startedAt,
+      };
+    }
 
     const install = await installWorktreeGraphDatabase(
       temporaryDbPath,
       input.targetDbPath,
-      input.openFilesBlockReplacement === true,
+      facts,
     );
     if (install !== 'installed') {
       return {
@@ -1579,9 +1780,11 @@ export async function seedCodeGraphDatabaseByClone(input: {
    * on Windows. Replacing the worktree graph then releases its write lock
    * first and keeps the prior graph if another connection opens it. */
   openFilesBlockReplacement?: boolean;
+  /** Host fact: flushing needs a write handle, as on Windows. */
+  flushRequiresWriteHandle?: boolean;
 }): Promise<SeedCodeGraphResult | null> {
   const startedAt = Date.now();
-  if (hasCompletedCodeGraph(input.targetDbPath)) {
+  if (await hasCompletedSeedTarget(input.targetDbPath)) {
     return {
       installed: false,
       outcomes: [
@@ -1609,7 +1812,7 @@ export async function seedCodeGraphDatabaseByClone(input: {
       sourceAlreadyValidated: true,
       targetValidation: 'metadata-only',
       completion: 'clear',
-      openFilesBlockReplacement: input.openFilesBlockReplacement === true,
+      ...installFacts(input),
       seedProvenance: [
         {
           repoId: input.source.repoId,
@@ -1635,8 +1838,28 @@ export async function seedCodeGraphDatabaseByClone(input: {
       ],
       durationMs: Date.now() - startedAt,
     };
-  } catch {
-    return null;
+  } catch (error) {
+    if (error instanceof CodeGraphIoError && error.kind === 'flush') {
+      // The clone was not flushed, so it was not installed.
+      return {
+        installed: false,
+        outcomes: [seedFlushFailedOutcome(input.source.repoId, error)],
+        durationMs: Date.now() - startedAt,
+      };
+    }
+    // A kept unreadable graph or an unverified install fails the build, and
+    // so does an environmental failure (permissions, I/O, space) while the
+    // source is still in place. A missing, corrupt or foreign source, or the
+    // clone's own identity checks, fall back to fusion. SQLite reports a
+    // vanished source as a generic open failure, so the source is stat'ed.
+    if (error instanceof CodeGraphIoError) throw error;
+    if (
+      isMissingPathError(error) ||
+      !isEnvironmentalFailure(codeGraphFailureClass(error)) ||
+      (await stat(input.source.dbPath).then(() => false, isMissingPathError))
+    )
+      return null;
+    throw error;
   }
 }
 
@@ -1695,9 +1918,11 @@ export async function cloneCompletedCodeGraphDatabase(input: {
    * on Windows. Replacing the worktree graph then releases its write lock
    * first and keeps the prior graph if another connection opens it. */
   openFilesBlockReplacement?: boolean;
+  /** Host fact: flushing needs a write handle, as on Windows. */
+  flushRequiresWriteHandle?: boolean;
 }): Promise<CloneCodeGraphResult> {
   const startedAt = Date.now();
-  if (hasCompletedCodeGraph(input.targetDbPath)) {
+  if (await hasCompletedSeedTarget(input.targetDbPath)) {
     return { installed: false, durationMs: Date.now() - startedAt };
   }
 
@@ -1870,12 +2095,13 @@ export async function cloneCompletedCodeGraphDatabase(input: {
     clonedDb.exec('PRAGMA wal_checkpoint(TRUNCATE)');
     clonedDb.close();
     clonedDb = undefined;
-    await fsyncPath(temporaryDbPath);
+    const facts = installFacts(input);
+    await fsyncPath(temporaryDbPath, facts.flushRequiresWriteHandle);
 
     const install = await installWorktreeGraphDatabase(
       temporaryDbPath,
       input.targetDbPath,
-      input.openFilesBlockReplacement === true,
+      facts,
     );
     if (install === 'busy') {
       return {

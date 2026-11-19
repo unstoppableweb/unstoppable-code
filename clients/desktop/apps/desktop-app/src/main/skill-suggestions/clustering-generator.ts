@@ -6,12 +6,16 @@ import {
   getStructuredHelperQueryErrorUsage,
   type StructuredHelperQueryResult,
 } from '@canopy/desktop-shared/lib/structured-helper-query';
-import type { PreferencesData } from '@canopy/desktop-shared/types';
+import {
+  getProviderForModel,
+  type PreferencesData,
+} from '@canopy/desktop-shared/types';
 import {
   finalizeObservedHelperTask,
   startObservedHelperTask,
 } from '../lib/helper-observed-task';
 import { getSkillSuggestionsHelperDir } from '../lib/paths';
+import { isHelperNoBillingSourceError } from '../agents/helper-no-billing-source';
 import type { LocalMemoryHelperModel } from '../memory/local/helper-model';
 import type { ChainCandidate, PromptCandidate } from './clustering';
 import { meetsGroupThreshold, MIN_CHAIN_CHATS } from './clustering';
@@ -423,7 +427,15 @@ export type ScanModelChoice =
       localMemoryEnabled: boolean;
       workspaceId: string;
     }
-  | { kind: 'skip'; reason: string };
+  | {
+      kind: 'skip';
+      reason: string;
+      /**
+       * The provider is signed out with no billing source (CAN-7062), beside
+       * the `no-dispatchable-model` skip. The scan treats it as not run.
+       */
+      noBillingSource?: true;
+    };
 
 /**
  * The Memory model when local memory is on, otherwise the owner's default
@@ -480,6 +492,26 @@ export async function chooseScanModel(
   ) {
     return { kind: 'skip', reason: 'model-blocked' };
   }
+  // A provider known (from caches) to be signed out with nothing to pay for
+  // the scan would refuse the helper before any spawn (CAN-7062). The scan
+  // treats this skip as not run, so the partition stays eligible.
+  const provider = getProviderForModel(helperModel.model);
+  if (provider === 'claude' || provider === 'codex') {
+    const { isNoBillingSourceRefusalCached } =
+      await import('../agents/no-billing-source-refusal');
+    if (
+      isNoBillingSourceRefusalCached(
+        { model: helperModel.model, projectId: workspaceId },
+        provider,
+      )
+    ) {
+      return {
+        kind: 'skip',
+        reason: 'no-billing-source',
+        noBillingSource: true,
+      };
+    }
+  }
   return { kind: 'run', helperModel, localMemoryEnabled, workspaceId };
 }
 
@@ -524,7 +556,8 @@ export async function runSkillSuggestionScanModel(
   } catch (error) {
     finalizeObservedHelperTask(
       taskKey,
-      'failure',
+      // Refused before any spawn (CAN-7062); the scan treats it as not run.
+      isHelperNoBillingSourceError(error) ? 'cancelled' : 'failure',
       error instanceof Error ? error.message : String(error),
       getStructuredHelperQueryErrorUsage(error),
     );

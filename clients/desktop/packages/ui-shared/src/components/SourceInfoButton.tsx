@@ -30,7 +30,7 @@ export function SourceInfoButton({
     <span className="-my-1.5 inline-flex shrink-0 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 pointer-coarse:opacity-100">
       <Tooltip label={title}>
         <Button
-          variant="ghost-quiet"
+          variant="ghost"
           size="sm"
           iconOnly
           data-testid={dataTestId}

@@ -1,8 +1,8 @@
 import type { JSX } from 'react';
 import type {
-  PortalChatMessage,
-  PortalChatTurnGroup,
-} from '@canopy/protocol/portal';
+  RemoteControlChatMessage,
+  RemoteControlChatTurnGroup,
+} from '@canopy/protocol/remote-control/shell';
 import { ChatTranscript } from '@canopy/ui-app';
 import { SpecimenCell, SpecimenPanel } from './componentsLabParts';
 
@@ -11,7 +11,7 @@ const PROMPT_ID = 'lab-turn-notices-prompt';
 const REPLY_ID = 'lab-turn-notices-reply';
 const AT = Date.UTC(2026, 10, 10, 18);
 
-const messages: PortalChatMessage[] = [
+const messages: RemoteControlChatMessage[] = [
   {
     messageId: PROMPT_ID,
     chatId: 'lab-chat',
@@ -30,7 +30,7 @@ const messages: PortalChatMessage[] = [
   },
 ];
 
-const turnGroups: PortalChatTurnGroup[] = [
+const turnGroups: RemoteControlChatTurnGroup[] = [
   {
     userMessageId: PROMPT_ID,
     intermediateMessageIds: [],

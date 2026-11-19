@@ -21,8 +21,8 @@ import {
   type WorktreeRecoveryDescription,
   type WorktreeRecoveryRequest,
   type WorktreeRecoveryAsset,
-} from '@canopy/protocol/portal/worktree-recovery';
-import type { WorktreeDiscardDescription } from '@canopy/protocol/portal/worktree-discard';
+} from '@canopy/protocol/remote-control/shell/worktree-recovery';
+import type { WorktreeDiscardDescription } from '@canopy/protocol/remote-control/shell/worktree-discard';
 import { W5CommitRefusedError } from '@canopy/desktop-shared/node/w5-commit-log/errors';
 import { assertWorktreeCanBeRemoved } from '../agents/background-work';
 import {

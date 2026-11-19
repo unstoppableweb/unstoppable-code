@@ -11,7 +11,7 @@ import {
   isExternalAgentSent,
   type AgentSentInfo,
   type ExternalAgentSender,
-} from '@canopy/protocol/portal/external-agent-sender';
+} from '@canopy/protocol/remote-control/shell/external-agent-sender';
 
 export interface BuildSubmittedMessageTextOptions {
   text: string;

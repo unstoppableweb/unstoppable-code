@@ -24,7 +24,7 @@ export const DrawerInspectorAction = forwardRef<
     <Button
       {...props}
       ref={ref}
-      variant="ghost-overlay"
+      variant="ghost"
       // A chat action: the compact 13px label, on the rows' 13px detail line.
       // The offset cancels its 12px inset, so the label lines up.
       size="compact"

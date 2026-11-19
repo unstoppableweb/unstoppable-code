@@ -39,7 +39,7 @@ export function WatcherFollowUpButton({
           ref={triggerRef}
           // Set, it takes the accent ink beside the filled glyph; unset, the
           // routine secondary surface.
-          variant={hasInstruction ? 'ghost-accent' : 'secondary'}
+          variant={hasInstruction ? 'ghost' : 'secondary'}
           size="sm"
           iconOnly
           onClick={(): void => setOpen((prev) => !prev)}

@@ -5,6 +5,9 @@ import {
   CURSOR_APPROVAL_CHECK_PROJECT_ID,
   type ApprovalRequestEvent,
 } from '@canopy/desktop-shared/types';
+// Static import: a cold load of this module graph inside the test body counted
+// against the 5s per-test timeout.
+import { CursorApprovalCheck } from '../CursorApprovalCheck';
 
 declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean | undefined;
@@ -33,20 +36,34 @@ const CARD: ApprovalRequestEvent = {
 let root: Root;
 let container: HTMLDivElement;
 
-function buttonWithText(text: string): HTMLButtonElement {
+function findButton(text: string): HTMLButtonElement | null {
   const match = Array.from(container.querySelectorAll('button')).find(
     (element) => element.textContent?.trim() === text,
   );
-  if (!(match instanceof HTMLButtonElement)) {
-    throw new Error(`Missing button ${text}`);
-  }
-  return match;
+  return match instanceof HTMLButtonElement ? match : null;
 }
 
-async function flush(): Promise<void> {
+function enabledButton(text: string): HTMLButtonElement | null {
+  const match = findButton(text);
+  return match && !match.disabled ? match : null;
+}
+
+async function drainMicrotasks(): Promise<void> {
   await act(async () => {
     for (let i = 0; i < 10; i += 1) await Promise.resolve();
   });
+}
+
+async function settle<T>(
+  description: string,
+  read: () => T | null,
+): Promise<T> {
+  for (let round = 0; round < 50; round += 1) {
+    const value = read();
+    if (value !== null) return value;
+    await drainMicrotasks();
+  }
+  throw new Error(`Timed out waiting for ${description}`);
 }
 
 afterEach(() => {
@@ -81,27 +98,30 @@ it('a refused stale allow keeps the still-live Cursor approval card', async () =
       },
     },
   });
-  const { CursorApprovalCheck } = await import('../CursorApprovalCheck');
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
   act(() => {
     root.render(<CursorApprovalCheck />);
   });
-  await flush();
 
+  const runButton = await settle(
+    'an enabled Test Cursor approvals button',
+    () => enabledButton('Test Cursor approvals'),
+  );
   act(() => {
-    buttonWithText('Test Cursor approvals').click();
+    runButton.click();
   });
-  await flush();
   act(() => {
     deliver(CARD);
   });
-  await flush();
+  const staleAllow = await settle('the Allow once button', () =>
+    findButton('Allow once'),
+  );
   act(() => {
-    buttonWithText('Allow once').click();
+    staleAllow.click();
   });
-  await flush();
+  await drainMicrotasks();
 
   expect(respond).toHaveBeenCalledWith(
     expect.objectContaining({ policyRevision: 1 }),
@@ -113,10 +133,13 @@ it('a refused stale allow keeps the still-live Cursor approval card', async () =
     'This approval is no longer pending.',
   );
 
+  const liveAllow = await settle('the Allow once button', () =>
+    findButton('Allow once'),
+  );
   act(() => {
-    buttonWithText('Allow once').click();
+    liveAllow.click();
   });
-  await flush();
+  await drainMicrotasks();
   expect(respond).toHaveBeenLastCalledWith(
     expect.objectContaining({ policyRevision: 2 }),
   );

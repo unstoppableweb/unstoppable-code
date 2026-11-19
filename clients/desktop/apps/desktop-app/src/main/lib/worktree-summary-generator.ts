@@ -48,6 +48,7 @@ import { getExecutionObservabilityIngest } from '../observability/ingest';
 import { isRecord } from './type-guards';
 import { isWorktreeSummaryData } from './worktree-summary-persistence';
 import { resolveHelperInvocation } from '../ollama/helper-invocation';
+import { isHelperNoBillingSourceError } from '../agents/helper-no-billing-source';
 import { resolveInvocationWorkOwner } from '../agents/work-owner';
 import { resolveClaudeModAdmissionLaunch } from '../agents/claude-mod-admission-launch';
 import { mergeClaudeModAdmissionSettings } from '@canopy/execution-engine/node/plugins/claude-mod-admission';
@@ -276,6 +277,12 @@ export async function generateWorktreeSummary(
       );
       if (isTransientAgentRetryExhaustedError(error)) {
         break;
+      }
+      // Never started: the provider is signed out with no billing source
+      // (CAN-7062). A retry would be refused the same way, and the scheduler
+      // turns this into a skip that leaves the stored summary untouched.
+      if (isHelperNoBillingSourceError(error)) {
+        throw error;
       }
       // Retry once before giving up.
     }

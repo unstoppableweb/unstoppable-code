@@ -42,7 +42,7 @@ export function MarketplaceLabelsSpecimen(): JSX.Element {
           ))}
         </SpecimenGrid>
       </SpecimenPanel>
-      <SpecimenPanel title="Long label (stays on one line)">
+      <SpecimenPanel title="Long label" hint="Stays on one line">
         <SpecimenCell label="No wrapping; the host clips it" wide>
           <div className="w-40 overflow-hidden">
             <MarketplaceTypeLabel
@@ -52,7 +52,10 @@ export function MarketplaceLabelsSpecimen(): JSX.Element {
           </div>
         </SpecimenCell>
       </SpecimenPanel>
-      <SpecimenPanel title="CuratedSourceLabel (mark, then Curated; hover for the source)">
+      <SpecimenPanel
+        title="CuratedSourceLabel"
+        hint="Mark, then Curated; hover for the source"
+      >
         <SpecimenCell label="Curated by Unstoppable Domains">
           <CuratedSourceLabel entryId="lab" dataTestId="lab-curated" />
         </SpecimenCell>

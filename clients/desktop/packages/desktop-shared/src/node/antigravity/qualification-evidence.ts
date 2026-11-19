@@ -19,8 +19,16 @@ export interface AntigravityQualificationToolCall {
  * here, not written by hand, so the checklist cannot claim more than the
  * probe observed.
  */
+/** Which copy of the CLI the probe launched. */
+export type AntigravityExecutableSource = 'managed' | 'override' | 'path';
+
 export interface AntigravityQualificationEvidence {
   runtimeVersion: string;
+  /**
+   * The managed copy Canopy installed, `ANTIGRAVITY_EXECUTABLE`, or a PATH
+   * `agy`/`antigravity`. Absent from evidence written before it was recorded.
+   */
+  executableSource?: AntigravityExecutableSource;
   capturedAt: string;
   sessionCapabilities: Record<string, unknown>;
   /** Titles of tool calls that completed; only these count as evidence. */
@@ -50,6 +58,8 @@ export interface NativeToolObservation {
 }
 
 export interface AntigravityQualificationSummary {
+  /** The launched copy, or null when the evidence predates the field. */
+  executableSource: AntigravityExecutableSource | null;
   /** True only when the exact legacy titles all completed. */
   nativeTitlesMatch: boolean;
   /** Titles no rule identifies as read, write, execute or MCP. */
@@ -225,6 +235,12 @@ function notCountedReason(call: {
   }`;
 }
 
+const EXECUTABLE_SOURCE_PHRASE: Record<AntigravityExecutableSource, string> = {
+  managed: 'managed copy',
+  override: 'ANTIGRAVITY_EXECUTABLE copy',
+  path: 'PATH copy',
+};
+
 const TITLE_FORMAT_PHRASE = {
   legacy: 'titles are the legacy read_file/write_file/run_command names',
   'human-readable':
@@ -295,7 +311,10 @@ export function summarizeQualificationEvidence(
   const { advertised, accepted } = evidence.additionalDirectories;
   const additionalDirectoriesSupported = advertised && accepted === true;
 
-  const runtime = `Antigravity ${evidence.runtimeVersion}`;
+  const executableSource = evidence.executableSource ?? null;
+  const runtime = `Antigravity ${evidence.runtimeVersion}${
+    executableSource ? ` (${EXECUTABLE_SOURCE_PHRASE[executableSource]})` : ''
+  }`;
   const source = `(live evidence ${evidence.capturedAt})`;
   const count = calls.length;
   const callsText = `${count} tool call${count === 1 ? '' : 's'}`;
@@ -319,6 +338,7 @@ export function summarizeQualificationEvidence(
         : `CHAT-06: ${runtime} advertised additionalDirectories but refused a session with one ${source}.`,
   ];
   return {
+    executableSource,
     nativeTitlesMatch,
     unknownTitles,
     additionalDirectoriesSupported,

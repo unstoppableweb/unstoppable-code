@@ -19,7 +19,6 @@ import {
   PUBLIC_PROFILE_MAX_LINKS,
   type PublicProfileArtifactDetail,
 } from '../profile/index';
-import type { DailyCreditDripPreferenceSaveResult } from '../billing/index';
 import {
   ACCOUNT_API_ROUTES,
   ALLOWED_AVATAR_MIME_TYPES,
@@ -108,8 +107,7 @@ import {
  * intents, payment-method confirm and removal, credit top-up and charging,
  * automatic top-up mutation, subscription cancel/resume, and plan-change
  * quotes. Automatic top-up SETTINGS are read through `account.billing.credits`
- * (`CreditsSummary.autoTopUp`); the daily free-credit opt-in is a preference,
- * not a payment.
+ * (`CreditsSummary.autoTopUp`).
  *
  * `transport: 'auth'` entries are Better Auth endpoints under `/api/auth/*`
  * with the exact JSON body the web `authClient` sends. Spike A (see the
@@ -1083,7 +1081,7 @@ export const ACCOUNT_SETTINGS_OPERATIONS = {
       path: `${API}${billingInvoicesPath(input)}`,
     }),
   }),
-  /** Includes the automatic top-up SETTINGS and daily free-credit state. */
+  /** Includes the automatic top-up SETTINGS. */
   'account.billing.credits': defineSettingsRead({
     transport: 'backend',
     input: settingsEmptyInputSchema,
@@ -1103,24 +1101,6 @@ export const ACCOUNT_SETTINGS_OPERATIONS = {
         `${API}${ACCOUNT_BILLING_READ_ROUTES.creditsLedger}`,
         { limit: input.limit, cursor: input.cursor },
       ),
-    }),
-  }),
-  'account.billing.dailyFreeCredits.update': defineSettingsWrite({
-    transport: 'backend',
-    input: z.strictObject({ enabled: z.boolean() }),
-    result: settingsDtoSchema<DailyCreditDripPreferenceSaveResult>(
-      z.looseObject({
-        enabled: z.boolean(),
-        decidedAt: z.string().nullable(),
-        capCredits: z.number(),
-        balanceCredits: z.number().nullable(),
-        granted: z.number(),
-      }),
-    ),
-    request: (input) => ({
-      method: 'PUT',
-      path: `${API}${ACCOUNT_BILLING_READ_ROUTES.creditsDailyDrip}`,
-      body: { enabled: input.enabled },
     }),
   }),
 } as const satisfies Record<string, AnySettingsOperation>;

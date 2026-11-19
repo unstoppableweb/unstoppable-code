@@ -3,7 +3,7 @@ import type {
   FileTabViewMode,
   WorkspaceAttachmentItem,
 } from '@canopy/desktop-shared/types';
-import type { PortalFileReadPayload } from '@canopy/protocol/portal';
+import type { RemoteControlFileReadPayload } from '@canopy/protocol/remote-control/shell';
 import { fileViewerKey, useFileViewerStore } from '@canopy/app-state';
 import { FileViewer, type FileViewerProps } from '@canopy/ui-app';
 import { Surface, Button } from '@canopy/ui-shared/components';
@@ -59,7 +59,7 @@ export function ArchivedAttachmentViewer({
   const closeFile = useFileViewerStore((state) => state.closeFile);
   const rootPath = parentPath(attachment.absolutePath);
   const rootId = `archived-attachments:${workspaceId}:${containerId}`;
-  const request = useMemo<PortalFileReadPayload>(
+  const request = useMemo<RemoteControlFileReadPayload>(
     () => ({
       projectId: workspaceId,
       worktreeId: containerId,

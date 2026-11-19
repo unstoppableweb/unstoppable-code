@@ -1,6 +1,6 @@
 import { useState, type JSX, type ReactNode } from 'react';
 import { CHAT_DETAILS, type ChatDetail } from '@canopy/protocol/chat-detail';
-import type { AutoResumeMetadata } from '@canopy/protocol/portal';
+import type { AutoResumeMetadata } from '@canopy/protocol/remote-control/shell';
 import {
   InlineCode,
   Surface,
@@ -201,7 +201,10 @@ function tenseLabel(tense: StepTense): string {
 export function ChatLookSpecimen(): JSX.Element {
   return (
     <div className="flex flex-col gap-6">
-      <SpecimenPanel title="ChatDetailProvider: how much of the work shows">
+      <SpecimenPanel
+        title="ChatDetailProvider"
+        hint="How much of the work shows"
+      >
         <SpecimenGrid min={280}>
           {CHAT_DETAILS.map((detail) => (
             <SpecimenCell key={detail} label={detail}>
@@ -210,7 +213,10 @@ export function ChatLookSpecimen(): JSX.Element {
           ))}
         </SpecimenGrid>
       </SpecimenPanel>
-      <SpecimenPanel title="ChatAppNameProvider: the product name in resume markers">
+      <SpecimenPanel
+        title="ChatAppNameProvider"
+        hint="The product name in resume markers"
+      >
         <SpecimenGrid min={320}>
           {RESUME_REASONS.map(({ label, resume }) => (
             <SpecimenCell key={label} label={label}>
@@ -247,7 +253,10 @@ export function ChatLookSpecimen(): JSX.Element {
           </SpecimenCell>
         </SpecimenGrid>
       </SpecimenPanel>
-      <SpecimenPanel title="StepTenseProvider and StepBadgeLine: a step in each tense">
+      <SpecimenPanel
+        title="StepTenseProvider and StepBadgeLine"
+        hint="A step in each tense"
+      >
         <SpecimenGrid min={280}>
           {TENSES.map((tense) => (
             <SpecimenCell key={tense} label={tense}>
@@ -367,7 +376,10 @@ function DismissibleChipDemo({
 export function PlanChipSpecimen(): JSX.Element {
   return (
     <div className="flex flex-col gap-6">
-      <SpecimenPanel title="buildPlanModeChip, dismissible: shown only while Plan is on; click removes it">
+      <SpecimenPanel
+        title="Plan chip, dismissible"
+        hint="buildPlanModeChip: shown only while Plan is on; click removes it"
+      >
         <SpecimenGrid min={340}>
           <SpecimenCell label="Plan, on" wide>
             <ComposerBox>
@@ -403,7 +415,10 @@ export function PlanChipSpecimen(): JSX.Element {
           </SpecimenCell>
         </SpecimenGrid>
       </SpecimenPanel>
-      <SpecimenPanel title="buildPlanModeChip, toggle: stays mounted; click flips Plan">
+      <SpecimenPanel
+        title="Plan chip, toggle"
+        hint="buildPlanModeChip: stays mounted; click flips Plan"
+      >
         <SpecimenGrid min={340}>
           <SpecimenCell label="Off: icon only" wide>
             <ComposerBox>
@@ -427,7 +442,10 @@ export function PlanChipSpecimen(): JSX.Element {
           </SpecimenCell>
         </SpecimenGrid>
       </SpecimenPanel>
-      <SpecimenPanel title="buildQuestionReadyChip: a question waits with its prompt closed">
+      <SpecimenPanel
+        title="Question chip"
+        hint="buildQuestionReadyChip: a question waits with its prompt closed"
+      >
         <SpecimenGrid min={340}>
           <SpecimenCell label="Question" wide>
             <ComposerBox>

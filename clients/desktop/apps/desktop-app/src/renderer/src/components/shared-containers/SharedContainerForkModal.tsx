@@ -522,7 +522,7 @@ function SharedContainerForkReview({
                   while this was open. Review it before making your copy.
                 </p>
                 <Button
-                  variant="outline"
+                  variant="secondary"
                   size="sm"
                   disabled={busy}
                   data-testid="shared-container-fork-revision-accept"
@@ -640,7 +640,7 @@ function SharedContainerForkReview({
                     className="min-w-0 flex-1"
                   />
                   <Button
-                    variant="outline"
+                    variant="secondary"
                     size="sm"
                     data-testid="shared-container-fork-browse"
                     onClick={(): void => void handleBrowse()}
@@ -809,7 +809,7 @@ function SharedContainerForkReview({
           {step === 'confirm' && (
             <>
               <Button
-                variant="outline"
+                variant="secondary"
                 size="lg"
                 disabled={busy}
                 onClick={(): void => setStep('destination')}

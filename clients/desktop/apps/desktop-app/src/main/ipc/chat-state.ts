@@ -3,8 +3,8 @@ import { classifyError } from '@canopy/protocol/app-errors/classification';
 import {
   TrackedPlanImplementationInputSchema,
   ChatPlanReviewApprovalSchema,
-} from '@canopy/protocol/portal';
-import { parseChatAgentSentInfo } from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
+import { parseChatAgentSentInfo } from '@canopy/protocol/remote-control/shell';
 import { parseAgentSenderProvenance } from '../agent-messaging/sender-context';
 import { CHAT_CUSTOM_TITLE_MAX_LENGTH } from '@canopy/protocol';
 import { rendererContentsOf } from '../lib/renderer-surface';

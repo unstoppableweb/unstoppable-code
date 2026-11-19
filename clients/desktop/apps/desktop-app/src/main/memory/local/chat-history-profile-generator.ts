@@ -15,6 +15,7 @@ import {
   type ChatHistoryProfileGenerator,
 } from './chat-history-profile';
 import { runLocalMemoryStructuredHelper } from './structured-helper';
+import { isHelperNoBillingSourceError } from '../../agents/helper-no-billing-source';
 
 /**
  * Asks the user's local memory model what their chat titles support, as a
@@ -52,7 +53,8 @@ export const generateChatHistoryProfile: ChatHistoryProfileGenerator = async (
   } catch (error) {
     finalizeObservedHelperTask(
       taskKey,
-      'failure',
+      // Refused before any spawn (CAN-7062); the refresh maps it to a skip.
+      isHelperNoBillingSourceError(error) ? 'cancelled' : 'failure',
       error instanceof Error ? error.message : String(error),
       getStructuredHelperQueryErrorUsage(error),
     );

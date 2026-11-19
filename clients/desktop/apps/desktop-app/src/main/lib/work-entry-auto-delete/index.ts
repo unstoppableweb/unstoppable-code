@@ -1,10 +1,10 @@
-import type { AutoDeleteAttention } from '@canopy/protocol/portal/auto-delete-attention';
+import type { AutoDeleteAttention } from '@canopy/protocol/remote-control/shell/auto-delete-attention';
 import { AutoDeleteInspectionError } from '../auto-delete-inspection-error';
 import {
   listAutoDeleteAttention,
   subscribeAutoDeleteAttention,
 } from '../auto-delete-attention';
-import { formatWorktreeRecoveryReason } from '@canopy/protocol/portal/worktree-recovery';
+import { formatWorktreeRecoveryReason } from '@canopy/protocol/remote-control/shell/worktree-recovery';
 import {
   DEFAULT_WORK_ENTRY_AUTO_DELETE_TEARDOWN,
   DEFAULT_WORK_ENTRY_AUTO_DELETE_UNMERGED_BRANCH,

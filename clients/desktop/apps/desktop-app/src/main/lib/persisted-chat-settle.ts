@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import {
   TOOL_SETTLEMENT_OUTPUT,
   type ToolInterruptionReason,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import {
   persistedInterruptedSettlementTime,
   persistedInterruptedTurnRange,

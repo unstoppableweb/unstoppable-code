@@ -320,7 +320,6 @@ export * from './SidebarSectionToggle';
 export * from './SidebarToggleRow';
 export * from './SidebarRowAge';
 export * from './CometSpinner';
-export * from './spinner-style';
 export * from './chat-look';
 export * from './ChatDetailControl';
 export * from './pr-hover-cards';

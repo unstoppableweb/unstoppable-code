@@ -18,15 +18,15 @@ import {
   type AgentTaskRow,
 } from '@canopy/protocol/cloud-session';
 import {
-  readPortalChatMessageAttachments,
-  type PortalAskUserQuestion,
-  type PortalAskUserQuestionAnswer,
-  type PortalAskUserQuestionState,
-  type PortalChatMessage,
-  type PortalChatPart,
-  type PortalQueuedMessage,
-  type PortalTurnTimerAutoRoutedModel,
-} from '@canopy/protocol/portal';
+  readRemoteControlChatMessageAttachments,
+  type RemoteControlAskUserQuestion,
+  type RemoteControlAskUserQuestionAnswer,
+  type RemoteControlAskUserQuestionState,
+  type RemoteControlChatMessage,
+  type RemoteControlChatPart,
+  type RemoteControlQueuedMessage,
+  type RemoteControlTurnTimerAutoRoutedModel,
+} from '@canopy/protocol/remote-control/shell';
 import {
   messageRevision,
   type ChatHydrationOptions,
@@ -131,7 +131,7 @@ export type ProjectCloudChatMessages = (input: {
   readonly chatKey: string;
   readonly messages: readonly unknown[];
   readonly tasks: readonly AgentTaskRow[];
-}) => PortalChatMessage[];
+}) => RemoteControlChatMessage[];
 
 export interface CloudChatSendInput {
   readonly text: string;
@@ -175,7 +175,7 @@ export interface CloudChatThread {
   /** Loads the next older transcript page; resolves at once when none is left. */
   loadOlder(): Promise<void>;
   /** The chat's unanswered questions, as the shared question cards read them. */
-  getQuestions(): readonly PortalAskUserQuestionState[];
+  getQuestions(): readonly RemoteControlAskUserQuestionState[];
   subscribeQuestions(listener: () => void): () => void;
   /** The chat's agent tasks (subagents and background work), as they stand. */
   getAgentTasks(): readonly AgentTaskRow[];
@@ -231,7 +231,7 @@ export interface CloudChatThread {
   subscribeSession(listener: () => void): () => void;
   answerQuestion(
     requestId: string,
-    answers: readonly PortalAskUserQuestionAnswer[],
+    answers: readonly RemoteControlAskUserQuestionAnswer[],
   ): Promise<void>;
   dismissQuestion(requestId: string): Promise<void>;
   /** Stops the running turn the web core reports, or else the one this client started; rejects when none is known. */
@@ -242,7 +242,7 @@ export interface CloudChatThread {
    */
   noteAutoRouting(
     promptMessageId: string,
-    routing: PortalTurnTimerAutoRoutedModel,
+    routing: RemoteControlTurnTimerAutoRoutedModel,
   ): void;
   /**
    * Follows the running turn's reply as it is written, while the chat is on
@@ -419,7 +419,7 @@ function replySteps(message: unknown): unknown[] {
 }
 
 /** A reply's artifact parts as the web core serves them (CAN-6116). */
-function servedArtifactParts(value: unknown): PortalChatPart[] {
+function servedArtifactParts(value: unknown): RemoteControlChatPart[] {
   return Array.isArray(value)
     ? value.flatMap((part: unknown) =>
         isRecord(part) && part.kind === 'attachment' && isRecord(part.data)
@@ -451,7 +451,9 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
  * reads; the web core's transcript names it `outcome`, as canonical desktop
  * timers do (CAN-6116).
  */
-function withTimerEndReason(message: PortalChatMessage): PortalChatMessage {
+function withTimerEndReason(
+  message: RemoteControlChatMessage,
+): RemoteControlChatMessage {
   let ended = false;
   const parts = message.parts?.map((part) => {
     const data =
@@ -464,7 +466,9 @@ function withTimerEndReason(message: PortalChatMessage): PortalChatMessage {
   return ended ? { ...message, parts } : message;
 }
 
-function isAskUserQuestion(value: unknown): value is PortalAskUserQuestion {
+function isAskUserQuestion(
+  value: unknown,
+): value is RemoteControlAskUserQuestion {
   return (
     isRecord(value) &&
     typeof value.question === 'string' &&
@@ -585,9 +589,11 @@ export function bindCloudChatThread(
   /** Each row's subagent cards as last published, to see them change. */
   const agentCards = new Map<string, string>();
   /** The model Auto picked, by the id of the timer its prompt's turn shows. */
-  const autoRouting = new Map<string, PortalTurnTimerAutoRoutedModel>();
+  const autoRouting = new Map<string, RemoteControlTurnTimerAutoRoutedModel>();
   /** A timer row with the model Auto picked for its turn, as REST's shows it. */
-  const withAutoRouting = (message: PortalChatMessage): PortalChatMessage => {
+  const withAutoRouting = (
+    message: RemoteControlChatMessage,
+  ): RemoteControlChatMessage => {
     const routed = autoRouting.get(message.messageId);
     return routed === undefined
       ? message
@@ -603,7 +609,7 @@ export function bindCloudChatThread(
   /** Prompts this client sent, by canonical message id, for queued rows. */
   const sentPrompts = new Map<string, { text: string; at: number }>();
   let queuedMessageIds: readonly string[] = [];
-  let questions: readonly PortalAskUserQuestionState[] = [];
+  let questions: readonly RemoteControlAskUserQuestionState[] = [];
   const questionListeners = new Set<() => void>();
   let agentTasks: readonly AgentTaskRow[] = [];
   const agentListeners = new Set<(update: CloudChatAgentUpdate) => void>();
@@ -659,7 +665,7 @@ export function bindCloudChatThread(
    * Host sends echoed before the first claim that the transcript does not
    * show yet: kept, and holding the turn, until it does.
    */
-  let heldSends: PortalChatMessage[] = [];
+  let heldSends: RemoteControlChatMessage[] = [];
 
   const scope = {
     workspaceId: target.workspaceId,
@@ -687,7 +693,7 @@ export function bindCloudChatThread(
     };
   }
 
-  function queuedMessages(): PortalQueuedMessage[] {
+  function queuedMessages(): RemoteControlQueuedMessage[] {
     // Only prompts this client sent: the web core lists queued ids, not text.
     return queuedMessageIds.flatMap((id) => {
       const sent = sentPrompts.get(id);
@@ -753,7 +759,7 @@ export function bindCloudChatThread(
   function liveMessages(
     after: number,
     shown: ReadonlySet<string>,
-  ): PortalChatMessage[] {
+  ): RemoteControlChatMessage[] {
     const now = Date.now();
     for (const [turnId, reply] of liveReplies) {
       if (committed(turnId, reply)) {
@@ -787,7 +793,7 @@ export function bindCloudChatThread(
     let order = after;
     return [...liveReplies].flatMap(([turnId, reply]) => {
       const messageId = `${target.key}:live:${turnId}`;
-      const status: PortalChatMessage['status'] = reply.finished
+      const status: RemoteControlChatMessage['status'] = reply.finished
         ? 'complete'
         : 'streaming';
       const steps: LiveStep[] =
@@ -796,52 +802,54 @@ export function bindCloudChatThread(
           : reply.text.length > 0 || reply.reasoning.length > 0
             ? [{ kind: 'text', text: reply.text }]
             : [];
-      const messages = steps.flatMap((step, index): PortalChatMessage[] => {
-        const id = index === 0 ? messageId : `${messageId}:${index}`;
-        // A tool step's cards as the host projects a committed reply's,
-        // with the subagent rows its spawn calls nest.
-        const tools =
-          step.kind === 'tools'
-            ? project({
-                chatKey: target.key,
-                messages: [
-                  ...raw.filter(
-                    (each) =>
-                      isRecord(each) &&
-                      typeof each.parentToolUseId === 'string',
-                  ),
-                  {
-                    id,
-                    role: 'assistant',
-                    blocks: step.blocks,
-                    timestamp: reply.createdAtMs,
-                  },
-                ],
-                tasks: agentTasks,
-              }).find((each) => each.messageId === id)
-            : undefined;
-        if (step.kind === 'tools' && tools === undefined) return [];
-        const thinking: PortalChatPart[] =
-          index === 0 && reply.reasoning.length > 0
-            ? [{ kind: 'thinking', data: { text: reply.reasoning } }]
-            : [];
-        const parts = [...thinking, ...(tools?.parts ?? [])];
-        return [
-          {
-            ...(tools ?? {}),
-            messageId: id,
-            chatId: target.key,
-            role: 'assistant',
-            // As REST's: the steps before the newest are done.
-            status: index === steps.length - 1 ? status : 'complete',
-            text: step.kind === 'text' ? step.text : '',
-            ...(parts.length > 0 ? { parts } : {}),
-            createdAtMs: reply.createdAtMs,
-            updatedAtMs: reply.updatedAtMs,
-            presentationOrder: order++,
-          },
-        ];
-      });
+      const messages = steps.flatMap(
+        (step, index): RemoteControlChatMessage[] => {
+          const id = index === 0 ? messageId : `${messageId}:${index}`;
+          // A tool step's cards as the host projects a committed reply's,
+          // with the subagent rows its spawn calls nest.
+          const tools =
+            step.kind === 'tools'
+              ? project({
+                  chatKey: target.key,
+                  messages: [
+                    ...raw.filter(
+                      (each) =>
+                        isRecord(each) &&
+                        typeof each.parentToolUseId === 'string',
+                    ),
+                    {
+                      id,
+                      role: 'assistant',
+                      blocks: step.blocks,
+                      timestamp: reply.createdAtMs,
+                    },
+                  ],
+                  tasks: agentTasks,
+                }).find((each) => each.messageId === id)
+              : undefined;
+          if (step.kind === 'tools' && tools === undefined) return [];
+          const thinking: RemoteControlChatPart[] =
+            index === 0 && reply.reasoning.length > 0
+              ? [{ kind: 'thinking', data: { text: reply.reasoning } }]
+              : [];
+          const parts = [...thinking, ...(tools?.parts ?? [])];
+          return [
+            {
+              ...(tools ?? {}),
+              messageId: id,
+              chatId: target.key,
+              role: 'assistant',
+              // As REST's: the steps before the newest are done.
+              status: index === steps.length - 1 ? status : 'complete',
+              text: step.kind === 'text' ? step.text : '',
+              ...(parts.length > 0 ? { parts } : {}),
+              createdAtMs: reply.createdAtMs,
+              updatedAtMs: reply.updatedAtMs,
+              presentationOrder: order++,
+            },
+          ];
+        },
+      );
       // The running timer, as REST's presentation shows it, under the id of
       // the timer its committed turn shows, which replaces it in place.
       const timerId =
@@ -888,7 +896,7 @@ export function bindCloudChatThread(
    * A reply step moves its row's revision, which `upsert` moves too.
    */
   function noteAgentCards(
-    message: PortalChatMessage,
+    message: RemoteControlChatMessage,
     revisionKey = message.messageId,
   ): void {
     const cards = message.parts?.filter((part) => part.kind === 'agent') ?? [];
@@ -936,7 +944,7 @@ export function bindCloudChatThread(
       raw.flatMap((each) => {
         const id = messageId(each);
         const read = isRecord(each)
-          ? readPortalChatMessageAttachments(each.attachments)
+          ? readRemoteControlChatMessageAttachments(each.attachments)
           : undefined;
         return id === null || read === undefined ? [] : [[id, read] as const];
       }),
@@ -956,12 +964,12 @@ export function bindCloudChatThread(
     // its last step, the others before its first step's parts.
     const artifacts = new Map<
       string,
-      { before: PortalChatPart[]; after: PortalChatPart[] }
+      { before: RemoteControlChatPart[]; after: RemoteControlChatPart[] }
     >();
     const place = (
       id: string | null,
       key: 'before' | 'after',
-      parts: PortalChatPart[],
+      parts: RemoteControlChatPart[],
     ): void => {
       if (id === null || parts.length === 0) return;
       const entry = artifacts.get(id) ?? { before: [], after: [] };
@@ -979,7 +987,7 @@ export function bindCloudChatThread(
           if (row !== null && id !== null) stepRows.set(id, row);
         }
         const served = isRecord(each) ? servedArtifactParts(each.parts) : [];
-        const isDeliverable = (part: PortalChatPart): boolean =>
+        const isDeliverable = (part: RemoteControlChatPart): boolean =>
           isRecord(part.data) && 'deliverable' in part.data;
         place(
           row,
@@ -1058,7 +1066,7 @@ export function bindCloudChatThread(
     publishedLive = shown;
     // A held send leaves once the transcript shows it: under its id, or by
     // role, text and time, as the store reconciles a send's echo.
-    const shownIn = (message: PortalChatMessage): boolean =>
+    const shownIn = (message: RemoteControlChatMessage): boolean =>
       projected.some((each) => each.messageId === message.messageId) ||
       hasAuthoritativeMatch(projected, message);
     const heldBefore = heldSends.length;
@@ -1298,7 +1306,9 @@ export function bindCloudChatThread(
         : raw.map((each, at) => (at === index ? message : each));
   }
 
-  function setQuestions(next: readonly PortalAskUserQuestionState[]): void {
+  function setQuestions(
+    next: readonly RemoteControlAskUserQuestionState[],
+  ): void {
     questions = next;
     for (const listener of questionListeners) listener();
   }
@@ -1466,7 +1476,7 @@ export function bindCloudChatThread(
     readonly requestId: string;
     readonly questions: readonly unknown[];
     readonly toolUseId?: unknown;
-  }): PortalAskUserQuestionState {
+  }): RemoteControlAskUserQuestionState {
     return {
       requestId: question.requestId,
       ...(typeof question.toolUseId === 'string'
@@ -2015,7 +2025,7 @@ export function bindCloudChatThread(
 
   function answerQuestion(
     requestId: string,
-    answers: readonly PortalAskUserQuestionAnswer[],
+    answers: readonly RemoteControlAskUserQuestionAnswer[],
   ): Promise<void> {
     const question = questions.find((each) => each.requestId === requestId);
     const keyed: Record<string, unknown> = {};
@@ -2034,7 +2044,7 @@ export function bindCloudChatThread(
 
   function noteAutoRouting(
     promptMessageId: string,
-    routing: PortalTurnTimerAutoRoutedModel,
+    routing: RemoteControlTurnTimerAutoRoutedModel,
   ): void {
     if (closed) return;
     const timerId = `${promptMessageId}:turn-timer`;

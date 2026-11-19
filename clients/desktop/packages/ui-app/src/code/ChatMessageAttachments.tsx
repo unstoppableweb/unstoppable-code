@@ -16,7 +16,7 @@ import {
   type ReactNode,
 } from 'react';
 import { isCloudImageAttachmentMediaType } from '@canopy/protocol/cloud-attachments';
-import type { PortalChatMessageAttachment } from '@canopy/protocol/portal';
+import type { RemoteControlChatMessageAttachment } from '@canopy/protocol/remote-control/shell';
 import {
   ErrorBanner,
   MessageFileTile,
@@ -33,13 +33,15 @@ import { VIDEO_FILENAME } from '@canopy/ui-shared/lib';
  */
 export interface ChatMessageAttachmentInteraction {
   readonly downloadContext?: object;
-  readonly onOpen?: (attachment: PortalChatMessageAttachment) => void;
+  readonly onOpen?: (attachment: RemoteControlChatMessageAttachment) => void;
   readonly onDownload: (
-    attachment: PortalChatMessageAttachment,
+    attachment: RemoteControlChatMessageAttachment,
     signal?: AbortSignal,
   ) => Promise<void>;
   /** Host-renderable URL for an image attachment, or null for no thumbnail. */
-  readonly imageSrc: (attachment: PortalChatMessageAttachment) => string | null;
+  readonly imageSrc: (
+    attachment: RemoteControlChatMessageAttachment,
+  ) => string | null;
   readonly resolveImage?: (
     reference: ChatAssetImageReference,
     signal: AbortSignal,
@@ -211,7 +213,9 @@ export function useChatMessageAttachmentInteraction(): ChatMessageAttachmentInte
  * attachment allowlist, videos included, as `application/octet-stream`, so
  * there the file name decides.
  */
-function isChatMessageVideo(attachment: PortalChatMessageAttachment): boolean {
+function isChatMessageVideo(
+  attachment: RemoteControlChatMessageAttachment,
+): boolean {
   return (
     attachment.mediaType.startsWith('video/') ||
     (attachment.mediaType === 'application/octet-stream' &&
@@ -220,13 +224,15 @@ function isChatMessageVideo(attachment: PortalChatMessageAttachment): boolean {
 }
 
 /** An image the hosts can preview, by its media type. */
-function isChatMessageImage(attachment: PortalChatMessageAttachment): boolean {
+function isChatMessageImage(
+  attachment: RemoteControlChatMessageAttachment,
+): boolean {
   return isCloudImageAttachmentMediaType(attachment.mediaType);
 }
 
 /** One attachment shown as a tile in the bubble's media row. */
 export interface ChatMessageMediaItem {
-  readonly attachment: PortalChatMessageAttachment;
+  readonly attachment: RemoteControlChatMessageAttachment;
   /** A picture (`image`, `video`) or a file shown by its type and name. */
   readonly kind: 'image' | 'video' | 'file';
   /** The host's URL for an image; `null` for anything else or one to resolve. */
@@ -261,7 +267,7 @@ export interface ChatMessageAttachmentSplit {
  * and tries the new source.
  */
 export function useChatMessageAttachmentSplit(
-  attachments: readonly PortalChatMessageAttachment[],
+  attachments: readonly RemoteControlChatMessageAttachment[],
 ): ChatMessageAttachmentSplit {
   const interaction = useChatMessageAttachmentInteraction();
   // Only these two host functions take part, so a host rebuilding its
@@ -277,7 +283,7 @@ export function useChatMessageAttachmentSplit(
     const media: ChatMessageMediaItem[] = [];
     const current = new Map<string, unknown>();
     const seen = new Set<string>();
-    const file = (attachment: PortalChatMessageAttachment): void => {
+    const file = (attachment: RemoteControlChatMessageAttachment): void => {
       media.push({ attachment, kind: 'file', src: null, resolve: false });
     };
     for (const attachment of attachments) {

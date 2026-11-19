@@ -266,7 +266,7 @@ export function useSubscriptionStatus(): UseSubscriptionStatusResult {
           description: options?.description,
           toastMessage:
             options?.toastMessage ??
-            // No credits clause: the daily free AI Credits are opt-in, so
+            // No credits clause: a new account starts at zero AI Credits, so
             // signing in does not by itself make any credits ready to use.
             (guest
               ? "You're all set. Your guest work is synced."

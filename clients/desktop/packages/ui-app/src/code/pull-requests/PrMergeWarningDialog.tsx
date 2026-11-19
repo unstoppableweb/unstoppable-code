@@ -135,7 +135,7 @@ export function PrMergeWarningDialog({
           Cancel
         </Button>
         <Button
-          variant="warning"
+          variant="secondary"
           size="compact"
           onClick={handleConfirm}
           disabled={isSubmitting}

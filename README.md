@@ -13,8 +13,8 @@
 
 <p align="center">
   Run Claude Code, Codex, and Cursor side by side, each in its own worktree, on
-  the compatible subscriptions you already have. The app stays quiet until an
-  agent needs you.
+  the subscriptions you already have. The app stays quiet until an agent needs
+  you.
 </p>
 
 <p align="center">
@@ -52,7 +52,7 @@ gets a push so you can reply from wherever you are.
 
 [Watch the full demo](https://storage.googleapis.com/unstoppable-client-assets/images/homepage/unstoppable-code/demos/hero-light-1eec784f253c.mp4) ([dark mode](https://storage.googleapis.com/unstoppable-client-assets/images/homepage/unstoppable-code/demos/hero-dark-281511986be7.mp4))
 
-### A second opinion before it ships
+### One model builds, a rival model reviews, your team reuses it
 
 Tell the built-in assistant the workflow you want: Claude builds, GPT reviews,
 Claude fixes, then your tests run. Tweak any step by hand, and share it once
@@ -82,9 +82,9 @@ where you left off.
 ### And more
 
 - **Every agent, on your subscription:** run Claude Code, Codex, and Cursor on
-  the compatible Claude, ChatGPT, or Cursor plans you already pay for. Your
-  provider's plan terms and usage limits still apply. You can also use local
-  models or choose hosted models with AI credits.
+  the Claude, ChatGPT, or Cursor plans you already pay for. Your provider's plan
+  terms and usage limits still apply. You can also use local models or choose
+  hosted models with AI credits.
 - **As many as you need, in parallel:** each task gets its own worktree,
   terminal, and browser, grouped by repo. Quit or reboot and the list comes
   back.

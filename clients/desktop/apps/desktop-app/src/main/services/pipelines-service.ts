@@ -1,10 +1,9 @@
-import type { CreateSharedPipelineRequest } from '../pipelines/canopy-server-client';
 import { WorkerPipelineSurvivalAssessmentSchema } from '@canopy/protocol/canopy-core';
 import { withSharedProjectDiscovery } from '../pipelines/shared-project-discovery';
 import {
   isPipelineDefinitionNotFound,
   listDesktopPipelines,
-  PIPELINE_DEFINITION_PORTAL_CALLER,
+  PIPELINE_DEFINITION_REMOTE_CONTROL_CALLER,
   pipelineSourceFailure,
   readDesktopPipeline,
 } from '../canopy-runtime/pipeline-definition-dispatch';
@@ -19,7 +18,6 @@ import {
   PERSONAL_WORKSPACE_CONTEXT,
   serializeWorkspaceContext,
 } from '@canopy/protocol/workspace-context';
-import type { PipelineShareSource } from '@canopy/execution-engine/types/pipeline';
 import { isThinkingLevel } from '@canopy/desktop-shared/types';
 import {
   codexSpeedFastMode,
@@ -29,25 +27,23 @@ import {
 } from '@canopy/execution-engine/lib/codex-speed';
 import type {
   AgentModelConfig,
-  PortalEntityEnvelope,
-  PortalPipelineCancelPayload,
-  PortalPipelineExecutionListPayload,
-  PortalPipelineExecutionListResult,
-  PortalPipelineExecutionGetPayload,
-  PortalPipelineGetPayload,
-  PortalPipelineGetResult,
-  PortalPipelineListPayload,
-  PortalPipelineLogRequestPayload,
-  PortalPipelineRun,
-  PortalPipelineRunPayload,
-  PortalPipelineRerunPayload,
-  PortalPipelineResumePayload,
-  PortalPipelineRetryPayload,
-  PortalPipelineRunVariant,
-  PortalPipelinePauseCheckpoint,
-  PortalPipelineSummary,
-  PortalPipelineSharePayload,
-  PortalShareResult,
+  RemoteControlEntityEnvelope,
+  RemoteControlPipelineCancelPayload,
+  RemoteControlPipelineExecutionListPayload,
+  RemoteControlPipelineExecutionListResult,
+  RemoteControlPipelineExecutionGetPayload,
+  RemoteControlPipelineGetPayload,
+  RemoteControlPipelineGetResult,
+  RemoteControlPipelineListPayload,
+  RemoteControlPipelineLogRequestPayload,
+  RemoteControlPipelineRun,
+  RemoteControlPipelineRunPayload,
+  RemoteControlPipelineRerunPayload,
+  RemoteControlPipelineResumePayload,
+  RemoteControlPipelineRetryPayload,
+  RemoteControlPipelineRunVariant,
+  RemoteControlPipelinePauseCheckpoint,
+  RemoteControlPipelineSummary,
 } from '@canopy/desktop-shared/types';
 import { access, open, readFile, stat } from 'node:fs/promises';
 import {
@@ -56,7 +52,6 @@ import {
 } from '../lib/serialized-size-budget';
 import {
   hasOnlyLocalPipelineTriggers,
-  pipelineSharePath,
   portablePipelineTriggerTypes,
 } from '@canopy/protocol/pipelines';
 import { sanitizePipelineSummaryForSync } from './sync-safe-pipeline-summary';
@@ -71,7 +66,7 @@ import {
   stepBillingRoute,
 } from '@canopy/execution-engine/pipelines/step-billing-route';
 import { assertNotSplitLocked } from './split-lock-service';
-import { PortalServiceError } from './portal-service-error';
+import { RemoteControlServiceError } from './remote-control-service-error';
 import { buildPipelineFailureDebugPrompt } from '@canopy/desktop-shared/lib/pipelineFailureDebugPrompt';
 import { isPathInside } from '../lib/path-safety';
 import {
@@ -105,18 +100,11 @@ import {
   listSharedPipelines,
 } from '../pipelines/canopy-server-client';
 import { getSharedPackageReadinessFromDetail } from '../pipelines/pipeline-package-service';
-import { getSharedPipelineSaveImpact } from '../pipelines/shared-pipeline-save-impact';
 import {
   loadCanopyCloudAccountPublicState,
   subscribeCanopyCloudAccountChanges,
 } from '../lib/canopy-cloud-account-store';
 import { authorShareRemoteIds } from '@canopy/protocol/sharing';
-import {
-  preserveOrganizationPublicLink,
-  requirePortalShareAccountId,
-  toPortalExistingShare,
-} from '../lib/resource-share-context';
-import type { PortalSharingExistingShare } from '@canopy/protocol/portal';
 import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
 import { CANOPY_CLOUD_SERVER_ID } from '@canopy/desktop-shared/constants/canopy-cloud';
 import {
@@ -147,14 +135,14 @@ import {
   type StepLogLocator,
 } from '@canopy/execution-engine/types/pipeline';
 import {
-  PORTAL_EVENT_BATCH_MAX_BYTES,
-  projectPortalPipelineDispatchInputs,
-  projectPortalPipelineMetadata,
+  REMOTE_CONTROL_EVENT_BATCH_MAX_BYTES,
+  projectRemoteControlPipelineDispatchInputs,
+  projectRemoteControlPipelineMetadata,
   worktreeScopedParentLocalId,
-  type PortalPipelineChatFollowUpPreparePayload,
-  type PortalPipelineContentReadPayload,
-  type PortalPipelineContentReadResult,
-} from '@canopy/protocol/portal';
+  type RemoteControlPipelineChatFollowUpPreparePayload,
+  type RemoteControlPipelineContentReadPayload,
+  type RemoteControlPipelineContentReadResult,
+} from '@canopy/protocol/remote-control/shell';
 import {
   agentTranscriptDocument,
   pipelineContentPage,
@@ -190,15 +178,17 @@ const RUN_TAIL_MAX_BYTES = 8 * 1024;
 // Reserve most of the unsplittable event budget for the run skeleton and
 // envelope. Live tails use an LRU slice of the remaining eighth.
 const STREAM_STEP_TAILS_MAX_BYTES = Math.floor(
-  PORTAL_EVENT_BATCH_MAX_BYTES / 8,
+  REMOTE_CONTROL_EVENT_BATCH_MAX_BYTES / 8,
 );
 const STREAM_STEP_TAILS_MAX_ENTRIES = 256;
 const STREAM_STEP_TAILS_TRUNCATION_MARKER =
   '[Earlier live step output omitted to fit the transfer limit]\n';
-const PORTAL_PAUSE_REQUESTS_MAX_BYTES = 64 * 1024;
-const pipelineRunUpdateListeners = new Set<(run: PortalPipelineRun) => void>();
-const portalPipelineMutationQueues = new Map<string, Promise<void>>();
-const portalPipelineProjectionQueues = new Map<string, Promise<void>>();
+const REMOTE_CONTROL_PAUSE_REQUESTS_MAX_BYTES = 64 * 1024;
+const pipelineRunUpdateListeners = new Set<
+  (run: RemoteControlPipelineRun) => void
+>();
+const remoteControlPipelineMutationQueues = new Map<string, Promise<void>>();
+const remoteControlPipelineProjectionQueues = new Map<string, Promise<void>>();
 
 function serializeKeyedOperation<T>(
   queues: Map<string, Promise<void>>,
@@ -217,27 +207,27 @@ function serializeKeyedOperation<T>(
   return result;
 }
 
-function serializePortalPipelineMutation<T>(
+function serializeRemoteControlPipelineMutation<T>(
   executionId: string,
   operation: () => Promise<T>,
 ): Promise<T> {
   return serializeKeyedOperation(
-    portalPipelineMutationQueues,
+    remoteControlPipelineMutationQueues,
     executionId,
     operation,
   );
 }
 
-function projectPortalPipelineRun(
+function projectRemoteControlPipelineRun(
   executionId: string,
-  projection: () => Promise<PortalPipelineRun | null>,
+  projection: () => Promise<RemoteControlPipelineRun | null>,
   options: {
     portalCommandId?: string;
-    onRunUpdate?: (run: PortalPipelineRun) => void;
+    onRunUpdate?: (run: RemoteControlPipelineRun) => void;
   } = {},
-): Promise<PortalPipelineRun | null> {
+): Promise<RemoteControlPipelineRun | null> {
   return serializeKeyedOperation(
-    portalPipelineProjectionQueues,
+    remoteControlPipelineProjectionQueues,
     executionId,
     async () => {
       const run = await projection();
@@ -248,7 +238,7 @@ function projectPortalPipelineRun(
 }
 
 export function subscribePipelineRunUpdates(
-  listener: (run: PortalPipelineRun) => void,
+  listener: (run: RemoteControlPipelineRun) => void,
 ): () => void {
   pipelineRunUpdateListeners.add(listener);
   return (): void => {
@@ -265,7 +255,7 @@ export function subscribePipelineRunUpdates(
 async function pipelineRunChatTurns(
   scope: PipelineRunChatLinksScope,
   executionId: string,
-): Promise<Pick<PortalPipelineRun, 'chatTurns'>> {
+): Promise<Pick<RemoteControlPipelineRun, 'chatTurns'>> {
   try {
     return {
       chatTurns: await getPipelineRunChatLinks().chatTurnsFor(
@@ -329,7 +319,7 @@ function createAsyncLimit(maxConcurrency: number): AsyncLimit {
 
 const stepTailReadLimit = createAsyncLimit(STEP_TAIL_READ_CONCURRENCY);
 
-interface RequestedPortalStep {
+interface RequestedRemoteControlStep {
   jobId: string;
   stepId: string;
   attempt: number;
@@ -338,7 +328,7 @@ interface RequestedPortalStep {
   outputTail: string;
 }
 
-function mapRunStatus(status: string): PortalPipelineRun['status'] {
+function mapRunStatus(status: string): RemoteControlPipelineRun['status'] {
   return status === 'failure' ? 'failed' : status;
 }
 
@@ -384,14 +374,14 @@ async function resolvePipelineDefinitionTarget(
  * rejected — as are an unknown speed and a boolean contradicting its speed —
  * before any receipt read, registration, or launch.
  */
-function normalizePortalModelConfig(
-  request: PortalPipelineRunPayload,
+function normalizeRemoteControlModelConfig(
+  request: RemoteControlPipelineRunPayload,
 ): AgentModelConfig | undefined {
   const requested = request.modelConfig;
   const requestedSpeed: unknown = requested?.speed;
   if (requestedSpeed !== undefined) {
     if (!isCodexSpeed(requestedSpeed)) {
-      throw new PortalServiceError(
+      throw new RemoteControlServiceError(
         'invalid_payload',
         'modelConfig.speed must be standard, fast, or ultrafast.',
       );
@@ -400,7 +390,7 @@ function normalizePortalModelConfig(
       typeof requested?.fastMode === 'boolean' &&
       requested.fastMode !== codexSpeedFastMode(requestedSpeed)
     ) {
-      throw new PortalServiceError(
+      throw new RemoteControlServiceError(
         'invalid_payload',
         'modelConfig.fastMode must match modelConfig.speed.',
       );
@@ -408,7 +398,7 @@ function normalizePortalModelConfig(
   }
   const speed = readCodexSpeedRecord(requested, request.codexFastModeEnabled);
   if (speed === 'ultrafast') {
-    throw new PortalServiceError(
+    throw new RemoteControlServiceError(
       'invalid_payload',
       'Workflows do not support Ultra fast. Choose Regular or Fast.',
     );
@@ -423,7 +413,9 @@ function normalizePortalModelConfig(
   return Object.keys(modelConfig).length > 0 ? modelConfig : undefined;
 }
 
-function normalizePortalPipelineEvent(request: PortalPipelineRunPayload): {
+function normalizeRemoteControlPipelineEvent(
+  request: RemoteControlPipelineRunPayload,
+): {
   planId?: string;
   eventName?: 'task_ready' | 'plan_ready';
   eventData?: {
@@ -433,7 +425,7 @@ function normalizePortalPipelineEvent(request: PortalPipelineRunPayload): {
 } {
   if (request.eventName === undefined) {
     if (request.eventData !== undefined) {
-      throw new PortalServiceError(
+      throw new RemoteControlServiceError(
         'invalid_payload',
         'eventData requires an eventName.',
       );
@@ -444,13 +436,13 @@ function normalizePortalPipelineEvent(request: PortalPipelineRunPayload): {
     case 'task_ready': {
       const taskText = request.eventData?.task_ready?.task_text;
       if (typeof taskText !== 'string' || !taskText.trim()) {
-        throw new PortalServiceError(
+        throw new RemoteControlServiceError(
           'invalid_payload',
           'task_ready requires a non-empty task_text.',
         );
       }
       if (request.planId !== undefined) {
-        throw new PortalServiceError(
+        throw new RemoteControlServiceError(
           'invalid_payload',
           'task_ready cannot target a plan.',
         );
@@ -463,7 +455,7 @@ function normalizePortalPipelineEvent(request: PortalPipelineRunPayload): {
     case 'plan_ready': {
       const planText = request.eventData?.plan_ready?.plan_text;
       if (typeof planText !== 'string' || !planText.trim()) {
-        throw new PortalServiceError(
+        throw new RemoteControlServiceError(
           'invalid_payload',
           'plan_ready requires a non-empty plan_text.',
         );
@@ -484,7 +476,7 @@ function normalizePortalPipelineEvent(request: PortalPipelineRunPayload): {
       };
     }
     default:
-      throw new PortalServiceError(
+      throw new RemoteControlServiceError(
         'invalid_payload',
         'Unsupported pipeline eventName.',
       );
@@ -506,7 +498,7 @@ async function resolvePipelineCwd(
 
   const resolvedCwd = resolve(worktreeRoot, requestedCwd);
   if (!isPathInside(worktreeRoot, resolvedCwd)) {
-    throw new PortalServiceError(
+    throw new RemoteControlServiceError(
       'invalid_payload',
       'cwd must be inside the selected worktree.',
     );
@@ -524,7 +516,7 @@ function validatePipelineExecutionScope(scope: PipelineExecutionScope): void {
     if (scope.projectId) validateId(scope.projectId, 'projectId');
     if (scope.worktreeId) validateId(scope.worktreeId, 'worktreeId');
   } catch (error) {
-    throw new PortalServiceError(
+    throw new RemoteControlServiceError(
       'invalid_target',
       error instanceof Error ? error.message : 'Invalid pipeline target scope.',
     );
@@ -536,13 +528,19 @@ function assertExecutionMatchesScope(
   scope: PipelineExecutionScope,
 ): asserts state is ExecutionState {
   if (!state) {
-    throw new PortalServiceError('not_found', 'Workflow execution not found.');
+    throw new RemoteControlServiceError(
+      'not_found',
+      'Workflow execution not found.',
+    );
   }
   if (
     (scope.projectId && state.project_id !== scope.projectId) ||
     (scope.worktreeId && state.worktree_id !== scope.worktreeId)
   ) {
-    throw new PortalServiceError('not_found', 'Workflow execution not found.');
+    throw new RemoteControlServiceError(
+      'not_found',
+      'Workflow execution not found.',
+    );
   }
 }
 
@@ -561,85 +559,6 @@ export interface PipelineListTarget {
   workspaceLocalId: string;
   worktreeLocalId: string;
   cwd: string;
-}
-
-async function resolvePortalShareablePipeline(request: {
-  projectId: string;
-  worktreeId?: string;
-  pipelineId: string;
-}): Promise<{
-  target: { worktreeId: string };
-  pipelineInfo: Omit<PipelineInfo, 'filePath' | 'source'> & {
-    filePath: string;
-    source: Exclude<PipelineInfo['source'], 'shared'>;
-  };
-}> {
-  try {
-    validatePipelineDefinitionLocator(request.pipelineId, 'pipelineId');
-    validateId(request.projectId, 'projectId');
-    if (request.worktreeId !== undefined) {
-      validateId(request.worktreeId, 'worktreeId');
-    }
-  } catch (error) {
-    throw new PortalServiceError(
-      'invalid_payload',
-      error instanceof Error ? error.message : 'Invalid pipeline locator.',
-    );
-  }
-  const target = await resolvePipelineDefinitionTarget(
-    request.projectId,
-    request.worktreeId,
-  );
-  if (!target) {
-    throw new PortalServiceError('not_found', 'Workflow not found.');
-  }
-  const cwd = await resolvePipelineCwd(request.projectId, target.worktreeId);
-  const pipelineInfo = (await discoverProjectPipelines(cwd)).find(
-    (pipeline) => pipeline.id === request.pipelineId,
-  );
-  const filePath = pipelineInfo?.filePath;
-  const source = pipelineInfo?.source;
-  if (
-    !pipelineInfo ||
-    !filePath ||
-    source === 'shared' ||
-    source === undefined
-  ) {
-    throw new PortalServiceError('not_found', 'Workflow not found.');
-  }
-  return {
-    target,
-    pipelineInfo: { ...pipelineInfo, filePath, source },
-  };
-}
-
-/** Load a local Pipeline's current Cloud audience for Portal preselection. */
-export async function getPortalExistingPipelineShare(request: {
-  projectId: string;
-  worktreeId?: string;
-  pipelineId: string;
-}): Promise<PortalSharingExistingShare | null> {
-  const { pipelineInfo } = await resolvePortalShareablePipeline(request);
-  if (!pipelineInfo.remote) return null;
-  await requirePortalShareAccountId(pipelineInfo.remote);
-  const { getSharedPipeline: loadSharedPipeline } =
-    await import('../pipelines/canopy-server-client');
-  try {
-    return toPortalExistingShare(
-      await loadSharedPipeline(pipelineInfo.remote.remoteId),
-      { kind: 'pipeline', itemId: pipelineInfo.remote.remoteId },
-    );
-  } catch (error) {
-    if (
-      typeof error === 'object' &&
-      error !== null &&
-      'status' in error &&
-      error.status === 404
-    ) {
-      return null;
-    }
-    throw error;
-  }
 }
 
 /**
@@ -661,7 +580,7 @@ export function pipelineListTargetFor(
 }
 
 async function resolvePipelineListTarget(
-  request: PortalPipelineListPayload,
+  request: RemoteControlPipelineListPayload,
 ): Promise<PipelineListTarget | null> {
   const workspaceLocalId = resolveWorkspaceId(request);
   if (!workspaceLocalId) return null;
@@ -681,7 +600,7 @@ async function resolvePipelineListTarget(
  * file is gone is dropped. A store or checkout that cannot be read is left
  * out rather than failing the snapshot.
  */
-async function listPortalPipelineInfos(scope: {
+async function listRemoteControlPipelineInfos(scope: {
   workspaceId: string;
   worktreeId: string;
 }): Promise<PipelineInfo[]> {
@@ -690,7 +609,7 @@ async function listPortalPipelineInfos(scope: {
   ): Promise<PipelineInfo[]> =>
     listDesktopPipelines(
       { sources, scope },
-      PIPELINE_DEFINITION_PORTAL_CALLER,
+      PIPELINE_DEFINITION_REMOTE_CONTROL_CALLER,
     ).then((listing) => listing.rows);
   // An unreadable store still lists the checkout's own definitions.
   const rows = await list(['bundled', 'user', 'project']).catch(() =>
@@ -703,7 +622,7 @@ async function listPortalPipelineInfos(scope: {
     if (resolved.success && resolved.data)
       stored.push({ ...info, filePath: resolved.data });
   }
-  return mergePortalPipelineInfos(
+  return mergeRemoteControlPipelineInfos(
     stored,
     rows.filter((info) => info.source === 'project'),
   );
@@ -765,7 +684,7 @@ async function listStoredPipelineInfos(options: {
  * both would make the run ambiguous; the repo-local definition is the more
  * specific one and wins. {@link runPipeline} resolves the same way.
  */
-function mergePortalPipelineInfos(
+function mergeRemoteControlPipelineInfos(
   storedInfos: PipelineInfo[],
   projectInfos: PipelineInfo[],
 ): PipelineInfo[] {
@@ -801,7 +720,7 @@ interface SharedPipelineListMemo {
  * {@link listSharedPipelineSummaries} and are stripped before stamping.
  */
 type UnstampedSharedPipelineSummary = Omit<
-  PortalPipelineSummary,
+  RemoteControlPipelineSummary,
   'workspaceLocalId' | 'worktreeLocalId'
 > & {
   createdById?: string;
@@ -1099,7 +1018,7 @@ async function listSharedPipelineSummaries(
   target: PipelineListTarget,
   localPipelines: readonly PipelineInfo[],
   options: { deadlineMs?: number; personalOnly?: boolean } = {},
-): Promise<PortalPipelineSummary[]> {
+): Promise<RemoteControlPipelineSummary[]> {
   // The author filter's account read rides the same deadline as the fetch.
   const load = (
     options.personalOnly
@@ -1170,7 +1089,7 @@ async function withoutAuthorLinkedShares(
  */
 function publishedLocalPipelines(
   pipelines: readonly PipelineInfo[],
-  published: readonly (PortalPipelineSummary | null)[],
+  published: readonly (RemoteControlPipelineSummary | null)[],
 ): PipelineInfo[] {
   const ids = new Set<string>();
   for (const summary of published) {
@@ -1211,13 +1130,13 @@ async function raceSharedPipelineDeadline(
 
 /** The live portal list: lenient, a discovery failure reads as empty. */
 export async function listPipelines(
-  request: PortalPipelineListPayload = {},
-): Promise<PortalPipelineSummary[]> {
+  request: RemoteControlPipelineListPayload = {},
+): Promise<RemoteControlPipelineSummary[]> {
   if (request.worktreeId !== undefined) {
     try {
       validateId(request.worktreeId, 'worktreeId');
     } catch (error) {
-      throw new PortalServiceError(
+      throw new RemoteControlServiceError(
         'invalid_payload',
         error instanceof Error ? error.message : 'Invalid worktreeId.',
       );
@@ -1232,13 +1151,13 @@ export async function listPipelines(
   // One checkout discovery serves the listing and every row's read.
   let infos: PipelineInfo[] = [];
   const summaries = await withSharedProjectDiscovery(async () => {
-    infos = await listPortalPipelineInfos(scope);
+    infos = await listRemoteControlPipelineInfos(scope);
     return summarizePipelines(target, infos, {
       loadDefinition: (pipeline) =>
         readDesktopPipeline(
           pipeline.id,
           scope,
-          PIPELINE_DEFINITION_PORTAL_CALLER,
+          PIPELINE_DEFINITION_REMOTE_CONTROL_CALLER,
         ).then(
           (data) => data.content,
           (): null => null,
@@ -1262,7 +1181,7 @@ export async function listPipelines(
 }
 
 export interface StrictPipelineList {
-  pipelines: PortalPipelineSummary[];
+  pipelines: RemoteControlPipelineSummary[];
   /** True when a discovery bound skipped files; see the discovery limits. */
   truncated: boolean;
 }
@@ -1291,7 +1210,7 @@ export async function listPipelinesStrict(
   // repository-controlled and so are not subject to the discovery bounds
   // above, but every summary still passes the same redaction and size budget
   // below.
-  const merged = mergePortalPipelineInfos(
+  const merged = mergeRemoteControlPipelineInfos(
     await listStoredPipelineInfos({
       strict: true,
       projectId: target.workspaceLocalId,
@@ -1314,7 +1233,7 @@ export async function listPipelinesStrict(
       remainingBytes: STRICT_DISCOVERY_LIMITS.maxSerializedBytes,
     },
   });
-  const pipelines: PortalPipelineSummary[] = [];
+  const pipelines: RemoteControlPipelineSummary[] = [];
   for (const summary of summaries) {
     if (
       summary &&
@@ -1359,7 +1278,7 @@ export async function listPipelinesStrict(
  * Whether the desktop can share this pipeline. It needs YAML on disk to
  * publish; a pipeline whose source is already Cloud-hosted is not re-shared.
  */
-function canSharePortalPipeline(pipeline: PipelineInfo): boolean {
+function canShareRemoteControlPipeline(pipeline: PipelineInfo): boolean {
   return pipeline.source !== 'shared' && Boolean(pipeline.filePath);
 }
 
@@ -1391,7 +1310,7 @@ async function summarizePipelines(
     /** Reads a listed definition; the file on disk by default. */
     loadDefinition?: (pipeline: PipelineInfo) => Promise<Pipeline | null>;
   } = {},
-): Promise<(PortalPipelineSummary | null)[]> {
+): Promise<(RemoteControlPipelineSummary | null)[]> {
   const load =
     options.loadDefinition ??
     ((pipeline: PipelineInfo): Promise<Pipeline | null> =>
@@ -1468,7 +1387,9 @@ async function summarizePipelines(
             ? { stepCount: pipeline.stepCount }
             : {}),
           scopes: pipeline.scopes ?? ['directory'],
-          ...(canSharePortalPipeline(pipeline) ? { shareable: true } : {}),
+          ...(canShareRemoteControlPipeline(pipeline)
+            ? { shareable: true }
+            : {}),
           // The author-side link, so the web can fold the author's own share
           // into this row and label it with its audience.
           ...(pipeline.remote
@@ -1481,14 +1402,14 @@ async function summarizePipelines(
             ? { ownedByAutomation: true }
             : {}),
           // `PipelineInputDef.default` is wider than the browser-safe portal
-          // projection (`PortalPipelineInputDefinition` stays scalar and keeps
+          // projection (`RemoteControlPipelineInputDefinition` stays scalar and keeps
           // its four input types). Narrow through the protocol's own projector
           // rather than widening the external portal contract.
           ...(taskReadyInputs && Object.keys(taskReadyInputs).length > 0
-            ? projectPortalPipelineMetadata({ taskReadyInputs })
+            ? projectRemoteControlPipelineMetadata({ taskReadyInputs })
             : {}),
           ...(planReadyInputs && Object.keys(planReadyInputs).length > 0
-            ? projectPortalPipelineMetadata({ planReadyInputs })
+            ? projectRemoteControlPipelineMetadata({ planReadyInputs })
             : {}),
         };
       }),
@@ -1533,14 +1454,14 @@ async function resolveLocalPipeline(
   await assertStoredPipelineContext(pipelineId);
   const stored = getStoredPipeline(pipelineId);
   if (!stored.success || !stored.data?.content) {
-    throw new PortalServiceError('not_found', 'Workflow not found.');
+    throw new RemoteControlServiceError('not_found', 'Workflow not found.');
   }
   return { pipeline: stored.data.content, pipelineInfo };
 }
 
 export async function getPipeline(
-  request: PortalPipelineGetPayload,
-): Promise<PortalPipelineGetResult> {
+  request: RemoteControlPipelineGetPayload,
+): Promise<RemoteControlPipelineGetResult> {
   try {
     validatePipelineDefinitionLocator(request.pipelineId, 'pipelineId');
     validateId(request.projectId, 'projectId');
@@ -1548,7 +1469,7 @@ export async function getPipeline(
       validateId(request.worktreeId, 'worktreeId');
     }
   } catch (error) {
-    throw new PortalServiceError(
+    throw new RemoteControlServiceError(
       'invalid_payload',
       error instanceof Error ? error.message : 'Invalid pipeline locator.',
     );
@@ -1562,13 +1483,13 @@ export async function getPipeline(
     const pipeline = await readDesktopPipeline(
       request.pipelineId,
       { workspaceId: request.projectId },
-      PIPELINE_DEFINITION_PORTAL_CALLER,
+      PIPELINE_DEFINITION_REMOTE_CONTROL_CALLER,
     ).then(
       (data) => data.content,
       (): null => null,
     );
     if (!pipeline) {
-      throw new PortalServiceError('not_found', 'Workflow not found.');
+      throw new RemoteControlServiceError('not_found', 'Workflow not found.');
     }
     // Same `plan_ready` scoping `runPipeline` enforces. This path exists only
     // to hydrate a plan-picker row, and only `plan_ready` shares are ever
@@ -1576,7 +1497,7 @@ export async function getPipeline(
     // full definition of ANY cloud pipeline the desktop's account can see,
     // including ones no surface ever offered.
     if (!getTriggerTypes(pipeline.on).includes('plan_ready')) {
-      throw new PortalServiceError('not_found', 'Workflow not found.');
+      throw new RemoteControlServiceError('not_found', 'Workflow not found.');
     }
     const planReadyInputs = getTriggerInputDefs(pipeline.on, 'plan_ready');
     return {
@@ -1585,7 +1506,7 @@ export async function getPipeline(
       // projection; narrow through the protocol's own projector rather than
       // widening the external contract.
       ...(planReadyInputs && Object.keys(planReadyInputs).length > 0
-        ? projectPortalPipelineMetadata({ planReadyInputs })
+        ? projectRemoteControlPipelineMetadata({ planReadyInputs })
         : {}),
     };
   }
@@ -1594,7 +1515,7 @@ export async function getPipeline(
     request.worktreeId,
   );
   if (!target) {
-    throw new PortalServiceError('not_found', 'Workflow not found.');
+    throw new RemoteControlServiceError('not_found', 'Workflow not found.');
   }
   let pipeline: Pipeline;
   try {
@@ -1602,12 +1523,12 @@ export async function getPipeline(
       await readDesktopPipeline(
         request.pipelineId,
         { workspaceId: request.projectId, worktreeId: target.worktreeId },
-        PIPELINE_DEFINITION_PORTAL_CALLER,
+        PIPELINE_DEFINITION_REMOTE_CONTROL_CALLER,
       )
     ).content;
   } catch (error) {
     if (isPipelineDefinitionNotFound(error))
-      throw new PortalServiceError('not_found', 'Workflow not found.');
+      throw new RemoteControlServiceError('not_found', 'Workflow not found.');
     throw pipelineSourceFailure(error);
   }
   // The Portal never sees `workflow` (CAN-5782): a pipeline that starts only
@@ -1615,9 +1536,9 @@ export async function getPipeline(
   // and a mixed one is described by its portable triggers.
   const triggerTypes = getTriggerTypes(pipeline.on);
   if (hasOnlyLocalPipelineTriggers(triggerTypes)) {
-    throw new PortalServiceError('not_found', 'Workflow not found.');
+    throw new RemoteControlServiceError('not_found', 'Workflow not found.');
   }
-  const portalPipeline: Pipeline = {
+  const remoteControlPipeline: Pipeline = {
     ...pipeline,
     on: setTriggerTypes(
       pipeline.on,
@@ -1625,12 +1546,13 @@ export async function getPipeline(
     ),
   };
   return {
-    definition:
-      toPipelineDefinitionViewModelWithoutCanonicalYaml(portalPipeline),
+    definition: toPipelineDefinitionViewModelWithoutCanonicalYaml(
+      remoteControlPipeline,
+    ),
     // Dispatch inputs ride `get` rather than every list row so the worktree
     // snapshot never re-reads every pipeline's YAML (CAN-3174).
     ...(getTriggerTypes(pipeline.on).includes('dispatch')
-      ? projectPortalPipelineDispatchInputs(
+      ? projectRemoteControlPipelineDispatchInputs(
           getTriggerInputDefs(pipeline.on, 'dispatch'),
         )
       : {}),
@@ -1638,12 +1560,12 @@ export async function getPipeline(
 }
 
 export async function listPipelineRuns(
-  request: PortalPipelineListPayload & {
+  request: RemoteControlPipelineListPayload & {
     workspaceLocalId?: string;
     workspaceId?: string;
     worktreeLocalId?: string;
   } = {},
-): Promise<PortalPipelineRun[]> {
+): Promise<RemoteControlPipelineRun[]> {
   const workspaceLocalId = resolveWorkspaceId(request);
   const worktreeLocalId = request.worktreeLocalId ?? request.worktreeId;
   if (!workspaceLocalId || !worktreeLocalId) return [];
@@ -1662,7 +1584,7 @@ export async function listPipelineRuns(
         getPipelineExecutionsDir(),
       ).catch(() => null);
       return state
-        ? stateToPortalRun(state)
+        ? stateToRemoteControlRun(state)
         : {
             localId: summary.id,
             runId: summary.id,
@@ -1686,10 +1608,10 @@ export async function listPipelineRuns(
 }
 
 export async function runPipeline(
-  request: PortalPipelineRunPayload,
+  request: RemoteControlPipelineRunPayload,
   options: {
     portalCommandId?: string;
-    onRunUpdate?: (run: PortalPipelineRun) => void;
+    onRunUpdate?: (run: RemoteControlPipelineRun) => void;
   } = {},
 ): Promise<{ executionId: string }> {
   try {
@@ -1699,15 +1621,15 @@ export async function runPipeline(
     // document that still offers a shared row to a desktop which no longer
     // understands `shared:` ids fails here, inline in the picker, instead of
     // degrading to an opaque `execution_failed`.
-    throw new PortalServiceError(
+    throw new RemoteControlServiceError(
       'invalid_payload',
       error instanceof Error ? error.message : 'Invalid pipeline locator.',
     );
   }
-  const portalModelConfig = normalizePortalModelConfig(request);
-  const portalEvent = normalizePortalPipelineEvent(request);
+  const remoteControlModelConfig = normalizeRemoteControlModelConfig(request);
+  const remoteControlEvent = normalizeRemoteControlPipelineEvent(request);
   if (!request.projectId || !request.worktreeId) {
-    throw new PortalServiceError(
+    throw new RemoteControlServiceError(
       'invalid_payload',
       'projectId and worktreeId are required.',
     );
@@ -1716,11 +1638,11 @@ export async function runPipeline(
   validateId(request.worktreeId, 'worktreeId');
   // CAN-6187: a run located elsewhere never runs on this computer.
   if (request.targetId !== undefined) {
-    const { portalRunLocationRefusal } =
+    const { remoteControlRunLocationRefusal } =
       await import('../pipelines/cloud-pipeline-runs');
-    throw new PortalServiceError(
+    throw new RemoteControlServiceError(
       'invalid_payload',
-      portalRunLocationRefusal(String(request.targetId)),
+      remoteControlRunLocationRefusal(String(request.targetId)),
     );
   }
   if (options.portalCommandId) {
@@ -1732,14 +1654,14 @@ export async function runPipeline(
     if (receipt) {
       assertExecutionMatchesScope(receipt, request);
       if (receipt.pipeline_id !== request.pipelineId) {
-        throw new PortalServiceError(
+        throw new RemoteControlServiceError(
           'not_found',
           'Pipeline execution receipt does not match this command.',
         );
       }
-      await projectPortalPipelineRun(
+      await projectRemoteControlPipelineRun(
         receipt.id,
-        () => stateToPortalRun(receipt),
+        () => stateToRemoteControlRun(receipt),
         options,
       );
       return { executionId: receipt.id };
@@ -1769,7 +1691,7 @@ export async function runPipeline(
       () => null,
     );
     if (!detail) {
-      throw new PortalServiceError('not_found', 'Workflow not found.');
+      throw new RemoteControlServiceError('not_found', 'Workflow not found.');
     }
     // Readiness is gated here rather than projected onto every list row: a
     // package-backed shared pipeline whose requirements are not installed
@@ -1799,7 +1721,7 @@ export async function runPipeline(
         () => null,
       );
       if (readiness === null || isPipelinePackageRunBlocked(readiness)) {
-        throw new PortalServiceError(
+        throw new RemoteControlServiceError(
           'invalid_payload',
           PIPELINE_PACKAGE_SETUP_REQUIRED_REMOTE_MESSAGE,
         );
@@ -1816,28 +1738,28 @@ export async function runPipeline(
     ));
   }
   if (!pipeline) {
-    throw new PortalServiceError('not_found', 'Workflow not found.');
+    throw new RemoteControlServiceError('not_found', 'Workflow not found.');
   }
   // A Portal start with no event runs as `dispatch`; the Portal never lists a
   // pipeline that can only start from the Workflows page, so refuse one sent
   // anyway. `plan_ready`- and `task_ready`-only pipelines keep starting from
   // the sidebar picker with no event, as before.
   if (
-    portalEvent.eventName === undefined &&
+    remoteControlEvent.eventName === undefined &&
     hasOnlyLocalPipelineTriggers(getTriggerTypes(pipeline.on))
   ) {
-    throw new PortalServiceError(
+    throw new RemoteControlServiceError(
       'invalid_payload',
       'This workflow can only start from the Workflows page.',
     );
   }
   if (
-    portalEvent.eventName !== undefined &&
-    !getTriggerTypes(pipeline.on).includes(portalEvent.eventName)
+    remoteControlEvent.eventName !== undefined &&
+    !getTriggerTypes(pipeline.on).includes(remoteControlEvent.eventName)
   ) {
-    throw new PortalServiceError(
+    throw new RemoteControlServiceError(
       'invalid_payload',
-      `The selected workflow does not support ${portalEvent.eventName}.`,
+      `The selected workflow does not support ${remoteControlEvent.eventName}.`,
     );
   }
   // A shared pipeline must additionally declare `plan_ready`, whether or not
@@ -1848,12 +1770,12 @@ export async function runPipeline(
   // account can read, including one that never appeared in any picker
   // (CAN-3021).
   if (sharedRef && !getTriggerTypes(pipeline.on).includes('plan_ready')) {
-    throw new PortalServiceError(
+    throw new RemoteControlServiceError(
       'invalid_payload',
       'The selected workflow does not support plan_ready.',
     );
   }
-  const portalForwarder = createPortalPipelineForwarder(options);
+  const remoteControlForwarder = createRemoteControlPipelineForwarder(options);
   const result = await startPipelineExecutionFromMain({
     pipeline,
     getWindow: () => null,
@@ -1885,27 +1807,27 @@ export async function runPipeline(
         ? { pipelineFilePath: pipelineInfo.filePath }
         : {}),
       inputs: request.inputs,
-      modelConfig: portalModelConfig,
-      planId: portalEvent.planId,
-      eventName: portalEvent.eventName,
-      eventData: portalEvent.eventData,
+      modelConfig: remoteControlModelConfig,
+      planId: remoteControlEvent.planId,
+      eventName: remoteControlEvent.eventName,
+      eventData: remoteControlEvent.eventData,
       initiationSource: 'portal',
       initiator: { kind: 'portal' },
       executionId: options.portalCommandId,
     },
-    onEvent: portalForwarder.onEvent,
-    onStepOutput: portalForwarder.onStepOutput,
+    onEvent: remoteControlForwarder.onEvent,
+    onStepOutput: remoteControlForwarder.onStepOutput,
   });
   if (!result.success) {
-    throw new PortalServiceError('execution_failed', result.error);
+    throw new RemoteControlServiceError('execution_failed', result.error);
   }
   await getPipelineExecution({ executionId: result.data.id }, options);
   return { executionId: result.data.id };
 }
 
-function createPortalPipelineForwarder(options: {
+function createRemoteControlPipelineForwarder(options: {
   portalCommandId?: string;
-  onRunUpdate?: (run: PortalPipelineRun) => void;
+  onRunUpdate?: (run: RemoteControlPipelineRun) => void;
 }): {
   onEvent: (event: ExecutionEvent) => void;
   onStepOutput: (event: StepOutputEvent) => void;
@@ -1956,7 +1878,7 @@ function createPortalPipelineForwarder(options: {
   };
   const requestedStepsForExecution = (
     executionId: string,
-  ): RequestedPortalStep[] => {
+  ): RequestedRemoteControlStep[] => {
     const requestedSteps = Array.from(outputTails.entries())
       .filter(([key]) => key.startsWith(`${executionId}\0`))
       .map(([, output]) => ({
@@ -2000,7 +1922,7 @@ function createPortalPipelineForwarder(options: {
         ) {
           const pendingExecutionId = lane.pendingExecutionId;
           lane.pendingExecutionId = undefined;
-          await projectPortalPipelineRun(
+          await projectRemoteControlPipelineRun(
             pendingExecutionId,
             async () => {
               const state = await loadExecutionState(
@@ -2009,7 +1931,7 @@ function createPortalPipelineForwarder(options: {
               );
               const requestedSteps =
                 requestedStepsForExecution(pendingExecutionId);
-              return stateToPortalRun(state, {
+              return stateToRemoteControlRun(state, {
                 requestedSteps,
                 streamProjection: true,
               });
@@ -2037,9 +1959,9 @@ function createPortalPipelineForwarder(options: {
         terminalExecutions.add(event.executionId);
         clearExecutionTails(event.executionId);
       }
-      void projectPortalPipelineRun(
+      void projectRemoteControlPipelineRun(
         event.executionId,
-        () => stateToPortalRun(event.state),
+        () => stateToRemoteControlRun(event.state),
         options,
       ).catch(() => undefined);
     },
@@ -2096,12 +2018,12 @@ function createPortalPipelineForwarder(options: {
 }
 
 async function cancelPipelineUnlocked(
-  request: PortalPipelineCancelPayload & PipelineExecutionScope,
+  request: RemoteControlPipelineCancelPayload & PipelineExecutionScope,
   options: {
     portalCommandId?: string;
     getWindow?: () => BrowserWindow | null;
   } = {},
-): Promise<PortalPipelineRun | null> {
+): Promise<RemoteControlPipelineRun | null> {
   validateId(request.executionId, 'executionId');
   validatePipelineExecutionScope(request);
   const existingState = await loadExecutionState(
@@ -2113,41 +2035,41 @@ async function cancelPipelineUnlocked(
     executionId: request.executionId,
     getWindow: options.getWindow ?? ((): null => null),
   });
-  return projectPortalPipelineRun(
+  return projectRemoteControlPipelineRun(
     request.executionId,
-    () => stateToPortalRun(state),
+    () => stateToRemoteControlRun(state),
     options,
   );
 }
 
 export function cancelPipeline(
-  request: PortalPipelineCancelPayload & PipelineExecutionScope,
+  request: RemoteControlPipelineCancelPayload & PipelineExecutionScope,
   options: {
     portalCommandId?: string;
     getWindow?: () => BrowserWindow | null;
   } = {},
-): Promise<PortalPipelineRun | null> {
-  return serializePortalPipelineMutation(request.executionId, () =>
+): Promise<RemoteControlPipelineRun | null> {
+  return serializeRemoteControlPipelineMutation(request.executionId, () =>
     cancelPipelineUnlocked(request, options),
   );
 }
 
 type PipelineControlOptions = {
   portalCommandId?: string;
-  onRunUpdate?: (run: PortalPipelineRun) => void;
+  onRunUpdate?: (run: RemoteControlPipelineRun) => void;
 };
 
-function portalPipelineActionRuntime(
+function remoteControlPipelineActionRuntime(
   state: ExecutionState,
   options: PipelineControlOptions,
 ): WorktreeActionRuntime {
   if (!state.project_id || !state.worktree_id) {
-    throw new PortalServiceError(
+    throw new RemoteControlServiceError(
       'invalid_target',
       'Pipeline execution is missing its workspace target.',
     );
   }
-  const forwarder = createPortalPipelineForwarder(options);
+  const forwarder = createRemoteControlPipelineForwarder(options);
   return {
     projectId: state.project_id,
     worktreeId: state.worktree_id,
@@ -2173,7 +2095,7 @@ function throwForPipelineActionFailure(response: {
     response.error?.code === 'not_found'
       ? response.error.code
       : 'execution_failed';
-  throw new PortalServiceError(
+  throw new RemoteControlServiceError(
     code,
     response.error?.message ?? 'Workflow execution action failed.',
   );
@@ -2185,7 +2107,7 @@ async function loadScopedPipelineExecution(
   validateId(request.executionId, 'executionId');
   validatePipelineExecutionScope(request);
   if (!request.projectId || !request.worktreeId) {
-    throw new PortalServiceError(
+    throw new RemoteControlServiceError(
       'invalid_target',
       'projectId and worktreeId are required.',
     );
@@ -2198,12 +2120,12 @@ async function loadScopedPipelineExecution(
   return state;
 }
 
-async function updatedPortalRun(
+async function updatedRemoteControlRun(
   executionId: string,
   scope: PipelineExecutionScope,
   options: PipelineControlOptions,
-): Promise<PortalPipelineRun> {
-  const run = await projectPortalPipelineRun(
+): Promise<RemoteControlPipelineRun> {
+  const run = await projectRemoteControlPipelineRun(
     executionId,
     async () => {
       const state = await loadExecutionState(
@@ -2211,17 +2133,20 @@ async function updatedPortalRun(
         getPipelineExecutionsDir(),
       );
       assertExecutionMatchesScope(state, scope);
-      return stateToPortalRun(state);
+      return stateToRemoteControlRun(state);
     },
     options,
   );
   if (!run) {
-    throw new PortalServiceError('not_found', 'Workflow execution not found.');
+    throw new RemoteControlServiceError(
+      'not_found',
+      'Workflow execution not found.',
+    );
   }
   return run;
 }
 
-function hasPortalCommandReceipt(
+function hasRemoteControlCommandReceipt(
   state: ExecutionState,
   commandId: string | undefined,
 ): boolean {
@@ -2231,17 +2156,17 @@ function hasPortalCommandReceipt(
   );
 }
 
-async function projectPortalCommandReceipt(
+async function projectRemoteControlCommandReceipt(
   state: ExecutionState,
   options: PipelineControlOptions,
-): Promise<PortalPipelineRun> {
-  const run = await projectPortalPipelineRun(
+): Promise<RemoteControlPipelineRun> {
+  const run = await projectRemoteControlPipelineRun(
     state.id,
-    () => stateToPortalRun(state),
+    () => stateToRemoteControlRun(state),
     options,
   );
   if (!run) {
-    throw new PortalServiceError(
+    throw new RemoteControlServiceError(
       'not_found',
       'Pipeline execution receipt could not be projected.',
     );
@@ -2250,18 +2175,18 @@ async function projectPortalCommandReceipt(
 }
 
 async function resumePipelineUnlocked(
-  request: PortalPipelineResumePayload & PipelineExecutionScope,
+  request: RemoteControlPipelineResumePayload & PipelineExecutionScope,
   options: PipelineControlOptions = {},
-): Promise<PortalPipelineRun> {
+): Promise<RemoteControlPipelineRun> {
   if (options.portalCommandId) {
     validateId(options.portalCommandId, 'portalCommandId');
   }
   const state = await loadScopedPipelineExecution(request);
-  if (hasPortalCommandReceipt(state, options.portalCommandId)) {
-    return projectPortalCommandReceipt(state, options);
+  if (hasRemoteControlCommandReceipt(state, options.portalCommandId)) {
+    return projectRemoteControlCommandReceipt(state, options);
   }
   if (!canResumeExecution(state)) {
-    throw new PortalServiceError(
+    throw new RemoteControlServiceError(
       'execution_failed',
       'Only paused root workflow executions can be resumed.',
     );
@@ -2274,34 +2199,34 @@ async function resumePipelineUnlocked(
         ? { pauseResponses: request.pauseResponses }
         : {}),
     },
-    portalPipelineActionRuntime(state, options),
+    remoteControlPipelineActionRuntime(state, options),
   );
   throwForPipelineActionFailure(response);
-  return updatedPortalRun(request.executionId, request, options);
+  return updatedRemoteControlRun(request.executionId, request, options);
 }
 
 export function resumePipeline(
-  request: PortalPipelineResumePayload & PipelineExecutionScope,
+  request: RemoteControlPipelineResumePayload & PipelineExecutionScope,
   options: PipelineControlOptions = {},
-): Promise<PortalPipelineRun> {
-  return serializePortalPipelineMutation(request.executionId, () =>
+): Promise<RemoteControlPipelineRun> {
+  return serializeRemoteControlPipelineMutation(request.executionId, () =>
     resumePipelineUnlocked(request, options),
   );
 }
 
 async function retryPipelineUnlocked(
-  request: PortalPipelineRetryPayload & PipelineExecutionScope,
+  request: RemoteControlPipelineRetryPayload & PipelineExecutionScope,
   options: PipelineControlOptions = {},
-): Promise<PortalPipelineRun> {
+): Promise<RemoteControlPipelineRun> {
   if (options.portalCommandId) {
     validateId(options.portalCommandId, 'portalCommandId');
   }
   const state = await loadScopedPipelineExecution(request);
-  if (hasPortalCommandReceipt(state, options.portalCommandId)) {
-    return projectPortalCommandReceipt(state, options);
+  if (hasRemoteControlCommandReceipt(state, options.portalCommandId)) {
+    return projectRemoteControlCommandReceipt(state, options);
   }
   if (!canRetryExecution(state)) {
-    throw new PortalServiceError(
+    throw new RemoteControlServiceError(
       'execution_failed',
       'Only failed or cancelled root workflow executions can be retried.',
     );
@@ -2311,27 +2236,27 @@ async function retryPipelineUnlocked(
       type: 'pipeline.execution_retry',
       executionId: request.executionId,
     },
-    portalPipelineActionRuntime(state, options),
+    remoteControlPipelineActionRuntime(state, options),
   );
   throwForPipelineActionFailure(response);
-  return updatedPortalRun(request.executionId, request, options);
+  return updatedRemoteControlRun(request.executionId, request, options);
 }
 
 export function retryPipeline(
-  request: PortalPipelineRetryPayload & PipelineExecutionScope,
+  request: RemoteControlPipelineRetryPayload & PipelineExecutionScope,
   options: PipelineControlOptions = {},
-): Promise<PortalPipelineRun> {
-  return serializePortalPipelineMutation(request.executionId, () =>
+): Promise<RemoteControlPipelineRun> {
+  return serializeRemoteControlPipelineMutation(request.executionId, () =>
     retryPipelineUnlocked(request, options),
   );
 }
 
 async function rerunPipelineUnlocked(
-  request: PortalPipelineRerunPayload & PipelineExecutionScope,
+  request: RemoteControlPipelineRerunPayload & PipelineExecutionScope,
   options: PipelineControlOptions = {},
-): Promise<PortalPipelineRun> {
+): Promise<RemoteControlPipelineRun> {
   if (!request.projectId || !request.worktreeId) {
-    throw new PortalServiceError(
+    throw new RemoteControlServiceError(
       'invalid_target',
       'projectId and worktreeId are required.',
     );
@@ -2346,18 +2271,18 @@ async function rerunPipelineUnlocked(
     if (receipt) {
       assertExecutionMatchesScope(receipt, request);
       if (receipt.rerun_source_id !== request.executionId) {
-        throw new PortalServiceError(
+        throw new RemoteControlServiceError(
           'not_found',
           'Pipeline rerun receipt does not match this command.',
         );
       }
-      const run = await projectPortalPipelineRun(
+      const run = await projectRemoteControlPipelineRun(
         receipt.id,
-        () => stateToPortalRun(receipt),
+        () => stateToRemoteControlRun(receipt),
         options,
       );
       if (!run) {
-        throw new PortalServiceError(
+        throw new RemoteControlServiceError(
           'not_found',
           'Pipeline rerun receipt could not be projected.',
         );
@@ -2367,7 +2292,7 @@ async function rerunPipelineUnlocked(
   }
   const state = await loadScopedPipelineExecution(request);
   if (!canRerunExecution(state) || !hasRerunReplayData(state)) {
-    throw new PortalServiceError(
+    throw new RemoteControlServiceError(
       'execution_failed',
       'This workflow execution cannot be rerun from its saved inputs.',
     );
@@ -2378,7 +2303,7 @@ async function rerunPipelineUnlocked(
       executionId: request.executionId,
       rerunExecutionId: options.portalCommandId,
     },
-    portalPipelineActionRuntime(state, options),
+    remoteControlPipelineActionRuntime(state, options),
   );
   throwForPipelineActionFailure(response);
   const result = response.result;
@@ -2391,29 +2316,29 @@ async function rerunPipelineUnlocked(
       ? execution.id
       : undefined;
   if (typeof executionId !== 'string') {
-    throw new PortalServiceError(
+    throw new RemoteControlServiceError(
       'execution_failed',
       'Pipeline rerun did not return an execution id.',
     );
   }
-  return updatedPortalRun(executionId, request, options);
+  return updatedRemoteControlRun(executionId, request, options);
 }
 
 export function rerunPipeline(
-  request: PortalPipelineRerunPayload & PipelineExecutionScope,
+  request: RemoteControlPipelineRerunPayload & PipelineExecutionScope,
   options: PipelineControlOptions = {},
-): Promise<PortalPipelineRun> {
-  return serializePortalPipelineMutation(request.executionId, () =>
+): Promise<RemoteControlPipelineRun> {
+  return serializeRemoteControlPipelineMutation(request.executionId, () =>
     rerunPipelineUnlocked(request, options),
   );
 }
 
 export async function listPipelineExecutions(
-  request: PortalPipelineExecutionListPayload,
-): Promise<PortalPipelineExecutionListResult> {
+  request: RemoteControlPipelineExecutionListPayload,
+): Promise<RemoteControlPipelineExecutionListResult> {
   validatePipelineExecutionScope(request);
   if (!request.projectId || !request.worktreeId) {
-    throw new PortalServiceError(
+    throw new RemoteControlServiceError(
       'invalid_target',
       'projectId and worktreeId are required.',
     );
@@ -2464,7 +2389,7 @@ export async function listPipelineExecutions(
       states.map(async (state) => {
         if (!state) return null;
         assertExecutionMatchesScope(state, request);
-        return stateToPortalRun(state);
+        return stateToRemoteControlRun(state);
       }),
     )
   ).flatMap((run) => (run ? [run] : []));
@@ -2482,9 +2407,9 @@ export async function listPipelineExecutions(
 }
 
 async function getPipelineExecutionUnlocked(
-  request: PortalPipelineExecutionGetPayload & PipelineExecutionScope,
+  request: RemoteControlPipelineExecutionGetPayload & PipelineExecutionScope,
   options: { portalCommandId?: string } = {},
-): Promise<PortalPipelineRun | null> {
+): Promise<RemoteControlPipelineRun | null> {
   validateId(request.executionId, 'executionId');
   validatePipelineExecutionScope(request);
   const state = await loadExecutionState(
@@ -2492,28 +2417,28 @@ async function getPipelineExecutionUnlocked(
     getPipelineExecutionsDir(),
   );
   assertExecutionMatchesScope(state, request);
-  const run = state ? await stateToPortalRun(state) : null;
+  const run = state ? await stateToRemoteControlRun(state) : null;
   if (run) notifyPipelineRunUpdate(run, options);
   return run;
 }
 
 export function getPipelineExecution(
-  request: PortalPipelineExecutionGetPayload & PipelineExecutionScope,
+  request: RemoteControlPipelineExecutionGetPayload & PipelineExecutionScope,
   options: { portalCommandId?: string } = {},
-): Promise<PortalPipelineRun | null> {
+): Promise<RemoteControlPipelineRun | null> {
   return serializeKeyedOperation(
-    portalPipelineProjectionQueues,
+    remoteControlPipelineProjectionQueues,
     request.executionId,
     () => getPipelineExecutionUnlocked(request, options),
   );
 }
 
 async function getPipelineLogUnlocked(
-  request: PortalPipelineLogRequestPayload & PipelineExecutionScope,
+  request: RemoteControlPipelineLogRequestPayload & PipelineExecutionScope,
   options: { portalCommandId?: string } = {},
 ): Promise<{
   lines: string[];
-  run?: PortalPipelineRun;
+  run?: RemoteControlPipelineRun;
 }> {
   validateId(request.executionId, 'executionId');
   validatePipelineRuntimeIdentifier(request.jobId, 'jobId');
@@ -2533,7 +2458,10 @@ async function getPipelineLogUnlocked(
   const stepOwner = job;
   const step = stepOwner?.steps[request.stepId];
   if (!state || !job || !stepOwner || !step) {
-    throw new PortalServiceError('not_found', 'Workflow step not found.');
+    throw new RemoteControlServiceError(
+      'not_found',
+      'Workflow step not found.',
+    );
   }
 
   const logPath =
@@ -2549,7 +2477,7 @@ async function getPipelineLogUnlocked(
       definition?.artifact_locator?.matrix_child_id,
     );
   const lines = await readLogLines(logPath, 500);
-  const run = await stateToPortalRun(state, {
+  const run = await stateToRemoteControlRun(state, {
     requestedStep: {
       jobId: request.jobId,
       stepId: request.stepId,
@@ -2564,14 +2492,14 @@ async function getPipelineLogUnlocked(
 }
 
 export function getPipelineLog(
-  request: PortalPipelineLogRequestPayload & PipelineExecutionScope,
+  request: RemoteControlPipelineLogRequestPayload & PipelineExecutionScope,
   options: { portalCommandId?: string } = {},
 ): Promise<{
   lines: string[];
-  run?: PortalPipelineRun;
+  run?: RemoteControlPipelineRun;
 }> {
   return serializeKeyedOperation(
-    portalPipelineProjectionQueues,
+    remoteControlPipelineProjectionQueues,
     request.executionId,
     () => getPipelineLogUnlocked(request, options),
   );
@@ -2584,7 +2512,7 @@ export function getPipelineLog(
  */
 function pipelineChatFollowUpReference(
   state: ExecutionState,
-  output: PortalPipelineChatFollowUpPreparePayload['output'],
+  output: RemoteControlPipelineChatFollowUpPreparePayload['output'],
 ): string | undefined {
   return output === 'plan'
     ? (state.event_data?.plan_ready?.plan_path ??
@@ -2600,7 +2528,7 @@ function pipelineChatFollowUpReference(
  * Reads no report content and changes nothing.
  */
 export async function preparePipelineChatFollowUp(
-  request: PortalPipelineChatFollowUpPreparePayload,
+  request: RemoteControlPipelineChatFollowUpPreparePayload,
 ): Promise<{ prompt: string }> {
   const state = await loadScopedPipelineExecution(request);
   if (
@@ -2609,14 +2537,14 @@ export async function preparePipelineChatFollowUp(
       request.worktreeId,
     ))
   ) {
-    throw new PortalServiceError(
+    throw new RemoteControlServiceError(
       'not_found',
       "This run's worktree is no longer available.",
     );
   }
   const reference = pipelineChatFollowUpReference(state, request.output);
   if (!reference) {
-    throw new PortalServiceError(
+    throw new RemoteControlServiceError(
       'not_found',
       request.output === 'plan'
         ? 'This workflow run does not have a saved plan file.'
@@ -2648,15 +2576,18 @@ let lastPipelineContent:
  * directory.
  */
 export async function readPipelineContent(
-  request: PortalPipelineContentReadPayload,
-): Promise<PortalPipelineContentReadResult> {
+  request: RemoteControlPipelineContentReadPayload,
+): Promise<RemoteControlPipelineContentReadResult> {
   const state = await loadScopedPipelineExecution(request);
   const source = request.source;
   const executionsDir = getPipelineExecutionsDir();
   const confined = (path: string): string => {
     const resolved = resolve(path);
     if (!isPathInsideExecutionsDir(executionsDir, resolved)) {
-      throw new PortalServiceError('not_found', 'This content is unavailable.');
+      throw new RemoteControlServiceError(
+        'not_found',
+        'This content is unavailable.',
+      );
     }
     return resolved;
   };
@@ -2669,7 +2600,10 @@ export async function readPipelineContent(
     const job = state.jobs[source.jobId];
     const step = job?.steps[source.stepId];
     if (!job || !step) {
-      throw new PortalServiceError('not_found', 'Workflow step not found.');
+      throw new RemoteControlServiceError(
+        'not_found',
+        'Workflow step not found.',
+      );
     }
     const definition =
       state.job_definitions?.[source.jobId] ??
@@ -2722,11 +2656,14 @@ export async function readPipelineContent(
       });
     };
   } else {
-    throw new PortalServiceError('invalid_payload', 'Invalid content source.');
+    throw new RemoteControlServiceError(
+      'invalid_payload',
+      'Invalid content source.',
+    );
   }
 
-  const unavailable = (): PortalServiceError =>
-    new PortalServiceError(
+  const unavailable = (): RemoteControlServiceError =>
+    new RemoteControlServiceError(
       'not_found',
       "This run's report is no longer available.",
     );
@@ -2739,7 +2676,7 @@ export async function readPipelineContent(
   );
   const revision = identities.join('/');
   if (request.revision !== undefined && request.revision !== revision) {
-    throw new PortalServiceError(
+    throw new RemoteControlServiceError(
       'execution_failed',
       'The content changed while it was loading. Try again.',
     );
@@ -2761,7 +2698,10 @@ export async function readPipelineContent(
   }
   const page = pipelineContentPage(document, request.offset ?? 0, revision);
   if (!page) {
-    throw new PortalServiceError('invalid_payload', 'Invalid content offset.');
+    throw new RemoteControlServiceError(
+      'invalid_payload',
+      'Invalid content offset.',
+    );
   }
   return page;
 }
@@ -2777,7 +2717,10 @@ export async function getPipelineFailureDebugContext(
   const runtime = createElectronExecutionRuntime();
   const state = await loadExecutionState(executionId, runtime.executionsDir);
   if (!state) {
-    throw new PortalServiceError('not_found', 'Workflow execution not found.');
+    throw new RemoteControlServiceError(
+      'not_found',
+      'Workflow execution not found.',
+    );
   }
 
   return buildPipelineFailureDebugPrompt(state, {
@@ -2847,16 +2790,16 @@ export async function getPipelineFailureDebugContext(
   });
 }
 
-export async function stateToPortalRun(
+export async function stateToRemoteControlRun(
   state: Awaited<ReturnType<typeof loadExecutionState>>,
   options: {
-    requestedStep?: RequestedPortalStep;
-    requestedSteps?: readonly RequestedPortalStep[];
+    requestedStep?: RequestedRemoteControlStep;
+    requestedSteps?: readonly RequestedRemoteControlStep[];
     streamProjection?: boolean;
   } = {},
-): Promise<PortalPipelineRun | null> {
+): Promise<RemoteControlPipelineRun | null> {
   if (!state?.project_id || !state.worktree_id) return null;
-  const jobs = await buildPortalPipelineJobs(
+  const jobs = await buildRemoteControlPipelineJobs(
     state,
     options.requestedSteps ??
       (options.requestedStep ? [options.requestedStep] : undefined),
@@ -2874,11 +2817,11 @@ export async function stateToPortalRun(
       .join('\n'),
     RUN_TAIL_MAX_BYTES,
   );
-  let remainingPauseRequestBytes = PORTAL_PAUSE_REQUESTS_MAX_BYTES;
-  const pendingPauses: PortalPipelinePauseCheckpoint[] = (
+  let remainingPauseRequestBytes = REMOTE_CONTROL_PAUSE_REQUESTS_MAX_BYTES;
+  const pendingPauses: RemoteControlPipelinePauseCheckpoint[] = (
     state.pending_pauses ?? []
   ).map((checkpoint) => {
-    const identity: PortalPipelinePauseCheckpoint = {
+    const identity: RemoteControlPipelinePauseCheckpoint = {
       id: checkpoint.id,
       kind: checkpoint.kind,
       jobId: checkpoint.job_id,
@@ -2954,13 +2897,13 @@ function currentRecovery(step: StepResult): number {
   return step.recovery_count ?? 0;
 }
 
-function findRequestedPortalStep(
-  requestedSteps: readonly RequestedPortalStep[] | undefined,
+function findRequestedRemoteControlStep(
+  requestedSteps: readonly RequestedRemoteControlStep[] | undefined,
   jobId: string,
   stepId: string,
   job: JobResult,
   step: StepResult,
-): RequestedPortalStep | undefined {
+): RequestedRemoteControlStep | undefined {
   return requestedSteps?.find(
     (requestedStep) =>
       requestedStep.jobId === jobId &&
@@ -2979,18 +2922,18 @@ function shouldHydrateMatrixStep(step: StepResult): boolean {
   );
 }
 
-async function buildPortalPipelineJobs(
+async function buildRemoteControlPipelineJobs(
   state: ExecutionState,
-  requestedSteps?: readonly RequestedPortalStep[],
+  requestedSteps?: readonly RequestedRemoteControlStep[],
   streamProjection = false,
-): Promise<NonNullable<PortalPipelineRun['jobs']>> {
+): Promise<NonNullable<RemoteControlPipelineRun['jobs']>> {
   return Promise.all(
     Object.entries(state.pipeline_snapshot.jobs).map(
       async ([logicalJobId, logicalJob]) => {
         const group = state.job_groups?.[logicalJobId];
         const projectPhysical = async (
           physicalJobId: string,
-        ): Promise<PortalPipelineRunVariant> => {
+        ): Promise<RemoteControlPipelineRunVariant> => {
           const definition =
             state.job_definitions?.[physicalJobId] ?? logicalJob;
           const result = state.jobs[physicalJobId];
@@ -3000,7 +2943,7 @@ async function buildPortalPipelineJobs(
               const requestedStep =
                 step !== undefined &&
                 result !== undefined &&
-                findRequestedPortalStep(
+                findRequestedRemoteControlStep(
                   requestedSteps,
                   physicalJobId,
                   stepDef.id,
@@ -3183,9 +3126,9 @@ function trimUtf8Tail(value: string, maxBytes: number): string {
   return bytes.subarray(start).toString('utf8');
 }
 
-export function pipelineToPortalEntity(
-  pipeline: PortalPipelineSummary,
-): PortalEntityEnvelope {
+export function pipelineToRemoteControlEntity(
+  pipeline: RemoteControlPipelineSummary,
+): RemoteControlEntityEnvelope {
   return {
     entityType: 'pipeline',
     localId: `${pipeline.worktreeLocalId}:${pipeline.pipelineId}`,
@@ -3198,10 +3141,10 @@ export function pipelineToPortalEntity(
 }
 
 function notifyPipelineRunUpdate(
-  run: PortalPipelineRun,
+  run: RemoteControlPipelineRun,
   options: {
     portalCommandId?: string;
-    onRunUpdate?: (run: PortalPipelineRun) => void;
+    onRunUpdate?: (run: RemoteControlPipelineRun) => void;
   } = {},
 ): void {
   options.onRunUpdate?.(run);
@@ -3214,174 +3157,4 @@ function notifyPipelineRunUpdate(
       // Ignore listener failures.
     }
   });
-}
-
-/**
- * `portal.pipeline.share`: re-read the pipeline's YAML from disk and create the
- * shared copy under the DESKTOP's Cloud account, then mint the link for the
- * requested scope.
- *
- * Definition-only by contract — see {@link PortalPipelineSharePayload}. A
- * packaged share needs the interactive analyze/select flow the desktop editor
- * drives, so it is never silently substituted here.
- */
-export async function sharePortalPipeline(
-  request: PortalPipelineSharePayload,
-): Promise<PortalShareResult> {
-  const { target, pipelineInfo } =
-    await resolvePortalShareablePipeline(request);
-  const accountId = await requirePortalShareAccountId(pipelineInfo.remote);
-
-  const sourcePipeline: PipelineShareSource =
-    pipelineInfo.source === 'project'
-      ? {
-          kind: 'project',
-          projectId: request.projectId,
-          worktreeId: target.worktreeId,
-          pipelineFilePath: pipelineInfo.filePath,
-        }
-      : { kind: 'stored', id: pipelineInfo.id, source: pipelineInfo.source };
-  const rawPipeline = await readFile(pipelineInfo.filePath, 'utf8');
-  // Lazy, like this service's other Cloud imports: the client pulls in the
-  // Cloud account/auth chain, and this module sits on the portal's hot read
-  // path (pipeline lists are rebuilt on every state refresh). It is a LOCAL
-  // module, so the packaged bytecode main build resolves it the same way as
-  // the static imports above — the packaged-resolution hazard applies to
-  // third-party dynamic imports, not these.
-  const {
-    createSharedPipeline,
-    deleteSharedPipeline,
-    getSharedPipeline,
-    publishPipelinePublicShare,
-    updateSharedPipeline,
-  } = await import('../pipelines/canopy-server-client');
-  const shareRequest: CreateSharedPipelineRequest = {
-    rawPipeline,
-    shareScope: request.scope === 'public' ? 'private' : request.scope,
-    ...(request.scope === 'team' && request.teamId
-      ? { teamId: request.teamId }
-      : {}),
-    ...(request.scope === 'organization' && request.organizationId
-      ? { organizationId: request.organizationId }
-      : {}),
-  };
-  const createRequest = pipelineResourceContextEnabled()
-    ? { ...shareRequest, sourcePipeline }
-    : shareRequest;
-  let created = false;
-  let hasAffectedAutomations = false;
-  let detail;
-  if (pipelineInfo.remote) {
-    try {
-      hasAffectedAutomations = await getSharedPipelineSaveImpact(
-        pipelineInfo.remote.remoteId,
-      )
-        .then((impact) => impact.automations.length > 0)
-        .catch(() => true);
-      const current = await getSharedPipeline(pipelineInfo.remote.remoteId);
-      detail = await updateSharedPipeline(
-        pipelineInfo.remote.remoteId,
-        rawPipeline,
-        {
-          expectedContentHash: current.contentHash,
-          preservePackage: true,
-          shareScope: shareRequest.shareScope,
-          ...(shareRequest.teamId ? { teamId: shareRequest.teamId } : {}),
-          ...(shareRequest.organizationId
-            ? { organizationId: shareRequest.organizationId }
-            : {}),
-          ...(request.scope !== 'public' &&
-          current.publicShare &&
-          !(await preserveOrganizationPublicLink(current.owner))
-            ? {
-                revokePublicShare: {
-                  externalId: current.publicShare.externalId,
-                  updatedAt: current.publicShare.updatedAt,
-                },
-              }
-            : {}),
-        },
-      );
-    } catch (error) {
-      if (
-        typeof error !== 'object' ||
-        error === null ||
-        !('status' in error) ||
-        error.status !== 404
-      ) {
-        throw error;
-      }
-      detail = await createSharedPipeline(createRequest);
-      created = true;
-    }
-  } else {
-    detail = await createSharedPipeline(createRequest);
-    created = true;
-  }
-
-  if (
-    sourcePipeline.kind === 'project' ||
-    (sourcePipeline.kind === 'stored' && sourcePipeline.source === 'user')
-  ) {
-    const { writePipelineRemoteMetadata, writeProjectPipelineRemoteMetadata } =
-      await import('../pipelines/pipeline-service');
-    const remote = {
-      accountId,
-      remoteId: detail.id,
-      contentHash: detail.contentHash,
-      shareScope: detail.shareScope ?? shareRequest.shareScope ?? 'private',
-      sharedAt: detail.updatedAt,
-    };
-    const linked =
-      sourcePipeline.kind === 'project'
-        ? writeProjectPipelineRemoteMetadata(
-            sourcePipeline.pipelineFilePath,
-            remote,
-          )
-        : writePipelineRemoteMetadata(sourcePipeline.id, remote);
-    if (!linked.success) {
-      if (created) await deleteSharedPipeline(detail.id);
-      throw new Error(linked.error ?? 'Failed to store workflow share link.');
-    }
-  }
-
-  if (request.scope === 'public') {
-    try {
-      const published = await publishPipelinePublicShare(detail.id);
-      return {
-        sharePath: published.sharePath,
-        ...(hasAffectedAutomations
-          ? {
-              message:
-                'People using this workflow in their automations will need to approve your changes before they run again.',
-            }
-          : {}),
-      };
-    } catch {
-      // The private copy exists; only the link step failed. Never fall back to
-      // publishing something the user did not ask for.
-      return {
-        message: hasAffectedAutomations
-          ? 'Workflow shared privately, but the public link could not be created, and people using this workflow in their automations will need to approve your changes before they run again.'
-          : 'Workflow shared privately, but the public link could not be created.',
-      };
-    }
-  }
-  if (request.scope === 'team' || request.scope === 'organization') {
-    return {
-      sharePath: pipelineSharePath(detail.id),
-      ...(hasAffectedAutomations
-        ? {
-            message:
-              'People using this workflow in their automations will need to approve your changes before they run again.',
-          }
-        : {}),
-    };
-  }
-  return hasAffectedAutomations
-    ? {
-        message:
-          'People using this workflow in their automations will need to approve your changes before they run again.',
-      }
-    : {};
 }

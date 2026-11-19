@@ -7,7 +7,7 @@ import type { CodexErrorInfo } from './generated/v2/CodexErrorInfo';
 import type { DynamicToolCallParams } from './generated/v2/DynamicToolCallParams';
 import type { DynamicToolCallResponse } from './generated/v2/DynamicToolCallResponse';
 import { projectCodexThreadItem } from './thread-item-projection';
-import type { ChatInputAdmission } from '@canopy/protocol/portal/input-delivery';
+import type { ChatInputAdmission } from '@canopy/protocol/remote-control/shell/input-delivery';
 
 export interface CodexRuntimeEvent {
   method: string;

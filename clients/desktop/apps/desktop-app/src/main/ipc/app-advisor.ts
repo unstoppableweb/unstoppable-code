@@ -9,7 +9,6 @@ import {
   type AgentArtifactNavigationRequest,
   type AgentArtifactNavigationResponse,
   type AppAdvisorAction,
-  type AppAdvisorAskUserAnswer,
   type AppAdvisorBrowserAction,
   type AppAdvisorClaudeMdLoadResponse,
   type AppAdvisorClaudeMdSaveRequest,
@@ -1065,61 +1064,6 @@ export function takeAppAdvisorAnswerProvenance(
   const provenance = askUserAnswerProvenance.get(requestId);
   askUserAnswerProvenance.delete(requestId);
   return provenance ?? 'agent';
-}
-
-/**
- * Settle an awaiting ask-user question from outside the renderer round-trip
- * (the portal answer/dismiss commands, CAN-2565). `answer: null` means the
- * user dismissed the question without answering — settled with the same
- * failure shape the App Advisor renderer produces for a dismissal, so the
- * awaiting `requestUserAnswers` caller cannot tell the two apart. Returns
- * `false` when `requestId` is unknown, is not an ask-user request, or is not
- * bound to `chatId` — the lookup is scoped by chat, so a remote client cannot
- * settle another chat's question (a pending record with no recorded chat
- * cannot be verified and is refused the same way). The settlement itself
- * reuses `settlePendingRequest`, preserving the completed-response
- * idempotency cache.
- */
-export function completeAppAdvisorAskUserRequest(
-  requestId: string,
-  chatId: string,
-  answer: AppAdvisorAskUserAnswer | null,
-  options?: { agentOriginated?: boolean },
-): boolean {
-  const key = getRendererToolRequestScopeKey(requestId, chatId);
-  const entry = pending.get(key);
-  if (
-    !entry ||
-    entry.request.kind !== 'ask_user_question' ||
-    entry.request.chatId !== chatId
-  ) {
-    return false;
-  }
-  if (answer)
-    askUserAnswerProvenance.set(
-      requestId,
-      options?.agentOriginated === false ? 'person' : 'agent',
-    );
-  settlePendingRequest(
-    key,
-    answer
-      ? {
-          requestId,
-          ok: true,
-          uiState: latestUiState ?? undefined,
-          answer,
-        }
-      : {
-          requestId,
-          ok: false,
-          uiState: latestUiState ?? undefined,
-          error: {
-            code: 'execution_failed',
-            message: 'Orchestrator question was dismissed without an answer.',
-          },
-        },
-  );
-  return true;
 }
 
 export async function requestAppAdvisorRendererTool(

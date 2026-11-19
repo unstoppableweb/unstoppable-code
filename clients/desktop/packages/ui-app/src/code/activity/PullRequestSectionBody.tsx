@@ -34,7 +34,7 @@ import { ChevronRightMediumIcon as AppCatalogChevronRightMediumIcon } from '@can
 // CAN-1528 — the desktop `PullRequestSection` presentational core, extracted
 // VERBATIM (markup + Tailwind classes + data-testids untouched) into a
 // props-only component rendered by BOTH surfaces: the desktop wrapper feeds
-// it from the githubStore, the portal feeds it from the `PortalPrStatus`
+// it from the githubStore, the portal feeds it from the `RemoteControlPrStatus`
 // snapshot. Host-specific concerns arrive as props: merge-readiness is
 // precomputed per status (`isMergeReady`, desktop `isPrReadyToMerge`),
 // section chrome collapses to the single `framelessChecks` boolean, and any

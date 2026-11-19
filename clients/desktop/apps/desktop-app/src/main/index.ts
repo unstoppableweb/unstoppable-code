@@ -152,6 +152,7 @@ import {
 import { broadcastPipelineExecutionEvent } from './pipelines/pipeline-execution-event-broadcaster';
 import { pauseAllActivePipelineExecutions } from './pipelines/pipeline-execution-registry';
 import { checkpointPipelinesThroughLocalWorker } from './pipelines/pipeline-worker-dispatch';
+import { startPipelineTransientRetries } from './pipelines/transient-retry-startup';
 import {
   getRemoteControlRuntime,
   initializeRemoteControl,
@@ -374,6 +375,7 @@ import { releaseIdleSplitLocksForRendererLifecycle } from './ipc/github';
 import { setModelHarnessAssignmentController } from './ipc/model-harness-assignments';
 import { installClaudeModAdmissionHost } from './agents/claude-mod-admission-launch';
 import { shutdownOpenCodeConnections } from './ipc/opencode-connection';
+import { shutdownAntigravityRuntimeInstalls } from './ipc/antigravity-runtime';
 import {
   reprobeAndApplyCanopyCloudEnforcedSettings,
   stopSettingsWriteRefreshRetries,
@@ -658,7 +660,6 @@ import { registerPluginHandlers } from './plugins';
 import { shutdownCodexPluginMaterializationWorker } from './plugins/codex-plugin-materialization-runner';
 import { startProviderPluginBackfill } from './plugins/provider-plugin-backfill';
 import { startCloudReachBack } from './mcp/cloud-reach-back/start';
-import { cancelDesktopStructureChanged } from './services/desktop-structure-signal';
 import { getWakeLockService } from './power/wake-lock-service';
 import { installExecutionAccountingHost } from './execution-accounting';
 import {
@@ -2419,6 +2420,7 @@ async function cleanupRuntimeResources(
           shutdownCursorConnections(),
           copilotShutdown,
           shutdownOpenCodeConnections(),
+          shutdownAntigravityRuntimeInstalls(),
         ]),
         new Promise<void>((resolve) => setTimeout(resolve, 3_000)),
       ]),
@@ -2503,7 +2505,6 @@ async function cleanupRuntimeResources(
         workerTerminal.daemonTerminals?.killAll({ reason }),
       )
       .catch(() => undefined);
-    cancelDesktopStructureChanged();
     getDesktopInventorySyncService().dispose();
     getSharedContainerInboxWatcher().shutdown();
     uninstallFeatureFlagRecoveryTriggers?.();
@@ -6755,6 +6756,7 @@ void app.whenReady().then(async (): Promise<void> => {
       await import('./e2e-fixtures/delegation-stream-fixture');
     await seedDelegationStreamFixture(getChatStateService());
   }
+  startPipelineTransientRetries(activeDesktopCanopyRuntime, getMainWindow);
   closeCanopyCloudSessionStatusPush = subscribeCanopyCloudSessionStatus(
     (): void => {
       sendToAllWindows(IPC_CHANNELS.settingsCanopyCloudSessionStatusChanged);

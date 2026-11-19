@@ -21,10 +21,9 @@ import { AI_GATEWAY_MODEL_CATALOG } from './ai-gateway-catalog.mjs';
 
 // Canopy Cloud surface for the shared UI-automation mock server.
 //
-// Ported from the per-test `startMockCanopyCloud` previously in
-// `canopy-portal.spec.mjs`. The shared server (see ../start.mjs) runs once for
-// the whole Playwright suite (Doc 4 §0); these routes are stateless and keyed by
-// the request's Bearer API key so concurrent tests/workers don't collide.
+// The shared server (see ../start.mjs) runs once for the whole Playwright suite
+// (Doc 4 §0); these routes are stateless and keyed by the request's Bearer API
+// key so concurrent tests/workers don't collide.
 
 /**
  * The account every guest the mock mints signs in as. A production build with
@@ -95,7 +94,7 @@ export const CLOUD_ACCOUNT = {
 // importing it; keep the two in sync if a cadence is ever added.
 const DEFAULT_DIGEST_PREFERENCES = {
   daily: false,
-  weekly: true,
+  weekly: false,
   monthly: false,
   weeklyAnchorDay: 1,
   monthlyAnchorDay: 1,

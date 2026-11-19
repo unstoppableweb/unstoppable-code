@@ -55,7 +55,7 @@ export function AiGatewayPresetPicker({
           <li key={preset.id} role="listitem" className="flex">
             <Button
               type="button"
-              variant="outline"
+              variant="secondary"
               size="lg"
               leadingIcon
               className="w-full"

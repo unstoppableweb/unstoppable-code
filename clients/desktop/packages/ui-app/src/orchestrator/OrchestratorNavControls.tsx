@@ -63,7 +63,7 @@ export function OrchestratorNavControls({
   return (
     <div
       className="flex items-center"
-      data-testid="portal-app-advisor-nav-controls"
+      data-testid="remote-control-app-advisor-nav-controls"
     >
       <Tooltip label="Back">
         <Button
@@ -72,7 +72,7 @@ export function OrchestratorNavControls({
           iconOnly
           onClick={onBack}
           aria-label="Back to projects"
-          data-testid="portal-app-advisor-back"
+          data-testid="remote-control-app-advisor-back"
         >
           <BackIcon size={16} aria-hidden="true" />
         </Button>
@@ -84,7 +84,7 @@ export function OrchestratorNavControls({
         onClick={onToggleCollapsed}
         aria-label={collapsed ? 'Expand navigation' : 'Collapse navigation'}
         aria-expanded={!collapsed}
-        data-testid="portal-app-advisor-nav-collapse"
+        data-testid="remote-control-app-advisor-nav-collapse"
       >
         <SidebarHiddenLeftWideIcon size={16} aria-hidden="true" />
       </Button>
@@ -95,7 +95,7 @@ export function OrchestratorNavControls({
           iconOnly
           onClick={onOpenSettings}
           aria-label={`${ORCHESTRATOR_LABEL} settings`}
-          data-testid="portal-app-advisor-nav-settings"
+          data-testid="remote-control-app-advisor-nav-settings"
         >
           <SettingsIcon size={14} aria-hidden="true" />
         </Button>
@@ -107,7 +107,7 @@ export function OrchestratorNavControls({
           iconOnly
           onClick={() => onCreateWorkEntry()}
           aria-label="New work entry"
-          data-testid="portal-app-advisor-nav-new-entry"
+          data-testid="remote-control-app-advisor-nav-new-entry"
         >
           <PlusMediumIcon size={14} aria-hidden="true" />
         </Button>

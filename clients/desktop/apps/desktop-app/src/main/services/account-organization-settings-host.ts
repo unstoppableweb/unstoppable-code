@@ -10,8 +10,8 @@ import {
 } from '../canopy-cloud/settings-client';
 import {
   isPaymentHandoffAvailable,
-  openStrictAuthenticatedPortalPage,
-} from '../canopy-cloud/authenticated-portal';
+  openStrictAuthenticatedCloudPage,
+} from '../canopy-cloud/authenticated-cloud-page';
 import {
   getCanopyCloudCredentials,
   peekCanopyCloudAccountId,
@@ -67,7 +67,7 @@ export function getAccountOrganizationSettingsService(): AccountOrganizationSett
       subscribeCanopyCloudAccountChanges((entry) =>
         listener(entry?.account?.id ?? null),
       ),
-    openStrictPortalPage: openStrictAuthenticatedPortalPage,
+    openStrictCloudPage: openStrictAuthenticatedCloudPage,
     paymentHandoffAvailable: isPaymentHandoffAvailable,
     resolveOrchestrated: createSettingsOrchestratedOperations(),
     resolveWriteFollowUp: createSettingsWriteFollowUps(),

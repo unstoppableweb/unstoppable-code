@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import type { StoreApi, UseBoundStore } from 'zustand';
 import type { SessionViewModel } from '@canopy/app-core';
-import type { PortalPipelineRunProjection } from '@canopy/protocol/portal';
+import type { RemoteControlPipelineRunProjection } from '@canopy/protocol/remote-control/shell';
 import { createClientStore } from '../create-client-store';
 
 /** A worktree row from the neutral shell snapshot. */
@@ -87,7 +87,7 @@ export function selectAwaitingApprovalWorktrees(
  */
 export function selectRunningPipelineRuns(
   state: OverviewState,
-): PortalPipelineRunProjection[] {
+): RemoteControlPipelineRunProjection[] {
   return (state.snapshot?.pipelineRuns ?? []).filter((run) =>
     ACTIVE_PIPELINE_STATUSES.has(run.status),
   );
@@ -101,7 +101,7 @@ export function selectRunningPipelineRuns(
  */
 export function selectUnreadPipelineRuns(
   state: OverviewState,
-): PortalPipelineRunProjection[] {
+): RemoteControlPipelineRunProjection[] {
   return (state.snapshot?.pipelineRuns ?? []).filter((run) =>
     TERMINAL_PIPELINE_STATUSES.has(run.status),
   );

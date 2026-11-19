@@ -23,6 +23,8 @@ export {
 } from '@canopy/code-graph/host/build-host';
 
 const OPEN_FILES_BLOCK_REPLACEMENT = hostOperatingSystem() === 'win32';
+// Windows `FlushFileBuffers` refuses a read-only handle.
+const FLUSH_REQUIRES_WRITE_HANDLE = hostOperatingSystem() === 'win32';
 
 export function codeGraphWorkerCpuProfileDirectory(
   e2eEnabled = __CANOPY_E2E__,
@@ -42,6 +44,7 @@ export function executeCodeGraphBuild(
   return executeHostCodeGraphBuild(request, {
     ...execution,
     openFilesBlockReplacement: OPEN_FILES_BLOCK_REPLACEMENT,
+    flushRequiresWriteHandle: FLUSH_REQUIRES_WRITE_HANDLE,
   });
 }
 
@@ -51,6 +54,7 @@ export function executeCodeGraphEagerSeed(
 ): Promise<CodeGraphWorkerEagerSeedResponse> {
   return executeHostCodeGraphEagerSeed(request, {
     openFilesBlockReplacement: OPEN_FILES_BLOCK_REPLACEMENT,
+    flushRequiresWriteHandle: FLUSH_REQUIRES_WRITE_HANDLE,
   });
 }
 
@@ -62,6 +66,7 @@ if (channel) {
   installDesktopCodeGraphResources();
   serveCodeGraphBuildHost(channel, {
     openFilesBlockReplacement: OPEN_FILES_BLOCK_REPLACEMENT,
+    flushRequiresWriteHandle: FLUSH_REQUIRES_WRITE_HANDLE,
     cpuProfileDirectory: codeGraphWorkerCpuProfileDirectory(),
     gitExecutable: getGitExecutableCommand(process.env),
   });

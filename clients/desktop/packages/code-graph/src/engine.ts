@@ -121,6 +121,7 @@ import { runFullResolutionDiff } from './resolve/full-resolution-diff';
 import type { ResolutionProjectionCounters } from './resolve/resolution-projection';
 import { CodeGraphQueryService } from './query/queries';
 import { CodeGraphBuildTimer } from './build-timings';
+import { isMissingPathError, isResourceExhaustionError } from './io-failure';
 
 const execFileAsync = promisify(execFile);
 
@@ -261,6 +262,8 @@ interface FileProcessOutcome {
   skipped: number;
   unchanged: number;
   failures: number;
+  /** 1 when the file exists but could not be read; its prior facts stay. */
+  unreadable: number;
   factsChanged: boolean;
   contentReadFailed: boolean;
 }
@@ -270,9 +273,27 @@ const NO_OP_FILE_OUTCOME: FileProcessOutcome = {
   skipped: 0,
   unchanged: 0,
   failures: 0,
+  unreadable: 0,
   factsChanged: false,
   contentReadFailed: true,
 };
+
+const UNREADABLE_FILE_OUTCOME: FileProcessOutcome = {
+  ...NO_OP_FILE_OUTCOME,
+  unreadable: 1,
+};
+
+/**
+ * A file read after the scan failed. Only a missing path means it vanished
+ * (the next build's scan removes it); any other error keeps its prior facts
+ * and counts it unreadable. Resource exhaustion fails the build instead.
+ */
+function failedReadOutcome(error: unknown): FileProcessOutcome {
+  if (isResourceExhaustionError(error)) throw error;
+  return isMissingPathError(error)
+    ? NO_OP_FILE_OUTCOME
+    : UNREADABLE_FILE_OUTCOME;
+}
 
 /** Internal qualification mode; never persisted or exposed by a protocol. */
 export interface CodeGraphResolutionBuildOptions extends CodeGraphBuildOptions {
@@ -441,6 +462,7 @@ export class CodeGraphEngine {
           skipped: 1,
           unchanged: 0,
           failures: 0,
+          unreadable: 0,
           factsChanged: false,
           contentReadFailed: false,
         };
@@ -460,6 +482,7 @@ export class CodeGraphEngine {
         skipped: 1,
         unchanged: 0,
         failures: 0,
+        unreadable: 0,
         factsChanged: true,
         contentReadFailed: false,
       };
@@ -468,8 +491,8 @@ export class CodeGraphEngine {
     let source: string;
     try {
       source = await fs.readFile(entry.absolutePath, 'utf8');
-    } catch {
-      return NO_OP_FILE_OUTCOME; // vanished mid-build; the next build's scan removes it
+    } catch (error) {
+      return failedReadOutcome(error);
     }
     const contentHash = computeContentHash(source);
     this.activeTimer?.add('hash', this.now() - readStartedAt);
@@ -489,6 +512,7 @@ export class CodeGraphEngine {
         skipped: 0,
         unchanged: 1,
         failures: 0,
+        unreadable: 0,
         factsChanged: false,
         contentReadFailed: false,
       };
@@ -639,6 +663,7 @@ export class CodeGraphEngine {
       skipped: 0,
       unchanged: 0,
       failures: facts.file.parseStatus === 'failed' ? 1 : 0,
+      unreadable: 0,
       factsChanged: true,
       contentReadFailed: false,
     };
@@ -674,6 +699,7 @@ export class CodeGraphEngine {
           skipped: 1,
           unchanged: 0,
           failures: 0,
+          unreadable: 0,
           factsChanged: false,
           contentReadFailed: false,
         };
@@ -693,6 +719,7 @@ export class CodeGraphEngine {
         skipped: 1,
         unchanged: 0,
         failures: 0,
+        unreadable: 0,
         factsChanged: true,
         contentReadFailed: false,
       };
@@ -701,8 +728,8 @@ export class CodeGraphEngine {
     let source: string;
     try {
       source = await fs.readFile(entry.absolutePath, 'utf8');
-    } catch {
-      return NO_OP_FILE_OUTCOME; // vanished mid-build; the next build's scan removes it
+    } catch (error) {
+      return failedReadOutcome(error);
     }
     const contentHash = computeContentHash(source);
     this.activeTimer?.add('hash', this.now() - readStartedAt);
@@ -722,6 +749,7 @@ export class CodeGraphEngine {
         skipped: 0,
         unchanged: 1,
         failures: 0,
+        unreadable: 0,
         factsChanged: false,
         contentReadFailed: false,
       };
@@ -756,6 +784,7 @@ export class CodeGraphEngine {
         skipped: 0,
         unchanged: 0,
         failures: 1,
+        unreadable: 0,
         factsChanged: true,
         contentReadFailed: false,
       };
@@ -768,6 +797,7 @@ export class CodeGraphEngine {
       skipped: 0,
       unchanged: 0,
       failures: 0,
+      unreadable: 0,
       factsChanged: true,
       contentReadFailed: false,
     };
@@ -931,6 +961,7 @@ export class CodeGraphEngine {
     let filesSkipped = 0;
     let filesRemoved = 0;
     let parseFailures = 0;
+    let filesUnreadable = 0;
     let contentVerificationIncomplete = false;
     const repositoriesWithHeads = await Promise.all(
       this.repositories.map(async (repository) => ({
@@ -967,10 +998,12 @@ export class CodeGraphEngine {
     const customLanguagesChanged =
       getMetadataValue(this.db, 'custom_languages_fingerprint') !==
       customLanguages.fingerprint;
+    // The extractor or grammar configuration moves forward with this build, so
+    // every prior fact is stale: an unreadable file cannot keep its rows (its
+    // unchanged size/mtime would later hide that it was never reparsed).
+    const configurationChanged = extractorChanged || customLanguagesChanged;
     const forceFullReparse =
-      extractorChanged ||
-      customLanguagesChanged ||
-      options?.forceReparse === true;
+      configurationChanged || options?.forceReparse === true;
     factsChanged ||= extractorChanged || customLanguagesChanged;
     if (
       extractorChanged ||
@@ -1011,8 +1044,14 @@ export class CodeGraphEngine {
         excludedFiles: 0,
         examples: [],
       };
+      // Listed files that exist but could not be stat'ed: they keep their
+      // facts (they are not removed) and count as unreadable, unless the
+      // extractor configuration changed (then they are removed and re-added
+      // once readable).
+      const unreadablePaths = new Set<string>();
       const scanned = await enumerateSourceFiles(repository.rootPath, {
         customExtensions,
+        onUnreadable: (relativePath) => unreadablePaths.add(relativePath),
         onDisposition: (relativePath, disposition) => {
           if (disposition === 'eligible') scan.eligibleFiles++;
           else {
@@ -1028,10 +1067,24 @@ export class CodeGraphEngine {
       const existingByPath = new Map(
         existing.map((candidate) => [candidate.relativePath, candidate]),
       );
-      const plan = planFileWork(scanned, existing, {
-        forceFullReparse: forceFullReparse || options?.verifyContent === true,
-      });
+      const plan = planFileWork(
+        scanned,
+        configurationChanged
+          ? existing
+          : existing.filter(
+              (entry) => !unreadablePaths.has(entry.relativePath),
+            ),
+        {
+          forceFullReparse: forceFullReparse || options?.verifyContent === true,
+        },
+      );
+      if (unreadablePaths.size > 0) {
+        filesUnreadable += unreadablePaths.size;
+        contentVerificationIncomplete = true;
+        candidate?.markGlobal(repository.repoId, 'content-read-failed');
+      }
       filesUnchanged += plan.unchanged;
+      const toRemove = [...plan.toRemove];
       const toParsePaths = new Set(
         plan.toParse.map((entry) => entry.relativePath),
       );
@@ -1089,6 +1142,11 @@ export class CodeGraphEngine {
         filesSkipped += outcome.skipped;
         filesUnchanged += outcome.unchanged;
         parseFailures += outcome.failures;
+        filesUnreadable += outcome.unreadable;
+        // A read failure keeps prior facts, except under a changed extractor
+        // configuration, where they are stale (see `configurationChanged`).
+        if (outcome.unreadable > 0 && configurationChanged)
+          toRemove.push(entry.relativePath);
         factsChanged ||= outcome.factsChanged;
         if (outcome.factsChanged)
           candidate?.changed(
@@ -1108,21 +1166,21 @@ export class CodeGraphEngine {
         );
       }
 
-      for (const relativePath of plan.toRemove)
+      for (const relativePath of toRemove)
         candidate?.preserve(fileRowId(repository.repoId, relativePath));
       const removalFtsBefore = timer.total('fts');
       timer.measure('scan', () =>
-        this.store.removeFiles(repository.repoId, plan.toRemove),
+        this.store.removeFiles(repository.repoId, toRemove),
       );
       timer.add('scan', -(timer.total('fts') - removalFtsBefore));
-      for (const relativePath of plan.toRemove)
+      for (const relativePath of toRemove)
         candidate?.changed(
           repository.repoId,
           fileRowId(repository.repoId, relativePath),
           true,
         );
-      filesRemoved += plan.toRemove.length;
-      factsChanged ||= plan.toRemove.length > 0;
+      filesRemoved += toRemove.length;
+      factsChanged ||= toRemove.length > 0;
     }
     timer.persist('scan', 'hash', 'parse');
 
@@ -1309,6 +1367,7 @@ export class CodeGraphEngine {
         filesSkipped,
         filesRemoved,
         parseFailures,
+        ...(filesUnreadable > 0 ? { filesUnreadable } : {}),
         symbolCount: this.store.countSymbols(),
         edgeCount: this.store.countEdges(),
         durationMs: Date.now() - startedAt,
@@ -1395,6 +1454,7 @@ export class CodeGraphEngine {
       filesSkipped,
       filesRemoved,
       parseFailures,
+      ...(filesUnreadable > 0 ? { filesUnreadable } : {}),
       symbolCount: this.store.countSymbols(),
       edgeCount: this.store.countEdges(),
       durationMs: Date.now() - startedAt,

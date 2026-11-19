@@ -12,13 +12,12 @@
  * renderer, it reads tool results as persisted (externalized outputs keep
  * their inline preview), so both surfaces attribute identically.
  * After durable chat commits the post-commit projection marks changed chats
- * dirty; the next refresh recomputes only those chats and notifies listeners
- * about executions whose link sets changed, including removals. Projection
- * failures are logged and never affect chat commits. A chat whose transcript
+ * dirty; the next lookup recomputes only those chats. Projection failures are
+ * logged and never affect chat commits. A chat whose transcript
  * has never been read leaves the index incomplete: lookups reject (callers
  * omit the links, which clients keep) until a retry reads it.
  */
-import type { PortalPipelineRunChatTurn } from '@canopy/protocol/portal';
+import type { RemoteControlPipelineRunChatTurn } from '@canopy/protocol/remote-control/shell';
 import type {
   PersistedChatBlock,
   PersistedChatMessage,
@@ -51,11 +50,6 @@ export interface PipelineRunChatLinksReader {
   ): Promise<readonly PersistedChatMessage[]>;
 }
 
-export type PipelineRunChatLinksListener = (
-  scope: PipelineRunChatLinksScope,
-  executionIds: readonly string[],
-) => void;
-
 interface ChatLinksEntry {
   /** Undefined when the tab has no transcript descriptor to compare. */
   fingerprint: string | undefined;
@@ -65,11 +59,9 @@ interface ChatLinksEntry {
 interface ScopeState {
   /** Every live chat has been read; `byExecution` is complete. */
   built: boolean;
-  /** A recompute left the index incomplete, so lookups were rejected. */
-  withheld: boolean;
   chats: Map<string, ChatLinksEntry>;
   /** Links as of the last complete recompute. */
-  byExecution: Map<string, PortalPipelineRunChatTurn[]>;
+  byExecution: Map<string, RemoteControlPipelineRunChatTurn[]>;
   dirtyAll: boolean;
   dirtyChats: Set<string>;
   queue: Promise<void>;
@@ -149,36 +141,12 @@ function attributionMessage(
   return { ...message, blocks };
 }
 
-function sameChatTurns(
-  left: readonly PortalPipelineRunChatTurn[] | undefined,
-  right: readonly PortalPipelineRunChatTurn[] | undefined,
-): boolean {
-  if ((left?.length ?? 0) !== (right?.length ?? 0)) return false;
-  return (left ?? []).every((link, index) => {
-    const other = right?.[index];
-    return (
-      other !== undefined &&
-      other.chatId === link.chatId &&
-      other.userMessageId === link.userMessageId &&
-      other.relation === link.relation
-    );
-  });
-}
-
 export class PipelineRunChatLinksService {
   private readonly scopes = new Map<string, ScopeState>();
-  private readonly listeners = new Set<PipelineRunChatLinksListener>();
 
   public constructor(
     private readonly reader: PipelineRunChatLinksReader = canonicalChatReader,
   ) {}
-
-  public subscribe(listener: PipelineRunChatLinksListener): () => void {
-    this.listeners.add(listener);
-    return (): void => {
-      this.listeners.delete(listener);
-    };
-  }
 
   /**
    * Post-commit hook: mark changed chats of an already-indexed scope dirty.
@@ -203,13 +171,6 @@ export class PipelineRunChatLinksService {
     for (const chatId of delta.removedTabIds) state.dirtyChats.add(chatId);
   }
 
-  /** Recompute dirty chats of an indexed scope and publish link changes. */
-  public refresh(scope: PipelineRunChatLinksScope): Promise<void> {
-    const state = this.scopes.get(scopeKey(scope));
-    if (!state || !this.isDirty(state)) return Promise.resolve();
-    return this.enqueue(scope, state);
-  }
-
   /**
    * Links for one execution, building the scope index on first use and
    * applying pending commits first. An empty array means "no links".
@@ -217,13 +178,12 @@ export class PipelineRunChatLinksService {
   public async chatTurnsFor(
     scope: PipelineRunChatLinksScope,
     executionId: string,
-  ): Promise<PortalPipelineRunChatTurn[]> {
+  ): Promise<RemoteControlPipelineRunChatTurn[]> {
     const key = scopeKey(scope);
     let state = this.scopes.get(key);
     if (!state) {
       state = {
         built: false,
-        withheld: false,
         chats: new Map(),
         byExecution: new Map(),
         dirtyAll: true,
@@ -298,7 +258,7 @@ export class PipelineRunChatLinksService {
           'Pipeline run chat links: failed to project chat transcript',
           error,
         );
-        // Keep the last good links and retry on the next refresh.
+        // Keep the last good links and retry on the next lookup.
         if (previous) nextChats.set(tab.id, previous);
         state.dirtyChats.add(tab.id);
       }
@@ -309,10 +269,12 @@ export class PipelineRunChatLinksService {
       // A never-read chat could hold any run's links; an index without it
       // must not answer, or its empty lists would clear clients' links.
       state.built = false;
-      state.withheld = true;
       return;
     }
-    const nextByExecution = new Map<string, PortalPipelineRunChatTurn[]>();
+    const nextByExecution = new Map<
+      string,
+      RemoteControlPipelineRunChatTurn[]
+    >();
     nextChats.forEach((entry, chatId) => {
       for (const link of entry.links) {
         const links = nextByExecution.get(link.executionId) ?? [];
@@ -324,30 +286,10 @@ export class PipelineRunChatLinksService {
         nextByExecution.set(link.executionId, links);
       }
     });
-    const changed: string[] = [];
-    // Runs projected while links were withheld carry none: republish all.
-    if (state.built || state.withheld) {
-      const executionIds = new Set<string>();
-      state.byExecution.forEach((_links, id) => executionIds.add(id));
-      nextByExecution.forEach((_links, id) => executionIds.add(id));
-      executionIds.forEach((executionId) => {
-        if (
-          state.withheld ||
-          !sameChatTurns(
-            state.byExecution.get(executionId),
-            nextByExecution.get(executionId),
-          )
-        ) {
-          changed.push(executionId);
-        }
-      });
-    }
     state.byExecution = nextByExecution;
     state.built = true;
-    state.withheld = false;
-    if (changed.length > 0) this.notify(scope, changed);
     // A scope whose last chat was removed (including scope deletion) drops
-    // its derived state after publishing the removals; it rebuilds on use.
+    // its derived state; it rebuilds on use.
     if (
       hadChats &&
       nextChats.size === 0 &&
@@ -376,22 +318,6 @@ export class PipelineRunChatLinksService {
       .filter((message) => message.role === 'user' && !message.hidden)
       .map((message) => message.id);
     return projectPipelineRunTurnLinks(projection, turnOrder, scope);
-  }
-
-  private notify(
-    scope: PipelineRunChatLinksScope,
-    executionIds: readonly string[],
-  ): void {
-    this.listeners.forEach((listener) => {
-      try {
-        listener(scope, executionIds);
-      } catch (error) {
-        logMainProcessError(
-          'Pipeline run chat links: change listener failed',
-          error,
-        );
-      }
-    });
   }
 }
 

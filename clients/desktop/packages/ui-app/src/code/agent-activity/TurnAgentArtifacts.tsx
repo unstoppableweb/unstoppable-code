@@ -5,7 +5,7 @@ import type {
   AgentArtifactReceiptV1,
   PipelineRunArtifactReceiptV1,
 } from '@canopy/protocol/agent-artifacts';
-import type { PortalChatMessage } from '@canopy/protocol/portal';
+import type { RemoteControlChatMessage } from '@canopy/protocol/remote-control/shell';
 import {
   CapabilityTile,
   capabilityTileModel,
@@ -22,7 +22,7 @@ const NO_HOST_ACTION: CapabilityTileAction = { kind: 'none' };
 
 export interface TurnAgentArtifactsProps {
   /** The turn's assistant messages, in transcript order. */
-  readonly messages: readonly PortalChatMessage[];
+  readonly messages: readonly RemoteControlChatMessage[];
   /**
    * The receipts to list instead of collecting them from `messages`. A chat
    * view supplies them after placing each run in one turn across the chat

@@ -90,19 +90,15 @@ import { getTelemetrySyncService } from '../services/telemetry-sync-service';
 import {
   isAiCreditsChosenOverAccountProxy,
   resolveAiCreditsRoutingActivation,
-  signedOutRoutesToAiCredits,
 } from './ai-credits-routing';
 import {
   billedProviderFor,
   effectiveTabAiCreditsRouting,
 } from './effective-ai-credits-routing';
-// NOTE: `../auth/provider-auth-state` statically imports this module, so this is
-// a cycle — but the same cycle already exists via `./ai-credits-routing`, and
-// only function declarations are read across it (never at module-eval time).
-import { peekProviderNativeAuthAvailability } from '../auth/provider-auth-state';
 import { isModelBlockedByStoredPolicy } from '../lib/model-policy-state';
 import { assertTurnModelGatewayRoute } from '../lib/model-gateway-turn';
 import { accountProxySettingsSignature } from '../account-proxy/service';
+import { peekSignedOutBillingRoute } from './no-billing-source-refusal';
 import { previewAccountProxySessionRoute } from '../account-proxy/routing';
 import {
   captureSessionWorkOwner,
@@ -1928,17 +1924,12 @@ function resolveAiCreditsRoutingSignature(
     // switching off `off` moves it to `routed:`). The bucket does not start
     // with `routed:`, so it counts as not routed.
     //
-    // `peekProviderNativeAuthAvailability` is the right read here: it is
-    // cache-only and synchronous, honoring this function's cheapness contract,
-    // and it omits the provider key when cold or probe-failed — degrading to
-    // today's `'native'` rather than guessing.
-    // An unloaded routing mode degrades to `'native'` the same way.
-    if (peekProviderNativeAuthAvailability()[providerType] === false) {
-      const routes = signedOutRoutesToAiCredits();
-      if (routes === null) return 'native';
-      return routes ? `routed:${opts.model ?? ''}` : 'no-billing-source';
-    }
-    return 'native';
+    // `peekSignedOutBillingRoute` is cache-only and synchronous, honoring
+    // this function's cheapness contract, and degrades to today's `'native'`
+    // when the auth cache is cold or probe-failed or the mode is unloaded.
+    const signedOut = peekSignedOutBillingRoute(providerType);
+    if (signedOut === 'routes') return `routed:${opts.model ?? ''}`;
+    return signedOut;
   }
   return `routed:${activation.modelId ?? opts.model ?? ''}`;
 }

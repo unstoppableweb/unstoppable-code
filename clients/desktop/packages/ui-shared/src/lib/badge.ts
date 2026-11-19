@@ -2,15 +2,17 @@
  * One vocabulary for small markers: a Badge (a state or label word), a Count
  * (a number), and a Dot (a meaning with no text).
  *
- * - Badge: an 18px capsule, 11px label at 450, tinted `-subtle` fill and the
- *   tone's strong ink. Six tones. Never bordered, never the accent, never
- *   uppercase or semibold.
+ * - Badge: an 18px capsule, 11px label at 450, on the one neutral fill. The
+ *   tone is a 6px dot before the word (or the badge's icon, in the tone's
+ *   ink); the word stays in the text ink. Six tones. Never a tinted fill,
+ *   never bordered, never the accent, never uppercase or semibold.
  * - Count: plain `fg-quaternary` text next to a label, with proportional
  *   figures (DESIGN.md Typography: counts in a row are not tabular); a 16px
  *   tabular capsule on an icon, neutral, blue for unread, or orange for
  *   waiting on you. On an icon it caps at 99+.
  * - Badge `compact`: a 16px square tag at 10px for dense views only
- *   (diagrams, code views, schema tags such as PK or added).
+ *   (diagrams, code views, schema tags such as PK or added). Too small for
+ *   a dot, so the word itself takes the tone's ink, on the same neutral fill.
  * - Dot: 6px (8px `large` in a leading icon slot), with six meanings only:
  *   unread (blue), waiting on you (orange), filter on (grey), working (green,
  *   something is running), connected (green, a live connection), and offline
@@ -46,27 +48,94 @@ export const BADGE_BASE_CLASS_BY_SIZE: Readonly<Record<BadgeSize, string>> = {
   compact: BADGE_COMPACT_BASE_CLASS,
 };
 
-/** Fill and ink per tone. Fills are the `-subtle` roles; inks the strong roles. */
-export const BADGE_TONE_CLASS: Readonly<Record<BadgeTone, string>> = {
-  neutral: 'bg-muted fg-secondary',
-  info: 'bg-info-subtle fg-info',
-  success: 'bg-success-subtle fg-success-strong',
-  warning: 'bg-warning-subtle fg-warning-strong',
-  danger: 'bg-destructive-subtle fg-destructive-strong',
-  special: 'bg-special-subtle fg-special-strong',
+/**
+ * The tone's 6px dot, drawn before the word by the capsule itself, so every
+ * badge built from these classes carries it without a child element.
+ */
+const BADGE_DOT_CLASS =
+  "before:size-1.5 before:shrink-0 before:rounded-full before:content-['']";
+
+/** The dot's color per tone: the same inks the `Dot` marker uses. */
+const BADGE_DOT_TONE_CLASS: Readonly<Record<BadgeTone, string>> = {
+  neutral: '',
+  info: `${BADGE_DOT_CLASS} before:bg-fg-info`,
+  success: `${BADGE_DOT_CLASS} before:bg-fg-success-strong`,
+  warning: `${BADGE_DOT_CLASS} before:bg-fg-warning`,
+  danger: `${BADGE_DOT_CLASS} before:bg-fg-destructive-strong`,
+  special: `${BADGE_DOT_CLASS} before:bg-fg-special-strong`,
 };
 
 /**
- * Quieter fill and ink for a badge on a completed or de-emphasised row.
- * Geometry is unchanged.
+ * Fill and ink per tone: one neutral fill, the word in the text ink, and the
+ * tone as a dot. A tinted fill under same-colored text made a row of badges
+ * read as six colors of candy; the dot keeps the meaning and the row calm.
+ * `neutral` (roles, plans, kinds) has no dot and the quieter ink.
+ */
+export const BADGE_TONE_CLASS: Readonly<Record<BadgeTone, string>> = {
+  neutral: 'bg-muted fg-secondary',
+  info: `bg-muted fg-primary ${BADGE_DOT_TONE_CLASS.info}`,
+  success: `bg-muted fg-primary ${BADGE_DOT_TONE_CLASS.success}`,
+  warning: `bg-muted fg-primary ${BADGE_DOT_TONE_CLASS.warning}`,
+  danger: `bg-muted fg-primary ${BADGE_DOT_TONE_CLASS.danger}`,
+  special: `bg-muted fg-primary ${BADGE_DOT_TONE_CLASS.special}`,
+};
+
+/**
+ * Quieter fill and ink for a badge on a completed or de-emphasised row; the
+ * dot fades with it. Geometry is unchanged.
  */
 export const BADGE_MUTED_TONE_CLASS: Readonly<Record<BadgeTone, string>> = {
   neutral: 'bg-subtle fg-tertiary',
-  info: 'bg-info-subtle fg-info/70',
-  success: 'bg-success-subtle fg-success-strong/70',
-  warning: 'bg-warning-subtle fg-warning-strong/70',
-  danger: 'bg-destructive-subtle fg-destructive-strong/70',
-  special: 'bg-special-subtle fg-special-strong/70',
+  info: `bg-subtle fg-tertiary ${BADGE_DOT_TONE_CLASS.info} before:opacity-60`,
+  success: `bg-subtle fg-tertiary ${BADGE_DOT_TONE_CLASS.success} before:opacity-60`,
+  warning: `bg-subtle fg-tertiary ${BADGE_DOT_TONE_CLASS.warning} before:opacity-60`,
+  danger: `bg-subtle fg-tertiary ${BADGE_DOT_TONE_CLASS.danger} before:opacity-60`,
+  special: `bg-subtle fg-tertiary ${BADGE_DOT_TONE_CLASS.special} before:opacity-60`,
+};
+
+/**
+ * A badge with a leading icon: no dot, since the icon carries the tone (see
+ * {@link BADGE_ICON_TONE_CLASS}).
+ */
+const BADGE_WITH_ICON_TONE_CLASS: Readonly<Record<BadgeTone, string>> = {
+  neutral: 'bg-muted fg-secondary',
+  info: 'bg-muted fg-primary',
+  success: 'bg-muted fg-primary',
+  warning: 'bg-muted fg-primary',
+  danger: 'bg-muted fg-primary',
+  special: 'bg-muted fg-primary',
+};
+
+/** The tone's ink for a regular badge's leading icon. */
+export const BADGE_ICON_TONE_CLASS: Readonly<Record<BadgeTone, string>> = {
+  neutral: '',
+  info: 'fg-info',
+  success: 'fg-success-strong',
+  warning: 'fg-warning',
+  danger: 'fg-destructive-strong',
+  special: 'fg-special-strong',
+};
+
+/**
+ * The 16px tag has no room for a dot: the word takes the tone's ink on the
+ * neutral fill.
+ */
+const BADGE_COMPACT_TONE_CLASS: Readonly<Record<BadgeTone, string>> = {
+  neutral: 'bg-muted fg-secondary',
+  info: 'bg-muted fg-info',
+  success: 'bg-muted fg-success-strong',
+  warning: 'bg-muted fg-warning-strong',
+  danger: 'bg-muted fg-destructive-strong',
+  special: 'bg-muted fg-special-strong',
+};
+
+const BADGE_COMPACT_MUTED_TONE_CLASS: Readonly<Record<BadgeTone, string>> = {
+  neutral: 'bg-subtle fg-tertiary',
+  info: 'bg-subtle fg-info/70',
+  success: 'bg-subtle fg-success-strong/70',
+  warning: 'bg-subtle fg-warning-strong/70',
+  danger: 'bg-subtle fg-destructive-strong/70',
+  special: 'bg-subtle fg-special-strong/70',
 };
 
 /** 12px leading glyph inside a badge. */
@@ -107,6 +176,11 @@ export interface BadgeClassNameOptions {
   readonly size?: BadgeSize;
   /** `tint` (default) is the capsule; `solid` the environment label. */
   readonly variant?: BadgeVariant;
+  /**
+   * The badge leads with an icon, which carries the tone
+   * ({@link BADGE_ICON_TONE_CLASS}), so the capsule draws no dot.
+   */
+  readonly withIcon?: boolean;
 }
 
 /** Full class string for a badge: shared geometry plus the tone's fill and ink. */
@@ -117,11 +191,21 @@ export function badgeClassName(
   if (options.variant === 'solid') {
     return `${BADGE_SOLID_BASE_CLASS} ${BADGE_SOLID_TONE_CLASS[tone]}`;
   }
+  const size = options.size ?? 'regular';
+  const muted = options.muted === true;
   const toneClass =
-    options.muted === true
-      ? BADGE_MUTED_TONE_CLASS[tone]
-      : BADGE_TONE_CLASS[tone];
-  return `${BADGE_BASE_CLASS_BY_SIZE[options.size ?? 'regular']} ${toneClass}`;
+    size === 'compact'
+      ? (muted ? BADGE_COMPACT_MUTED_TONE_CLASS : BADGE_COMPACT_TONE_CLASS)[
+          tone
+        ]
+      : muted
+        ? options.withIcon === true
+          ? 'bg-subtle fg-tertiary'
+          : BADGE_MUTED_TONE_CLASS[tone]
+        : (options.withIcon === true
+            ? BADGE_WITH_ICON_TONE_CLASS
+            : BADGE_TONE_CLASS)[tone];
+  return `${BADGE_BASE_CLASS_BY_SIZE[size]} ${toneClass}`;
 }
 
 /** Largest number a count on an icon shows before it reads `99+`. */

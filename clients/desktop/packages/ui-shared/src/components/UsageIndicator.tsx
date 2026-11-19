@@ -2,7 +2,7 @@ import {
   parseOpenCodeReportedUsage,
   type OpenCodeReportedUsage,
   type ReportedTurnUsage,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import {
   useCallback,
   useEffect,

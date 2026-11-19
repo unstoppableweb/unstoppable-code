@@ -75,14 +75,14 @@ import {
   PersonalProjectOperationSchema,
 } from '@canopy/protocol/organizations';
 import type {
-  PortalAppAdvisorSettings,
-  PortalDirectoryListing,
-  PortalFileIndex,
-  PortalFileMutationResult,
-  PortalFilePreview,
-  PortalFileReadPayload,
-  PortalFileRoot,
-} from '@canopy/protocol/portal';
+  RemoteControlAppAdvisorSettings,
+  RemoteControlDirectoryListing,
+  RemoteControlFileIndex,
+  RemoteControlFileMutationResult,
+  RemoteControlFilePreview,
+  RemoteControlFileReadPayload,
+  RemoteControlFileRoot,
+} from '@canopy/protocol/remote-control/shell';
 import {
   REMOTE_IPC_CHANNELS as C,
   type RemoteIpcChannel,
@@ -90,7 +90,7 @@ import {
 import {
   WorktreeArchiveResultSchema,
   worktreeRemovalOutcome,
-} from '@canopy/protocol/portal/worktree-discard-schemas';
+} from '@canopy/protocol/remote-control/shell/worktree-discard-schemas';
 import type { RemoteIpcTransport } from '@canopy/protocol/remote-control';
 import {
   isScriptActionsAddReceipt,
@@ -143,7 +143,7 @@ import {
   rootRelativeSegments,
   toAgentModelConfig,
   toHookRunRequest,
-  toRequestedPortalPlanDetail,
+  toRequestedRemoteControlPlanDetail,
   toScriptRunRequest,
   toUpdateTrackedPlanRequest,
   versionFrom,
@@ -248,7 +248,7 @@ const isFileContent = reply<WireFileContent>(
 );
 const isFileSaved = recordWith<WireFileSaved>('sizeBytes', 'modifiedAtMs');
 const isPreferences = recordReply<WirePreferences>();
-const isAppAdvisorSettings = reply<PortalAppAdvisorSettings | null>(
+const isAppAdvisorSettings = reply<RemoteControlAppAdvisorSettings | null>(
   (value) =>
     value === null ||
     (isRecord(value) &&
@@ -594,8 +594,8 @@ class PortableIpcCanopyClient implements CanopyClient {
 
   /** `file:read-content`, projected into the canonical preview. */
   private async readFilePreview(
-    args: PortalFileReadPayload,
-  ): Promise<PortalFilePreview> {
+    args: RemoteControlFileReadPayload,
+  ): Promise<RemoteControlFilePreview> {
     const { root, catalog } = await this.resolveFileRoot(
       args.projectId,
       args.worktreeId,
@@ -659,7 +659,7 @@ class PortableIpcCanopyClient implements CanopyClient {
   private async listFileRoots(args: {
     projectId: string;
     worktreeId: string;
-  }): Promise<PortalFileRoot[]> {
+  }): Promise<RemoteControlFileRoot[]> {
     const { roots } = await this.channels.invoke(
       C.fileTreeRoots,
       isFileTreeRoots,
@@ -679,7 +679,7 @@ class PortableIpcCanopyClient implements CanopyClient {
     worktreeId: string;
     repoId: string;
     relativeDir: string;
-  }): Promise<PortalDirectoryListing> {
+  }): Promise<RemoteControlDirectoryListing> {
     const { entries } = await this.channels.invoke(
       C.fileTreeDirectory,
       isFileTreeDirectory,
@@ -712,8 +712,8 @@ class PortableIpcCanopyClient implements CanopyClient {
       relativePath: string;
     },
     mutation: (repoId: string) => Record<string, unknown>,
-    result: (repoId: string) => PortalFileMutationResult,
-  ): Promise<PortalFileMutationResult> {
+    result: (repoId: string) => RemoteControlFileMutationResult,
+  ): Promise<RemoteControlFileMutationResult> {
     try {
       const { root } = await this.resolveFileRoot(
         args.projectId,
@@ -973,7 +973,7 @@ class PortableIpcCanopyClient implements CanopyClient {
           projectId: args.projectId,
           worktreeId: args.worktreeId,
         }),
-      'file.index': async (args): Promise<PortalFileIndex> => {
+      'file.index': async (args): Promise<RemoteControlFileIndex> => {
         try {
           const index = await channels.invoke(C.fileIndexGet, isFileIndex, {
             projectId: args.projectId,
@@ -1019,7 +1019,7 @@ class PortableIpcCanopyClient implements CanopyClient {
           },
         );
         const detail = plan
-          ? toRequestedPortalPlanDetail(plan, args.revisionNumber)
+          ? toRequestedRemoteControlPlanDetail(plan, args.revisionNumber)
           : null;
         if (!detail) {
           throw new Error('Plan not found.');

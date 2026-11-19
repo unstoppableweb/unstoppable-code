@@ -2,7 +2,7 @@
 
 import { useEffect, useState, type JSX, type ReactNode } from 'react';
 import { fileViewerKey } from '@canopy/app-state';
-import type { PortalFileReadPayload } from '@canopy/protocol/portal';
+import type { RemoteControlFileReadPayload } from '@canopy/protocol/remote-control/shell';
 import {
   Surface,
   CenteredLoadingSpinner,
@@ -41,7 +41,7 @@ function formatMegabytes(bytes: number): string {
 }
 
 export interface FileNotebookPreviewProps {
-  readonly request: PortalFileReadPayload;
+  readonly request: RemoteControlFileReadPayload;
   /** Parse of `content` already made by the viewer (untruncated files only). */
   readonly parsed: NotebookParseResult | null;
   readonly truncated: boolean;
@@ -49,7 +49,7 @@ export interface FileNotebookPreviewProps {
   readonly version: string;
   /** Loads the complete file when the text session is truncated. */
   readonly resolveDocumentBytes?: (
-    request: PortalFileReadPayload,
+    request: RemoteControlFileReadPayload,
     signal: AbortSignal,
   ) => Promise<FileDocumentBytesResult>;
   readonly documentRetryGeneration: number;
@@ -95,7 +95,7 @@ function NotebookSourceFallback({
  * session holds only the first part of a large file, then parses it once.
  */
 function useFullNotebook(
-  request: PortalFileReadPayload,
+  request: RemoteControlFileReadPayload,
   version: string,
   enabled: boolean,
   resolveDocumentBytes: FileNotebookPreviewProps['resolveDocumentBytes'],

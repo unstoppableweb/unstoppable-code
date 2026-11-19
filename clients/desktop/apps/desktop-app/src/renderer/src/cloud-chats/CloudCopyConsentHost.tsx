@@ -11,6 +11,7 @@ import {
 import { ConfirmDialog } from '@canopy/ui-shared';
 import { toAppError } from '@canopy/protocol/app-errors';
 import { useCanopyCloudAccountState } from '../hooks/useCanopyCloudAccountState';
+import { isInstalledSourceSkill } from './cloud-picker-local-items';
 
 /** What COMPOSER's cloud plugin picker passes for a `needs_upload` row (R5d). */
 export interface CloudCopyConsentRequest {
@@ -58,6 +59,9 @@ export function CloudCopyConsentHost({
       : row.state.action === 'publish_plugin'
         ? 'plugin'
         : null;
+  // An installed skill's copy asks again after every change (CAN-6943).
+  const offerKeepInStep =
+    kind === 'skill' && !isInstalledSourceSkill(entry.entryId);
   const [analysis, setAnalysis] =
     useState<PipelinePackageAnalysisSummary | null>(null);
   const [loading, setLoading] = useState(false);
@@ -131,8 +135,9 @@ export function CloudCopyConsentHost({
         package: {
           analysisId: analysis.analysisId,
           selectedOptionalResourceIds: [...selected],
-          // The dialog offers it for a skill only.
-          keepInStep: kind === 'skill' && choice.keepInStep,
+          // The dialog offers it for a custom skill only; main records an
+          // installed skill's copy as never kept in step either way.
+          keepInStep: offerKeepInStep && choice.keepInStep,
         },
         expectedAccountId: accountId,
         _meta: { idempotencyKey: crypto.randomUUID() },
@@ -159,6 +164,7 @@ export function CloudCopyConsentHost({
   return (
     <CloudCopyConsentDialog
       subject={{ kind, name: row.name }}
+      offerKeepInStep={offerKeepInStep}
       replacing={row.state.reason === 'changed'}
       audience={audience}
       analysis={analysis}

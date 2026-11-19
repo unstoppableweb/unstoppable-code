@@ -66,6 +66,18 @@ interface PkgShape {
       }
     >;
   };
+  'antigravity-cli'?: {
+    version: string;
+    artifacts: Record<
+      string,
+      {
+        url: string;
+        integrity: string;
+        archiveBytes: number;
+        executableSha256: string;
+      }
+    >;
+  };
   'opencode-cli'?: {
     version: string;
     artifacts: Record<
@@ -387,6 +399,9 @@ function createDependencyVersionDefines(mode: string): Record<string, string> {
     ),
     __CANOPY_OPENCODE_CLI__: JSON.stringify(
       pkg['opencode-cli'] ?? { version: 'unknown', artifacts: {} },
+    ),
+    __CANOPY_ANTIGRAVITY_CLI__: JSON.stringify(
+      pkg['antigravity-cli'] ?? { version: 'unknown', artifacts: {} },
     ),
     __CANOPY_CLIPROXYAPI__: JSON.stringify(
       pkg.cliproxyapi ?? { version: 'unknown', artifacts: {} },

@@ -1,4 +1,4 @@
-import type { PortalChatMessage } from '@canopy/protocol/portal';
+import type { RemoteControlChatMessage } from '@canopy/protocol/remote-control/shell';
 
 /**
  * Composer recovery after a refused turn (CAN-5348).
@@ -538,7 +538,7 @@ export function chatFilesNotAttachedNotice(names: readonly string[]): string {
 
 /** Explicit host-projected refusal; neither text nor message position grants recovery. */
 export function composerRefusedUserMessageId(
-  message: PortalChatMessage,
+  message: RemoteControlChatMessage,
 ): string | undefined {
   if (message.role !== 'assistant') return undefined;
   for (const part of message.parts ?? []) {
@@ -566,8 +566,8 @@ export function composerRefusedUserMessageId(
   return undefined;
 }
 
-export function composerRecoveryPortalTranscript(
-  messages: readonly PortalChatMessage[],
+export function composerRecoveryRemoteControlTranscript(
+  messages: readonly RemoteControlChatMessage[],
 ): ComposerRecoveryTranscriptMessage[] {
   return messages.map((message) => {
     const refusal = composerRefusedUserMessageId(message);

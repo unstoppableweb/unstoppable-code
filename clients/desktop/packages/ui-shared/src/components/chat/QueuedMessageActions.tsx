@@ -3,7 +3,7 @@ import type {
   ChatTurnPhase,
   QueuedMessageRetryBlockedReason,
   SettingsHeldChange,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import { PlayCircleIcon, RetryIcon, SteerIcon } from '../../icons';
 import { StopIcon, TrashIcon } from '../../icons/AppIcons';
 import { ActionTooltip } from '../ActionTooltip';

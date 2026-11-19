@@ -2,10 +2,7 @@ import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import type { JSX } from 'react';
 import { ChoiceList, ChoiceListRow } from './ChoiceList';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
-import {
-  SegmentedControl,
-  type SegmentedControlShape,
-} from './SegmentedControl';
+import { SegmentedControl } from './SegmentedControl';
 
 const ACCESS_LABEL = `Allow project agents to use ${ORCHESTRATOR_LABEL} chats and create automations`;
 
@@ -38,8 +35,6 @@ export interface AppAdvisorProjectAgentAccessControlProps {
   readonly disabled?: boolean;
   readonly saving?: boolean;
   readonly testIdPrefix?: string;
-  /** Segmented control corner; desktop passes 'capsule' under early access. Default 'rounded'. */
-  readonly segmentShape?: SegmentedControlShape;
 }
 
 interface OwnerRow {
@@ -93,7 +88,6 @@ export function AppAdvisorProjectAgentAccessControl({
   disabled = false,
   saving = false,
   testIdPrefix = 'app-advisor-project-agent-access',
-  segmentShape = 'rounded',
 }: AppAdvisorProjectAgentAccessControlProps): JSX.Element {
   const optionOwnerKeys = new Set(
     ownerOptions.map(({ owner }) => ownerKey(owner)),
@@ -195,7 +189,6 @@ export function AppAdvisorProjectAgentAccessControl({
             onChange={handleModeChange}
             label={ACCESS_LABEL}
             width="control"
-            shape={segmentShape}
             disabled={disabled || saving}
             dataTestId={`${testIdPrefix}-mode`}
           />

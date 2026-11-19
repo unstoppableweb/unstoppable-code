@@ -10,7 +10,7 @@ import {
   type W5RecoveryEntry,
   type W5RecoveryReason,
   type W5RecoveryStatus,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import { isRecord } from './type-guards';
 import {
   W5MaintenanceDecisionError,

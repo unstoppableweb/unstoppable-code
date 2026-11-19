@@ -285,7 +285,8 @@ export function customizeDiscoveryNeedsAttention(
 }
 
 /** The compatibility levels that count as "works with" (CAN-6813). */
-const WORKS_WITH_LEVELS: ReadonlySet<string> = new Set([
+/** The compatibility levels at which an item works with a harness. */
+export const WORKS_WITH_LEVELS: ReadonlySet<string> = new Set([
   'native',
   'full',
   'partial',

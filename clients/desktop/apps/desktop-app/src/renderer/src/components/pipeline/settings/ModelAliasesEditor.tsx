@@ -218,7 +218,7 @@ function ModelAliasItem({
           <span className="flex shrink-0 p-1.5">
             <Tooltip label="Remove model alias">
               <Button
-                variant="ghost-quiet"
+                variant="ghost"
                 size="sm"
                 iconOnly
                 onClick={onRemove}

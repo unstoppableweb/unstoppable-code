@@ -9,10 +9,10 @@ import { logMainProcessWarn } from './main-process-logging';
  * Portal state store applied: a larger file is abandoned unread, which already
  * cost the identifier before this module existed.
  */
-export const LEGACY_PORTAL_STATE_FILE_MAX_BYTES = 64 * 1024 * 1024;
+export const LEGACY_REMOTE_CONTROL_STATE_FILE_MAX_BYTES = 64 * 1024 * 1024;
 
 const INSTALL_IDENTITY_FILE = 'install-identity.json';
-const LEGACY_PORTAL_STATE_FILE = 'portal-state.json';
+const LEGACY_REMOTE_CONTROL_STATE_FILE = 'portal-state.json';
 
 interface InstallIdentityRecord {
   version: 1;
@@ -34,7 +34,7 @@ export function installIdentityFilePath(): string {
 }
 
 export function legacyPortalStateFilePath(): string {
-  return path.join(userDataDir(), LEGACY_PORTAL_STATE_FILE);
+  return path.join(userDataDir(), LEGACY_REMOTE_CONTROL_STATE_FILE);
 }
 
 function errorCode(error: unknown): unknown {
@@ -116,7 +116,7 @@ async function loadInstallIdentity(): Promise<LoadedInstallIdentity> {
   // 1. The install's own file.
   const own = await readJsonFileForIdentity(
     installIdentityFilePath(),
-    LEGACY_PORTAL_STATE_FILE_MAX_BYTES,
+    LEGACY_REMOTE_CONTROL_STATE_FILE_MAX_BYTES,
   );
   if (own.kind === 'parsed') {
     const installId = nonEmptyStringField(own.value, 'installId');
@@ -134,7 +134,7 @@ async function loadInstallIdentity(): Promise<LoadedInstallIdentity> {
   //    build installed over this one still finds the same identifier there.
   const legacy = await readJsonFileForIdentity(
     legacyPortalStateFilePath(),
-    LEGACY_PORTAL_STATE_FILE_MAX_BYTES,
+    LEGACY_REMOTE_CONTROL_STATE_FILE_MAX_BYTES,
   );
   const adopted =
     legacy.kind === 'parsed'

@@ -2,11 +2,11 @@
 // the consent page (pre-registered `cursor` client, PKCE, loopback callback)
 // and JSON-RPC `tools/call` requests to `/api/v1/mcp/tasks`. Test-only.
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { PORTAL_WEB_ORIGIN } from './harness/config.mjs';
-import { seededSessionCookie } from './harness/portalHarness.mjs';
+import { REMOTE_CONTROL_WEB_ORIGIN } from './harness/config.mjs';
+import { seededSessionCookie } from './harness/remoteControlHarness.mjs';
 
 const LOOPBACK_CALLBACK = 'http://localhost:8787/callback';
-const TASKS_RESOURCE = `${PORTAL_WEB_ORIGIN}/api/v1/mcp/tasks`;
+const TASKS_RESOURCE = `${REMOTE_CONTROL_WEB_ORIGIN}/api/v1/mcp/tasks`;
 const MCP_TIMEOUT_MS = 60_000;
 
 function parseRpcResponse(text) {
@@ -25,7 +25,7 @@ export async function connectTasksAgent(page, seeded, { webServer } = {}) {
   await page.context().addCookies([
     seededSessionCookie(seeded, {
       webServer,
-      webServerOrigin: PORTAL_WEB_ORIGIN,
+      webServerOrigin: REMOTE_CONTROL_WEB_ORIGIN,
     }),
   ]);
   const verifier = randomBytes(32).toString('base64url');
@@ -50,7 +50,7 @@ export async function connectTasksAgent(page, seeded, { webServer } = {}) {
   );
   try {
     await page.goto(
-      `${PORTAL_WEB_ORIGIN}/api/v1/oauth/authorize?${params.toString()}`,
+      `${REMOTE_CONTROL_WEB_ORIGIN}/api/v1/oauth/authorize?${params.toString()}`,
       { waitUntil: 'domcontentloaded' },
     );
     await page
@@ -81,7 +81,7 @@ export async function connectTasksAgent(page, seeded, { webServer } = {}) {
     const code = callbackUrl.searchParams.get('code');
     if (!code) throw new Error('The OAuth callback omitted its code.');
     const response = await page.request.post(
-      `${PORTAL_WEB_ORIGIN}/api/v1/oauth/token`,
+      `${REMOTE_CONTROL_WEB_ORIGIN}/api/v1/oauth/token`,
       {
         form: {
           grant_type: 'authorization_code',

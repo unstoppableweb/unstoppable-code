@@ -382,7 +382,7 @@ export function WorkspaceReadinessRecommendations({
                             ) : (
                               <Button
                                 size="sm"
-                                variant="outline"
+                                variant="secondary"
                                 disabled={launchingKey !== null}
                                 onClick={() => void handleFix(issue)}
                               >

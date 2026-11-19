@@ -1,11 +1,11 @@
 import { create, type StoreApi, type UseBoundStore } from 'zustand';
 import type { CanopyClient } from '@canopy/app-core';
-import type { ProjectDeletionDiscardDescription } from '@canopy/protocol/portal/project-deletion-discard';
+import type { ProjectDeletionDiscardDescription } from '@canopy/protocol/remote-control/shell/project-deletion-discard';
 import type {
   WorktreeDiscardDescription,
   WorktreeDiscardRefusal,
   WorktreeDiscardResult,
-} from '@canopy/protocol/portal/worktree-discard';
+} from '@canopy/protocol/remote-control/shell/worktree-discard';
 import { describesRetainedArchive, failureText } from './discard-store';
 import type { ProjectDeletionDiscardOffer } from './project-deletion-offer';
 

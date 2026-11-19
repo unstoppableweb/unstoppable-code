@@ -111,7 +111,7 @@ function WaitReadout(): JSX.Element {
 
 export function ToolApprovalWaitSpecimen(): JSX.Element {
   return (
-    <SpecimenPanel title={`${MODULE_TAGS}: what waits for approval`}>
+    <SpecimenPanel title="What waits for approval" hint={MODULE_TAGS}>
       <SpecimenCell
         label="Bash and Edit are held for approval; the file chip waits too"
         wide
@@ -134,7 +134,7 @@ export function ToolApprovalWaitSpecimen(): JSX.Element {
 
 export function LiveToolActivitySpecimen(): JSX.Element {
   return (
-    <SpecimenPanel title={`${MODULE_TAGS}: the live line of a running call`}>
+    <SpecimenPanel title="Live line of a running call" hint={MODULE_TAGS}>
       {[HOLDING, NO_TOOL_APPROVAL_WAIT].map((wait, index) => (
         <SpecimenCell
           key={index}
@@ -193,7 +193,7 @@ const FAMILY_CASES: readonly {
 export function ToolDisplaySpecimen(): JSX.Element {
   return (
     <div className="flex flex-col gap-6">
-      <SpecimenPanel title={`${MODULE_TAGS}: icon and label per call`}>
+      <SpecimenPanel title="Icon and label per call" hint={MODULE_TAGS}>
         <SpecimenGrid min={260}>
           {SAMPLE_CALLS.map((call) => {
             const info = getToolDisplayInfo(call.toolName, call.input);
@@ -208,7 +208,7 @@ export function ToolDisplaySpecimen(): JSX.Element {
           })}
         </SpecimenGrid>
       </SpecimenPanel>
-      <SpecimenPanel title={`${MODULE_TAGS}: the family a call belongs to`}>
+      <SpecimenPanel title="Call families" hint={MODULE_TAGS}>
         {FAMILY_CASES.map(({ label, toolName, input, supplied }) => (
           <SpecimenCell key={label} label={label} wide>
             <span className="text-s">

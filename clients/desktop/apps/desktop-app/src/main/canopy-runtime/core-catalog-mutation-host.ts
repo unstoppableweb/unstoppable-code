@@ -11,14 +11,14 @@ import type {
   PluginInfo,
   PluginsCache,
 } from '@canopy/execution-engine/types/plugins';
-import type { PortalMarketplaceMutationResult } from '@canopy/protocol/portal';
+import type { RemoteControlMarketplaceMutationResult } from '@canopy/protocol/remote-control/shell';
 import { CanopyCloudClientError } from '../canopy-cloud/client';
 import type * as CloudMarketplaces from '../canopy-cloud/plugin-marketplaces';
 import { UnsafeExternalPluginUrlError } from '../plugins/external-plugin-url';
 import type * as PluginHandlers from '../plugins/plugin-handlers';
 import type * as PluginService from '../plugins/plugin-service';
 import type * as PluginCatalogService from '../services/plugin-catalog-service';
-import { offerCatalogPortalResult } from './catalog-portal-results';
+import { offerCatalogRemoteControlResult } from './catalog-remote-control-results';
 
 /** What the mutation host calls; tests inject fakes. Defaults load lazily. */
 export interface DesktopCatalogMutationDeps {
@@ -32,9 +32,9 @@ export interface DesktopCatalogMutationDeps {
   handlers: Pick<typeof PluginHandlers, 'refreshAfterSuccess'>;
   portal: Pick<
     typeof PluginCatalogService,
-    | 'addPortalMarketplace'
-    | 'installPortalBuiltInPluginWithOutcomes'
-    | 'installPortalExternalPlugin'
+    | 'addRemoteControlMarketplace'
+    | 'installRemoteControlBuiltInPluginWithOutcomes'
+    | 'installRemoteControlExternalPlugin'
   >;
   runSerialized: <T>(operation: () => Promise<T>) => Promise<T>;
   cloud: Pick<
@@ -72,26 +72,26 @@ const defaultDeps: DesktopCatalogMutationDeps = {
       ),
   },
   portal: {
-    addPortalMarketplace: async (repo) =>
-      (await import('../services/plugin-catalog-service')).addPortalMarketplace(
-        repo,
-      ),
-    installPortalBuiltInPluginWithOutcomes: async (
+    addRemoteControlMarketplace: async (repo) =>
+      (
+        await import('../services/plugin-catalog-service')
+      ).addRemoteControlMarketplace(repo),
+    installRemoteControlBuiltInPluginWithOutcomes: async (
       marketplaceId,
       pluginName,
       providers,
     ) =>
       (
         await import('../services/plugin-catalog-service')
-      ).installPortalBuiltInPluginWithOutcomes(
+      ).installRemoteControlBuiltInPluginWithOutcomes(
         marketplaceId,
         pluginName,
         providers,
       ),
-    installPortalExternalPlugin: async (marketplaceId, pluginName) =>
+    installRemoteControlExternalPlugin: async (marketplaceId, pluginName) =>
       (
         await import('../services/plugin-catalog-service')
-      ).installPortalExternalPlugin(marketplaceId, pluginName),
+      ).installRemoteControlExternalPlugin(marketplaceId, pluginName),
   },
   cloud: {
     addCloudPluginMarketplace: async (source, context) =>
@@ -248,9 +248,9 @@ export function createDesktopCatalogMutationHost(
     addGitSource: async (repository) => {
       if (parseGitHubRepo(repository) === null)
         throw new CatalogHostRefusedError('source-invalid');
-      let result: PortalMarketplaceMutationResult;
+      let result: RemoteControlMarketplaceMutationResult;
       try {
-        result = await deps.portal.addPortalMarketplace(repository);
+        result = await deps.portal.addRemoteControlMarketplace(repository);
       } catch (error) {
         const code = codeOf(error);
         if (code === 'invalid_payload')
@@ -259,7 +259,7 @@ export function createDesktopCatalogMutationHost(
           throw new CatalogHostRefusedError('source-provider-rejected', error);
         throw error;
       }
-      offerCatalogPortalResult(result);
+      offerCatalogRemoteControlResult(result);
       const added = (await base.listSources()).find(
         (source) => source.sourceId === result.marketplace.id,
       );
@@ -314,7 +314,7 @@ export function createDesktopCatalogMutationHost(
         const alreadyAbsent = providers.every(
           (provider) => outcomes[provider].alreadyAbsent,
         );
-        offerCatalogPortalResult({
+        offerCatalogRemoteControlResult({
           removed: true,
           ...(alreadyAbsent ? { alreadyAbsent: true } : {}),
         });
@@ -495,19 +495,19 @@ export function createDesktopCatalogMutationHost(
         await import('../skills/publish-skill-to-cloud')
       ).unpublishSkillFromCloud(publicationId, expectedRemoteVersion),
     installPlugin: async (target, providers) => {
-      let outcome: PluginCatalogService.PortalPluginInstallOutcome;
+      let outcome: PluginCatalogService.RemoteControlPluginInstallOutcome;
       try {
         outcome =
           target.install === 'external'
             ? {
-                result: await deps.portal.installPortalExternalPlugin(
+                result: await deps.portal.installRemoteControlExternalPlugin(
                   target.marketplaceId,
                   target.pluginName,
                 ),
                 installedProviders: ['claude'],
                 failedProviders: [],
               }
-            : await deps.portal.installPortalBuiltInPluginWithOutcomes(
+            : await deps.portal.installRemoteControlBuiltInPluginWithOutcomes(
                 target.marketplaceId,
                 target.pluginName,
                 [...providers],
@@ -527,7 +527,7 @@ export function createDesktopCatalogMutationHost(
           throw new CatalogHostRefusedError('plugin-uninstall-pending', error);
         throw new CatalogHostRefusedError('plugin-install-failed', error);
       }
-      offerCatalogPortalResult(outcome.result);
+      offerCatalogRemoteControlResult(outcome.result);
       return {
         installed: outcome.installedProviders,
         failed: outcome.failedProviders,

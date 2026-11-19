@@ -3174,7 +3174,7 @@ export function ModelPickerMenu({
                     />
                     {modelSearch ? (
                       <Button
-                        variant="ghost-quiet"
+                        variant="ghost"
                         size="sm"
                         iconOnly
                         aria-label="Clear search"
@@ -4217,7 +4217,7 @@ function ModelPickerOption({
           {harnessTrigger ? (
             <Button
               ref={billingTriggerRef}
-              variant="ghost-quiet"
+              variant="ghost"
               size="sm"
               iconOnly
               touchArea="contained"
@@ -4273,7 +4273,7 @@ function ModelPickerOption({
             >
               <Button
                 ref={billingTriggerRef}
-                variant="ghost-quiet"
+                variant="ghost"
                 size="sm"
                 iconOnly
                 touchArea="contained"
@@ -4299,7 +4299,7 @@ function ModelPickerOption({
               above and below, so its touch hit area stays its own box. */}
           {onToggleFavorite ? (
             <Button
-              variant="ghost-quiet"
+              variant="ghost"
               size="sm"
               iconOnly
               touchArea="contained"

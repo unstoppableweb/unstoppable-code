@@ -72,7 +72,7 @@ export function BrowserSnapshotsPanel({
                   </span>
                 ) : (
                   <Button
-                    variant="ghost-quiet"
+                    variant="ghost"
                     size="compact"
                     onClick={(): void => {
                       void handleAttach(entry);
@@ -84,7 +84,7 @@ export function BrowserSnapshotsPanel({
                 ))}
               <Tooltip label="Delete snapshot">
                 <Button
-                  variant="ghost-quiet"
+                  variant="ghost"
                   size="compact"
                   iconOnly
                   onClick={(): void => removeScreenshot(browserId, entry.id)}

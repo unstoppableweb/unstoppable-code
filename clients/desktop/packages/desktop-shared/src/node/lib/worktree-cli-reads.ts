@@ -29,7 +29,7 @@ import type {
   WorktreePrStatus,
 } from '../../types/github';
 import { isPrMergeQueuePhase } from '../../types/github';
-import { PORTAL_PULL_REQUEST_CHECK_EXECUTION_STATES } from '@canopy/protocol/portal';
+import { REMOTE_CONTROL_PULL_REQUEST_CHECK_EXECUTION_STATES } from '@canopy/protocol/remote-control/shell';
 import { getWorkspaceItem } from './workspace-cli-reads';
 import { listCodeGraphWorktreeRepositories } from '@canopy/code-graph/host/worktree-repositories';
 import type { CodeGraphRepositoryInput } from '@canopy/code-graph/types/code-graph';
@@ -574,7 +574,7 @@ function isCheckStatus(value: unknown): value is PrStatusData['checkStatus'] {
 }
 
 function isCheckExecutionState(value: unknown): value is CheckExecutionState {
-  return PORTAL_PULL_REQUEST_CHECK_EXECUTION_STATES.some(
+  return REMOTE_CONTROL_PULL_REQUEST_CHECK_EXECUTION_STATES.some(
     (state) => state === value,
   );
 }

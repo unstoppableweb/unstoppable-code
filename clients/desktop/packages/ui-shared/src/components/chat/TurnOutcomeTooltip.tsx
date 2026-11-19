@@ -3,7 +3,7 @@ import type { JSX } from 'react';
 import type {
   TurnOutcomeCounts,
   TurnOutcomeStepDetail,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import { StopIcon } from '../../icons';
 import { ShieldIcon, WarningIcon } from '../../icons/AppIcons';
 import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';

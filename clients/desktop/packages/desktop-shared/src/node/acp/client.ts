@@ -127,6 +127,13 @@ const RESERVED_METHODS: ReadonlySet<string> = new Set([
  * Deadlines must fit a Node timer. A null prompt deadline is validated
  * separately below and disables the prompt bound in prompt() and bounded().
  */
+/** The host's update handler failed; its error stays local (CAN-7117). */
+function updateHandlerFailure(error: unknown): AcpClientError {
+  return new AcpClientError('handler-failed', 'ACP update handler failed', {
+    runtimeCause: error,
+  });
+}
+
 function invalidDeadline(ms: number): boolean {
   return !Number.isSafeInteger(ms) || ms < 1 || ms > 2_147_483_647;
 }
@@ -668,8 +675,8 @@ class AcpClientConnection implements AcpClient {
     if (this.failure) return;
     try {
       return this.options.onUpdate(update, this.options.resourceGeneration);
-    } catch {
-      this.fail(new AcpClientError('protocol', 'ACP update handler failed'));
+    } catch (error) {
+      this.fail(updateHandlerFailure(error));
     }
   }
 
@@ -692,7 +699,8 @@ class AcpClientConnection implements AcpClient {
     this.updateAdmissions.add(token);
     void admission.then(
       () => token.owner?.settleUpdateAdmission(token, false),
-      () => token.owner?.settleUpdateAdmission(token, true),
+      (error: unknown) =>
+        token.owner?.settleUpdateAdmission(token, true, error),
     );
   }
 
@@ -705,13 +713,14 @@ class AcpClientConnection implements AcpClient {
       finish: () => void;
     },
     failed: boolean,
+    error?: unknown,
   ): void {
     if (!this.updateAdmissions.delete(token)) return;
     token.owner = null;
     token.release();
     token.finish();
     if (failed) {
-      this.fail(new AcpClientError('protocol', 'ACP update handler failed'));
+      this.fail(updateHandlerFailure(error));
     }
   }
 
@@ -727,8 +736,15 @@ class AcpClientConnection implements AcpClient {
       throw new AcpClientError('cancelled', 'ACP prompt cancelled');
     let abort = (): void => undefined;
     const cancelled = new Promise<void>((_resolve, reject): void => {
+      // fail() records its failure before aborting the turn, so a connection
+      // failure (handler-failed, closed, ...) is reported as itself. Read it
+      // when the abort fires: a user cancel aborts first, and a close() that
+      // follows it must not replace the cancellation.
       abort = (): void =>
-        reject(new AcpClientError('cancelled', 'ACP prompt cancelled'));
+        reject(
+          this.failure ??
+            new AcpClientError('cancelled', 'ACP prompt cancelled'),
+        );
       turn.controller.signal.addEventListener('abort', abort, { once: true });
     });
     try {

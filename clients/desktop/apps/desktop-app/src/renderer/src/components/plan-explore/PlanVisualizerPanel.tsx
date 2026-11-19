@@ -266,7 +266,6 @@ export const PlanVisualizerPanel = forwardRef<
           <SegmentedControl
             label="Diagram type"
             semantics="tabs"
-            shape="capsule"
             width="content"
             value={resolvedTab}
             onChange={setActiveTab}

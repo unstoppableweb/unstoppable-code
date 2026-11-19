@@ -23,6 +23,7 @@ import {
   ToggleSwitch,
 } from '@canopy/ui-shared/components';
 import { Surface } from '@canopy/ui-shared/components';
+import { recordSurfacedError } from '@canopy/ui-shared/lib';
 
 /** Show the filter once a list no longer fits at a glance. */
 const SEARCH_THRESHOLD = 8;
@@ -40,7 +41,9 @@ export interface McpToolSelectionProps {
 }
 
 type ToolsState =
-  | { readonly status: 'idle' | 'loading' | 'failed' | 'reauth_required' }
+  | { readonly status: 'idle' | 'loading' | 'reauth_required' }
+  // The caught value, recorded once the failed notice is actually shown.
+  | { readonly status: 'failed'; readonly error: unknown }
   | {
       readonly status: 'loaded';
       readonly tools: readonly AccountMcpUpstreamTool[];
@@ -120,13 +123,28 @@ export function McpToolSelection({
         void Promise.resolve(onReauthRequired?.()).catch(() => undefined);
         return;
       }
-      setTools({ status: 'failed' });
+      setTools({ status: 'failed', error });
     }
   }, [loadTools, onReauthRequired]);
 
   useEffect(() => {
     if (!allTools && tools.status === 'idle') void load();
   }, [allTools, load, tools.status]);
+
+  // The caught value, not the notice text, so a failure main recorded links
+  // its reference; the failed notice below records nothing itself. Recording
+  // waits for the notice to render: a load that fails while "Allow all tools"
+  // is on shows nothing, so it is recorded only if the notice appears later.
+  const failedError = tools.status === 'failed' ? tools : null;
+  useEffect(() => {
+    if (allTools || !failedError) return;
+    recordSurfacedError({
+      chokePoint: 'notice',
+      surface: 'inline',
+      identifier: 'mcp-tool-selection',
+      error: failedError.error,
+    });
+  }, [allTools, failedError]);
 
   const rows = useMemo((): ToolRow[] => {
     if (tools.status !== 'loaded') return [];
@@ -235,7 +253,7 @@ export function McpToolSelection({
               </Notice>
             ) : tools.status === 'failed' ? (
               <div className="flex w-full flex-col items-start gap-2">
-                <Notice errorSource="mcp-tool-selection" intent="destructive">
+                <Notice intent="destructive" errorRecordingDisabled>
                   Couldn’t load this server’s tools.
                 </Notice>
                 <Button

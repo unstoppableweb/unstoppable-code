@@ -20,6 +20,8 @@ const FALLBACK_REASONS = [
 ] as const;
 
 export const DAEMON_ROUTE_REASONS = {
+  // Eligible local window branch lists (CAN-4729).
+  git_reads: ['served', ...SELECTION_REASONS, ...FALLBACK_REASONS],
   scripts: [
     'served',
     ...SELECTION_REASONS,

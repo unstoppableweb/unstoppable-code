@@ -126,7 +126,7 @@ export const PipelineRunArtifactCard = memo(function PipelineRunArtifactCard({
     useState<ExecutionState | null>(null);
   const [pipelineRunning, setPipelineRunning] = useState(false);
   const [pipelineRunError, setPipelineRunError] = useState<string | null>(null);
-  const portalHostRef = useRef<HTMLDivElement>(null);
+  const remoteControlHostRef = useRef<HTMLDivElement>(null);
   const rowExecutionState = rowStatesById[receipt.executionId];
 
   const liveOverride = useMemo(():
@@ -590,12 +590,12 @@ export const PipelineRunArtifactCard = memo(function PipelineRunArtifactCard({
     },
     [watchers],
   );
-  const portalDocument = getDocument(portalHostRef.current);
+  const remoteControlDocument = getDocument(remoteControlHostRef.current);
 
   return (
     <>
       <div
-        ref={portalHostRef}
+        ref={remoteControlHostRef}
         className="contents"
         data-testid={`pipeline-run-portal-host-${receipt.executionId}`}
       >
@@ -617,7 +617,7 @@ export const PipelineRunArtifactCard = memo(function PipelineRunArtifactCard({
           executionId={reportExecution.id}
           pipelineName={reportExecution.name}
           onClose={(): void => setReportExecution(null)}
-          ownerDocument={portalDocument}
+          ownerDocument={remoteControlDocument}
         />
       )}
       {followUpExecution && (
@@ -635,7 +635,7 @@ export const PipelineRunArtifactCard = memo(function PipelineRunArtifactCard({
           onRun={handlePipelineRun}
           isRunning={pipelineRunning}
           runError={pipelineRunError}
-          ownerDocument={portalDocument}
+          ownerDocument={remoteControlDocument}
         />
       )}
     </>

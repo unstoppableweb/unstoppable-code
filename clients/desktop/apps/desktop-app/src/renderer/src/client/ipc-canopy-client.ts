@@ -13,7 +13,7 @@ import type {
   CanopyApi,
   FileTreeRoot,
 } from '@canopy/desktop-shared/types';
-import { getPortalChatToolFamily } from '@canopy/desktop-shared/lib/portal-tool-family';
+import { getRemoteControlChatToolFamily } from '@canopy/desktop-shared/lib/remote-control-tool-family';
 import { CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT } from '@canopy/desktop-shared/constants/canopy-cloud';
 import type {
   CanopyCapabilities,
@@ -609,7 +609,7 @@ export function createDesktopCanopyClient(
       reportRendererConsoleError(message, details);
     },
     onContractMismatch: reportContractMismatch,
-    toolFamilyFor: getPortalChatToolFamily,
+    toolFamilyFor: getRemoteControlChatToolFamily,
     // The preload decodes `chat:event` outputs once for the page and owns
     // the host-local output reset.
     chatEventsDecoded: true,

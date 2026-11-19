@@ -106,6 +106,11 @@ export function hostPlatformOperatingSystem(): PlatformOperatingSystem {
   return platform;
 }
 
+/** The host CPU architecture (platform boundary check), such as 'arm64' or 'x64'. */
+export function hostPlatformArchitecture(): string {
+  return process.arch;
+}
+
 /** Composes services for the host platform. */
 export function hostPlatformServices(
   endpoints: PlatformEndpointServices,

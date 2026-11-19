@@ -17,36 +17,9 @@
 #define LIST_BOUND 65536
 #define DEFAULT_FILE_BOUND 65536
 #define MAX_FILE_BOUND 33554432
-#define ASSET_FILE_BOUND 104857600
-#define ASSET_CHUNK_BOUND 196608
-#define ASSET_VERSION_BOUND 256
 
 /* Largest file this session reads, compares, or writes. */
 static size_t file_bound = DEFAULT_FILE_BOUND;
-static bool asset_readonly = false;
-
-/* ':' names a drive or an alternate data stream only on Windows. POSIX names
- * may contain it, so only the Windows build refuses it. */
-static bool valid_asset_character(char character) {
-  if ((unsigned char)character < 32 || character == '\\') return false;
-#ifdef _WIN32
-  if (character == ':') return false;
-#endif
-  return true;
-}
-
-static bool valid_asset_path(const char *path) {
-  size_t length = strlen(path), start = 0;
-  if (!length || length >= PATH_BOUND || path[0] == '/' || path[length - 1] == '/') return false;
-  for (size_t index = 0; index <= length; ++index) {
-    if (path[index] == '/' || !path[index]) {
-      size_t count = index - start;
-      if (!count || (count == 1 && path[start] == '.') || (count == 2 && path[start] == '.' && path[start + 1] == '.')) return false;
-      start = index + 1;
-    } else if (!valid_asset_character(path[index])) return false;
-  }
-  return true;
-}
 
 /* A decimal bound from the host: digits only, 1..MAX_FILE_BOUND. */
 static bool parse_bound(const char *text, size_t *bound) {
@@ -172,88 +145,6 @@ static bool list_bytes(broker_handle root, char *bytes, size_t *used) {
 }
 #endif
 
-static bool asset_snapshot(broker_handle file, size_t *size, char *version) {
-#ifdef _WIN32
-  BY_HANDLE_FILE_INFORMATION info;
-  FILE_BASIC_INFO basic;
-  if (!safe_info(file, false, &info) || !GetFileInformationByHandleEx(file, FileBasicInfo, &basic, sizeof basic)) return false;
-  *size = (size_t)info.nFileSizeLow;
-  int length = snprintf(version, ASSET_VERSION_BOUND, "%lu:%lu:%lu:%zu:%lld:%lld",
-    (unsigned long)info.dwVolumeSerialNumber, (unsigned long)info.nFileIndexHigh,
-    (unsigned long)info.nFileIndexLow, *size, (long long)basic.LastWriteTime.QuadPart,
-    (long long)basic.ChangeTime.QuadPart);
-#else
-  struct stat info;
-  if (fstat(file, &info) || !S_ISREG(info.st_mode) || info.st_nlink != 1 || info.st_size < 0 || (unsigned long long)info.st_size > ASSET_FILE_BOUND) return false;
-  *size = (size_t)info.st_size;
-#ifdef __APPLE__
-  struct timespec modified = info.st_mtimespec, changed = info.st_ctimespec;
-#else
-  struct timespec modified = info.st_mtim, changed = info.st_ctim;
-#endif
-  int length = snprintf(version, ASSET_VERSION_BOUND, "%llu:%llu:%zu:%lld:%ld:%lld:%ld",
-    (unsigned long long)info.st_dev, (unsigned long long)info.st_ino, *size,
-    (long long)modified.tv_sec, modified.tv_nsec, (long long)changed.tv_sec, changed.tv_nsec);
-#endif
-  return length > 0 && length < ASSET_VERSION_BOUND && *size <= ASSET_FILE_BOUND;
-}
-
-/* One asset-readonly session serves one transfer. Its first request walks the
- * path without following links; later chunks of the same path read from that
- * already-opened file, so ancestor swaps cannot redirect a running transfer.
- * The host still compares every chunk's identity with the checked path. */
-static broker_handle asset_file = BAD_HANDLE;
-static char asset_path[PATH_BOUND];
-
-static void forget_asset_file(void) {
-  if (asset_file != BAD_HANDLE) close_handle(asset_file);
-  asset_file = BAD_HANDLE; asset_path[0] = 0;
-}
-
-static broker_handle asset_file_for(broker_handle root, const char *path) {
-  if (asset_file != BAD_HANDLE && !strcmp(asset_path, path)) return asset_file;
-  forget_asset_file();
-  broker_handle file = open_relative(root, path, false);
-  if (file == BAD_HANDLE) return BAD_HANDLE;
-  /* valid_asset_path bounds the length below PATH_BOUND. */
-  memcpy(asset_path, path, strlen(path) + 1);
-  asset_file = file; return file;
-}
-
-static bool read_asset_chunk(broker_handle root, const char *path, size_t offset, char **content, size_t *used) {
-  broker_handle file = asset_file_for(root, path);
-  if (file == BAD_HANDLE) return false;
-  char before[ASSET_VERSION_BOUND], after[ASSET_VERSION_BOUND];
-  size_t size = 0, after_size = 0;
-  bool ok = asset_snapshot(file, &size, before) && offset <= size;
-  size_t count = ok ? size - offset : 0;
-  if (count > ASSET_CHUNK_BOUND) count = ASSET_CHUNK_BOUND;
-  char *buffer = ok ? malloc(count + ASSET_VERSION_BOUND + 32) : NULL;
-  ok = ok && buffer != NULL;
-  int header = ok ? snprintf(buffer, ASSET_VERSION_BOUND + 32, "%zu\t%s\n", size, before) : -1;
-  ok = ok && header > 0 && header < ASSET_VERSION_BOUND + 32;
-  size_t received = 0;
-#ifdef _WIN32
-  LARGE_INTEGER position; position.QuadPart = (LONGLONG)offset;
-  if (ok) ok = SetFilePointerEx(file, position, NULL, FILE_BEGIN) != 0;
-#endif
-  while (ok && received < count) {
-#ifdef _WIN32
-    DWORD read_count = 0;
-    ok = ReadFile(file, buffer + header + received, (DWORD)(count - received), &read_count, NULL) != 0;
-    if (!ok || !read_count) { ok = false; break; }
-#else
-    ssize_t read_count = pread(file, buffer + header + received, count - received, (off_t)(offset + received));
-    if (read_count < 0 && errno == EINTR) continue;
-    if (read_count <= 0) { ok = false; break; }
-#endif
-    received += (size_t)read_count;
-  }
-  ok = ok && asset_snapshot(file, &after_size, after) && size == after_size && !strcmp(before, after);
-  if (!ok) { forget_asset_file(); free(buffer); return false; }
-  *content = buffer; *used = (size_t)header + received; return true;
-}
-
 /* Writes are reachable only through the owning host's per-operation grants and
  * approval checks. Never follow links; compare exact content before mutation.
  * Advisory lock coordinates cooperating helpers, not arbitrary external writers.
@@ -340,27 +231,6 @@ static int serve(broker_handle root) {
     size_t n = strlen(line);
     if (n < 3 || line[n-1] != '\n') break;
     line[n-1] = 0;
-    if (asset_readonly) {
-      char *offset_text = line[0] == 'A' && line[1] == '\t' ? strchr(line + 2, '\t') : NULL;
-      size_t offset = 0, digits = 0;
-      bool ok = offset_text != NULL;
-      if (ok) {
-        *offset_text++ = 0;
-        for (; offset_text[digits]; ++digits) {
-          if (digits >= 9 || offset_text[digits] < '0' || offset_text[digits] > '9') { ok = false; break; }
-          offset = offset * 10 + (size_t)(offset_text[digits] - '0');
-        }
-        ok = ok && digits > 0 && offset <= ASSET_FILE_BOUND && valid_asset_path(line + 2);
-      }
-      char *content = NULL; size_t used = 0;
-      ok = ok && read_asset_chunk(root, line + 2, offset, &content, &used);
-      bool written = true;
-      if (ok) { fprintf(stdout, "OK %zu\n", used); written = fwrite(content, 1, used, stdout) == used; }
-      else fputs("ERR\n", stdout);
-      free(content);
-      if (!written || fflush(stdout)) break;
-      continue;
-    }
     if (line[0] == 'W' && line[1] == '\t') {
       char *old_text = strchr(line + 2, '\t');
       if (!old_text) break;
@@ -408,8 +278,7 @@ int wmain(int argc, wchar_t **argv) {
     char narrow[32];
     int n = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, argv[2], -1, narrow, (int)sizeof narrow, NULL, NULL);
     if (n <= 0) return 1;
-    if (!strcmp(narrow, "--asset-readonly")) { asset_readonly = true; file_bound = ASSET_FILE_BOUND; }
-    else if (!parse_bound(narrow, &file_bound)) return 1;
+    if (!parse_bound(narrow, &file_bound)) return 1;
   }
   _setmode(_fileno(stdin), _O_BINARY); _setmode(_fileno(stdout), _O_BINARY);
   return serve(open_root(argv[1]));
@@ -418,8 +287,7 @@ int wmain(int argc, wchar_t **argv) {
 int main(int argc, char **argv) {
   if (argc != 2 && argc != 3) return 1;
   if (argc == 3) {
-    if (!strcmp(argv[2], "--asset-readonly")) { asset_readonly = true; file_bound = ASSET_FILE_BOUND; }
-    else if (!parse_bound(argv[2], &file_bound)) return 1;
+    if (!parse_bound(argv[2], &file_bound)) return 1;
   }
   return serve(open_root(argv[1]));
 }

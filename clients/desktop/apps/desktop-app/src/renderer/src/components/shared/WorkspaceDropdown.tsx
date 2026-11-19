@@ -546,7 +546,7 @@ export function WorkspaceDropdown({
             suppressed={isOpen}
           >
             <Button
-              variant="ghost-quiet"
+              variant="ghost"
               size="sm"
               iconOnly
               onClick={handleClear}

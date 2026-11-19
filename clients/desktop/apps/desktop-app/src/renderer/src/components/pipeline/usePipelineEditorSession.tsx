@@ -8,7 +8,7 @@ import {
 } from 'react';
 import { ConfirmDialog } from '@canopy/ui-shared/components';
 import type { UnsavedChangesSaveResult } from '@canopy/ui-app/workflows';
-import type { PortalPipelineDefinitionViewModel } from '@canopy/protocol/portal';
+import type { RemoteControlPipelineDefinitionViewModel } from '@canopy/protocol/remote-control/shell';
 import type {
   Pipeline,
   PipelineInfo,
@@ -152,7 +152,7 @@ export interface PipelineEditorSession {
   readDetailView: 'flowchart' | 'details';
   setReadDetailView: (view: 'flowchart' | 'details') => void;
   /** Set for a read-only pipeline: what the read detail renders. */
-  readDefinition: PortalPipelineDefinitionViewModel | null;
+  readDefinition: RemoteControlPipelineDefinitionViewModel | null;
   flowSource: PipelineFlowSource | null;
   selectionIsValid: boolean;
   validationErrors: ValidationIssue[];

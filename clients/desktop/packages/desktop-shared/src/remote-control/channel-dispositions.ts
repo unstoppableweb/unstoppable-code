@@ -83,6 +83,13 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     opencodeConnectionCancel: 'tunnel',
     opencodeConnectionDisconnect: 'tunnel',
     opencodeConnectionProgress: 'tunnel',
+    // Whether the controlled computer can launch Antigravity is readable, but
+    // installing a CLI is this computer's own download: install, cancel and
+    // their progress stay local.
+    antigravityRuntimeStatus: 'tunnel',
+    antigravityRuntimeInstall: 'local',
+    antigravityRuntimeCancel: 'local',
+    antigravityRuntimeProgress: 'local',
     managedDelegationMessage: 'tunnel',
     managedDelegationTree: 'tunnel',
     managedDelegationTranscriptPage: 'tunnel',
@@ -705,7 +712,7 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     settingsCanopyCloudSessionStatusChanged: 'blocked',
     settingsGetCanopyCloudBaseUrl: 'tunnel',
     // opens authenticated URL in system browser on A
-    settingsOpenAuthenticatedPortalPage: 'local',
+    settingsOpenAuthenticatedCloudPage: 'local',
     settingsLoadCanopyCloudAiCredits: 'tunnel',
     settingsLoadCanopyCloudEntitlements: 'tunnel',
     settingsLoadCloudReleaseNotes: 'tunnel',
@@ -713,8 +720,6 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     settingsSaveCloudDigestPreferences: 'tunnel',
     settingsLoadInstallUpdateEmailPreference: 'tunnel',
     settingsSaveInstallUpdateEmailPreference: 'tunnel',
-    settingsLoadDailyCreditDrip: 'tunnel',
-    settingsSaveDailyCreditDrip: 'tunnel',
     canopyCloudMobileActivationLoad: 'tunnel',
     settingsLoadNativeAiCreditsAvailability: 'tunnel',
     // returns raw secret/API key to caller
@@ -1541,6 +1546,7 @@ export const PLUGINS_REMOTE_DISPOSITIONS: RemoteDispositions<
   REMOVE: 'tunnel',
   OPERATION_PROGRESS: 'tunnel',
   READ_COMPONENT: 'tunnel',
+  PREVIEW_MANIFEST: 'blocked',
   INSTALL_PLUGIN: 'tunnel',
   INSTALL_BUILT_IN_PLUGIN: 'tunnel',
   PREPARE_CODEX_COMPATIBILITY: 'tunnel',

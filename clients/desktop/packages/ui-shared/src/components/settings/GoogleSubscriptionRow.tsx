@@ -20,6 +20,7 @@ export function GoogleSubscriptionRow({
   onRefresh,
   onDisconnect,
   onReconnect,
+  runtime,
   error,
 }: {
   readonly connected: boolean;
@@ -30,6 +31,8 @@ export function GoogleSubscriptionRow({
   readonly onRefresh: () => void;
   readonly onDisconnect: () => void;
   readonly onReconnect: () => void;
+  /** The host's Antigravity CLI status and install controls, if any. */
+  readonly runtime?: ReactNode;
   readonly error?: ReactNode;
 }): JSX.Element {
   return (
@@ -49,7 +52,7 @@ export function GoogleSubscriptionRow({
           : connected
             ? // Discovery confirms account access, not a paid subscription tier.
               'Google account connected'
-            : `Install Antigravity CLI 1.5.1, then sign in with your personal Google account. ${SHARED_SIGN_IN}`
+            : `Install Antigravity CLI 1.5.1 from this card if it is not installed, then sign in with your personal Google account. ${SHARED_SIGN_IN}`
       }
       dataTestId="google-subscription-connection"
       control={
@@ -84,6 +87,7 @@ export function GoogleSubscriptionRow({
         </div>
       }
     >
+      {runtime}
       {error}
     </SettingsRowsRow>
   );

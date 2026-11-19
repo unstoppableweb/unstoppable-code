@@ -1,4 +1,4 @@
-import type { TurnOutcomeStepDetail } from '@canopy/protocol/portal';
+import type { TurnOutcomeStepDetail } from '@canopy/protocol/remote-control/shell';
 import { toolInterruptionDetail } from './ToolCallCard';
 import {
   classifyToolDenial,

@@ -23,6 +23,10 @@ import { ChevronDownMediumIcon, WarningIcon } from '../icons/AppIcons';
 import { REPLAY_BLOCK_CLASS, REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 import { ControlButton } from './Button';
 import { useDialogFormFieldDescribedBy } from './dialog-form-field-context';
+import {
+  FieldButtonNestProvider,
+  type FieldButtonNest,
+} from './field-button-nest';
 import { FLOATING_MENU_GAP } from './FloatingMenu';
 import {
   FloatingPickerMenu,
@@ -108,6 +112,28 @@ const ADORNED_BOX_CLASS: Record<TextInputDensity, string> = {
   settings: `h-7 rounded-row px-2.5 pointer-coarse:h-9 text-xs pointer-coarse:text-m whitespace-nowrap`,
 };
 
+/**
+ * A `FieldButton` in the trailing adornment nests in the field's end: the
+ * field's end inset drops to the button's inset above and below it (4px
+ * around the 28px button of a 36px field, 2px around the 24px button of a
+ * 28px one; coarse pointers get a taller field and the larger inset to
+ * match), and the button takes the field's corner less that inset.
+ */
+const ADORNED_BUTTON_INSET_CLASS: Record<TextInputDensity, string> = {
+  default:
+    'has-[[data-field-adornment=trailing]_[data-field-button]]:pr-1 pointer-coarse:has-[[data-field-adornment=trailing]_[data-field-button]]:pr-2',
+  compact:
+    'has-[[data-field-adornment=trailing]_[data-field-button]]:pr-0.5 pointer-coarse:has-[[data-field-adornment=trailing]_[data-field-button]]:pr-1.5',
+  settings:
+    'has-[[data-field-adornment=trailing]_[data-field-button]]:pr-0.5 pointer-coarse:has-[[data-field-adornment=trailing]_[data-field-button]]:pr-1.5',
+};
+
+const ADORNED_BUTTON_NEST: Record<TextInputDensity, FieldButtonNest> = {
+  default: 'field-lg',
+  compact: 'field',
+  settings: 'field',
+};
+
 const ADORNED_SHELL_CLASS = `flex w-full min-w-0 items-baseline gap-1.5 bg-transparent fg-primary ${FIELD_EDGE_CLASS} ${FIELD_FOCUS_WITHIN_CLASS} ${FIELD_INVALID_WITHIN_CLASS} has-[input:disabled]:cursor-not-allowed has-[input:disabled]:bg-disabled has-[input:disabled]:fg-disabled`;
 
 const ADORNED_INPUT_CLASS: Record<TextInputDensity, string> = {
@@ -125,7 +151,9 @@ const ADORNED_INPUT_CLASS: Record<TextInputDensity, string> = {
  */
 const ADORNMENT_CLASS: Record<AdornmentKind, string> = {
   text: 'shrink-0 fg-tertiary select-none',
-  icon: 'flex shrink-0 items-center self-center fg-tertiary select-none',
+  // A nested button's touch area reaches 10px past it; the extra 4px here
+  // (on the shell's 6px gap) keeps that area off the input beside it.
+  icon: 'flex shrink-0 items-center self-center fg-tertiary select-none pointer-coarse:data-[field-adornment=trailing]:has-[[data-field-button]]:pl-1',
 };
 
 type AdornmentKind = 'text' | 'icon';
@@ -172,7 +200,11 @@ export interface TextInputProps extends InputHTMLAttributes<HTMLInputElement> {
    * a username), in the tertiary ink like `SearchField`'s icon.
    */
   readonly leading?: ReactNode;
-  /** Fixed text or a glyph inside the field edge after the value (a unit). */
+  /**
+   * Fixed text or a glyph inside the field edge after the value (a unit), or
+   * one `FieldButton` (Show or Hide a secret), which nests in the field's
+   * end. Never a `Button`: a capsule does not nest in a rounded rectangle.
+   */
   readonly trailing?: ReactNode;
 }
 
@@ -205,7 +237,7 @@ export const TextInput = forwardRef<HTMLInputElement, TextInputProps>(
       return (
         <span
           className={withPlacement(
-            `${ADORNED_SHELL_CLASS} ${ADORNED_BOX_CLASS[density]}`,
+            `${ADORNED_SHELL_CLASS} ${ADORNED_BOX_CLASS[density]} ${ADORNED_BUTTON_INSET_CLASS[density]}`,
             className,
           )}
           onMouseDown={(event): void => {
@@ -234,7 +266,9 @@ export const TextInput = forwardRef<HTMLInputElement, TextInputProps>(
             {...props}
           />
           {trailing !== undefined ? (
-            <Adornment side="trailing">{trailing}</Adornment>
+            <FieldButtonNestProvider value={ADORNED_BUTTON_NEST[density]}>
+              <Adornment side="trailing">{trailing}</Adornment>
+            </FieldButtonNestProvider>
           ) : null}
         </span>
       );

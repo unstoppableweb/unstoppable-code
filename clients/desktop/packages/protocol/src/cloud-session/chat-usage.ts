@@ -1,4 +1,4 @@
-import type { PortalChatUsage } from '../portal';
+import type { RemoteControlChatUsage } from '../remote-control/shell';
 
 /**
  * A cloud chat's running usage, as the composer's context meter reads it
@@ -98,7 +98,7 @@ export function foldChatUsage(
     readonly catalogContextWindow?: CatalogContextWindow;
     readonly compactions?: readonly ChatUsageCompaction[];
   } = {},
-): PortalChatUsage | undefined {
+): RemoteControlChatUsage | undefined {
   if (answers.length === 0) return undefined;
   let inputTokens = 0;
   let outputTokens = 0;

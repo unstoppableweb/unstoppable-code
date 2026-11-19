@@ -51,7 +51,7 @@ export interface SettingsNavGroupsProps {
   readonly onNavigate?: (row: SettingsNavRow, event: MouseEvent) => void;
   /**
    * Test-id prefix for rows (`<prefix><row key>`) and groups
-   * (`<prefix>group-<group id>`). Web keeps `portal-settings-nav-`; desktop
+   * (`<prefix>group-<group id>`). Web keeps `remote-control-settings-nav-`; desktop
    * uses `settings-nav-`.
    */
   readonly testIdPrefix: string;

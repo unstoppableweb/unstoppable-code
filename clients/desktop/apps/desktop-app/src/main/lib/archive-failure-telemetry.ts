@@ -23,7 +23,7 @@ import {
   appErrorNativeFrames,
   rememberAppErrorNativeFrames,
 } from '@canopy/protocol/app-errors';
-import type { WorktreeDiscardDescription } from '@canopy/protocol/portal';
+import type { WorktreeDiscardDescription } from '@canopy/protocol/remote-control/shell';
 import {
   destructiveFailureCode,
   destructiveErrorProperty,

@@ -1,5 +1,5 @@
 import { Fragment, type JSX } from 'react';
-import type { TurnOutcomeCounts } from '@canopy/protocol/portal';
+import type { TurnOutcomeCounts } from '@canopy/protocol/remote-control/shell';
 import {
   formatTurnOutcomeLabel,
   turnOutcomeEntries,

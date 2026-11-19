@@ -307,9 +307,9 @@ test('Cloud runs list, open and answer their controls over the web core', async 
 
     // Answer the pause: the answer reaches the web core for this checkpoint.
     await dialog
-      .getByTestId('portal-pipeline-pause-field-reason')
+      .getByTestId('remote-control-pipeline-pause-field-reason')
       .fill('Looks good');
-    await dialog.getByTestId('portal-pipeline-pause-submit').click();
+    await dialog.getByTestId('remote-control-pipeline-pause-submit').click();
     await expect
       .poll(() =>
         runs.calls.find(

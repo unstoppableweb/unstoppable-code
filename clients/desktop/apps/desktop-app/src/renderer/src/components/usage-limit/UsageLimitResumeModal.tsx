@@ -265,7 +265,7 @@ function ResumeRowContinueMenu({
           triggerRef.current = element;
           registerTrigger(element);
         }}
-        variant="ghost-quiet"
+        variant="ghost"
         size="compact"
         data-testid={`usage-limit-resume-continue-${suffix}`}
         aria-haspopup="menu"
@@ -1725,7 +1725,7 @@ function UsageLimitResumeModalContent(): JSX.Element | null {
           {!scheduledAt ? (
             <Button
               ref={controlRef(key, 'schedule')}
-              variant="ghost-quiet"
+              variant="ghost"
               size="compact"
               data-testid={`usage-limit-resume-schedule-${suffix}`}
               aria-describedby={describedBy}
@@ -1744,7 +1744,7 @@ function UsageLimitResumeModalContent(): JSX.Element | null {
               </span>
               <Button
                 ref={controlRef(key, 'undo')}
-                variant="ghost-quiet"
+                variant="ghost"
                 size="compact"
                 data-testid={`usage-limit-resume-undo-schedule-${suffix}`}
                 aria-describedby={describedBy}

@@ -1,6 +1,7 @@
 import type { LedgerPendingTitleRecord } from '@canopy/desktop-shared/node/ledger';
 import {
   getExecutionHarnessForModel,
+  requireProviderForModel,
   resolveProviderModelConfig,
   type AgentModelConfig,
   type ThinkingLevel,
@@ -100,12 +101,27 @@ export interface PendingTitleSummaryGeneratorHost {
   generateChatSummary(
     text: string,
     invocation: PendingTitleSummaryInvocation,
-  ): Promise<{ readonly text: string; readonly fallback?: unknown }>;
+  ): Promise<{
+    readonly text: string;
+    readonly fallback?: { readonly skipped?: true };
+  }>;
 }
 
 export type PendingTitleSummaryGenerator = (
   input: PendingTitleGenerationInput,
 ) => Promise<string | null>;
+
+/**
+ * Thrown by the title generator when the helper was not started because its
+ * provider is signed out with no billing source (CAN-7062). The orchestrator
+ * leaves the title pending instead of resolving it.
+ */
+export class PendingTitleGenerationSkippedError extends Error {
+  constructor() {
+    super('The title helper was skipped.');
+    this.name = 'PendingTitleGenerationSkippedError';
+  }
+}
 
 /** Builds the injectable adapter used by both production and unit tests. */
 export function createPendingTitleSummaryGenerator(
@@ -138,6 +154,9 @@ export function createPendingTitleSummaryGenerator(
         : { modelConfig: settings.modelConfig }),
       workOwner: workOwner ?? null,
     });
+    if (result.fallback?.skipped === true) {
+      throw new PendingTitleGenerationSkippedError();
+    }
     if (result.fallback !== undefined) return null;
     const title = result.text.trim();
     return title.length === 0 ? null : title;
@@ -163,6 +182,16 @@ export interface PendingTitleOrchestratorOptions {
     readonly revision: number;
     readonly titleResolved: true;
   }) => void;
+  /**
+   * Whether a marker's helper is known, from caches alone, to be refused
+   * because its provider is signed out with no billing source (CAN-7062).
+   * A skipped marker records no attempt and stays pending for a later sweep.
+   * `readEntry` reads the marker's entry through the orchestrator's storage
+   * tracking, for a check that needs the entry's workspace.
+   */
+  readonly isGenerationSkipped?: (
+    readEntry: () => Promise<PendingTitleEntryContext | null>,
+  ) => Promise<boolean>;
   readonly now?: () => number;
   readonly startupDelayMs?: number;
   readonly sweepIntervalMs?: number;
@@ -308,6 +337,11 @@ export class PendingTitleOrchestrator {
       return;
     }
     if (!this.isEnabled()) return;
+    // Checked before the attempt is recorded, so a skip the cached auth state
+    // predicts uses none of the marker's bounded attempts. On a cold auth
+    // cache the check can't predict it: the attempt is recorded and the
+    // generation is then skipped, which costs that one attempt.
+    if (await this.isGenerationSkipped(record)) return;
 
     const attempted = await this.withStorage(() =>
       this.options.host.recordPendingTitleAttempt({ entryId: record.entryId }),
@@ -338,8 +372,12 @@ export class PendingTitleOrchestrator {
       const outcome = await this.raceDeadline(generation);
       timedOut = outcome.timedOut;
       title = outcome.timedOut ? null : outcome.title;
-    } catch {
-      if (attempted.attempts >= PENDING_TITLE_MAX_ATTEMPTS) {
+    } catch (error) {
+      // A skipped helper never started (CAN-7062): the title stays pending.
+      if (
+        !(error instanceof PendingTitleGenerationSkippedError) &&
+        attempted.attempts >= PENDING_TITLE_MAX_ATTEMPTS
+      ) {
         await this.resolve(record, null);
       }
       return;
@@ -424,6 +462,20 @@ export class PendingTitleOrchestrator {
     }
   }
 
+  private async isGenerationSkipped(
+    record: LedgerPendingTitleRecord,
+  ): Promise<boolean> {
+    try {
+      return (
+        (await this.options.isGenerationSkipped?.(() =>
+          this.withStorage(() => this.options.host.readEntry(record)),
+        )) === true
+      );
+    } catch {
+      return false;
+    }
+  }
+
   private isStale(record: LedgerPendingTitleRecord): boolean {
     const createdAt = Date.parse(record.createdAt);
     return (
@@ -446,26 +498,27 @@ export function startDesktopPendingTitleOrchestrator(options: {
   readonly isEnabled: () => boolean;
 }): void {
   if (desktopOrchestrator !== undefined) return;
+  const readSettings = async (): Promise<PendingTitleSummarySettings> => {
+    const { readPreferencesFile } = await import('../lib/preferences-store');
+    const preferences = await readPreferencesFile();
+    const model = preferences.summaryModel;
+    const thinkingLevel = preferences.summaryThinkingLevel;
+    const modelConfig =
+      getExecutionHarnessForModel(model) === 'codex'
+        ? resolveProviderModelConfig(
+            'codex',
+            { thinkingLevel },
+            preferences.providerModelConfigDefaults,
+          )
+        : undefined;
+    return {
+      model,
+      thinkingLevel,
+      ...(modelConfig === undefined ? {} : { modelConfig }),
+    };
+  };
   const generateTitle = createPendingTitleSummaryGenerator({
-    readSettings: async (): Promise<PendingTitleSummarySettings> => {
-      const { readPreferencesFile } = await import('../lib/preferences-store');
-      const preferences = await readPreferencesFile();
-      const model = preferences.summaryModel;
-      const thinkingLevel = preferences.summaryThinkingLevel;
-      const modelConfig =
-        getExecutionHarnessForModel(model) === 'codex'
-          ? resolveProviderModelConfig(
-              'codex',
-              { thinkingLevel },
-              preferences.providerModelConfigDefaults,
-            )
-          : undefined;
-      return {
-        model,
-        thinkingLevel,
-        ...(modelConfig === undefined ? {} : { modelConfig }),
-      };
-    },
+    readSettings,
     resolveScope: (
       container: LedgerContainer,
     ): {
@@ -492,7 +545,10 @@ export function startDesktopPendingTitleOrchestrator(options: {
     generateChatSummary: async (
       text: string,
       invocation: PendingTitleSummaryInvocation,
-    ): Promise<{ readonly text: string; readonly fallback?: unknown }> => {
+    ): Promise<{
+      readonly text: string;
+      readonly fallback?: { readonly skipped?: true };
+    }> => {
       const { generateChatSummary } = await import('../agents/utils');
       return generateChatSummary(text, {
         model: invocation.model,
@@ -537,9 +593,36 @@ export function startDesktopPendingTitleOrchestrator(options: {
     }> => getLedgerStoreClient().resolvePendingTitle(input),
   };
 
+  // Cache-only: with the provider signed out and nothing to pay for the
+  // helper (CAN-7062), a sweep leaves the marker pending without an attempt.
+  // The workspace check runs only when the global one predicts a refusal,
+  // because a workspace Environment credential replaces the global one.
+  const isGenerationSkipped = async (
+    readEntry: () => Promise<PendingTitleEntryContext | null>,
+  ): Promise<boolean> => {
+    const { model } = await readSettings();
+    if (model === undefined) return false;
+    const provider = requireProviderForModel(model);
+    const { isNoBillingSourceRefusalCached } =
+      await import('../agents/no-billing-source-refusal');
+    if (!isNoBillingSourceRefusalCached({ model }, provider)) return false;
+    const context = await readEntry();
+    const scope =
+      context === null
+        ? null
+        : ledgerTaskViewScopeForContainer(context.container);
+    // A missing entry or a global Ledger is resolved by the normal path.
+    if (scope === null) return false;
+    return isNoBillingSourceRefusalCached(
+      { model, projectId: scope.projectId },
+      provider,
+    );
+  };
+
   desktopOrchestrator = new PendingTitleOrchestrator({
     host,
     generateTitle,
+    isGenerationSkipped,
     enqueue: (task, priority): Promise<void> =>
       enqueueBackgroundHelperTask({
         priority,

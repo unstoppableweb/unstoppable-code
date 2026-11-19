@@ -656,7 +656,7 @@ export function CompletedRunRow({
           <div className="absolute right-2 top-2 z-10 opacity-0 transition-opacity group-hover/pipeline-run:opacity-100 focus-within:opacity-100">
             <Button
               type="button"
-              variant="ghost-overlay"
+              variant="ghost"
               size="compact"
               iconOnly
               data-testid={`pipeline-run-toggle-hidden-${summary.id}`}

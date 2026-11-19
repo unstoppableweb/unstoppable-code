@@ -8,7 +8,7 @@ import {
 } from '@canopy/protocol/canopy-core';
 import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
 import type { DesktopIpcCallerResolver } from './file-tree';
-import { WorktreeRecoveryRequestSchema } from '@canopy/protocol/portal/worktree-discard-schemas';
+import { WorktreeRecoveryRequestSchema } from '@canopy/protocol/remote-control/shell/worktree-discard-schemas';
 import {
   IPC_CHANNELS,
   type ProjectDeletionDiscardDescribeRequest,

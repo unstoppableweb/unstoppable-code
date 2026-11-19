@@ -86,30 +86,10 @@ export async function openDelegationFiles(
   return openNativeFiles(directory, signal, limits);
 }
 
-export async function openPortalAssetFiles(
-  directory: string,
-  signal: AbortSignal,
-): Promise<NativeDelegationFiles> {
-  // Portal binary-asset access keeps its prior macOS/Windows-only support and
-  // is distinct from managed-delegation helper eligibility: enabling the shared
-  // native helper on Linux must not newly expose this path. Refuse an
-  // unsupported Portal host before any process launch, as before.
-  const hostOs = hostOperatingSystem();
-  if (hostOs !== 'darwin' && hostOs !== 'win32')
-    throw new Error('The delegated file boundary is unavailable');
-  return openNativeFiles(
-    directory,
-    signal,
-    { fileBytes: 197_632, totalBytes: 104_857_600 + 197_632 },
-    true,
-  );
-}
-
 async function openNativeFiles(
   directory: string,
   signal: AbortSignal,
   limits: DelegationFileLimits,
-  assetReadonly = false,
 ): Promise<NativeDelegationFiles> {
   const canonical = await canonicalDelegationRoot(directory);
   if (signal.aborted)
@@ -134,10 +114,9 @@ async function openNativeFiles(
   }
   const child = spawnClaudeCodeProcessOffMain({
     command: delegationFileBinary(),
-    args: assetReadonly
-      ? [canonical, '--asset-readonly']
-      : limits.fileBytes === undefined ||
-          limits.fileBytes === DELEGATION_FILE_DEFAULT_BYTES
+    args:
+      limits.fileBytes === undefined ||
+      limits.fileBytes === DELEGATION_FILE_DEFAULT_BYTES
         ? [canonical]
         : [canonical, String(limits.fileBytes)],
     cwd: canonical,

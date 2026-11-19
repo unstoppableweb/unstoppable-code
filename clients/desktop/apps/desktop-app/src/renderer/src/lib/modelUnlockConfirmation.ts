@@ -53,7 +53,7 @@ interface ModelUnlockConfirmationBalance {
   readonly credits: number | null;
   /**
    * The increase over the starting balance, only when both readings are the
-   * same wallet and no daily grant could account for any of it.
+   * same wallet.
    */
   readonly addedCredits: number | null;
 }
@@ -96,8 +96,6 @@ interface BalanceRun {
   credits: number | null;
   /** The last usable personal reading, for the amount added. */
   reading: PersonalBalanceReading | null;
-  /** A read in this run minted the daily drip. */
-  grantReported: boolean;
   generation: number;
   pending: boolean;
   wake: (() => void) | null;
@@ -261,8 +259,7 @@ export function selectModelUnlockConfirmationAdded(
 
 /**
  * The credits added since checkout opened. Claimed only when both readings
- * are the same wallet and no read reported a daily grant, which the contract
- * cannot tell apart from a purchase. A balance change, never a receipt.
+ * are the same wallet. A balance change, never a receipt.
  */
 function addedSinceStart(
   start: PersonalBalanceReading | null,
@@ -270,7 +267,6 @@ function addedSinceStart(
 ): number | null {
   const end = run.reading;
   if (start === null || end === null) return null;
-  if (start.reportedGrant || run.grantReported) return null;
   if (start.source !== end.source || start.email !== end.email) return null;
   const added = Math.round((end.credits - start.credits) * 100) / 100;
   return added > 0 ? added : null;
@@ -314,7 +310,6 @@ export function ensureModelUnlockConfirmationBalance(
     finished: false,
     credits: null,
     reading: null,
-    grantReported: false,
     generation: 0,
     pending: false,
     wake: null,
@@ -339,8 +334,6 @@ export function ensureModelUnlockConfirmationBalance(
       run.credits = read.credits;
       run.reading = personalBalanceReading(read.response);
     }
-    if (read.response?.balance?.dailyDripOutcome === 'granted')
-      run.grantReported = true;
     return read.outcome;
   };
 

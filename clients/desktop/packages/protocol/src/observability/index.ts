@@ -5,7 +5,7 @@
 import type {
   AntigravityAccountSnapshot,
   OpenCodeAccountSnapshot,
-} from '../portal';
+} from '../remote-control/shell';
 import type { AgentExecutionHarness } from '../models';
 import type { ModelRoutingAttributionV1 } from '../model-routing';
 

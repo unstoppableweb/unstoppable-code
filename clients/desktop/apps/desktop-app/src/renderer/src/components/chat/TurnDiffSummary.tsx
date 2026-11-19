@@ -572,7 +572,7 @@ export const TurnDiffSummary = memo(function TurnDiffSummary({
               className="ml-auto flex shrink-0 items-center gap-2"
             >
               {onUndo && (
-                <Button variant="ghost-overlay" size="sm" onClick={onUndo}>
+                <Button variant="ghost" size="sm" onClick={onUndo}>
                   Undo
                   <AppCatalogRevertIcon aria-hidden="true" />
                 </Button>

@@ -10,7 +10,7 @@ import {
   supportsChatHarnessChoice,
 } from '@canopy/desktop-shared/lib/chat-model-selection';
 import { assertOpenCodeSelectionAvailable } from '../opencode/selection';
-import type { AgentSentInfo } from '@canopy/protocol/portal/external-agent-sender';
+import type { AgentSentInfo } from '@canopy/protocol/remote-control/shell/external-agent-sender';
 import { resolvePresentationSource } from '../canopy-tools/presentation-state';
 import { chatLastMessageRole } from '../lib/chat-last-message-role';
 import { isOpenCodeRuntimeAvailable } from '../opencode/runtime-availability';
@@ -38,19 +38,18 @@ import {
   type CoworkWorkEntryChatSummary,
   type AgentModelConfig,
   type AgentProviderType,
-  type AiCreditsScopeRequest,
   type ChatActiveSessionInfo,
   type ModelHarness,
   type PersistedChatMessage,
   type PersistedChatTab,
   type PersistedPendingQuestion,
-  type PortalChatMessage,
-  type PortalStandaloneChatCancelPayload,
-  type PortalStandaloneChatSendPayload,
-  type PortalStandaloneChatSetModelPayload,
-  type PortalStandaloneChatSummary,
-  type PortalStandaloneWorkEntryFields,
-  type PortalSessionShellState,
+  type RemoteControlChatMessage,
+  type RemoteControlStandaloneChatCancelPayload,
+  type RemoteControlStandaloneChatSendPayload,
+  type RemoteControlStandaloneChatSetModelPayload,
+  type RemoteControlStandaloneChatSummary,
+  type RemoteControlStandaloneWorkEntryFields,
+  type RemoteControlSessionShellState,
   type ChatTabPluginSelections,
   type UsageInitiationSource,
   type ThinkingLevel,
@@ -63,10 +62,10 @@ import {
   type ChatCommandExecutionOptions,
 } from '@canopy/desktop-shared/types';
 import type {
-  PortalChatScheduledMessages,
-  PortalStandaloneChatCreatePayload,
-  PortalStandaloneChatCreateResult,
-} from '@canopy/protocol/portal';
+  RemoteControlChatScheduledMessages,
+  RemoteControlStandaloneChatCreatePayload,
+  RemoteControlStandaloneChatCreateResult,
+} from '@canopy/protocol/remote-control/shell';
 import { mergeAgentModelConfig } from '@canopy/execution-engine/lib/codex-speed';
 import { TurnDispatchTiming } from '../lib/turn-dispatch-timing';
 import { validateId } from '../lib/validation';
@@ -92,8 +91,7 @@ import {
 } from '../lib/cowork-work-entries';
 import { sidebarItemGroupsService } from './sidebar-item-groups-service';
 import { REMOTE_CONTROL_LABEL } from '@canopy/protocol';
-import type { WorkOwner } from '@canopy/protocol/llm-gateway';
-import { peekPortalProviderAvailability } from '../auth/provider-auth-state';
+import { peekRemoteControlProviderAvailability } from '../auth/provider-auth-state';
 import { isCursorRuntimeAvailable } from '../cursor/runtime-availability';
 import { readChatTabsFile } from '../lib/chat-tabs-reader';
 import {
@@ -112,8 +110,8 @@ import {
   getSessionProviderType,
   getSessionSelectedModel,
 } from '../agents/session-manager';
-import { projectPortalQuestionStates } from '../lib/portal-question-states';
-import { projectPortalLastTurnEnd } from '../lib/portal-turn-end';
+import { projectRemoteControlQuestionStates } from '../lib/remote-control-question-states';
+import { projectRemoteControlLastTurnEnd } from '../lib/remote-control-turn-end';
 import {
   adoptPreparingSendSession,
   cancelChatTurn,
@@ -121,11 +119,7 @@ import {
   isChatTurnStopCurrent,
   type ChatTurnStopContext,
 } from '../lib/chat-turn-cancel';
-import {
-  createAiCreditsScopeOwnerResolver,
-  resolveAiCreditsScopeOwner,
-  type SnapshotWorkOwnerEvidence,
-} from '../agents/work-owner';
+import { resolveAiCreditsScopeOwner } from '../agents/work-owner';
 import {
   pinInheritingAgentToDestination,
   resolveSendModelPin,
@@ -133,8 +127,8 @@ import {
 import { sendToWindow } from '../lib/window-send';
 import { requestDesktopSessionSnapshotInvalidation } from './desktop-session-snapshot-invalidation';
 import {
-  limitPortalChatTranscriptForSeedWithMetadata,
-  type PortalChatTranscriptSeed,
+  limitRemoteControlChatTranscriptForSeedWithMetadata,
+  type RemoteControlChatTranscriptSeed,
   projectPersistedChatTranscript,
 } from './chat-transcript-projector';
 import { buildAutomationInfoMessage } from './automation-info-message';
@@ -169,7 +163,7 @@ import {
   backgroundTaskCount,
   summaryTurnActive,
 } from '@canopy/desktop-shared/lib/background-work';
-import { PortalServiceError } from './portal-service-error';
+import { RemoteControlServiceError } from './remote-control-service-error';
 import type { PipelinePackageCapabilityOverlay } from '@canopy/execution-engine/types/pipeline';
 
 const CURSOR_CONNECT_MESSAGE =
@@ -184,7 +178,7 @@ const CURSOR_CONNECT_MESSAGE =
 function standaloneTurnFields(
   session: ChatActiveSessionInfo | undefined,
 ): Pick<
-  PortalStandaloneChatSummary,
+  RemoteControlStandaloneChatSummary,
   'turnActive' | 'settingApplication' | 'turnSettings'
 > {
   const turnActive = session?.turnActive === true;
@@ -222,7 +216,7 @@ export interface StandaloneChatServiceOptions {
 
 function assertCanCommitSend(options: StandaloneChatServiceOptions): void {
   if (options.canCommitSend?.() === false) {
-    throw new PortalServiceError(
+    throw new RemoteControlServiceError(
       'invalid_target',
       'The paired session is no longer authorized.',
     );
@@ -230,7 +224,7 @@ function assertCanCommitSend(options: StandaloneChatServiceOptions): void {
 }
 
 type StandaloneChatSendRequest = Omit<
-  PortalStandaloneChatSendPayload,
+  RemoteControlStandaloneChatSendPayload,
   'fileReferences'
 > & {
   fileReferences?: FileReference[];
@@ -461,7 +455,7 @@ async function upsertStandaloneMessages(input: {
       tab.newChatStartedWatcherFiredAt = input.newChatStartedWatcherFiredAt;
     }
     if (input.canCommitSend?.() === false) {
-      throw new PortalServiceError(
+      throw new RemoteControlServiceError(
         'invalid_target',
         'The paired session is no longer authorized.',
       );
@@ -518,7 +512,7 @@ async function readStandaloneProjects(
 }
 
 export async function createStandaloneChatTab(
-  request: PortalStandaloneChatCreatePayload,
+  request: RemoteControlStandaloneChatCreatePayload,
   options: {
     commandId: string;
     dispatchCommand: (
@@ -531,14 +525,14 @@ export async function createStandaloneChatTab(
     >;
     canCreate: () => boolean;
   },
-): Promise<PortalStandaloneChatCreateResult> {
+): Promise<RemoteControlStandaloneChatCreateResult> {
   validateStandaloneProjectId(request.projectLocalId);
   validateId(request.chatId, 'chatId');
   if (request.workEntryId !== undefined) {
     try {
       validateId(request.workEntryId, 'workEntryId');
     } catch {
-      throw new PortalServiceError(
+      throw new RemoteControlServiceError(
         'invalid_payload',
         'Invalid standalone chat create payload.',
       );
@@ -546,7 +540,7 @@ export async function createStandaloneChatTab(
   }
   const assertAuthorized = (): void => {
     if (!options.canCreate()) {
-      throw new PortalServiceError(
+      throw new RemoteControlServiceError(
         'invalid_target',
         'The paired session is no longer authorized.',
       );
@@ -555,7 +549,7 @@ export async function createStandaloneChatTab(
   assertAuthorized();
   const resolved = await resolveStandaloneChatTarget(request);
   if (resolved.isArchived) {
-    throw new PortalServiceError(
+    throw new RemoteControlServiceError(
       request.workEntryId === undefined ? 'invalid_target' : 'not_found',
       'Archived chats must be restored before they can be used.',
     );
@@ -569,7 +563,7 @@ export async function createStandaloneChatTab(
       assertAuthorized();
       const projects = await readStandaloneProjects();
       if (!projects.some((project) => project.id === workspaceId)) {
-        throw new PortalServiceError(
+        throw new RemoteControlServiceError(
           'not_found',
           'The selected project is no longer available.',
         );
@@ -585,7 +579,7 @@ export async function createStandaloneChatTab(
           current.archivedInEntryId !== null ||
           (current.entryId !== null && current.entryId !== request.workEntryId)
         ) {
-          throw new PortalServiceError(
+          throw new RemoteControlServiceError(
             'not_found',
             'The selected Work Entry is no longer available.',
           );
@@ -594,7 +588,7 @@ export async function createStandaloneChatTab(
         current.archivedInEntryId !== null ||
         (current.entryId !== null && current.entryId !== entryId)
       ) {
-        throw new PortalServiceError(
+        throw new RemoteControlServiceError(
           'invalid_target',
           'The selected chat target changed.',
         );
@@ -607,7 +601,7 @@ export async function createStandaloneChatTab(
       ) {
         const file = await readChatTabsFile(workspaceId, entryId);
         if (file.tabs.length > 0) {
-          throw new PortalServiceError(
+          throw new RemoteControlServiceError(
             'invalid_target',
             'This chat identifier belongs to another work entry.',
           );
@@ -653,7 +647,7 @@ export async function createStandaloneChatTab(
           latest.archivedInEntryId !== null ||
           (latest.entryId !== null && latest.entryId !== request.workEntryId)
         ) {
-          throw new PortalServiceError(
+          throw new RemoteControlServiceError(
             'not_found',
             'The selected Work Entry is no longer available.',
           );
@@ -678,7 +672,7 @@ export async function createStandaloneChatTab(
         result.outcome !== 'applied' &&
         result.outcome !== 'already_applied'
       ) {
-        throw new PortalServiceError(
+        throw new RemoteControlServiceError(
           result.outcome === 'not_found' ? 'not_found' : 'execution_failed',
           result.reason ?? 'The new chat could not be created.',
         );
@@ -806,7 +800,7 @@ async function resolveStandaloneArchiveTarget(
       ? projects
       : projects.filter((project) => project.id === workspaceId);
   if (scoped.length === 0)
-    throw new PortalServiceError(
+    throw new RemoteControlServiceError(
       'invalid_target',
       'The chat project is unavailable on this paired desktop.',
     );
@@ -914,19 +908,19 @@ async function resolveStandaloneArchiveTarget(
         });
     }
     if (liveIncarnation !== undefined && matches.length === matchesBeforeScan)
-      throw new PortalServiceError(
+      throw new RemoteControlServiceError(
         'invalid_target',
         'The Work Entry changed before archive.',
       );
   }
   if (matches.length > 1)
-    throw new PortalServiceError(
+    throw new RemoteControlServiceError(
       'invalid_target',
       'The chat target is ambiguous. Specify its project.',
     );
   const match = matches[0];
   if (!match)
-    throw new PortalServiceError(
+    throw new RemoteControlServiceError(
       'not_found',
       'The chat has no live or retained archived Work Entry.',
     );
@@ -941,7 +935,7 @@ async function resolveStandaloneArchiveTarget(
 function projectWorkEntryFields(
   entry: WorkEntryChatSummaryListItem,
   projectId: string,
-): PortalStandaloneWorkEntryFields {
+): RemoteControlStandaloneWorkEntryFields {
   const notificationSpaceId = notificationSpaceIdFor({
     projectId,
     worktreeId: entry.entryId,
@@ -983,18 +977,17 @@ function buildStandaloneChatSummary(
   tab: PersistedChatTab,
   options?: {
     scheduledMessagesIndex:
-      | ReadonlyMap<string, PortalChatScheduledMessages>
+      | ReadonlyMap<string, RemoteControlChatScheduledMessages>
       | undefined;
     hasActiveChat?: boolean;
     deferredToolsAllowed?: boolean;
     includeDelivery?: boolean;
     lastMessageAt?: string;
     workEntry?: WorkEntryChatSummaryListItem;
-    owner?: WorkOwner;
     /** The Work Entry's file-backed questions; omit for streaming updates. */
     pendingQuestions?: readonly PersistedPendingQuestion[];
   },
-): PortalStandaloneChatSummary {
+): RemoteControlStandaloneChatSummary {
   const workEntryId = options?.workEntry?.entryId;
   // The canonical turn decides, as for worktree chats (turn-state phase 41b).
   const chatState = getChatStateService();
@@ -1019,7 +1012,7 @@ function buildStandaloneChatSummary(
               })),
           canonicalTurn?.phase,
         );
-  const lastTurnEnd = projectPortalLastTurnEnd(tab);
+  const lastTurnEnd = projectRemoteControlLastTurnEnd(tab);
   const lastMessageAt = tab.transcript
     ? tab.transcript.lastMessageAt
     : tab.messages[tab.messages.length - 1]?.timestamp;
@@ -1161,7 +1154,7 @@ function buildStandaloneChatSummary(
     // Projected composer state (CAN-1219) so the portal's standalone model
     // picker seeds from and reconciles against the desktop.
     model: tab.model,
-    providerAvailability: peekPortalProviderAvailability(),
+    providerAvailability: peekRemoteControlProviderAvailability(),
     pluginSelectionsDetail: normalizePluginSelections(tab.pluginSelections),
     deferredToolsAllowed:
       options?.deferredToolsAllowed ?? tab.deferredToolsAllowed,
@@ -1175,7 +1168,7 @@ function buildStandaloneChatSummary(
     ...(lastTurnEnd ? { lastTurnEnd } : {}),
     ...(options?.pendingQuestions !== undefined
       ? {
-          pendingQuestions: projectPortalQuestionStates(
+          pendingQuestions: projectRemoteControlQuestionStates(
             tab.id,
             options.pendingQuestions,
           ),
@@ -1189,11 +1182,10 @@ function buildCompactStandaloneChatSummary(
   projectName: string,
   entry: WorkEntryChatSummaryListItem,
   chat: CoworkWorkEntryChatSummary,
-  owner: WorkOwner | undefined,
   scheduledMessagesIndex:
-    | ReadonlyMap<string, PortalChatScheduledMessages>
+    | ReadonlyMap<string, RemoteControlChatScheduledMessages>
     | undefined,
-): PortalStandaloneChatSummary {
+): RemoteControlStandaloneChatSummary {
   const { pluginSelectionsDetail, ...summary } = buildStandaloneChatSummary(
     projectId,
     projectName,
@@ -1219,7 +1211,6 @@ function buildCompactStandaloneChatSummary(
       workEntry: entry,
       includeDelivery: false,
       scheduledMessagesIndex,
-      owner,
     },
   );
   // Compact entries do not retain this policy. Omit the unknown value so a
@@ -1236,33 +1227,21 @@ function buildCompactStandaloneChatSummary(
     : { ...summary, lastMessageRole: chat.lastMessageRole };
 }
 
-function standaloneSummaryOwnerScope(
-  projectId: string,
-  entryId: string,
-  chatId: string,
-): AiCreditsScopeRequest {
-  return { kind: 'work', projectId, worktreeId: entryId, chatId };
-}
-
 export async function listStandaloneChats(options?: {
   strict?: boolean;
   /** Share session discovery without putting provisioning inside its view. */
   sidebarSnapshot?: SidebarItemsSnapshot;
-  ownerEvidence?: SnapshotWorkOwnerEvidence;
   /** Authorized visible parents for a complete Activity inventory. */
   projectIds?: readonly string[];
-}): Promise<PortalStandaloneChatSummary[]> {
+}): Promise<RemoteControlStandaloneChatSummary[]> {
   const projects = await readStandaloneProjects(
     options?.strict,
     options?.sidebarSnapshot,
   );
   if (projects.length === 0) return [];
-  const summaries: PortalStandaloneChatSummary[] = [];
+  const summaries: RemoteControlStandaloneChatSummary[] = [];
   const scheduledMessagesIndex =
     await getAutomationsService().getScheduledMessagesIndex();
-  const resolveOwner = createAiCreditsScopeOwnerResolver(
-    options?.ownerEvidence,
-  );
   // The desktop shell needs chat metadata, not transcript bodies. The Work
   // Entry registry's write-through summaries keep this startup projection
   // proportional to chat count rather than transcript bytes.
@@ -1274,9 +1253,6 @@ export async function listStandaloneChats(options?: {
       : await listWorkEntryChatSummaries(project.id);
     for (const entry of entries) {
       for (const chat of entry.chats) {
-        const owner = await resolveOwner(
-          standaloneSummaryOwnerScope(project.id, entry.entryId, chat.id),
-        );
         summaries.push(
           await withLiveSessionQuestions(
             buildCompactStandaloneChatSummary(
@@ -1284,7 +1260,6 @@ export async function listStandaloneChats(options?: {
               project.name,
               entry,
               chat,
-              owner,
               scheduledMessagesIndex,
             ),
           ),
@@ -1298,8 +1273,8 @@ export async function listStandaloneChats(options?: {
 }
 
 export function projectStandaloneChatSnapshot(
-  chat: PortalStandaloneChatSummary,
-): PortalSessionShellState['standaloneChats'][number] {
+  chat: RemoteControlStandaloneChatSummary,
+): RemoteControlSessionShellState['standaloneChats'][number] {
   return {
     localId: chat.chatId,
     queuedMessages: chat.queuedMessages,
@@ -1371,8 +1346,8 @@ export function projectStandaloneChatSnapshot(
  * and a snapshot fails so it can be retried.
  */
 export async function withStandalonePendingQuestions(
-  chat: PortalStandaloneChatSummary,
-): Promise<PortalStandaloneChatSummary> {
+  chat: RemoteControlStandaloneChatSummary,
+): Promise<RemoteControlStandaloneChatSummary> {
   if (chat.workEntryId === undefined || chat.pendingQuestions !== undefined)
     return chat;
   const tabsFile = await readChatTabsFile(
@@ -1381,11 +1356,11 @@ export async function withStandalonePendingQuestions(
     { chatIds: [chat.chatId], pageOnly: true },
   );
   const tab = tabsFile.tabs.find((candidate) => candidate.id === chat.chatId);
-  const lastTurnEnd = tab ? projectPortalLastTurnEnd(tab) : undefined;
+  const lastTurnEnd = tab ? projectRemoteControlLastTurnEnd(tab) : undefined;
   return {
     ...chat,
     ...(lastTurnEnd ? { lastTurnEnd } : {}),
-    pendingQuestions: projectPortalQuestionStates(
+    pendingQuestions: projectRemoteControlQuestionStates(
       chat.chatId,
       tabsFile.pendingQuestions ?? [],
     ),
@@ -1399,8 +1374,8 @@ export async function withStandalonePendingQuestions(
  * one without them would drop a question that is still awaited.
  */
 async function withLiveSessionQuestions(
-  chat: PortalStandaloneChatSummary,
-): Promise<PortalStandaloneChatSummary> {
+  chat: RemoteControlStandaloneChatSummary,
+): Promise<RemoteControlStandaloneChatSummary> {
   const hasLiveSession =
     chat.workEntryId !== undefined &&
     getActiveSessionInfos(chat.projectLocalId, chat.workEntryId).some(
@@ -1441,7 +1416,7 @@ export function emitStandaloneChatRemovals(): void {
  * the ack never claims success for a model that never persists.
  */
 export async function setStandaloneChatModel(
-  payload: PortalStandaloneChatSetModelPayload,
+  payload: RemoteControlStandaloneChatSetModelPayload,
   options: StandaloneChatServiceOptions = {},
 ): Promise<{ ok: true }> {
   validateId(payload.chatId, 'chatId');
@@ -2752,7 +2727,7 @@ async function sendStandaloneChatMessageOnce(
 }
 
 export async function cancelStandaloneChat(
-  request: PortalStandaloneChatCancelPayload,
+  request: RemoteControlStandaloneChatCancelPayload,
 ): Promise<{ ok: true }> {
   validateId(request.chatId, 'chatId');
   // Target resolution is asynchronous for unscoped Cowork chats. Snapshot all
@@ -2865,7 +2840,7 @@ export async function listStandaloneChatTranscript(input?: {
   chatId?: string;
   projectId?: string;
   projectLocalId?: string;
-}): Promise<PortalChatMessage[]> {
+}): Promise<RemoteControlChatMessage[]> {
   return (await getStandaloneChatTranscriptSeed(input)).messages;
 }
 
@@ -2873,7 +2848,7 @@ export async function getStandaloneChatTranscriptSeed(input?: {
   chatId?: string;
   projectId?: string;
   projectLocalId?: string;
-}): Promise<PortalChatTranscriptSeed> {
+}): Promise<RemoteControlChatTranscriptSeed> {
   if (!input?.chatId) return { messages: [], truncated: false };
   validateId(input.chatId, 'chatId');
   const { workspaceId, entryId } = await resolveStandaloneChatTarget(input);
@@ -2886,7 +2861,7 @@ export async function getStandaloneChatTranscriptSeed(input?: {
   if (!tab) return { messages: [], truncated: false };
   // Hydrate delivery only when this chat is opened; shell startup uses compact metadata.
   requestDesktopSessionSnapshotInvalidation('standalone-chat.tab-summary');
-  return limitPortalChatTranscriptForSeedWithMetadata(
+  return limitRemoteControlChatTranscriptForSeedWithMetadata(
     // Transcript-level projection so each turn's persisted timer row is
     // re-keyed onto the live wire timer id (`${userMessageId}:turn-timer`);
     // see `projectPersistedChatTranscript`.

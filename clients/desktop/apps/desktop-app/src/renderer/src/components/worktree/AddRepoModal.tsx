@@ -49,7 +49,7 @@ import {
   normalizeRepositoryCloneUrl,
   repositoryCloneErrorMessage,
   REPOSITORY_CLONE_FAILURE_MESSAGE,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useStandaloneChatStore } from '@/stores/standaloneChatStore';

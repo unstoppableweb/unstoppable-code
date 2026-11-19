@@ -194,6 +194,7 @@ import {
   getContextUsageForSession,
   restrictSessionApprovalRules,
 } from '../agents/session-manager';
+import { isNoBillingSourceRefusalCached } from '../agents/no-billing-source-refusal';
 import { generateHandoffSummary } from '../agents/utils';
 import {
   captureSessionWorkOwner,
@@ -2986,19 +2987,33 @@ export function registerChatHandlers(
 
         // Canonical eligibility controls initial title generation, including
         // retries after failed persistence. Work entry metadata derives from
-        // canonical tab state.
-        scheduleChatSummary({
-          projectId,
-          worktreeId,
-          chatId,
-          cwd,
-          getWindow,
-          standaloneChatProjectId: standaloneProjectId,
-          linkTarget: buildStandaloneChatLinkTarget(
-            standaloneProjectId,
+        // canonical tab state. A send the session will refuse with
+        // `no_billing_source` (known from caches only) schedules no title
+        // helper (CAN-7062); naming stays pending for a later turn.
+        if (
+          !isNoBillingSourceRefusalCached(
+            {
+              projectId,
+              model: runtimeModel,
+              aiCreditsRouting,
+              subscriptionBillingOverride,
+            },
+            runtimeProviderType,
+          )
+        ) {
+          scheduleChatSummary({
+            projectId,
+            worktreeId,
             chatId,
-          ),
-        });
+            cwd,
+            getWindow,
+            standaloneChatProjectId: standaloneProjectId,
+            linkTarget: buildStandaloneChatLinkTarget(
+              standaloneProjectId,
+              chatId,
+            ),
+          });
+        }
 
         await assertCoworkChatRootPresent(projectId, worktreeId);
         if (shouldRecreateSessionOnNextTurn(projectId, worktreeId, chatId)) {

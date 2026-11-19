@@ -32,9 +32,9 @@ import {
 } from '../skills/skill-service';
 import { loadMarketplaces } from '../plugins/plugin-service';
 import {
-  addPortalMarketplace,
-  installPortalBuiltInPlugin,
-  installPortalExternalPlugin,
+  addRemoteControlMarketplace,
+  installRemoteControlBuiltInPlugin,
+  installRemoteControlExternalPlugin,
 } from '../services/plugin-catalog-service';
 import { skillContextSnapshot } from '../skills/resource-lanes';
 import {
@@ -191,7 +191,7 @@ export const collectionMutationPorts: CollectionMutationPorts = {
     let matches = find();
     if (matches.length === 0 && item.marketplace.type === 'github') {
       await assertCurrent();
-      await addPortalMarketplace(item.marketplace.repo);
+      await addRemoteControlMarketplace(item.marketplace.repo);
       catalog = await readCatalog();
       matches = find();
     }
@@ -202,10 +202,14 @@ export const collectionMutationPorts: CollectionMutationPorts = {
       const providers =
         item.type === 'codex_plugin' ? ['codex' as const] : ['claude' as const];
       await assertCurrent();
-      await installPortalBuiltInPlugin(marketplace.id, plugin.name, providers);
+      await installRemoteControlBuiltInPlugin(
+        marketplace.id,
+        plugin.name,
+        providers,
+      );
     } else if (plugin.externalSource || plugin.facets.claude?.externalSource) {
       await assertCurrent();
-      await installPortalExternalPlugin(marketplace.id, plugin.name);
+      await installRemoteControlExternalPlugin(marketplace.id, plugin.name);
     }
     return { marketplaceId: marketplace.id, pluginName: plugin.name };
   },

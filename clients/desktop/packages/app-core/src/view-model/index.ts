@@ -1,4 +1,4 @@
-import type { PortalSessionShellState } from '@canopy/protocol/portal';
+import type { RemoteControlSessionShellState } from '@canopy/protocol/remote-control/shell';
 
 /**
  * The neutral, transport-agnostic view-model the shared UI renders.
@@ -11,4 +11,4 @@ import type { PortalSessionShellState } from '@canopy/protocol/portal';
  * Re-exported as `SessionViewModel` so feature code reads it under a
  * transport-neutral name rather than the portal-flavoured one.
  */
-export type SessionViewModel = PortalSessionShellState;
+export type SessionViewModel = RemoteControlSessionShellState;

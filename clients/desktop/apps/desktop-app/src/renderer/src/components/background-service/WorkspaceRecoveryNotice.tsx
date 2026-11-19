@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useState, type JSX } from 'react';
-import { WorktreeRecoveryPanel } from '@canopy/ui-app/worktree-discard';
-import type { W5RecoveryStatus } from '@canopy/protocol/portal';
+import {
+  getWorkspaceRecoveryDismissalStore,
+  WorktreeRecoveryPanel,
+} from '@canopy/ui-app/worktree-discard';
+import type { W5RecoveryStatus } from '@canopy/protocol/remote-control/shell';
 import { useCanopyClient, useCapabilities } from '@canopy/app-state';
 import { useRemoteControlStore } from '@/stores/remoteControlStore';
 import { useRecoveryShellSnapshotStore } from '@/stores/recoveryShellSnapshotStore';
@@ -13,6 +16,12 @@ export function WorkspaceRecoveryNotice(): JSX.Element | null {
   );
   const capabilities = useCapabilities();
   const client = useCanopyClient();
+  // Keep dismissal across notice remounts for this CanopyClient only; renderer
+  // reload or app relaunch must restore access to Restart for recovery.
+  const dismissalStore = useMemo(
+    () => (local ? getWorkspaceRecoveryDismissalStore(client, null) : null),
+    [client, local],
+  );
   const sharedSidebar = useMemo(isDesktopSharedSidebarEnabled, []);
   const snapshot = useRecoveryShellSnapshotStore((store) => store.snapshot);
   const [status, setStatus] = useState<W5RecoveryStatus | null>(null);
@@ -70,10 +79,11 @@ export function WorkspaceRecoveryNotice(): JSX.Element | null {
       })
       .finally(() => setBusy(false));
   }, [busy]);
-  if (!local) return null;
+  if (!local || dismissalStore === null) return null;
   return (
     <WorktreeRecoveryPanel
       client={client}
+      dismissalStore={dismissalStore}
       snapshot={sharedSidebar ? snapshot : undefined}
       status={status ?? undefined}
       canRecover={capabilities.workspaceRecovery === true}

@@ -13,7 +13,7 @@ import {
   CanopyKeyedRetryDirectiveSchema,
   CanopyQueryRetryDirectiveSchema,
 } from '../../errors';
-import { WorktreeRecoveryDescriptionSchema } from '../../../portal/worktree-discard-schemas';
+import { WorktreeRecoveryDescriptionSchema } from '../../../remote-control/shell/worktree-discard-schemas';
 // The routes' DTOs carry retained setup output past 32 KiB, as the listing's do.
 import { CoreCloudJsonValueSchema } from '../workspace/reads';
 

@@ -9,6 +9,7 @@ import {
   MEMORY_GRANTS,
   WORKER_GIT_GRANTS,
   PIPELINE_GRANTS,
+  REVIEW_GRANTS,
   WORKER_CODE_GRAPH_GRANTS,
   WORKER_SCRIPT_GRANTS,
   WORKER_VISUAL_GRANTS,
@@ -31,6 +32,10 @@ export const AGENT_CORE_TOOL_OPERATIONS = {
     'core.annotation.thread.get': [ANNOTATION_GRANTS.read],
     'core.annotation.thread.list': [ANNOTATION_GRANTS.read],
     'core.annotation.thread.reply': [ANNOTATION_GRANTS.write],
+  },
+  review: {
+    'core.review.get': [REVIEW_GRANTS.read],
+    'core.review.comment.reply': [REVIEW_GRANTS.write],
   },
   ledger: {
     'core.ledger.entries.search': [LEDGER_GRANTS.read],

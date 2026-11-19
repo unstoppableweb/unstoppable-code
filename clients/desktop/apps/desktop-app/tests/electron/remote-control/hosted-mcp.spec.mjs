@@ -13,11 +13,14 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { chromium } from '@playwright/test';
 import { expect, test } from './harness/fixtures.mjs';
-import { PORTAL_WEB_ORIGIN_LOOPBACK } from './harness/config.mjs';
-import { ensurePortalSchema } from './harness/portalHarness.mjs';
-import { seedPortalWebUser } from './harness/seedWebUser.mjs';
-import { truncateWebTestState, withPortalDbClient } from './harness/db.mjs';
-import { warmPortalRoutes } from './harness/web-server.mjs';
+import { REMOTE_CONTROL_WEB_ORIGIN_LOOPBACK } from './harness/config.mjs';
+import { ensureRemoteControlSchema } from './harness/remoteControlHarness.mjs';
+import { seedRemoteControlWebUser } from './harness/seedWebUser.mjs';
+import {
+  truncateWebTestState,
+  withRemoteControlDbClient,
+} from './harness/db.mjs';
+import { warmRemoteControlRoutes } from './harness/web-server.mjs';
 import {
   buildTrackedPlan,
   DEFAULT_MOCK_BASE_URL,
@@ -406,17 +409,17 @@ function chatEnvelope(projectId, worktreeId) {
   return { schemaVersion: 1, commandId: randomUUID(), projectId, worktreeId };
 }
 
-test.beforeAll(async ({ portalServerManager }) => {
+test.beforeAll(async ({ remoteControlServerManager }) => {
   // A cold Turbopack compile of the web routes and consent page can take
   // minutes; the budget absorbs it here instead of inside a case.
   test.setTimeout(900_000);
-  await ensurePortalSchema();
+  await ensureRemoteControlSchema();
   await truncateWebTestState();
   relay = await startDeviceRelay();
-  webServer = await portalServerManager.acquire(
+  webServer = await remoteControlServerManager.acquire(
     directWebServerOptions({ relay }),
   );
-  await warmPortalRoutes([
+  await warmRemoteControlRoutes([
     { path: '/api/v1/device-relay/token', method: 'POST' },
     { path: '/api/v1/mcp/remotes/pair', method: 'POST' },
     { path: '/api/v1/external-agents/computers', method: 'GET' },
@@ -428,8 +431,8 @@ test.beforeAll(async ({ portalServerManager }) => {
     { path: '/api/v1/oauth/token', method: 'POST' },
   ]);
 
-  userA = await seedPortalWebUser({ name: 'Hosted agents owner' });
-  userB = await seedPortalWebUser({ name: 'Another account' });
+  userA = await seedRemoteControlWebUser({ name: 'Hosted agents owner' });
+  userB = await seedRemoteControlWebUser({ name: 'Another account' });
   desktop = await launchRemoteControlDesktop({
     relay,
     seeded: userA,
@@ -590,7 +593,7 @@ test('pairs through the SSE route with desktop approval, retrying a failed link 
   test.setTimeout(180_000);
   // Fail every in-place attempt to record the link after the desktop
   // approves. A sequence is not transactional, so it counts failed writes.
-  await withPortalDbClient(async (client) => {
+  await withRemoteControlDbClient(async (client) => {
     await client.query(`
       DROP TRIGGER IF EXISTS e2e_fail_hosted_link ON agent_remote_identities;
       DROP SEQUENCE IF EXISTS e2e_hosted_link_faults;
@@ -624,7 +627,7 @@ test('pairs through the SSE route with desktop approval, retrying a failed link 
     firstRemoteId = links[0].external_id;
     expect((await readHostedLeases(userA.userId)).length).toBe(0);
   } finally {
-    await withPortalDbClient((client) =>
+    await withRemoteControlDbClient((client) =>
       client.query(`
         DROP TRIGGER IF EXISTS e2e_fail_hosted_link ON agent_remote_identities;
         DROP FUNCTION IF EXISTS e2e_fail_hosted_link();
@@ -1662,7 +1665,7 @@ test('the desktop refuses forbidden effects from a valid delegated hosted sessio
 });
 
 async function externalIdOf(userId) {
-  return withPortalDbClient(async (client) => {
+  return withRemoteControlDbClient(async (client) => {
     const result = await client.query(
       'SELECT external_id FROM users WHERE id = $1',
       [userId],
@@ -1773,7 +1776,7 @@ test('an expired trial refuses neither the next call on a pooled session nor a p
 
   // Remote control no longer depends on subscription state, so a trial that
   // ended in tier mode refuses nothing.
-  await withPortalDbClient((client) =>
+  await withRemoteControlDbClient((client) =>
     client.query(
       `UPDATE users SET trial_ends_at = clock_timestamp() - interval '1 day' WHERE id = $1`,
       [userA.userId],
@@ -1802,7 +1805,7 @@ test('an expired trial refuses neither the next call on a pooled session nor a p
       .toBe(0);
     expect(relay.connectedDeviceIds().has(pooled.relay_device_id)).toBe(true);
   } finally {
-    await withPortalDbClient((client) =>
+    await withRemoteControlDbClient((client) =>
       client.query('UPDATE users SET trial_ends_at = NULL WHERE id = $1', [
         userA.userId,
       ]),
@@ -1827,7 +1830,7 @@ test('global slots: pooled calls share one slot, a fifth admission is refused, a
   const foreign = [];
   const holdSlot = async (slot, expiresIn) => {
     const relayDeviceId = randomRelayDeviceId();
-    await withPortalDbClient((client) =>
+    await withRemoteControlDbClient((client) =>
       client.query(
         `INSERT INTO hosted_remote_session_leases
            (external_id, user_id, slot, purpose, relay_device_id, expires_at)
@@ -1889,7 +1892,7 @@ test('global slots: pooled calls share one slot, a fifth admission is refused, a
 
     // That holder crashes: its renewal stops, the lease lapses, and the
     // next admission reclaims the slot without anyone releasing it.
-    await withPortalDbClient((client) =>
+    await withRemoteControlDbClient((client) =>
       client.query(
         `UPDATE hosted_remote_session_leases
             SET expires_at = clock_timestamp() + interval '3 seconds'
@@ -1907,7 +1910,7 @@ test('global slots: pooled calls share one slot, a fifth admission is refused, a
     );
     expect(leases.filter((lease) => lease.live)).toHaveLength(4);
   } finally {
-    await withPortalDbClient((client) =>
+    await withRemoteControlDbClient((client) =>
       client.query(
         `DELETE FROM hosted_remote_session_leases
           WHERE user_id = $1 AND relay_device_id = ANY($2::text[])`,
@@ -1945,7 +1948,7 @@ test('another account cannot see, pair with, reach or remove this computer', asy
   ).toHaveLength(0);
 
   const remove = await fetch(
-    `${PORTAL_WEB_ORIGIN_LOOPBACK}/api/v1/external-agents/computers/${(await pairedLink(userA.userId)).external_id}/remove`,
+    `${REMOTE_CONTROL_WEB_ORIGIN_LOOPBACK}/api/v1/external-agents/computers/${(await pairedLink(userA.userId)).external_id}/remove`,
     { method: 'POST', headers: sameOriginJsonHeaders(userB), body: '{}' },
   );
   expect(remove.status).toBe(404);

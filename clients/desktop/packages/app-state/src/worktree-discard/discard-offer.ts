@@ -1,11 +1,11 @@
-import { WorktreeRecoveryDescriptionSchema } from '@canopy/protocol/portal/worktree-discard-schemas';
+import { WorktreeRecoveryDescriptionSchema } from '@canopy/protocol/remote-control/shell/worktree-discard-schemas';
 import {
   formatWorktreeRecoveryReason,
   type WorktreeRecoveryDescription,
-} from '@canopy/protocol/portal/worktree-recovery';
-import type { PortalWorktreeArchivePayload } from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell/worktree-recovery';
+import type { RemoteControlWorktreeArchivePayload } from '@canopy/protocol/remote-control/shell';
 import { create } from 'zustand';
-import type { WorktreeDiscardDescription } from '@canopy/protocol/portal/worktree-discard';
+import type { WorktreeDiscardDescription } from '@canopy/protocol/remote-control/shell/worktree-discard';
 
 /**
  * CAN-5336: a worktree removal the host refused, offered to the mounted
@@ -24,7 +24,7 @@ export interface WorktreeDiscardOffer {
   readonly recovery?: WorktreeRecoveryDescription;
   /** Safety choices from the original confirmation, not a component callback. */
   readonly removal?: Pick<
-    PortalWorktreeArchivePayload,
+    RemoteControlWorktreeArchivePayload,
     'deleteBranch' | 'expectedBranchName' | 'deleteWithoutRetentionIfMissing'
   >;
   /**

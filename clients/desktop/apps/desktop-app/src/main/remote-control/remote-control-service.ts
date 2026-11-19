@@ -667,7 +667,7 @@ export class RemoteControlService {
       this.scheduleMigrationRetry();
       return;
     }
-    const portalActive = portal.active;
+    const remoteControlActive = portal.active;
     await this.deps.store.update((current) => {
       if (current.migratedOptIn === true) return current;
       // An explicit choice made meanwhile wins over the Portal opt-in.
@@ -676,7 +676,7 @@ export class RemoteControlService {
         ...current,
         allowIncoming: explicit
           ? current.allowIncoming
-          : current.allowIncoming || portalActive,
+          : current.allowIncoming || remoteControlActive,
         migratedOptIn: true,
       };
     });

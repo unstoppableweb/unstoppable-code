@@ -1,4 +1,4 @@
-import type { PortalChatEventPayload } from '@canopy/protocol/portal';
+import type { RemoteControlChatEventPayload } from '@canopy/protocol/remote-control/shell';
 import type { ConversationPresentationSource } from '@canopy/app-core/conversation';
 import {
   createConversationHostClientBridge,
@@ -30,7 +30,7 @@ export interface ConversationConformanceHost {
 }
 
 interface RecordedSink extends ConversationHostBridgeTarget {
-  readonly messages: PortalChatEventPayload[];
+  readonly messages: RemoteControlChatEventPayload[];
   readonly starts: { userMessageId: string; canonicalId: string }[];
   readonly settles: ('complete' | 'failed')[];
   readonly resets: string[];
@@ -65,7 +65,7 @@ function check(condition: boolean, message: string): void {
 function lastMessageWithRole(
   sink: RecordedSink,
   role: 'user' | 'assistant',
-): PortalChatEventPayload['message'] | undefined {
+): RemoteControlChatEventPayload['message'] | undefined {
   const messages = sink.messages
     .map((payload) => payload.message)
     .filter((message) => message.role === role);

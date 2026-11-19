@@ -218,7 +218,7 @@ export function McpRemovalRepair({
                         variant={
                           serverId === candidate.serverId
                             ? 'secondary'
-                            : 'tinted'
+                            : 'ghost'
                         }
                         size="compact"
                         className="max-w-full"

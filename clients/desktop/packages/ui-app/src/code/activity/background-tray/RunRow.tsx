@@ -8,7 +8,6 @@ import {
   Tooltip,
   DagProgressDots,
   GroupedDiffStats,
-  SpinnerStyleProvider,
   StatusGlyph,
   type DagJobMeta,
   joinDetails,
@@ -407,7 +406,7 @@ const PR_STATE_APPEARANCE = {
 const RUN_ACTION_VARIANTS = {
   accent: 'primary',
   destructive: 'ghost-destructive',
-  quiet: 'ghost-overlay',
+  quiet: 'ghost',
 } as const;
 
 /** One job of the open run: its glyph, its name and how long it took. */
@@ -416,91 +415,111 @@ export function RunJobRows({
   dag,
   now,
   onJobClick,
+  canOpenJob,
 }: {
   readonly run: BackgroundTrayRun;
   readonly dag: BackgroundTrayRunDag;
   readonly now: number;
   readonly onJobClick?: (runId: string, jobId: string) => void;
+  /**
+   * Whether a job has something to open. A job the host cannot open yet (one
+   * GitHub has not created) is a plain row, not a button that does nothing.
+   * Without it every job opens.
+   */
+  readonly canOpenJob?: (jobId: string) => boolean;
 }): JSX.Element {
   const presentation = useContext(DrawerRowPresentationContext);
   const modal = presentation === 'modal';
   return (
-    // The glyph the collapsed strip shows at 12px, here at the row's 14px,
-    // always the round comet. Times end in the row's time column: past the
-    // 56px action column and its 12px gap.
-    <SpinnerStyleProvider value="comet">
-      {/* One list per tier, in run order, read as one list: each job named
-          with its state ("Build: running"), as the job bar named its dots. */}
-      <div
-        className={`${REPLAY_BLOCK_CLASS} flex flex-col gap-2 ${modal ? '' : presentation === 'legacy' ? 'pr-17' : 'pr-9.5'}`}
-        data-testid="background-tray-run-jobs"
-      >
-        {dag.tiers.map((tier, index) => (
-          <ul
-            key={tier.join(' ') || String(index)}
-            className="flex flex-col gap-2"
-            data-testid="dag-progress-tier"
-          >
-            {tier.map((jobId) => {
-              const job = dag.jobs[jobId];
-              if (job === undefined) return null;
-              const started = job.startedAt ? Date.parse(job.startedAt) : NaN;
-              const ended = job.completedAt ? Date.parse(job.completedAt) : now;
-              const time = Number.isNaN(started)
-                ? null
-                : formatElapsed(Math.max(0, ended - started));
-              const state = runStatusGlyphState(job.status) ?? 'queued';
-              const accessibleName = `${job.name}: ${job.status ?? 'pending'}`;
-              const name = (
-                <span className="min-w-0 flex-1 truncate text-left fg-primary">
-                  {job.name}
-                </span>
-              );
-              return (
-                <li
-                  key={jobId}
-                  className="flex min-w-0 items-center gap-2.5"
-                  data-job-state={state}
-                  {...(onJobClick
-                    ? {}
-                    : { 'data-job-id': jobId, 'aria-label': accessibleName })}
-                >
-                  <span className="flex w-3.5 shrink-0 justify-center">
-                    {presentation !== 'legacy' &&
-                    state === 'paused' &&
-                    run.status === 'needs-input' ? (
-                      <CirclePauseIcon
-                        size={14}
-                        drawnStrokeWidth={1.5}
-                        className="fg-warning-strong"
-                        aria-hidden="true"
-                      />
-                    ) : (
-                      <StatusGlyph state={state} size={14} />
-                    )}
-                  </span>
-                  {onJobClick ? (
-                    <ControlButton
-                      presentation="workflow-step-open"
-                      onClick={(): void => onJobClick(run.id, jobId)}
-                      data-job-id={jobId}
-                      aria-label={accessibleName}
-                    >
-                      {name}
-                    </ControlButton>
+    // The glyph the collapsed strip shows at 12px, here at the row's 14px.
+    // Times end in the row's time column: past the 56px action column and its
+    // 12px gap. One list per tier, in run order, read as one list: each job
+    // named with its state ("Build: running"), as the job bar named its dots.
+    <div
+      className={`${REPLAY_BLOCK_CLASS} flex flex-col gap-2 ${modal ? '' : presentation === 'legacy' ? 'pr-17' : 'pr-9.5'}`}
+      data-testid="background-tray-run-jobs"
+    >
+      {dag.tiers.map((tier, index) => (
+        <ul
+          // A tier is its place in the run: a job that joins it must not
+          // remount the jobs already there (and drop the focus on one).
+          key={index}
+          className="flex flex-col gap-2"
+          data-testid="dag-progress-tier"
+        >
+          {tier.map((jobId) => {
+            const job = dag.jobs[jobId];
+            if (job === undefined) return null;
+            const started = job.startedAt ? Date.parse(job.startedAt) : NaN;
+            const ended = job.completedAt ? Date.parse(job.completedAt) : now;
+            const time = Number.isNaN(started)
+              ? null
+              : formatElapsed(Math.max(0, ended - started));
+            const state = runStatusGlyphState(job.status) ?? 'queued';
+            const accessibleName = `${job.name}: ${job.outcomeLabel?.toLowerCase() ?? job.status ?? 'pending'}`;
+            const opens =
+              onJobClick !== undefined && (canOpenJob?.(jobId) ?? true);
+            const name = (
+              <span
+                className="min-w-0 flex-1 truncate text-left fg-primary"
+                // A long name is cut; pointing at it shows the whole of it.
+                title={job.name}
+              >
+                {job.name}
+              </span>
+            );
+            return (
+              <li
+                key={jobId}
+                className="flex min-w-0 items-center gap-2.5"
+                data-job-state={state}
+                {...(opens
+                  ? {}
+                  : { 'data-job-id': jobId, 'aria-label': accessibleName })}
+              >
+                <span className="flex w-3.5 shrink-0 justify-center">
+                  {presentation !== 'legacy' &&
+                  state === 'paused' &&
+                  run.status === 'needs-input' ? (
+                    <CirclePauseIcon
+                      size={14}
+                      drawnStrokeWidth={1.5}
+                      className="fg-warning-strong"
+                      aria-hidden="true"
+                    />
                   ) : (
-                    name
+                    <StatusGlyph state={state} size={14} />
                   )}
-                  {time !== null && (
-                    <span className="shrink-0 text-s tabular-nums">{time}</span>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-        ))}
-      </div>
-    </SpinnerStyleProvider>
+                </span>
+                {opens ? (
+                  <ControlButton
+                    presentation="workflow-step-open"
+                    onClick={(): void => onJobClick?.(run.id, jobId)}
+                    data-job-id={jobId}
+                    aria-label={accessibleName}
+                  >
+                    {name}
+                  </ControlButton>
+                ) : (
+                  name
+                )}
+                {(job.outcomeLabel !== undefined ||
+                  job.status === 'skipped') && (
+                  // A skipped job shares the cancelled glyph, so it is named,
+                  // in the source's own word when it has one.
+                  <span className="shrink-0 text-s fg-tertiary">
+                    {job.outcomeLabel ?? 'Skipped'}
+                  </span>
+                )}
+                {time !== null && (
+                  <span className="shrink-0 text-s tabular-nums">{time}</span>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      ))}
+    </div>
   );
 }
 
@@ -698,7 +717,7 @@ function LegacyRunRow({
           <span className="flex items-center gap-1">
             {openBesideAction && (
               <Button
-                variant="ghost-overlay"
+                variant="ghost"
                 size="compact"
                 data-testid="background-tray-row-open"
                 onClick={(): void => onOpen?.(run.id)}
@@ -721,7 +740,7 @@ function LegacyRunRow({
           handler && !isFinishedTrayRun(run.status) ? (
             <Tooltip label={action.label}>
               <Button
-                variant={action.tone === 'accent' ? 'primary' : 'ghost-overlay'}
+                variant={action.tone === 'accent' ? 'primary' : 'ghost'}
                 size="compact"
                 iconOnly
                 aria-label={runActionAriaLabel(run, action.suffix)}
@@ -902,7 +921,7 @@ function DrawerRunRow({
       <span className="flex items-center">
         {onOpen && (
           <Button
-            variant="ghost-overlay"
+            variant="ghost"
             size="compact"
             data-testid="background-tray-row-open"
             onClick={() => onOpen(run.id)}
@@ -917,7 +936,7 @@ function DrawerRunRow({
         >
           <span className="inline-flex">
             <Button
-              variant="ghost-overlay"
+              variant="ghost"
               size="compact"
               iconOnly
               aria-label="Resume run"
@@ -940,7 +959,7 @@ function DrawerRunRow({
       >
         <span className="inline-flex">
           <Button
-            variant="ghost-overlay"
+            variant="ghost"
             size="compact"
             iconOnly
             aria-label="Stop run"

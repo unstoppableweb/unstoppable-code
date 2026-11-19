@@ -92,11 +92,10 @@ export type EntitlementsSummaryProbe =
       canDisableSharing: boolean;
       /**
        * Whether the account holds the `remote_control` capability. NOTE: this is
-       * NOT the Remote Control availability gate — under billing-off the
-       * entitlements mirror never emits `remote_control`, yet the server still
-       * fails open and mints `portal-v1`. The authoritative desktop "can I use
-       * Remote Control" signal is the account `portal-v1` capability. This bit is
-       * billing-on-only, for completeness/telemetry.
+       * NOT a Remote Control availability gate — under billing-off the
+       * entitlements mirror never emits `remote_control`, yet Remote Control is
+       * still available. This bit is billing-on-only, for
+       * completeness/telemetry.
        */
       canRemoteControl: boolean;
       source: EntitlementSource;

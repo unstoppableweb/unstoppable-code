@@ -178,7 +178,6 @@ export function ShellCommandContent({
           {hasDistinctResolvedRun && (
             <SegmentedControl
               label="Shell command source"
-              shape="capsule"
               width="content"
               value={effectiveViewMode}
               onChange={setViewMode}

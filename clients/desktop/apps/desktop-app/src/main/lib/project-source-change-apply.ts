@@ -31,6 +31,7 @@ import {
   writeCanopyJson,
 } from './canopy-json';
 import { getWorktreeDataDir, getWorktreeDir } from './paths';
+import { ensureWorktreeMetadataDirectory } from './worktree-metadata-reservation';
 import { resolveProjectReferenceRepoPath } from './project-reference-repo';
 import { startProjectWorktreePostCreateSetup } from './project-worktree-runtime';
 import { detachedWorkCallback } from '@canopy/desktop-shared/node/lib/detached-work';
@@ -248,9 +249,9 @@ async function ensureTargetProjectWorktree(
 
   transition?.beforeEffects?.();
   await mkdir(dirname(worktreePath), { recursive: true });
-  await mkdir(getWorktreeDataDir(request.projectId, worktreeId), {
-    recursive: true,
-  });
+  await ensureWorktreeMetadataDirectory(
+    getWorktreeDataDir(request.projectId, worktreeId),
+  );
   const branchName = await git.createWorktree(
     referenceRepoPath,
     worktreePath,
@@ -354,9 +355,9 @@ async function applyAdmittedProjectSourceChanges(
     transition,
   );
   transition?.beforeEffects?.();
-  await mkdir(getWorktreeDataDir(request.projectId, targetContext.worktreeId), {
-    recursive: true,
-  });
+  await ensureWorktreeMetadataDirectory(
+    getWorktreeDataDir(request.projectId, targetContext.worktreeId),
+  );
 
   let manifest: CanopyJsonFile;
   try {

@@ -66,7 +66,7 @@ export function CreditsNoticesSpecimen(): JSX.Element {
               role="none"
               detailLines={[
                 retainedMessageCopy('create'),
-                'Credits refill tomorrow at 9:00 AM.',
+                'Your balance is 0 AI Credits.',
               ]}
             >
               The turn failed before it started.

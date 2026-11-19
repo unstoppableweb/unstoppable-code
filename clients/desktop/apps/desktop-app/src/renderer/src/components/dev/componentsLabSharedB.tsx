@@ -65,7 +65,7 @@ function delay(ms: number): Promise<void> {
 
 const NOW_MS = 1_760_000_000_000;
 
-function BackgroundWorkCapSheet(): JSX.Element {
+export function BackgroundWorkCapSheet(): JSX.Element {
   return (
     <SpecimenPanel title="BackgroundWorkCapNotice">
       <SpecimenGrid min={360}>
@@ -205,7 +205,7 @@ const formatDate = (iso: string): string =>
     timeZone: 'UTC',
   });
 
-function BillingHistorySheet(): JSX.Element {
+export function BillingHistorySheet(): JSX.Element {
   return (
     <SpecimenPanel title="BillingHistoryTable">
       <SpecimenCell
@@ -240,7 +240,7 @@ function BillingHistorySheet(): JSX.Element {
 // Bubble copy badge
 // ---------------------------------------------------------------------------
 
-function BubbleCopySheet(): JSX.Element {
+export function BubbleCopySheet(): JSX.Element {
   return (
     <SpecimenPanel title="BubbleCopyBadge">
       <SpecimenGrid min={260}>
@@ -272,7 +272,7 @@ function BubbleCopySheet(): JSX.Element {
 // Catching up notice
 // ---------------------------------------------------------------------------
 
-function CatchingUpSheet(): JSX.Element {
+export function CatchingUpSheet(): JSX.Element {
   return (
     <SpecimenPanel title="CatchingUpNotice">
       <SpecimenGrid min={360}>
@@ -308,7 +308,7 @@ function ChatDetailPicker({
   return <ChatDetailControl value={value} onChange={setValue} />;
 }
 
-function ChatDetailSheet(): JSX.Element {
+export function ChatDetailSheet(): JSX.Element {
   return (
     <SpecimenPanel title="ChatDetailControl">
       <SpecimenGrid min={280}>
@@ -392,9 +392,12 @@ function OverflowMenuDemo({
   );
 }
 
-function OverflowMenuSheet(): JSX.Element {
+export function OverflowMenuSheet(): JSX.Element {
   return (
-    <SpecimenPanel title="ChatComposerOverflowMenu (click the ⋯ trigger to open)">
+    <SpecimenPanel
+      title="ChatComposerOverflowMenu"
+      hint="Click the ⋯ trigger to open"
+    >
       <SpecimenGrid min={220}>
         <SpecimenCell label="Toggles and a cycler: the menu stays open on Thinking">
           <OverflowMenuDemo />
@@ -495,9 +498,12 @@ function MessageRow(): JSX.Element {
   );
 }
 
-function MessageContextMenuSheet(): JSX.Element {
+export function MessageContextMenuSheet(): JSX.Element {
   return (
-    <SpecimenPanel title="ChatMessageContextMenu (click a button to open it below the button)">
+    <SpecimenPanel
+      title="ChatMessageContextMenu"
+      hint="Click a button to open it below the button"
+    >
       <ChatMessageLinkActionsProvider
         value={{ openInBrowser: noop, openExternal: noop }}
       >
@@ -588,9 +594,12 @@ function ChecklistRowDemo({
   );
 }
 
-function ChecklistSheet(): JSX.Element {
+export function ChecklistSheet(): JSX.Element {
   return (
-    <SpecimenPanel title="ChecklistAction and ChecklistDismiss (hover a row: it fills, and the whole row is the action)">
+    <SpecimenPanel
+      title="ChecklistAction and ChecklistDismiss"
+      hint="Hover a row: it fills, and the whole row is the action"
+    >
       <SpecimenGrid min={320}>
         <SpecimenCell label="Prominent action with dismiss">
           <ChecklistRowDemo title="Connect your GitHub account" />
@@ -634,7 +643,7 @@ function ChecklistSheet(): JSX.Element {
 // Claude AI credits fallback error
 // ---------------------------------------------------------------------------
 
-function ClaudeFallbackSheet(): JSX.Element {
+export function ClaudeFallbackSheet(): JSX.Element {
   return (
     <SpecimenPanel title="ClaudeAiCreditsFallbackErrorNotice">
       <SpecimenGrid min={360}>
@@ -650,21 +659,5 @@ function ClaudeFallbackSheet(): JSX.Element {
         </SpecimenCell>
       </SpecimenGrid>
     </SpecimenPanel>
-  );
-}
-
-export function SharedBSpecimen(): JSX.Element {
-  return (
-    <div className="flex flex-col gap-6">
-      <BackgroundWorkCapSheet />
-      <BillingHistorySheet />
-      <BubbleCopySheet />
-      <CatchingUpSheet />
-      <ChatDetailSheet />
-      <OverflowMenuSheet />
-      <MessageContextMenuSheet />
-      <ChecklistSheet />
-      <ClaudeFallbackSheet />
-    </div>
   );
 }

@@ -100,7 +100,7 @@ export function CustomizeRowMenu({
     <div className="relative shrink-0">
       <Button
         ref={triggerRef}
-        variant="ghost-quiet"
+        variant="ghost"
         size="compact"
         iconOnly
         id={`${idPrefix}-menu-trigger`}

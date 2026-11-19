@@ -20,6 +20,7 @@ import {
   CORE_CHAT_VISUAL_STAGE_INSTRUCTION_DEFINITIONS,
   CORE_MANAGED_DELEGATION_INSTRUCTION_DEFINITIONS,
   CORE_PLAN_INSTRUCTION_DEFINITIONS,
+  CORE_REVIEW_INSTRUCTION_DEFINITIONS,
   type WORKER_FILESYSTEM_WRITE_INSTRUCTION_DEFINITIONS,
   WORKER_AGENT_HELPER_INSTRUCTION_DEFINITIONS,
   WORKER_AGENT_RUN_INSTRUCTION_DEFINITIONS,
@@ -54,6 +55,17 @@ const {
 void planImport;
 void detectedPlanScan;
 void detectedPlanUpdate;
+// The code review state writes (CAN-4167 PR 2c); generation joins in PR 2d.
+// Resolve isn't served yet: code-review persistence has no status change it
+// makes under its lock, and a read then a save could bring back a thread
+// deleted between the two.
+const {
+  'core.review.create': reviewCreate,
+  'core.review.comment.resolve': reviewResolve,
+  ...CORE_REVIEW_STATE_INSTRUCTION_DEFINITIONS
+} = CORE_REVIEW_INSTRUCTION_DEFINITIONS;
+void reviewCreate;
+void reviewResolve;
 
 /**
  * The desktop dispatcher's instructions: the composed registry, which carries
@@ -72,10 +84,10 @@ void detectedPlanUpdate;
  * the portable chat transfer instructions (CAN-4113, this dispatcher only),
  * the memory save (CAN-5993), the agent watcher writes (CAN-5994), the
  * deferred tools load (CAN-5995), the ShowVisual staging write
- * (CAN-5996), the managed delegation controls (CAN-6291) and the MCP
- * account connect (CAN-6176 PR 4a), the worktree setup cancel
- * (CAN-4097) and the tracked-plan writes (CAN-4165 PR 3b-2), this
- * dispatcher only.
+ * (CAN-5996), the managed delegation controls (CAN-6291), the MCP
+ * account connect (CAN-6176 PR 4a), the worktree setup cancel (CAN-4097),
+ * the tracked-plan writes (CAN-4165 PR 3b-2) and the code review state
+ * writes (CAN-4167 PR 2c), this dispatcher only.
  * Composing throws on a name two maps define, so a registry that later
  * gains one of these fails at startup instead of serving two definitions.
  */
@@ -111,6 +123,7 @@ export const DESKTOP_INSTRUCTION_DEFINITIONS =
     CORE_CHAT_VISUAL_STAGE_INSTRUCTION_DEFINITIONS,
     CORE_MANAGED_DELEGATION_INSTRUCTION_DEFINITIONS,
     CORE_PLAN_LIFECYCLE_INSTRUCTION_DEFINITIONS,
+    CORE_REVIEW_STATE_INSTRUCTION_DEFINITIONS,
   );
 
 export type DesktopInstructionDefinitions =

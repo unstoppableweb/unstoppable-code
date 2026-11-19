@@ -1,7 +1,7 @@
 import {
   normalizeRepositoryCloneUrl,
   repositoryNameFromCloneUrl,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import { realpath, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, posix, resolve, win32 } from 'node:path';
 import type { W5CommitLogFileStore } from '@canopy/core-runtime/node/w5/commit-log-file-store';

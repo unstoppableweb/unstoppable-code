@@ -24,6 +24,11 @@ export const PLUGINS_CHANNELS = {
   REMOVE: 'plugins:removeMarketplace',
   OPERATION_PROGRESS: 'plugins:operation-progress',
   READ_COMPONENT: 'plugins:read-component',
+  /**
+   * Customize's light preview of a catalog plugin not added yet: its
+   * repository listing and native manifests, read without cloning (spec 3b).
+   */
+  PREVIEW_MANIFEST: 'plugins:preview-manifest',
   INSTALL_PLUGIN: 'plugins:install-plugin',
   INSTALL_BUILT_IN_PLUGIN: 'plugins:install-built-in-plugin',
   PREPARE_CODEX_COMPATIBILITY: 'plugins:prepare-codex-compatibility',

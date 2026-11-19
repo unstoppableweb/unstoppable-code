@@ -2,7 +2,7 @@ import { useState, type JSX } from 'react';
 import type {
   TurnOutcomeCounts,
   TurnOutcomeStepDetail,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import {
   Button,
   DropdownMenuItem,

@@ -69,7 +69,7 @@ export function buildProjectedAppAdvisorModelCatalog(
 
 /**
  * Build a flat, serializable snapshot of every model + custom Agent the desktop
- * can currently offer, for projection on `PortalChatSummaryEntity.availableModels`.
+ * can currently offer, for projection on `RemoteControlChatSummaryEntity.availableModels`.
  * Order matches the desktop picker: Claude, then Codex, then Ollama, then
  * Cursor, then Agents.
  *

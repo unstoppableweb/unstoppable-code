@@ -6,7 +6,7 @@ import {
   resolveGitHubTokenWithSource,
   type GitHubTokenSource,
 } from '../github-auth';
-import { GitHubBrokerError } from './errors';
+import { GitHubBrokerError, GitHubBrokerLeaseExpiredError } from './errors';
 
 /**
  * The GitHub credential port: the only place in Electron main that turns a
@@ -28,6 +28,7 @@ type LeaseRecord =
       source: GitHubBrokerCredentialSource;
       fingerprint: string;
       revoked: boolean;
+      expiresAt: number;
     };
 
 /**
@@ -83,6 +84,15 @@ export type GitHubBrokerCredentialScopePurpose =
   | { kind: 'pr-tracking' }
   | { kind: 'reference-preview'; accountIdentity: string };
 
+/**
+ * How long a pinned lease can authorize requests after it is minted: longer
+ * than the longest GitHub primary rate-limit reset (an hour), so a request
+ * parked behind one still sends. Holders mint a lease per sweep or per probe,
+ * so a lease that outlives this was dropped without being revoked. The
+ * default lease has no lifetime.
+ */
+export const GITHUB_BROKER_LEASE_TTL_MS = 65 * 60_000;
+
 const FINE_GRAINED_PAT_PREFIX = 'github_pat_';
 const CLASSIC_PAT_PREFIXES = ['ghp_', 'gho_', 'ghu_', 'ghs_', 'ghr_'];
 
@@ -133,6 +143,18 @@ async function readSource(
 
 const DEFAULT_LEASE = Lease.mint({ kind: 'default' });
 
+/** Refuse a revoked or expired pinned lease without reading its credential. */
+function assertLive(record: LeaseRecord): void {
+  if (record.kind === 'default') return;
+  if (record.revoked) {
+    throw new GitHubBrokerError(
+      'not_authenticated',
+      'The GitHub credential lease was revoked.',
+    );
+  }
+  if (Date.now() >= record.expiresAt) throw new GitHubBrokerLeaseExpiredError();
+}
+
 /**
  * Read the pinned lease's source and hand its token to `use` for one
  * synchronous step. The token never outlives that step.
@@ -141,16 +163,13 @@ async function withPinnedToken<T>(
   record: Extract<LeaseRecord, { kind: 'pinned' }>,
   use: (token: string) => T,
 ): Promise<T> {
-  if (record.revoked) {
-    throw new GitHubBrokerError(
-      'not_authenticated',
-      'The GitHub credential lease was revoked.',
-    );
-  }
+  assertLive(record);
   const { token } = await readSource(record.source).catch(() => ({
     token: '',
   }));
-  if (record.revoked || !token || fingerprintOf(token) !== record.fingerprint) {
+  // The lease may have been revoked or expired while its source was read.
+  assertLive(record);
+  if (!token || fingerprintOf(token) !== record.fingerprint) {
     throw new GitHubBrokerError(
       'not_authenticated',
       'The GitHub credential this lease was issued for is no longer available.',
@@ -177,6 +196,12 @@ export interface GitHubBrokerCredentialPort {
    * building a header.
    */
   verify(lease: GitHubBrokerCredentialLease): Promise<void>;
+  /**
+   * Throw unless a pinned lease is still unrevoked and unexpired, without
+   * reading its credential: the auth hook's last check before a request is
+   * sent. An expired lease throws `GitHubBrokerLeaseExpiredError`.
+   */
+  assertLive(lease: GitHubBrokerCredentialLease): void;
   /**
    * The cache and quota scope: `resolved` for the default, and one stable id
    * per pinned credential, so two credentials never share a scope and one
@@ -209,6 +234,7 @@ const port: GitHubBrokerCredentialPort = {
   defaultLease: DEFAULT_LEASE,
 
   async lease(source) {
+    const mintedAt = Date.now();
     const read = await readSource(source).catch(() => null);
     if (!read?.token || read.source === 'none') return null;
     return {
@@ -217,6 +243,7 @@ const port: GitHubBrokerCredentialPort = {
         source,
         fingerprint: fingerprintOf(read.token),
         revoked: false,
+        expiresAt: mintedAt + GITHUB_BROKER_LEASE_TTL_MS,
       }),
       source: read.source,
       tokenFamily: tokenFamilyOf(read.token),
@@ -250,6 +277,10 @@ const port: GitHubBrokerCredentialPort = {
       return;
     }
     await withPinnedToken(record, () => undefined);
+  },
+
+  assertLive(lease) {
+    assertLive(recordOf(lease));
   },
 
   scopeId(lease) {

@@ -1,7 +1,7 @@
 import {
   antigravityAccountSnapshotSchema,
   openCodeAccountSnapshotSchema,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 /**
  * Remote Control projection of the desktop's provider plan usage (CAN-3635).
  * The observability service stays the only usage authority; this module maps
@@ -15,15 +15,15 @@ import type {
 } from '@canopy/desktop-shared/types';
 import type { AccountProxyStatus } from '@canopy/desktop-shared/types/account-proxy';
 import {
-  PORTAL_PROVIDER_USAGE_MAX_ACCOUNT_LABEL_LENGTH,
-  PORTAL_PROVIDER_USAGE_MAX_ACCOUNT_WINDOWS,
-  PORTAL_PROVIDER_USAGE_MAX_ACCOUNTS,
-  PORTAL_PROVIDER_USAGE_PROVIDERS,
-  type PortalProviderUsageAccount,
-  type PortalProviderUsageEntry,
-  type PortalProviderUsageProjection,
-  type PortalProviderUsageProvider,
-} from '@canopy/protocol/portal';
+  REMOTE_CONTROL_PROVIDER_USAGE_MAX_ACCOUNT_LABEL_LENGTH,
+  REMOTE_CONTROL_PROVIDER_USAGE_MAX_ACCOUNT_WINDOWS,
+  REMOTE_CONTROL_PROVIDER_USAGE_MAX_ACCOUNTS,
+  REMOTE_CONTROL_PROVIDER_USAGE_PROVIDERS,
+  type RemoteControlProviderUsageAccount,
+  type RemoteControlProviderUsageEntry,
+  type RemoteControlProviderUsageProjection,
+  type RemoteControlProviderUsageProvider,
+} from '@canopy/protocol/remote-control/shell';
 import {
   accountProxyAccountsForHarness,
   resolveProviderAccountSource,
@@ -33,21 +33,21 @@ import {
   projectAccountProxyUsageAccount,
   projectProviderUsageError,
   projectProviderUsageWindows,
-  toPortalIsoTimestamp,
+  toRemoteControlIsoTimestamp,
 } from '@canopy/desktop-shared/lib/account-proxy-usage-projection';
 import { classifyUsageFetchErrorMessage } from '@canopy/desktop-shared/lib/usage-fetch-error';
 import { getAccountProxyStatus } from '../account-proxy/service';
 import { isAiCreditsChosenOverAccountProxy } from '../agents/ai-credits-routing';
 import { logMainProcessError } from '../lib/main-process-logging';
 
-const PROVIDER_LABELS: Record<PortalProviderUsageProvider, string> = {
+const PROVIDER_LABELS: Record<RemoteControlProviderUsageProvider, string> = {
   claude: 'Claude',
   codex: 'Codex',
   copilot: 'Copilot',
 };
 
 /** The multi-account proxy state a projection reads, without provider I/O. */
-export interface PortalProviderUsageAccountProxySource {
+export interface RemoteControlProviderUsageAccountProxySource {
   readonly status: AccountProxyStatus | null;
   /** AI Credits outrank the proxy for the device's new work. */
   readonly aiCreditsChosen: boolean;
@@ -66,13 +66,13 @@ function fetchErrorKind(
 }
 
 function projectEntry(
-  provider: PortalProviderUsageProvider,
+  provider: RemoteControlProviderUsageProvider,
   summary: ProviderUsageSummary | undefined,
-): PortalProviderUsageEntry {
+): RemoteControlProviderUsageEntry {
   if (!summary) {
     return { provider, authState: 'unknown', windows: [] };
   }
-  const lastUpdatedAt = toPortalIsoTimestamp(summary.lastUpdatedAt);
+  const lastUpdatedAt = toRemoteControlIsoTimestamp(summary.lastUpdatedAt);
   const base = {
     provider,
     ...(lastUpdatedAt === undefined ? {} : { lastUpdatedAt }),
@@ -117,7 +117,7 @@ function projectEntry(
 }
 
 function accountProxyHarness(
-  provider: PortalProviderUsageProvider,
+  provider: RemoteControlProviderUsageProvider,
 ): AccountProxyHarness | null {
   return provider === 'claude' || provider === 'codex' ? provider : null;
 }
@@ -127,10 +127,10 @@ function accountProxyHarness(
  * routes it: AI Credits chosen over the proxy come first, then the proxy's
  * connection, routing, and local runtime.
  */
-function isPortalProviderUsageServedByAccountProxy(
-  provider: PortalProviderUsageProvider,
-  source: PortalProviderUsageAccountProxySource | undefined,
-): source is PortalProviderUsageAccountProxySource & {
+function isRemoteControlProviderUsageServedByAccountProxy(
+  provider: RemoteControlProviderUsageProvider,
+  source: RemoteControlProviderUsageAccountProxySource | undefined,
+): source is RemoteControlProviderUsageAccountProxySource & {
   readonly status: AccountProxyStatus;
 } {
   const harness = accountProxyHarness(provider);
@@ -152,23 +152,23 @@ function isPortalProviderUsageServedByAccountProxy(
  * device; undefined when the native sign-in applies.
  */
 function projectAccounts(
-  provider: PortalProviderUsageProvider,
-  source: PortalProviderUsageAccountProxySource | undefined,
-): PortalProviderUsageAccount[] | undefined {
+  provider: RemoteControlProviderUsageProvider,
+  source: RemoteControlProviderUsageAccountProxySource | undefined,
+): RemoteControlProviderUsageAccount[] | undefined {
   const harness = accountProxyHarness(provider);
   if (
     harness === null ||
-    !isPortalProviderUsageServedByAccountProxy(provider, source)
+    !isRemoteControlProviderUsageServedByAccountProxy(provider, source)
   ) {
     return undefined;
   }
   const seen = new Set<string>();
-  const accounts: PortalProviderUsageAccount[] = [];
+  const accounts: RemoteControlProviderUsageAccount[] = [];
   for (const account of accountProxyAccountsForHarness(
     source.status.accounts,
     harness,
   )) {
-    if (accounts.length >= PORTAL_PROVIDER_USAGE_MAX_ACCOUNTS) break;
+    if (accounts.length >= REMOTE_CONTROL_PROVIDER_USAGE_MAX_ACCOUNTS) break;
     if (seen.has(account.authIndex)) continue;
     seen.add(account.authIndex);
     accounts.push(boundForWire(projectAccountProxyUsageAccount(account)));
@@ -179,7 +179,7 @@ function projectAccounts(
 function boundLabel(label: string | undefined): string | undefined {
   return label === undefined
     ? undefined
-    : label.slice(0, PORTAL_PROVIDER_USAGE_MAX_ACCOUNT_LABEL_LENGTH);
+    : label.slice(0, REMOTE_CONTROL_PROVIDER_USAGE_MAX_ACCOUNT_LABEL_LENGTH);
 }
 
 /**
@@ -187,8 +187,8 @@ function boundLabel(label: string | undefined): string | undefined {
  * invalidates the whole projection; the desktop's own views show it all.
  */
 function boundForWire(
-  account: PortalProviderUsageAccount,
-): PortalProviderUsageAccount {
+  account: RemoteControlProviderUsageAccount,
+): RemoteControlProviderUsageAccount {
   const label = boundLabel(account.label);
   const planLabel = boundLabel(account.planLabel);
   return {
@@ -197,7 +197,7 @@ function boundForWire(
     ...(planLabel === undefined ? {} : { planLabel }),
     windows: account.windows.slice(
       0,
-      PORTAL_PROVIDER_USAGE_MAX_ACCOUNT_WINDOWS,
+      REMOTE_CONTROL_PROVIDER_USAGE_MAX_ACCOUNT_WINDOWS,
     ),
   };
 }
@@ -209,10 +209,10 @@ function boundForWire(
  * the proxy's accounts. Excludes Cursor, retained accounts, plan tiers and
  * raw provider responses.
  */
-export function projectPortalProviderUsage(
+export function projectRemoteControlProviderUsage(
   overview: AgentUsageOverview,
-  accountProxy?: PortalProviderUsageAccountProxySource,
-): PortalProviderUsageProjection {
+  accountProxy?: RemoteControlProviderUsageAccountProxySource,
+): RemoteControlProviderUsageProjection {
   return {
     updatedAt: overview.updatedAt,
     ...(overview.openCodeAccounts
@@ -223,7 +223,7 @@ export function projectPortalProviderUsage(
         }
       : {}),
     ...antigravityAccountField(overview),
-    providers: PORTAL_PROVIDER_USAGE_PROVIDERS.filter(
+    providers: REMOTE_CONTROL_PROVIDER_USAGE_PROVIDERS.filter(
       (provider) =>
         provider !== 'copilot' ||
         overview.providers.some((summary) => summary.provider === 'copilot'),
@@ -241,7 +241,7 @@ export function projectPortalProviderUsage(
 /** Plan metadata only; an invalid snapshot is withheld, never the quotas. */
 function antigravityAccountField(
   overview: AgentUsageOverview,
-): Pick<PortalProviderUsageProjection, 'antigravityAccount'> {
+): Pick<RemoteControlProviderUsageProjection, 'antigravityAccount'> {
   if (!overview.antigravityAccount) return {};
   const parsed = antigravityAccountSnapshotSchema.safeParse(
     overview.antigravityAccount,
@@ -254,7 +254,7 @@ function antigravityAccountField(
  * canonical usage merged into it, never a new read from the proxy or the
  * providers. A failed read withdraws the proxy's accounts.
  */
-export async function readPortalProviderUsageAccountProxySource(): Promise<PortalProviderUsageAccountProxySource> {
+export async function readRemoteControlProviderUsageAccountProxySource(): Promise<RemoteControlProviderUsageAccountProxySource> {
   let status: AccountProxyStatus | null = null;
   try {
     status = await getAccountProxyStatus({ refresh: false });

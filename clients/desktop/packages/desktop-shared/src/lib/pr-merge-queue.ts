@@ -1,4 +1,4 @@
-import { PORTAL_PR_MERGE_QUEUE_PHASES } from '@canopy/protocol/portal';
+import { REMOTE_CONTROL_PR_MERGE_QUEUE_PHASES } from '@canopy/protocol/remote-control/shell';
 import {
   isPrMergeQueuePhase,
   toPrMergeQueuePhase,
@@ -51,7 +51,7 @@ function isKnownPhase(
 
 /** Phases a watcher can select, in GitHub's lifecycle order. */
 export const PR_MERGE_QUEUE_KNOWN_PHASES: readonly PrMergeQueueKnownPhase[] =
-  PORTAL_PR_MERGE_QUEUE_PHASES.filter(isKnownPhase);
+  REMOTE_CONTROL_PR_MERGE_QUEUE_PHASES.filter(isKnownPhase);
 
 export function isPrMergeQueueKnownPhase(
   value: unknown,

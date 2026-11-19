@@ -2514,7 +2514,6 @@ export function WorkspaceSettingsModal({
                       label="Repository source"
                       value={addMode}
                       width="content"
-                      shape="capsule"
                       options={[
                         ...(existingRepos.length > 0
                           ? [{ value: 'existing' as const, label: 'Existing' }]
@@ -2585,7 +2584,6 @@ export function WorkspaceSettingsModal({
                             label="Remote source"
                             value={remoteSource}
                             width="content"
-                            shape="capsule"
                             options={REMOTE_SOURCE_OPTIONS}
                             onChange={handleRemoteSourceSelect}
                           />

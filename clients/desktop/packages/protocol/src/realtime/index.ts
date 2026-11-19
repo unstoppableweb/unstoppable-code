@@ -86,7 +86,7 @@ export type RealtimeOwnerScope =
 // ===========================================================================
 
 /**
- * Wire shape of a single real-time event. Modeled on `PortalEventEnvelope`
+ * Wire shape of a single real-time event. Modeled on `RemoteControlEventEnvelope`
  * (`../portal`) but owner-scoped and carrying the numeric `sequence` (the
  * durable, globally-monotonic row id) so a reconnecting client can resume with
  * `Last-Event-ID` without gap or duplicate.

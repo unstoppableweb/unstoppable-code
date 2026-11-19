@@ -8,14 +8,14 @@ import {
   isOrgProjectCatalogSetupSupported,
   orgProjectPlaceholderLocalId,
 } from '@canopy/protocol/org-projects';
-import type { PortalSessionShellState } from '@canopy/protocol/portal';
+import type { RemoteControlSessionShellState } from '@canopy/protocol/remote-control/shell';
 
 /** Pure projection: catalog rows never pass through workspace discovery or persistence. */
 export function appendOrgProjectPlaceholderRows(
-  rows: PortalSessionShellState['workspaces'],
+  rows: RemoteControlSessionShellState['workspaces'],
   snapshot: DesktopOrgProjectCatalogSnapshot,
   context: WorkspaceContext,
-): PortalSessionShellState['workspaces'] {
+): RemoteControlSessionShellState['workspaces'] {
   if (
     context.kind !== 'organization' ||
     snapshot.error === 'unavailable' ||
@@ -27,7 +27,7 @@ export function appendOrgProjectPlaceholderRows(
       row.owner?.type === 'organization' ? [row.owner.projectId] : [],
     ),
   );
-  const placeholders: PortalSessionShellState['workspaces'] = [];
+  const placeholders: RemoteControlSessionShellState['workspaces'] = [];
   for (const project of snapshot.projects) {
     if (
       project.organizationId !== context.organizationId ||

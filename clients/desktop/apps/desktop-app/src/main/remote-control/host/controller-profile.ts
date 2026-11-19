@@ -2,7 +2,7 @@ import { createHash, createHmac, timingSafeEqual, verify } from 'node:crypto';
 import {
   parseExternalAgentSender,
   type ExternalAgentSender,
-} from '@canopy/protocol/portal/external-agent-sender';
+} from '@canopy/protocol/remote-control/shell/external-agent-sender';
 import {
   DEVICE_RELAY_FEATURE_DEVICE_KIND,
   deviceKindOrDefault,

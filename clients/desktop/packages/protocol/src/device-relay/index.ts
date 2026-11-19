@@ -114,7 +114,6 @@ export type DeviceRelayTokenRequest = z.infer<
 export const DEVICE_RELAY_TOKEN_ERROR_CODES = [
   'unauthorized',
   'personal_account_required',
-  'feature_disabled',
   'device_relay_not_configured',
   'payload_too_large',
   'invalid_request',

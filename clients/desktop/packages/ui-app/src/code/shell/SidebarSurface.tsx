@@ -49,9 +49,9 @@ import type {
   WorktreeCreateResult,
 } from '@canopy/app-core';
 import type {
-  PortalRowBackend,
-  PortalWorkspaceCreatePayload,
-} from '@canopy/protocol/portal';
+  RemoteControlRowBackend,
+  RemoteControlWorkspaceCreatePayload,
+} from '@canopy/protocol/remote-control/shell';
 import {
   DEFAULT_SIDEBAR_NAV_LAYOUT,
   splitSidebarNavLayout,
@@ -472,7 +472,7 @@ export interface SidebarSurfaceProps {
    */
   readonly createTaskActive?: boolean;
   readonly onCreateWorkspace?: (
-    payload: PortalWorkspaceCreatePayload,
+    payload: RemoteControlWorkspaceCreatePayload,
   ) => Promise<WorkspaceCreateResult>;
   readonly onOpenCreateWorkspaceOverride?: () => boolean;
   /**
@@ -1377,7 +1377,7 @@ interface WorktreeRemovalConfirmTarget {
   readonly label: string;
   readonly subject: 'worktree' | 'session';
   readonly mode?: 'archive' | 'delete';
-  readonly backend?: PortalRowBackend;
+  readonly backend?: RemoteControlRowBackend;
   readonly presentation: 'archive' | 'delete';
   readonly copy?: 'saved-changes';
 }
@@ -1742,8 +1742,8 @@ function SidebarNavItemRow({
   if (!def || !action) return null;
   const testId =
     navKey === 'app-advisor'
-      ? 'portal-sidebar-advisor'
-      : `portal-sidebar-nav-${navKey}`;
+      ? 'remote-control-sidebar-advisor'
+      : `remote-control-sidebar-nav-${navKey}`;
   const { content, ariaLabel } = sidebarNavItemPresentation(
     def.icon,
     def.label,
@@ -1884,8 +1884,8 @@ function MoreMenu({
       open={open}
       onOpenChange={setOpen}
       triggerRef={triggerRef}
-      triggerTestId="portal-more"
-      menuTestId="portal-more-menu"
+      triggerTestId="remote-control-more"
+      menuTestId="remote-control-more-menu"
       compact={compact}
       touchTarget={touch ? 'always' : 'none'}
     >
@@ -1906,7 +1906,7 @@ function MoreMenu({
           return (
             <MoreMenuAnchorRow
               key={key}
-              testId={`portal-more-item-${key}`}
+              testId={`remote-control-more-item-${key}`}
               href={href}
               icon={item.icon}
               label={item.label}
@@ -1933,7 +1933,7 @@ function MoreMenu({
           <DropdownMenuItem
             key={key}
             role="menuitem"
-            data-testid={`portal-more-item-${key}`}
+            data-testid={`remote-control-more-item-${key}`}
             onClick={(): void => action.onSelect?.()}
             touchTarget={touch}
           >
@@ -2212,17 +2212,19 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
     // becomes a strip icon), so the same control, found by its own id, wins.
     const sameControl = id === '' ? undefined : inBlock(id);
     const key =
-      id === 'portal-sidebar-advisor'
+      id === 'remote-control-sidebar-advisor'
         ? 'app-advisor'
         : id.replace(/^portal-(?:more-item-|sidebar-nav-)/, '');
     const destination = inBlock(
       key === 'app-advisor'
-        ? 'portal-sidebar-advisor'
-        : `portal-sidebar-nav-${key}`,
+        ? 'remote-control-sidebar-advisor'
+        : `remote-control-sidebar-nav-${key}`,
     );
     const menuItem = Array.from(
-      doc.querySelectorAll<HTMLElement>('[data-testid^="portal-more-item-"]'),
-    ).find((node) => node.dataset.testid === `portal-more-item-${key}`);
+      doc.querySelectorAll<HTMLElement>(
+        '[data-testid^="remote-control-more-item-"]',
+      ),
+    ).find((node) => node.dataset.testid === `remote-control-more-item-${key}`);
     const fallback = block.querySelector<HTMLElement>(
       'button:not(:disabled), a[href]',
     );
@@ -2230,7 +2232,7 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
       sameControl ??
       destination ??
       menuItem ??
-      block.querySelector<HTMLElement>('[data-testid="portal-more"]') ??
+      block.querySelector<HTMLElement>('[data-testid="remote-control-more"]') ??
       fallback
     )?.focus();
   }, [navRegions.mainNav, navRegions.more]);
@@ -2318,7 +2320,7 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
     label: string;
     subject: 'worktree' | 'session';
     mode?: 'archive' | 'delete';
-    backend?: PortalRowBackend;
+    backend?: RemoteControlRowBackend;
     presentation: 'archive' | 'delete';
     /** The row's client asks for its own removal wording. */
     copy?: CanopyCapabilities['worktreeRemovalCopy'];
@@ -3339,99 +3341,99 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
         testIds: {
           setLabel: worktreeTestId(
             testIds?.worktreeActionSetLabel,
-            'portal-worktree-actions-set-label',
+            'remote-control-worktree-actions-set-label',
           ),
           debugInfo: worktreeTestId(
             undefined,
-            'portal-worktree-actions-debug-info',
+            'remote-control-worktree-actions-debug-info',
           ),
           branchInfo: worktreeTestId(
             testIds?.worktreeActionBranchInfo,
-            'portal-worktree-actions-info',
+            'remote-control-worktree-actions-info',
           ),
           launch: worktreeTestId(
             testIds?.worktreeActionLaunch,
-            'portal-worktree-actions-launch',
+            'remote-control-worktree-actions-launch',
           ),
           stopScripts: worktreeTestId(
             undefined,
-            'portal-worktree-actions-stop-scripts',
+            'remote-control-worktree-actions-stop-scripts',
           ),
           dispatchPipeline: worktreeTestId(
             testIds?.worktreeActionDispatchPipeline,
-            'portal-worktree-actions-dispatch-pipeline',
+            'remote-control-worktree-actions-dispatch-pipeline',
           ),
           splitPr: worktreeTestId(
             testIds?.worktreeActionSplitPr,
-            'portal-worktree-actions-split-pr',
+            'remote-control-worktree-actions-split-pr',
           ),
           addRepository: worktreeTestId(
             testIds?.worktreeActionAddRepository,
-            'portal-worktree-actions-add-repository',
+            'remote-control-worktree-actions-add-repository',
           ),
           createBranch: worktreeTestId(
             testIds?.worktreeActionCreateBranch,
-            'portal-worktree-actions-create-branch',
+            'remote-control-worktree-actions-create-branch',
           ),
           toggleHidden: worktreeTestId(
             testIds?.worktreeActionToggleHidden,
-            'portal-worktree-actions-toggle-hidden',
+            'remote-control-worktree-actions-toggle-hidden',
           ),
           togglePin: worktreeTestId(
             testIds?.worktreeActionTogglePin,
-            'portal-worktree-actions-toggle-pin',
+            'remote-control-worktree-actions-toggle-pin',
           ),
           moveToOrganization: worktreeTestId(
             testIds?.worktreeActionMoveToOrganization,
-            'portal-worktree-actions-move-to-organization',
+            'remote-control-worktree-actions-move-to-organization',
           ),
           grouping: worktreeTestId(
             testIds?.worktreeActionGrouping,
-            'portal-worktree-actions-grouping',
+            'remote-control-worktree-actions-grouping',
           ),
           delete: worktreeTestId(
             testIds?.worktreeDeletion,
-            'portal-worktree-actions-delete',
+            'remote-control-worktree-actions-delete',
           ),
           removal: worktreeTestId(
             testIds?.worktreeRemoval,
-            'portal-delete-worktree',
+            'remote-control-delete-worktree',
           ),
           ...(testIds?.worktreeDeletion !== undefined
             ? {
                 removalDelete: worktreeTestId(
                   testIds.worktreeDeletion,
-                  'portal-delete-worktree',
+                  'remote-control-delete-worktree',
                 ),
               }
             : {}),
           directRemoval: worktreeTestId(
             testIds?.worktreeDirectRemoval,
-            'portal-worktree-delete-button',
+            'remote-control-worktree-delete-button',
           ),
           directShow: worktreeTestId(
             testIds?.worktreeDirectShow,
-            'portal-worktree-show-button',
+            'remote-control-worktree-show-button',
           ),
           bulkPin: worktreeTestId(
             undefined,
-            'portal-worktree-actions-bulk-pin',
+            'remote-control-worktree-actions-bulk-pin',
           ),
           bulkStopScripts: worktreeTestId(
             undefined,
-            'portal-worktree-actions-bulk-stop-scripts',
+            'remote-control-worktree-actions-bulk-stop-scripts',
           ),
           bulkArchive: worktreeTestId(
             undefined,
-            'portal-worktree-actions-bulk-archive',
+            'remote-control-worktree-actions-bulk-archive',
           ),
           bulkDelete: worktreeTestId(
             undefined,
-            'portal-worktree-actions-bulk-delete',
+            'remote-control-worktree-actions-bulk-delete',
           ),
           notifications: worktreeTestId(
             testIds?.worktreeNotifications,
-            'portal-worktree-actions',
+            'remote-control-worktree-actions',
           ),
         },
       },
@@ -3568,7 +3570,7 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
                     tone: 'neutral' as const,
                     testId: worktreeTestId(
                       undefined,
-                      'portal-worktree-pin-button',
+                      'remote-control-worktree-pin-button',
                     ),
                     visibility: 'fine-pointer' as const,
                   },
@@ -3584,7 +3586,7 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
                     tone: 'neutral' as const,
                     testId: worktreeTestId(
                       undefined,
-                      'portal-worktree-archive-button',
+                      'remote-control-worktree-archive-button',
                     ),
                     visibility: 'fine-pointer' as const,
                   },
@@ -3601,7 +3603,7 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
                       tone: 'neutral' as const,
                       testId: worktreeTestId(
                         undefined,
-                        'portal-worktree-archive-button',
+                        'remote-control-worktree-archive-button',
                       ),
                       visibility: 'fine-pointer' as const,
                     },
@@ -3628,11 +3630,11 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
         accessibleLabel={`Actions for ${rowLabel}`}
         triggerTestId={worktreeTestId(
           testIds?.worktreeActionsMenuButton,
-          'portal-worktree-actions-menu-button',
+          'remote-control-worktree-actions-menu-button',
         )}
         menuTestId={worktreeTestId(
           testIds?.worktreeActionsMenu,
-          'portal-worktree-actions-menu',
+          'remote-control-worktree-actions-menu',
         )}
         triggerDataAttributes={
           rowRemoval ? { 'data-delete-enabled': 'true' } : undefined
@@ -3743,7 +3745,8 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
       )
     : scopedSnapshot.worktrees;
   const hiddenWorkspacesToggleId =
-    testIds?.hiddenWorkspacesToggle ?? 'portal-hidden-workspaces-toggle';
+    testIds?.hiddenWorkspacesToggle ??
+    'remote-control-hidden-workspaces-toggle';
   // Archive is judged per chat by its owning project, so a fallback row never
   // borrows another project's capability (CAN-5461).
   const canArchiveStandaloneChat = (chat: {
@@ -4092,7 +4095,7 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
                 testIds={{
                   root:
                     testIds?.coworkWorkspace?.(workspace.localId) ??
-                    `portal-cowork-workspace-${workspace.localId}`,
+                    `remote-control-cowork-workspace-${workspace.localId}`,
                   folderToggle: testIds?.workspaceToggle?.(
                     workspace.localId,
                     workspace.type,
@@ -4144,7 +4147,7 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
           hiddenWorkspacesToggle: listTestIds.hiddenWorkspacesToggle,
           hiddenWorktreesToggle: (id) =>
             testIds?.hiddenWorktreesToggle?.(id) ??
-            `portal-hidden-worktrees-toggle-${id}`,
+            `remote-control-hidden-worktrees-toggle-${id}`,
         }}
       />
     );
@@ -4320,7 +4323,7 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
   const chatsSection =
     chatsOwner && chatsSectionVisible ? (
       <div
-        data-testid={testIds?.chatsSection ?? 'portal-chats-section'}
+        data-testid={testIds?.chatsSection ?? 'remote-control-chats-section'}
         data-workspace-id={chatsOwner.localId}
         // The rail advertises the state that changes what the header's click
         // means (stuck: back to the rows), as desktop's section did.
@@ -4440,26 +4443,30 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
               props.renderChatsSectionRows || cloudChatsWorkspace
                 ? `${
                     testIds?.coworkWorkspace?.(chatsOwner.localId) ??
-                    `portal-cowork-workspace-${chatsOwner.localId}`
+                    `remote-control-cowork-workspace-${chatsOwner.localId}`
                   }-section`
                 : (testIds?.coworkWorkspace?.(chatsOwner.localId) ??
-                  `portal-cowork-workspace-${chatsOwner.localId}`),
+                  `remote-control-cowork-workspace-${chatsOwner.localId}`),
             sectionToggle:
-              testIds?.chatsSectionToggle ?? 'portal-chats-section-toggle',
+              testIds?.chatsSectionToggle ??
+              'remote-control-chats-section-toggle',
             sectionSettings:
-              testIds?.chatsSectionSettings ?? 'portal-chats-section-settings',
+              testIds?.chatsSectionSettings ??
+              'remote-control-chats-section-settings',
             sectionMenu:
-              testIds?.chatsSectionMenu ?? 'portal-chats-section-menu',
+              testIds?.chatsSectionMenu ?? 'remote-control-chats-section-menu',
             sectionMenuContent:
               testIds?.chatsSectionMenuContent ??
-              'portal-chats-section-menu-content',
+              'remote-control-chats-section-menu-content',
             sectionShowAll:
-              testIds?.chatsSectionShowAll ?? 'portal-chats-section-show-all',
+              testIds?.chatsSectionShowAll ??
+              'remote-control-chats-section-show-all',
             sectionCreateChat:
               testIds?.chatsSectionCreateChat ??
-              'portal-chats-section-new-chat',
+              'remote-control-chats-section-new-chat',
             sectionEmpty:
-              testIds?.chatsSectionEmpty ?? 'portal-chats-section-empty',
+              testIds?.chatsSectionEmpty ??
+              'remote-control-chats-section-empty',
             sectionContent: testIds?.chatsSectionContent,
             chatRow: testIds?.standaloneChatRow,
           }}
@@ -4542,7 +4549,7 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
       label={WORKSPACE_LABEL_PLURAL}
       touchTargets={touch}
       expanded={!workspacesSectionCollapsed}
-      chevronTestId="portal-workspaces-chevron"
+      chevronTestId="remote-control-workspaces-chevron"
       toggleProps={
         props.workspacesSectionCollapsible
           ? {
@@ -4550,7 +4557,7 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
               'data-sidebar-projects-return-focus': '',
               'data-testid':
                 testIds?.workspacesSectionToggle ??
-                'portal-workspaces-section-toggle',
+                'remote-control-workspaces-section-toggle',
               'aria-label': workspacesSectionCollapsed
                 ? 'Expand projects'
                 : 'Collapse projects',
@@ -4563,7 +4570,7 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
             }
           : undefined
       }
-      data-testid="portal-workspaces-header"
+      data-testid="remote-control-workspaces-header"
       data-sidebar-projects-header=""
       data-sidebar-header-resting={workspacesHeaderRest.resting || undefined}
       onPointerEnter={workspacesHeaderRest.onPointerEnter}
@@ -4580,10 +4587,12 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
       }
       menuOpen={workspacesMenuOpen}
       onMenuOpenChange={setWorkspacesMenuOpen}
-      menuTestId={testIds?.workspacesSectionMenu ?? 'portal-workspaces-menu'}
+      menuTestId={
+        testIds?.workspacesSectionMenu ?? 'remote-control-workspaces-menu'
+      }
       menuContentTestId={
         testIds?.workspacesSectionMenuContent ??
-        'portal-workspaces-menu-content'
+        'remote-control-workspaces-menu-content'
       }
       menuFiltered={props.workspacesSectionFiltered}
       actions={selectionActionsFor('projects')}
@@ -4618,7 +4627,7 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
             }
           : undefined
       }
-      createTestId={testIds?.addWorkspace ?? 'portal-add-workspace'}
+      createTestId={testIds?.addWorkspace ?? 'remote-control-add-workspace'}
       createDataAttrs={props.addWorkspaceButtonDataAttrs}
       createRevealed={
         props.addWorkspaceRevealed === true ||
@@ -4648,7 +4657,7 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
             aria-expanded={chatSearchRevealed}
             aria-controls={chatSearchRevealed ? chatSearchInputId : undefined}
             aria-label={searchPresentation.ariaLabel}
-            data-testid="portal-sidebar-chat-search-toggle"
+            data-testid="remote-control-sidebar-chat-search-toggle"
             presentation={
               navStrip
                 ? chatSearchRevealed
@@ -4734,7 +4743,7 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
       {((contentState === 'ready' && sharedSections.length > 0) ||
         props.sharedWithMeNotices) && (
         <section
-          data-testid="portal-shared-with-me-section"
+          data-testid="remote-control-shared-with-me-section"
           aria-labelledby="portal-shared-with-me-heading"
           className="pb-3"
         >
@@ -4755,8 +4764,9 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
               {renderWorkspaceList(
                 sharedSections,
                 {
-                  root: 'portal-shared-with-me-list',
-                  hiddenWorkspacesToggle: 'portal-shared-with-me-hidden-toggle',
+                  root: 'remote-control-shared-with-me-list',
+                  hiddenWorkspacesToggle:
+                    'remote-control-shared-with-me-hidden-toggle',
                 },
                 true,
               )}
@@ -4840,10 +4850,10 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
                 testIds={{
                   root:
                     testIds?.standaloneChatList ??
-                    'portal-standalone-chat-list',
+                    'remote-control-standalone-chat-list',
                   folderToggle:
                     testIds?.standaloneChatFolderToggle ??
-                    'portal-default-folder-toggle',
+                    'remote-control-default-folder-toggle',
                   chatRow: testIds?.standaloneChatRow,
                 }}
               />
@@ -4865,7 +4875,7 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
       aria-label="Search chats"
       aria-expanded={chatSearchRevealed}
       aria-controls={chatSearchRevealed ? chatSearchInputId : undefined}
-      data-testid="portal-sidebar-chat-search-toggle"
+      data-testid="remote-control-sidebar-chat-search-toggle"
       holdHoverWhenExpanded
     />
   );
@@ -4907,7 +4917,7 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
       >
         {(props.headerSlot || activityToggleInHeader) && (
           <div
-            data-testid="portal-sidebar-header"
+            data-testid="remote-control-sidebar-header"
             className="relative flex h-11 shrink-0 items-center gap-2 px-3"
           >
             <div className="flex min-w-0 flex-1 items-center">
@@ -4925,7 +4935,7 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
         {props.contextRowSlot &&
           (activityToggleInContextRow || chatSearchInContextRow ? (
             <SidebarContextHeader
-              testId="portal-sidebar-context-row"
+              testId="remote-control-sidebar-context-row"
               action={
                 <>
                   {activityToggleInContextRow && (
@@ -4942,7 +4952,7 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
             </SidebarContextHeader>
           ) : (
             <div
-              data-testid="portal-sidebar-context-row"
+              data-testid="remote-control-sidebar-context-row"
               className="relative flex shrink-0 px-2 pt-2"
             >
               {props.contextRowSlot}
@@ -4960,7 +4970,7 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
           props.currentDestination) && (
           <div
             ref={navBlockRef}
-            data-testid="portal-sidebar-menu-block"
+            data-testid="remote-control-sidebar-menu-block"
             onFocusCapture={(event): void => {
               if (event.target instanceof HTMLElement) {
                 focusedNavRef.current = event.target;
@@ -4978,7 +4988,7 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
                 <SidebarNavRow
                   onClick={props.onCreateTask}
                   disabled={!props.onCreateTask}
-                  data-testid="portal-create-task"
+                  data-testid="remote-control-create-task"
                   aria-current={props.createTaskActive ? 'page' : undefined}
                   data-selected={props.createTaskActive || undefined}
                   // Desktop's `SidebarNavRow`: the same row vocabulary as every
@@ -4994,7 +5004,7 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
             <div
               data-testid={
                 navStrip && navStripHasItems
-                  ? 'portal-sidebar-nav-strip'
+                  ? 'remote-control-sidebar-nav-strip'
                   : undefined
               }
               // Below the breakpoint: one row of 44px icon buttons under New
@@ -5019,7 +5029,7 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
                 id={chatSearchInputId}
                 className="min-w-0 flex-1"
                 clearLabel="Clear chat search"
-                clearTestId="portal-sidebar-chat-search-clear"
+                clearTestId="remote-control-sidebar-chat-search-clear"
                 // Escape is handled below: clear first, then collapse.
                 clearOnEscape={false}
                 ref={chatSearchInputRef}
@@ -5046,7 +5056,7 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
                 }}
                 placeholder="Search chats"
                 aria-label="Search chats"
-                data-testid="portal-sidebar-chat-search-input"
+                data-testid="remote-control-sidebar-chat-search-input"
               />
             </div>
           </Surface>
@@ -5056,12 +5066,12 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
             <Surface
               variant="rail"
               padding="tight"
-              data-testid="portal-sidebar-chat-search-results"
+              data-testid="remote-control-sidebar-chat-search-results"
               className="absolute inset-0 z-10 overflow-y-auto overflow-x-hidden overscroll-contain"
             >
               {props.chatSearch.hydrating === true && (
                 <p
-                  data-testid="portal-sidebar-chat-search-syncing"
+                  data-testid="remote-control-sidebar-chat-search-syncing"
                   role="status"
                   className="px-3 py-1 text-xs fg-secondary"
                 >
@@ -5070,7 +5080,7 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
               )}
               {chatSearchResults.length === 0 ? (
                 <p
-                  data-testid="portal-sidebar-chat-search-empty"
+                  data-testid="remote-control-sidebar-chat-search-empty"
                   className="px-3 py-2 text-s fg-secondary"
                 >
                   No chats match &ldquo;{chatSearchQuery.trim()}&rdquo;.
@@ -5081,7 +5091,7 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
                     <li key={`${result.kind}-${result.chatId}`}>
                       <ListRow
                         onClick={() => props.chatSearch?.onSelectResult(result)}
-                        data-testid={`portal-sidebar-chat-search-result-${result.chatId}`}
+                        data-testid={`remote-control-sidebar-chat-search-result-${result.chatId}`}
                         touchTarget={touch}
                         description={
                           <span className={REPLAY_MASK_CLASS}>
@@ -5184,7 +5194,7 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
           <SidebarProjectsReturn
             ref={projectsPinRef}
             label={WORKSPACE_LABEL_PLURAL}
-            testId="portal-projects-pin-bottom"
+            testId="remote-control-projects-pin-bottom"
             resolveTarget={() => {
               const viewport = scrollViewportRef.current;
               const header = viewport?.querySelector<HTMLElement>(
@@ -5219,7 +5229,7 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
             boundary={
               props.footerCallout || bulk.notice !== null ? 'none' : 'top'
             }
-            data-testid="portal-sidebar-footer"
+            data-testid="remote-control-sidebar-footer"
             className="relative flex shrink-0 items-center"
           >
             {props.footer}
@@ -5234,10 +5244,10 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
           testIds={{
             dialog:
               testIds?.createWorkspaceDialog ??
-              'portal-create-workspace-dialog',
-            remoteUrl: 'portal-create-workspace-remote-url',
-            submit: 'portal-create-workspace-submit',
-            error: 'portal-create-workspace-error',
+              'remote-control-create-workspace-dialog',
+            remoteUrl: 'remote-control-create-workspace-remote-url',
+            submit: 'remote-control-create-workspace-submit',
+            error: 'remote-control-create-workspace-error',
           }}
         />
       )}
@@ -5278,7 +5288,7 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
           destructive={pendingWorkspaceRemoval.presentation === 'delete'}
           dataTestId={
             testIds?.workspaceRemovalConfirm ??
-            'portal-remove-workspace-confirm'
+            'remote-control-remove-workspace-confirm'
           }
           // A rejected removal keeps the dialog open and shows why, so a
           // failure is distinguishable from a slow success and can be retried.
@@ -5336,7 +5346,10 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
           dataTestId={worktreeTestIdsFor(
             pendingDelete.workspaceId,
             pendingDelete.worktreeId,
-          )(testIds?.worktreeRemovalConfirm, 'portal-delete-worktree-confirm')}
+          )(
+            testIds?.worktreeRemovalConfirm,
+            'remote-control-delete-worktree-confirm',
+          )}
           busy={pendingDeleteStatus === 'busy'}
           errorMessage={
             pendingDeleteStatus === 'failed'
@@ -5590,14 +5603,14 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
             }}
             onClose={() => setSettingsDialog(null)}
             testIds={{
-              dialog: 'portal-workspace-settings-dialog',
-              nameInput: 'portal-workspace-name-input',
-              colorSwatches: 'portal-workspace-color-swatches',
-              claudeMdTextarea: 'portal-workspace-claude-md-textarea',
-              scriptInput: (key) => `portal-workspace-script-${key}`,
-              danger: 'portal-workspace-settings-danger',
-              error: 'portal-workspace-settings-error',
-              save: 'portal-workspace-settings-save',
+              dialog: 'remote-control-workspace-settings-dialog',
+              nameInput: 'remote-control-workspace-name-input',
+              colorSwatches: 'remote-control-workspace-color-swatches',
+              claudeMdTextarea: 'remote-control-workspace-claude-md-textarea',
+              scriptInput: (key) => `remote-control-workspace-script-${key}`,
+              danger: 'remote-control-workspace-settings-danger',
+              error: 'remote-control-workspace-settings-error',
+              save: 'remote-control-workspace-settings-save',
             }}
           />
         )}

@@ -84,7 +84,7 @@ export function HomeBelowComposerGallery(): JSX.Element {
             </SuggestionRow>
             <SuggestionRowTrailing>
               <Button
-                variant="ghost-overlay"
+                variant="ghost"
                 size="compact"
                 iconOnly
                 aria-label="Dismiss"

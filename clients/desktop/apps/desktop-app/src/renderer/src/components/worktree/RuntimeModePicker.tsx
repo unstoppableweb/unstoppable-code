@@ -70,7 +70,6 @@ export function RuntimeModePicker({
     <SegmentedControl<CommandRuntimeMode>
       label={ariaLabel}
       semantics="radio"
-      shape="capsule"
       width="content"
       value={mode}
       disabled={disabled}

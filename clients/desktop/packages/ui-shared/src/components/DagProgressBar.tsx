@@ -40,6 +40,12 @@ export interface DagJobMeta {
   /** Human-readable job name shown in the popover title. */
   name: string;
   status: DagJobStatus | undefined;
+  /**
+   * The source's own word for a finished job when `status` is broader than
+   * it: GitHub's `neutral` and `stale` both draw as `skipped`. Lists that
+   * name a job's outcome show this instead of the status.
+   */
+  outcomeLabel?: string;
   /** Optional started-at ISO 8601 timestamp; drives the duration field. */
   startedAt?: string;
   /** Optional completed-at ISO 8601 timestamp; clamps the duration. */

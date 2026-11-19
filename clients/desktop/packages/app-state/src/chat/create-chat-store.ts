@@ -1,4 +1,4 @@
-import { retainPortalToolPartMetadata } from '@canopy/protocol/portal';
+import { retainRemoteControlToolPartMetadata } from '@canopy/protocol/remote-control/shell';
 import { createContext, useContext, useEffect, useRef } from 'react';
 import { create } from 'zustand';
 import type {
@@ -10,12 +10,12 @@ import type {
 import type {
   ChatInputDeliveryView,
   ChatSteeringCapabilities,
-  PortalChatMessage,
-  PortalChatMessageAttachment,
-  PortalQueuedMessage,
-  PortalChatThinkingLevel,
-  PortalChatTurnGroup,
-} from '@canopy/protocol/portal';
+  RemoteControlChatMessage,
+  RemoteControlChatMessageAttachment,
+  RemoteControlQueuedMessage,
+  RemoteControlChatThinkingLevel,
+  RemoteControlChatTurnGroup,
+} from '@canopy/protocol/remote-control/shell';
 import type { ModelCatalogThinkingLevel } from '@canopy/protocol/models';
 import {
   advanceThinkingLevel,
@@ -50,7 +50,7 @@ import {
 export type ChatThreadStatus = 'idle' | 'streaming' | 'error';
 
 /** Default composer thinking level (matches the desktop default). */
-const DEFAULT_THINKING_LEVEL: PortalChatThinkingLevel = 'high';
+const DEFAULT_THINKING_LEVEL: RemoteControlChatThinkingLevel = 'high';
 
 const EMPTY_WAITING_DELEGATION_IDS: readonly string[] = Object.freeze([]);
 
@@ -63,9 +63,12 @@ export const CHAT_THREAD_RELEASED_ALLOWANCE = 8;
 // Whether a transcript still holds a send awaiting its echo. A later send
 // replaces the per-chat binding, so the rows themselves are the record.
 // Cached per array: idle threads keep theirs, streaming ones are never checked.
-const optimisticPresence = new WeakMap<readonly PortalChatMessage[], boolean>();
+const optimisticPresence = new WeakMap<
+  readonly RemoteControlChatMessage[],
+  boolean
+>();
 const hasOptimisticMessage = (
-  messages: readonly PortalChatMessage[],
+  messages: readonly RemoteControlChatMessage[],
 ): boolean => {
   let present = optimisticPresence.get(messages);
   if (present === undefined) {
@@ -98,7 +101,7 @@ export interface ChatHydrationOptions {
   readonly turnActive?: boolean;
   readonly route?: ChatRoute;
   readonly settings?: ChatTabSettings;
-  readonly queuedMessages?: readonly PortalQueuedMessage[];
+  readonly queuedMessages?: readonly RemoteControlQueuedMessage[];
   readonly waitingDelegationIds?: readonly string[];
   readonly inputDelivery?: readonly ChatInputDeliveryView[];
   readonly steeringCapabilities?: ChatSteeringCapabilities;
@@ -118,9 +121,9 @@ export interface ChatThreadState {
   /** Mirrors `getResidencyGeneration(chatId)` once nonzero. */
   readonly residencyGeneration?: number;
   /** Messages ordered by `createdAtMs` ascending. */
-  readonly messages: readonly PortalChatMessage[];
+  readonly messages: readonly RemoteControlChatMessage[];
   /** Turn groups with completed-group object identity preserved across frames. */
-  readonly turnGroups: readonly PortalChatTurnGroup[];
+  readonly turnGroups: readonly RemoteControlChatTurnGroup[];
   readonly status: ChatThreadStatus;
   /** Failure text when `status === 'error'`, else `null`. */
   readonly error: string | null;
@@ -132,7 +135,7 @@ export interface ChatThreadState {
    */
   readonly turnActive: boolean;
   /** Host-authoritative queue mirror. */
-  readonly queuedMessages: readonly PortalQueuedMessage[];
+  readonly queuedMessages: readonly RemoteControlQueuedMessage[];
   /** Delegations whose request to this chat waits in its queue (ids only). */
   readonly waitingDelegationIds: readonly string[];
   readonly inputDelivery?: readonly ChatInputDeliveryView[];
@@ -142,7 +145,7 @@ export interface ChatThreadState {
   // ---- Persisted composer settings (CAN-739) ----
   readonly planMode: boolean;
   readonly proposalMode: 'optional' | 'required';
-  readonly thinkingLevel: PortalChatThinkingLevel;
+  readonly thinkingLevel: RemoteControlChatThinkingLevel;
   /** Opaque provider tool-input for a pending plan exit, carried across restart. */
   readonly pendingPlanExit?: Readonly<Record<string, unknown>>;
   /** Routing context captured from events, needed to address persistence. */
@@ -245,7 +248,7 @@ export interface ChatStoreState {
    */
   hydrate(
     chatId: string,
-    messages: readonly PortalChatMessage[],
+    messages: readonly RemoteControlChatMessage[],
     options?: ChatHydrationOptions,
   ): void;
   /** Drop a thread's state, its turn-group cache, and any pending persist. */
@@ -271,7 +274,7 @@ export interface ChatStoreState {
       text: string;
       createdAtMs: number;
       localId?: string;
-      attachments?: readonly PortalChatMessageAttachment[];
+      attachments?: readonly RemoteControlChatMessageAttachment[];
     },
   ): void;
   /**
@@ -344,7 +347,7 @@ export interface ChatStoreState {
   /** Set whether a produced plan requires approval (debounced-persisted). */
   setProposalMode(chatId: string, proposalMode: 'optional' | 'required'): void;
   /** Set the composer thinking level directly (debounced-persisted). */
-  setThinkingLevel(chatId: string, level: PortalChatThinkingLevel): void;
+  setThinkingLevel(chatId: string, level: RemoteControlChatThinkingLevel): void;
   /**
    * Advance the thinking level by one step (debounced-persisted).
    *
@@ -409,9 +412,9 @@ function sameStringArray(
 
 /** Replacement frames retain known user files and matching tool read metadata. */
 function retainMessageMetadata(
-  incoming: PortalChatMessage,
-  existing: PortalChatMessage | undefined,
-): PortalChatMessage {
+  incoming: RemoteControlChatMessage,
+  existing: RemoteControlChatMessage | undefined,
+): RemoteControlChatMessage {
   const withAttachments =
     incoming.role === 'user' &&
     existing?.role === 'user' &&
@@ -420,7 +423,7 @@ function retainMessageMetadata(
       ? { ...incoming, attachments: existing.attachments }
       : incoming;
   if (!existing?.parts || !withAttachments.parts) return withAttachments;
-  const parts = retainPortalToolPartMetadata(
+  const parts = retainRemoteControlToolPartMetadata(
     existing.parts,
     withAttachments.parts,
   );
@@ -430,9 +433,9 @@ function retainMessageMetadata(
 }
 
 function refreshPresentationOrder(
-  existing: PortalChatMessage,
-  incoming: PortalChatMessage,
-): PortalChatMessage {
+  existing: RemoteControlChatMessage,
+  incoming: RemoteControlChatMessage,
+): RemoteControlChatMessage {
   return incoming.presentationOrder === undefined ||
     incoming.presentationOrder === existing.presentationOrder
     ? existing
@@ -440,12 +443,12 @@ function refreshPresentationOrder(
 }
 
 const messageIndexes = new WeakMap<
-  readonly PortalChatMessage[],
+  readonly RemoteControlChatMessage[],
   ReadonlyMap<string, number>
 >();
 
 function indexMessages(
-  messages: readonly PortalChatMessage[],
+  messages: readonly RemoteControlChatMessage[],
 ): ReadonlyMap<string, number> {
   let index = messageIndexes.get(messages);
   if (!index) {
@@ -472,8 +475,8 @@ export function batchChatStoreUpdates(callback: () => void): void {
 }
 
 function orderMessages(
-  messages: readonly PortalChatMessage[],
-): PortalChatMessage[] {
+  messages: readonly RemoteControlChatMessage[],
+): RemoteControlChatMessage[] {
   const chronological = messages
     .slice()
     .sort((a, b) => a.createdAtMs - b.createdAtMs);
@@ -495,10 +498,10 @@ function orderMessages(
 
 /** Upsert by `messageId`, retaining any authoritative presentation order. */
 function upsertMessage(
-  messages: readonly PortalChatMessage[],
-  incoming: PortalChatMessage,
+  messages: readonly RemoteControlChatMessage[],
+  incoming: RemoteControlChatMessage,
   knownIndex?: number,
-): PortalChatMessage[] {
+): RemoteControlChatMessage[] {
   const indexes = indexMessages(messages);
   const index = knownIndex ?? indexes.get(incoming.messageId) ?? -1;
   if (
@@ -521,7 +524,7 @@ function upsertMessage(
 }
 
 /** A row's revision as the store compares it: a timer's completion counts. */
-export function messageRevision(message: PortalChatMessage): number {
+export function messageRevision(message: RemoteControlChatMessage): number {
   const frameRevision = message.updatedAtMs ?? message.createdAtMs;
   // Persisted timer messages retain their start timestamp; completion advances
   // only the embedded timer block.
@@ -540,8 +543,8 @@ export function messageRevision(message: PortalChatMessage): number {
 }
 
 function supersedesCachedMessage(
-  cached: PortalChatMessage,
-  incoming: PortalChatMessage,
+  cached: RemoteControlChatMessage,
+  incoming: RemoteControlChatMessage,
 ): boolean {
   const revisionDelta = messageRevision(incoming) - messageRevision(cached);
   return (
@@ -559,7 +562,7 @@ function supersedesCachedMessage(
  * frames arrive already `complete` (the non-delta path finalizes each block),
  * so they cannot drive the working indicator; the timer can.
  */
-function isTurnTimerFrame(message: PortalChatMessage): boolean {
+function isTurnTimerFrame(message: RemoteControlChatMessage): boolean {
   return (
     message.role === 'system' &&
     (message.parts?.some((part) => part.kind === 'turn_timer') ?? false)
@@ -574,7 +577,7 @@ const TURN_TIMER_ID_SUFFIX = ':turn-timer';
  * several executions can share one anchor; a legacy one carries it in its id.
  */
 function turnTimerUserMessageId(
-  message: PortalChatMessage,
+  message: RemoteControlChatMessage,
 ): string | undefined {
   if (!isTurnTimerFrame(message)) return undefined;
   const data = message.parts?.find((part) => part.kind === 'turn_timer')?.data;
@@ -600,7 +603,7 @@ function turnTimerUserMessageId(
  * completed block from an older turn must not defeat a pending rollback.
  */
 function isAuthoritativeTurnLifecycleFrame(
-  message: PortalChatMessage,
+  message: RemoteControlChatMessage,
 ): boolean {
   return (
     isTurnTimerFrame(message) ||
@@ -609,7 +612,7 @@ function isAuthoritativeTurnLifecycleFrame(
   );
 }
 
-function isTerminalTurnTimerFrame(message: PortalChatMessage): boolean {
+function isTerminalTurnTimerFrame(message: RemoteControlChatMessage): boolean {
   return (
     isTurnTimerFrame(message) &&
     (message.status === 'complete' ||
@@ -620,8 +623,8 @@ function isTerminalTurnTimerFrame(message: PortalChatMessage): boolean {
 
 /** A frame advances transcript identity when it is new or supersedes its row. */
 function isNewOrSupersedingMessage(
-  existing: PortalChatMessage | undefined,
-  incoming: PortalChatMessage,
+  existing: RemoteControlChatMessage | undefined,
+  incoming: RemoteControlChatMessage,
 ): boolean {
   return existing === undefined || supersedesCachedMessage(existing, incoming);
 }
@@ -640,7 +643,7 @@ function isNewOrSupersedingMessage(
  */
 function deriveStatus(
   prev: ChatThreadState,
-  message: PortalChatMessage,
+  message: RemoteControlChatMessage,
 ): { status: ChatThreadStatus; error: string | null; turnActive: boolean } {
   if (isTurnTimerFrame(message)) {
     switch (message.status) {
@@ -664,7 +667,7 @@ function deriveStatus(
           : { status: 'idle', error: null, turnActive: false };
       default:
         // Exhaustiveness guard (mirrors the assistant switch): the four cases
-        // cover `PortalChatMessage['status']`; a new status fails to compile.
+        // cover `RemoteControlChatMessage['status']`; a new status fails to compile.
         message.status satisfies never;
         return {
           status: prev.status,
@@ -745,7 +748,7 @@ export function createChatStore(
    * claims the transcript. The claim fences the host's rows, and the echo is
    * then the only copy of the message, so it stays until the claimant shows it.
    */
-  const heldEchoes = new Map<string, readonly PortalChatMessage[]>();
+  const heldEchoes = new Map<string, readonly RemoteControlChatMessage[]>();
   let disposed = false;
   let storeLifetime = 0;
   let triggerCleanup: ((chatId: string) => void) | null = null;
@@ -975,9 +978,9 @@ export function createChatStore(
   // participate, whether consumed in this operation or a previous one.
   const withoutConsumedEchoes = (
     chatId: string,
-    messages: readonly PortalChatMessage[],
-    alsoExclude?: PortalChatMessage,
-  ): readonly PortalChatMessage[] => {
+    messages: readonly RemoteControlChatMessage[],
+    alsoExclude?: RemoteControlChatMessage,
+  ): readonly RemoteControlChatMessage[] => {
     const consumed = consumedEchoIdsFor(chatId);
     if (!consumed && alsoExclude === undefined) return messages;
     return messages.filter(
@@ -1351,7 +1354,7 @@ export function createChatStore(
               // live frame plus its history re-push), and rendering both would
               // duplicate transcript rows. Live ingest already upserts by id;
               // hydrate must apply the same identity rule.
-              const byId = new Map<string, PortalChatMessage>();
+              const byId = new Map<string, RemoteControlChatMessage>();
               for (const message of hydrationMessages) {
                 byId.set(
                   message.messageId,
@@ -1507,7 +1510,7 @@ export function createChatStore(
                   );
                 }
               }
-              const replacements: PortalChatMessage[] = [];
+              const replacements: RemoteControlChatMessage[] = [];
               for (const message of incoming) {
                 const existing = mergedById.get(message.messageId);
                 if (!existing) {
@@ -1582,7 +1585,7 @@ export function createChatStore(
                       (message) => message.messageId !== supersededOptimisticId,
                     );
               // Only while another writer claims the transcript or echoes are held.
-              const withHeldEchoes = (): PortalChatMessage[] => {
+              const withHeldEchoes = (): RemoteControlChatMessage[] => {
                 const announced = new Set(
                   prev.queuedMessages.flatMap(
                     (message) => message.supersedesUserMessageId ?? [],
@@ -1617,7 +1620,7 @@ export function createChatStore(
                 const words = (text: string): string =>
                   text.replace(/\s+/g, '');
                 // Only the claimant's rows land an echo, never another echo.
-                const landed = (echo: PortalChatMessage): boolean =>
+                const landed = (echo: RemoteControlChatMessage): boolean =>
                   ownerIds.has(echo.messageId) ||
                   shown.some(
                     (message) =>

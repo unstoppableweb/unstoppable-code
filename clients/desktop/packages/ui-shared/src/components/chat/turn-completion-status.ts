@@ -1,4 +1,4 @@
-import type { TurnOutcomeCounts } from '@canopy/protocol/portal';
+import type { TurnOutcomeCounts } from '@canopy/protocol/remote-control/shell';
 
 /**
  * How a settled turn ended, as its footer and clean header say it:

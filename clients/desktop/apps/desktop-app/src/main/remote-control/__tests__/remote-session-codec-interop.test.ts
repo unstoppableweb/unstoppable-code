@@ -130,6 +130,30 @@ function desktopDecode(
   return result.value;
 }
 
+/**
+ * Asserts `actual` is a byte view holding exactly `expected`'s bytes, naming
+ * `label` and the first differing byte on failure. Deep `toEqual` compares
+ * typed arrays one element at a time, which is too slow for the
+ * fragment-boundary sizes below on loaded CI shards.
+ */
+function expectSameBytes(
+  label: string,
+  actual: unknown,
+  expected: Uint8Array,
+): void {
+  expect(actual).toBeInstanceOf(Uint8Array);
+  if (!(actual instanceof Uint8Array)) return;
+  expect({ label, byteLength: actual.byteLength }).toEqual({
+    label,
+    byteLength: expected.byteLength,
+  });
+  if (Buffer.compare(actual, expected) === 0) return;
+  const firstDifference = actual.findIndex(
+    (byte, index) => byte !== expected[index],
+  );
+  expect({ label, firstDifference }).toEqual({ label, firstDifference: -1 });
+}
+
 /** A Uint8Array payload whose serialized message is exactly `size` bytes. */
 function messageOfSerializedSize(size: number): Uint8Array {
   for (let length = size - 9; length <= size; length += 1) {
@@ -380,9 +404,14 @@ describe('message codec interop with the desktop', () => {
       const value = messageOfSerializedSize(size);
       const portable = await encodeMessage(value);
       const desktop = desktopEncodeMessage(value);
-      expect(portable.map((fragment) => Buffer.from(fragment))).toEqual(
-        desktop,
-      );
+      expect(portable).toHaveLength(desktop.length);
+      portable.forEach((fragment, index) => {
+        expectSameBytes(
+          `size ${size} fragment ${index}`,
+          fragment,
+          desktop[index] ?? new Uint8Array(0),
+        );
+      });
       expect(portable).toHaveLength(
         Math.max(1, Math.ceil(size / MAX_FRAGMENT_BYTES)),
       );
@@ -391,8 +420,16 @@ describe('message codec interop with the desktop', () => {
         expect(fragment[0]).toBe(final ? FRAGMENT_FLAG_FINAL : 0);
         if (!final) expect(fragment.byteLength).toBe(MAX_FRAGMENT_BYTES + 1);
       });
-      expect(await portableDecode(desktop)).toEqual(value);
-      expect(desktopDecode(portable)).toEqual(Buffer.from(value));
+      expectSameBytes(
+        `size ${size} portable decode`,
+        await portableDecode(desktop),
+        value,
+      );
+      expectSameBytes(
+        `size ${size} desktop decode`,
+        desktopDecode(portable),
+        value,
+      );
     }
   });
 

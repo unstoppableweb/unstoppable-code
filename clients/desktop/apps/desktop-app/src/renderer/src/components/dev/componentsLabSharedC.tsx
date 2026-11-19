@@ -82,7 +82,7 @@ const MODEL_LONG_LABELS = {
   fallbackModelLabel: 'Luna 6.0 mini with the standard reasoning budget',
 } as const satisfies ComponentProps<typeof CodexAccountModelNotice>['failure'];
 
-function CodexAccountModelNoticeSheet(): JSX.Element {
+export function CodexAccountModelNoticeSheet(): JSX.Element {
   return (
     <SpecimenPanel title="CodexAccountModelNotice">
       <SpecimenGrid min={360}>
@@ -219,9 +219,12 @@ function TriggerlessAccessPicker(): JSX.Element {
   );
 }
 
-function ComposerAccessPickerSheet(): JSX.Element {
+export function ComposerAccessPickerSheet(): JSX.Element {
   return (
-    <SpecimenPanel title="ComposerAccessPicker (click a trigger to open its menu; the Full access trigger shows the destructive ink)">
+    <SpecimenPanel
+      title="ComposerAccessPicker"
+      hint="Click a trigger to open its menu; the Full access trigger shows the destructive ink"
+    >
       <SpecimenGrid min={240}>
         <SpecimenCell label="Default: glyph, label and chevron">
           <AccessPickerSpecimen />
@@ -274,7 +277,7 @@ const ICON_BUTTON_TONES: readonly IconButtonTone[] = [
   'destructive',
 ];
 
-function ComposerIconButtonSheet(): JSX.Element {
+export function ComposerIconButtonSheet(): JSX.Element {
   return (
     <SpecimenPanel title="ComposerIconButton">
       <SpecimenGrid min={200}>
@@ -423,9 +426,12 @@ function PlusMenuSpecimen({
   );
 }
 
-function ComposerPlusMenuPresentationSheet(): JSX.Element {
+export function ComposerPlusMenuPresentationSheet(): JSX.Element {
   return (
-    <SpecimenPanel title="ComposerPlusMenuPresentation (click a trigger to open the menu)">
+    <SpecimenPanel
+      title="ComposerPlusMenuPresentation"
+      hint="Click a trigger to open the menu"
+    >
       <SpecimenGrid min={200}>
         <SpecimenCell label="Default trigger">
           <PlusMenuSpecimen prefix="lab-plus-default" />
@@ -536,7 +542,7 @@ function DismissibleTipDrawer(): JSX.Element {
   );
 }
 
-function ComposerDrawerSheet(): JSX.Element {
+export function ComposerDrawerSheet(): JSX.Element {
   return (
     <SpecimenPanel title="ComposerDrawer and ComposerDrawerSection">
       <SpecimenGrid min={340}>
@@ -625,7 +631,7 @@ function QueueCard({
   );
 }
 
-function ComposerTraySheet(): JSX.Element {
+export function ComposerTraySheet(): JSX.Element {
   return (
     <SpecimenPanel title="ComposerTray, ComposerTrayProvider, ComposerTrayHost and ComposerTraySlot">
       <SpecimenGrid min={340}>
@@ -794,9 +800,12 @@ function TipArbiterSpecimen({
   );
 }
 
-function ComposerTipArbiterSheet(): JSX.Element {
+export function ComposerTipArbiterSheet(): JSX.Element {
   return (
-    <SpecimenPanel title="ComposerTipArbiterProvider (plan mode outranks the star prompt; toggle either tip)">
+    <SpecimenPanel
+      title="ComposerTipArbiterProvider"
+      hint="Plan mode outranks the star prompt; toggle either tip"
+    >
       <SpecimenGrid min={340}>
         <SpecimenCell label="Both want to show: only the plan tip does">
           <TipArbiterSpecimen initialPlan initialStar />
@@ -855,9 +864,12 @@ function CopyFeedbackSpecimen({
   );
 }
 
-function CopyFeedbackSheet(): JSX.Element {
+export function CopyFeedbackSheet(): JSX.Element {
   return (
-    <SpecimenPanel title="useAnnouncedCopy and CopyStatusRegion (click each button: the copy control confirms in place and the hidden live region announces)">
+    <SpecimenPanel
+      title="useAnnouncedCopy and CopyStatusRegion"
+      hint="Click each button: the copy control confirms in place and the hidden live region announces"
+    >
       <SpecimenGrid min={240}>
         <SpecimenCell label="Succeeds: Copied, announced after a beat, then back to Copy key">
           <CopyFeedbackSpecimen
@@ -907,9 +919,12 @@ function CopyFeedbackSheet(): JSX.Element {
 const SERVER_REASON =
   'ECONNRESET: upstream closed the stream at offset 4096 (request id req_9f3a2c7e)';
 
-function CopyDetailsButtonSheet(): JSX.Element {
+export function CopyDetailsButtonSheet(): JSX.Element {
   return (
-    <SpecimenPanel title="CopyDetailsButton (the raw reason is copied and never shown)">
+    <SpecimenPanel
+      title="CopyDetailsButton"
+      hint="The raw reason is copied and never shown"
+    >
       <SpecimenGrid min={360}>
         <SpecimenCell label="In a failure notice: Copy details, then Copied">
           <div className="w-full">
@@ -1053,9 +1068,12 @@ const formatLedgerDate = (iso: string): string =>
     timeZone: 'UTC',
   });
 
-function CreditLedgerTableSheet(): JSX.Element {
+export function CreditLedgerTableSheet(): JSX.Element {
   return (
-    <SpecimenPanel title="CreditLedgerTable (the table shows from the sm breakpoint; below it the same entries stack as cards)">
+    <SpecimenPanel
+      title="CreditLedgerTable"
+      hint="The table shows from the sm breakpoint; below it the same entries stack as cards"
+    >
       <SpecimenGrid min={420}>
         <SpecimenCell label="Credits in primary ink, debits muted">
           <div className="w-full">
@@ -1088,22 +1106,5 @@ function CreditLedgerTableSheet(): JSX.Element {
         </SpecimenCell>
       </SpecimenGrid>
     </SpecimenPanel>
-  );
-}
-
-export function SharedCSpecimen(): JSX.Element {
-  return (
-    <div className="flex flex-col gap-8">
-      <CodexAccountModelNoticeSheet />
-      <ComposerAccessPickerSheet />
-      <ComposerIconButtonSheet />
-      <ComposerPlusMenuPresentationSheet />
-      <ComposerDrawerSheet />
-      <ComposerTraySheet />
-      <ComposerTipArbiterSheet />
-      <CopyFeedbackSheet />
-      <CopyDetailsButtonSheet />
-      <CreditLedgerTableSheet />
-    </div>
   );
 }

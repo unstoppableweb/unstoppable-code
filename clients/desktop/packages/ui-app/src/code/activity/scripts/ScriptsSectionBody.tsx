@@ -618,7 +618,7 @@ export function ScriptsSectionBody({
           enlargeButton={
             <Button
               type="button"
-              variant="ghost-accent"
+              variant="ghost"
               size="compact"
               iconOnly
               onClick={(): void => setEnlargedKey(key)}
@@ -666,7 +666,7 @@ export function ScriptsSectionBody({
             !entry.script.interactive ? (
               <Button
                 type="button"
-                variant="ghost-accent"
+                variant="ghost"
                 size="compact"
                 iconOnly
                 onClick={(): void => setEnlargedKey(key)}

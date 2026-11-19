@@ -327,7 +327,7 @@ export function UserBubble({
           navigateClass +
           phoneBadgeClearanceClass
         }
-        data-testid="portal-chat-message-content"
+        data-testid="remote-control-chat-message-content"
         onClick={onNavigate ? handleNavigateClick : undefined}
       >
         {header}

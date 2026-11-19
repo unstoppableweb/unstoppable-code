@@ -4,7 +4,7 @@ import { basename, dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { BRAND } from '@canopy/brand/current';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
-import { normalizeRepositoryCloneUrl } from '@canopy/protocol/portal';
+import { normalizeRepositoryCloneUrl } from '@canopy/protocol/remote-control/shell';
 import { getGitExecutableCommand } from '../../lib/git-executable';
 import type { CanopyJsonFile } from '../../types';
 import {

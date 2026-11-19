@@ -73,7 +73,7 @@ export * from './PlansIcon';
 export * from './PlayCircleIcon';
 export * from './PluginsIcon';
 export * from './PlusIcon';
-export * from './PortalIcon';
+export * from './RemoteControlIcon';
 export * from './ProcessIcon';
 export * from './CoworkWorkspaceIcon';
 export * from './MultiRepoIcon';

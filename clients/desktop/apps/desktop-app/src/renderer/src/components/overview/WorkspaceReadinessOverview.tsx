@@ -588,7 +588,7 @@ export function WorkspaceReadinessOverview({
                           ) : (
                             <Button
                               size="sm"
-                              variant="outline"
+                              variant="secondary"
                               aria-label={
                                 isLaunching
                                   ? `Starting fix for ${issue.title} in ${workspaceName}`

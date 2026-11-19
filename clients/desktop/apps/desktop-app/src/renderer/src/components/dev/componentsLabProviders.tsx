@@ -87,7 +87,10 @@ export function ProvidersSpecimen(): JSX.Element {
         </SpecimenGrid>
       </SpecimenPanel>
 
-      <SpecimenPanel title="LayoutTierProvider (a first-paint seed; the browser's own width wins)">
+      <SpecimenPanel
+        title="LayoutTierProvider"
+        hint="A first-paint seed; the browser's own width wins"
+      >
         <SpecimenGrid min={220}>
           {(['phone', 'tablet', 'desktop'] as const).map((tier) => (
             <SpecimenCell key={tier} label={`tier="${tier}"`}>

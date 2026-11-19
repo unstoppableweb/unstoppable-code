@@ -198,7 +198,7 @@ export function buildHelperPluginRunOptions(
 
 export function finalizeObservedHelperTask(
   taskKey: string,
-  status: 'success' | 'failure',
+  status: 'success' | 'failure' | 'cancelled',
   error?: string,
   usage?: ObservedHelperUsage,
 ): void {

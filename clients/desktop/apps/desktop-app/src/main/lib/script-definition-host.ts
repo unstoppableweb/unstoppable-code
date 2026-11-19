@@ -6,7 +6,7 @@ import type {
 import type { SingleRepoSidebarItem } from '@canopy/desktop-shared/types';
 import { W5CommitRefusedError } from '@canopy/desktop-shared/node/w5-commit-log/errors';
 import type { CoreScriptDefinitionsHost } from '@canopy/core-runtime/node/script/core-script-definitions';
-import { PortalServiceError } from '../services/portal-service-error';
+import { RemoteControlServiceError } from '../services/remote-control-service-error';
 import {
   getWorktreeDir,
   getWorkspaceWorktreeRepoDir,
@@ -55,7 +55,7 @@ export async function readSingleRepoProject(
       item.type === 'single-repo' && item.id === projectId,
   );
   if (!project) {
-    throw new PortalServiceError('not_found', 'Project not found.');
+    throw new RemoteControlServiceError('not_found', 'Project not found.');
   }
   return project;
 }
@@ -117,7 +117,7 @@ function scriptErrorCode(error: unknown): CoreScriptErrorCode | undefined {
     return COMMIT_REFUSAL_CODES[error.reason];
   if (
     error instanceof WorkspaceRepoNotFoundError ||
-    (error instanceof PortalServiceError && error.code === 'not_found')
+    (error instanceof RemoteControlServiceError && error.code === 'not_found')
   )
     return 'core.script.notFound';
   return undefined;

@@ -41,7 +41,7 @@ import {
 import type {
   TurnOutcomeCounts,
   TurnOutcomeStepDetail,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import { ringChatCallFocus } from './chat-call-focus';
 import { desktopTurnApprovalWait } from './tool-approval-matching';
 import type {

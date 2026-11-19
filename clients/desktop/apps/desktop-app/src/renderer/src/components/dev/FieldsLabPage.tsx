@@ -3,7 +3,6 @@ import {
   createContext,
   useContext,
   useEffect,
-  useId,
   useRef,
   useState,
   type FormEvent,
@@ -35,7 +34,6 @@ import {
   SettingsSelect,
   SortDropdown,
   Surface,
-  TabBar,
   TextArea,
   TextInput,
   type TextInputDensity,
@@ -48,6 +46,7 @@ import {
   type ThinkingLevel,
 } from '@canopy/protocol/thinking';
 import { SearchIcon, SparkleIcon } from '@canopy/ui-shared/icons/AppIcons';
+import { SpecimenPanel } from './componentsLabParts';
 
 /**
  * Localhost lab for trying every shared form field by hand
@@ -923,11 +922,11 @@ const CHOICE_MATRIX_COLUMNS = [
  * marks' `forceState` prop, which applies the same classes as the live
  * states (lab and visual tests only); focus is real browser focus.
  */
-function ChoiceMatrix({
+export function ChoiceMatrix({
   kind,
 }: {
   readonly kind?: 'radio' | 'checkbox';
-}): JSX.Element {
+} = {}): JSX.Element {
   // A Focus button moves real focus to one mark at a time.
   const [focusRow, setFocusRow] = useState('');
   const rows = kind
@@ -936,7 +935,7 @@ function ChoiceMatrix({
   return (
     <div className="flex min-w-0 flex-col gap-2 overflow-x-auto">
       {kind === undefined ? (
-        <Heading level={2} variant="title">
+        <Heading level={2} variant="title" data-lab-toc="">
           Radio and checkbox
         </Heading>
       ) : null}
@@ -944,7 +943,8 @@ function ChoiceMatrix({
         <div
           className="grid gap-px"
           style={{
-            gridTemplateColumns: `200px repeat(${CHOICE_MATRIX_COLUMNS.length}, 120px)`,
+            // 168 + 5 × 110 (and its hairline gaps) fits the lab's 760px sheet.
+            gridTemplateColumns: `168px repeat(${CHOICE_MATRIX_COLUMNS.length}, 110px)`,
             width: 'max-content',
           }}
         >
@@ -1106,65 +1106,121 @@ function StatesView({
   );
 }
 
-const FIELD_TABS = [
-  ...FIELD_GROUPS.map(({ id, label, rows }) => ({
-    id,
-    label,
-    View: (): JSX.Element => (
-      <StatesView
-        openMenu="none"
-        rows={rows}
-        focusFirst={false}
-        showChoiceMatrix={false}
-      />
-    ),
-  })),
-  {
-    id: 'checkbox',
-    label: 'Checkbox',
-    View: (): JSX.Element => <ChoiceMatrix kind="checkbox" />,
-  },
-  {
-    id: 'radio',
-    label: 'Radio',
-    View: (): JSX.Element => <ChoiceMatrix kind="radio" />,
-  },
-  { id: 'playground', label: 'Playground', View: PlaygroundView },
-] as const;
+/** Plain titles for the components library's state sheets. */
+const FIELD_STATE_TITLES: Readonly<Record<string, string>> = {
+  'text-default': 'Default, 36px',
+  'text-compact': 'Compact, 28px',
+  'text-settings': 'Settings, 28px',
+  textarea: 'States',
+  select: 'Select, 36px',
+  'settings-select': 'Settings select, 28px',
+  'date-field': 'States',
+  'search-sm': 'Small, 28px',
+  'search-md': 'Page search, 32px',
+  inline: 'At rest and editing',
+  'dialog-field': 'Dialog form field',
+  'field-error': 'Error on its own',
+  'choice-list': 'Choice list rows',
+  toggle: 'States',
+  capsules: 'States',
+};
 
-type FieldTab = (typeof FIELD_TABS)[number]['id'];
+/**
+ * Where a state's name sits beside its specimen, so the name reads on the
+ * specimen's first line of text: 8px down beside a 36px field, 6px beside a
+ * 32px one, 4px beside a 28px one, and at the top beside a field that has
+ * its own label above it.
+ */
+const STATE_NAME_OFFSET_CLASS: Readonly<Record<string, string>> = {
+  'text-compact': 'pt-1',
+  'text-settings': 'pt-1',
+  'settings-select': 'pt-1',
+  'search-sm': 'pt-1',
+  'search-md': 'pt-1.5',
+  inline: 'pt-1',
+  toggle: 'pt-0',
+  capsules: 'pt-1',
+  'field-error': 'pt-0',
+  'dialog-field': 'pt-0',
+};
 
-export function FieldsSpecimen(): JSX.Element {
-  const [selected, setSelected] = useState<FieldTab>('text-input');
-  const id = useId();
-  const panelId = `${id}-panel`;
-  const tabs = FIELD_TABS.map(({ id: tab, label }) => ({
-    id: tab,
-    label,
-    tabId: `${id}-${tab}`,
-  }));
-  const { View } =
-    FIELD_TABS.find((tab) => tab.id === selected) ?? FIELD_TABS[0];
+/** States drawn inside a `FormField`, whose first line is the field's label. */
+const LABELLED_STATES: ReadonlySet<string> = new Set([
+  'Invalid + error',
+  'Help text',
+  'Error + help',
+]);
 
+/**
+ * The states of the named fields for the components library: one panel a
+ * field, and inside it a state list, the way a design system page shows
+ * states. Each state is a row: its name in a fixed column on the left, on
+ * the specimen's first line, and the specimen in one column on the right at
+ * a form's width. Every specimen starts on the same left edge, and nothing
+ * scrolls sideways (the fields lab keeps the full matrix). A state a field
+ * does not have is left out. One "Focused" row holds real focus at a time;
+ * the Focus button beside its field moves it there.
+ */
+export function FieldStates({
+  rows,
+}: {
+  /** Row ids from the state matrix, in the order to show them. */
+  readonly rows: readonly string[];
+}): JSX.Element {
+  const [focusRow, setFocusRow] = useState('');
+  const shown = rows.flatMap((id) => STATE_ROWS.filter((row) => row.id === id));
   return (
-    <div className="flex min-w-0 flex-col gap-4">
-      <TabBar
-        items={tabs}
-        value={selected}
-        onChange={setSelected}
-        label="Field types"
-        density="compact"
-        panelId={panelId}
-        scrollable
-      />
-      <div
-        id={panelId}
-        role="tabpanel"
-        aria-labelledby={`${id}-${selected}`}
-        className="min-w-0"
-      >
-        <View />
-      </div>
+    <div className="flex flex-col gap-6">
+      {shown.map((row) => (
+        <SpecimenPanel
+          key={row.id}
+          title={FIELD_STATE_TITLES[row.id] ?? row.name}
+        >
+          <div className="flex flex-col gap-5" role="list">
+            {STATE_COLUMNS.map((column) => {
+              const focused = focusRow === row.id;
+              const content = row.cell(column, focused);
+              if (content === NOT_APPLICABLE) return null;
+              const nameOffset = LABELLED_STATES.has(column)
+                ? 'pt-0'
+                : (STATE_NAME_OFFSET_CLASS[row.id] ?? 'pt-2');
+              return (
+                <div
+                  key={column}
+                  role="listitem"
+                  className="grid grid-cols-[9rem_minmax(0,1fr)] items-start gap-x-6"
+                  data-state={column}
+                  data-row={row.id}
+                >
+                  <span
+                    className={`text-xs leading-5 text-pretty fg-secondary ${nameOffset}`}
+                    data-state-name=""
+                  >
+                    {column}
+                  </span>
+                  <div className="flex min-w-0 items-center gap-2">
+                    <div
+                      className="w-full max-w-90 min-w-0"
+                      data-state-specimen=""
+                    >
+                      {content}
+                    </div>
+                    {column === 'Focused' && !focused ? (
+                      <Button
+                        size="compact"
+                        variant="ghost"
+                        onClick={(): void => setFocusRow(row.id)}
+                      >
+                        Focus
+                      </Button>
+                    ) : null}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </SpecimenPanel>
+      ))}
     </div>
   );
 }
@@ -1690,18 +1746,77 @@ function ChoicesDemo(): JSX.Element {
   );
 }
 
+const FIELD_DEMOS = {
+  'settings-form': {
+    title: 'Settings form',
+    hint: 'Submit with empty fields to see errors',
+    Demo: SettingsFormDemo,
+  },
+  'tall-form': {
+    title: '36px form',
+    hint: 'Select beside 36px fields',
+    Demo: TallFormDemo,
+  },
+  dialog: { title: 'Dialog form', hint: undefined, Demo: DialogDemo },
+  'inline-rename': {
+    title: 'Inline rename',
+    hint: undefined,
+    Demo: InlineRenameDemo,
+  },
+  'two-factor': {
+    title: 'Field beside capsule buttons',
+    hint: undefined,
+    Demo: TwoFactorRowDemo,
+  },
+  choices: { title: 'Choices', hint: undefined, Demo: ChoicesDemo },
+  'search-row': {
+    title: 'Page search row',
+    hint: 'The field is a rectangle; filters stay capsules',
+    Demo: SearchRowDemo,
+  },
+  chips: {
+    title: 'Composer chips',
+    hint: 'They stay capsules',
+    Demo: ChipTriggers,
+  },
+} as const;
+
+export type FieldsDemoId = keyof typeof FIELD_DEMOS;
+
+/** One of the fields lab's playground forms, for the components library. */
+export function FieldsDemo({
+  demo,
+}: {
+  readonly demo: FieldsDemoId;
+}): JSX.Element {
+  const { title, hint, Demo } = FIELD_DEMOS[demo];
+  return (
+    <SpecimenPanel title={title} hint={hint}>
+      <Demo />
+    </SpecimenPanel>
+  );
+}
+
 function PlaygroundCard({
   title,
+  hint,
   children,
 }: {
   readonly title: string;
+  /** What to do or notice, under the title (as `SpecimenPanel`'s hint). */
+  readonly hint?: string;
   readonly children: ReactNode;
 }): JSX.Element {
   return (
     <Surface as="section" variant="outline" padding="default" gap="item">
-      <Heading level={2} variant="title">
-        {title}
-      </Heading>
+      <div className="flex flex-col gap-0.5">
+        <Heading level={2} variant="title" data-lab-toc="">
+          {title}
+        </Heading>
+        {hint ? (
+          <p className="text-xs text-pretty fg-tertiary">{hint}</p>
+        ) : null}
+      </div>
       {children}
     </Surface>
   );
@@ -1710,11 +1825,14 @@ function PlaygroundCard({
 function PlaygroundView(): JSX.Element {
   return (
     <div className="grid max-w-5xl gap-4 lg:grid-cols-2">
-      <PlaygroundCard title="Settings form (submit with empty fields to see errors)">
+      <PlaygroundCard
+        title="Settings form"
+        hint="Submit with empty fields to see errors"
+      >
         <SettingsFormDemo />
       </PlaygroundCard>
       <div className="flex flex-col gap-4">
-        <PlaygroundCard title="36px form (Select beside 36px fields)">
+        <PlaygroundCard title="36px form" hint="Select beside 36px fields">
           <TallFormDemo />
         </PlaygroundCard>
         <PlaygroundCard title="Dialog form">
@@ -1731,12 +1849,15 @@ function PlaygroundView(): JSX.Element {
         </PlaygroundCard>
       </div>
       <div className="lg:col-span-2">
-        <PlaygroundCard title="Page search row (field is a rectangle, filters stay capsules)">
+        <PlaygroundCard
+          title="Page search row"
+          hint="The field is a rectangle; filters stay capsules"
+        >
           <SearchRowDemo />
         </PlaygroundCard>
       </div>
       <div className="lg:col-span-2">
-        <PlaygroundCard title="Composer chips (stay capsules)">
+        <PlaygroundCard title="Composer chips" hint="They stay capsules">
           <ChipTriggers />
         </PlaygroundCard>
       </div>

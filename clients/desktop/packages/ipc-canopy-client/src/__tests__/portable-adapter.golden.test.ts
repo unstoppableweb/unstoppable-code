@@ -42,7 +42,7 @@ import {
   type RemoteIpcChannelKey,
   type RemoteOperationChannels,
 } from '@canopy/protocol/remote-control/channels';
-import type { PortalPrActionPayload } from '@canopy/protocol/portal';
+import type { RemoteControlPrActionPayload } from '@canopy/protocol/remote-control/shell';
 import type { RemoteIpcTransport } from '@canopy/protocol/remote-control';
 import { SCRIPT_ACTIONS_CHANNELS } from '@canopy/protocol/script-actions';
 import {
@@ -2935,16 +2935,16 @@ const TAB_SETTINGS: ChatTabSettings = {
 };
 
 function prAction(
-  action: PortalPrActionPayload['action'],
+  action: RemoteControlPrActionPayload['action'],
   extra: Record<string, unknown> = {},
-): PortalPrActionPayload {
+): RemoteControlPrActionPayload {
   const value: unknown = {
     workspaceLocalId: 'single',
     worktreeLocalId: 'wt-a',
     action,
     ...extra,
   };
-  return value as PortalPrActionPayload;
+  return value as RemoteControlPrActionPayload;
 }
 
 const COMMAND_SCENARIOS: CommandScenarios = {

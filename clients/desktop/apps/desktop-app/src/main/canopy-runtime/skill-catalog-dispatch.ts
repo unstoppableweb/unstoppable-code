@@ -36,7 +36,7 @@ export const SKILL_CATALOG_DESKTOP_CALLER: CanopyCallerDescriptor = {
 };
 
 /** The Portal reading a skill for a paired browser. */
-export const SKILL_CATALOG_PORTAL_CALLER: CanopyCallerDescriptor = {
+export const SKILL_CATALOG_REMOTE_CONTROL_CALLER: CanopyCallerDescriptor = {
   principalId: 'local-desktop-user',
   clientInstanceId: 'electron-main-portal',
   authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
@@ -364,7 +364,7 @@ export async function readSkillContentThroughCore(
     getDesktopCanopyRuntime().query(
       'core.catalog.skill.read',
       { skill: { sourceId, skillName } },
-      { caller: SKILL_CATALOG_PORTAL_CALLER },
+      { caller: SKILL_CATALOG_REMOTE_CONTROL_CALLER },
     ),
   );
   return { frontmatter, body, truncated };

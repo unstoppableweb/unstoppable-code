@@ -12,6 +12,11 @@ import {
   type DigestPreferences,
 } from '@canopy/protocol/digests';
 
+export {
+  digestPreferencesDescription,
+  type DigestPreferencesScope,
+} from '@canopy/protocol/digests';
+
 /**
  * Cadence values as they come off the API (the Prisma `DigestCadence` enum).
  * `ON_DEMAND` rows are never a *preference* — they are minted by the user's own
@@ -66,9 +71,9 @@ export const DIGEST_CADENCES: ReadonlyArray<{
 export type DigestPreferencesValue = DigestPreferences;
 
 /**
- * Matches `DEFAULT_DIGEST_PREFERENCES` server-side: absent row means weekly
- * only, anchored to Monday and the 1st. Used as the optimistic initial state so
- * the card never renders three off toggles before the first fetch resolves.
+ * Matches `DEFAULT_DIGEST_PREFERENCES` server-side: digests are opt-in, so an
+ * absent row means every cadence is off, anchored to Monday and the 1st. Used
+ * as the initial state before the first fetch resolves.
  */
 export const DEFAULT_DIGEST_PREFERENCES: DigestPreferencesValue =
   SHARED_DEFAULT_DIGEST_PREFERENCES;

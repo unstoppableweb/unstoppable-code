@@ -137,7 +137,9 @@ const ITEM_TONE_CLASS_NAMES: Record<DropdownMenuItemTone, string> = {
   accent:
     'bg-accent fg-emphasis enabled:hover:[background-image:linear-gradient(var(--bg-subtle),var(--bg-subtle))]',
   info: 'fg-blue enabled:hover:bg-subtle',
-  destructive: 'fg-destructive enabled:hover:bg-destructive-subtle',
+  // Half the `-subtle` tint (8% red): at the full 16% the hovered row was the
+  // loudest thing in the menu.
+  destructive: 'fg-destructive enabled:hover:bg-destructive-subtle/50',
   'status-success': `${OPERATIONAL_STATUS_COLORS.success.foreground} enabled:hover:bg-subtle`,
   'status-active': `${OPERATIONAL_STATUS_COLORS.active.foreground} enabled:hover:bg-subtle`,
   'status-failed': `${OPERATIONAL_STATUS_COLORS.failed.foreground} enabled:hover:bg-subtle`,

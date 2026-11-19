@@ -1,7 +1,7 @@
 /**
  * Non-payment billing read contracts for hosted settings: the plan summary,
  * charge history, invoices, AI-credit summary (including the automatic top-up
- * SETTINGS and daily free-credit state it carries) and the ledger.
+ * SETTINGS it carries) and the ledger.
  *
  * Moved from `apps/web/src/lib/billing-api-contracts.ts`, which re-exports
  * every symbol here. Financial request contracts (setup intents, card
@@ -13,10 +13,8 @@
 
 import {
   isBillingCapability,
-  isDailyDripBlockedReason,
   type BillingCapability,
   type BillingPresentation,
-  type DailyDripBlockedReason,
   type EntitlementSource,
 } from '../billing/index';
 import type { OrgTeamsLapseReason } from './organization';
@@ -49,8 +47,6 @@ export const ACCOUNT_BILLING_READ_ROUTES = {
   credits: '/account/billing/credits',
   /** `GET` (cursor-paged) — the personal AI-credit ledger. */
   creditsLedger: '/account/billing/credits/ledger',
-  /** `PUT` — the daily free-credit opt-in (a preference, not a payment). */
-  creditsDailyDrip: '/account/billing/credits/daily-drip',
 } as const;
 
 function pagedPath(
@@ -443,13 +439,6 @@ export interface CreditsAutoTopUpSettings {
   disabledReason: string | null;
 }
 
-/** Daily free-credit drip opt-in state carried on `CreditsSummary`. */
-export interface CreditsDailyDrip {
-  blockedReason?: DailyDripBlockedReason;
-  enabled: boolean;
-  capCredits: number;
-}
-
 /**
  * Which rule produced the "credits used" window. Mirrors the service
  * `CreditsSummaryUsageWindowKind`. Append-only: `isCreditsSummary` rejects a
@@ -485,13 +474,12 @@ export interface CreditsSummary {
   creditPriceUsd?: number;
   split: CreditsConsumptionSplit;
   allotmentTotalCredits: number;
-  dailyDripCapCredits: number;
   /**
-   * Daily free-credit drip opt-in (`enabled`) and the plan cap (`capCredits`,
-   * shown even when opted out). Optional on the wire: an older server omits it,
-   * and a missing value means "unknown", never "opted out".
+   * @deprecated Retired daily free-credit cap, always `0` (CAN-4771). Kept
+   * because shipped clients require it. The server also still sends a retired
+   * `dailyDrip` object that current clients ignore.
    */
-  dailyDrip?: CreditsDailyDrip;
+  dailyDripCapCredits: number;
   nextRefillAt: string | null;
   nextAllotmentAt: string | null;
   autoTopUp: CreditsAutoTopUpSettings;
@@ -737,12 +725,6 @@ export function isCreditsSummary(value: unknown): value is CreditsSummary {
     isCreditsConsumptionSplit(value.split) &&
     typeof value.allotmentTotalCredits === 'number' &&
     typeof value.dailyDripCapCredits === 'number' &&
-    (value.dailyDrip === undefined ||
-      (isRecord(value.dailyDrip) &&
-        typeof value.dailyDrip.enabled === 'boolean' &&
-        typeof value.dailyDrip.capCredits === 'number' &&
-        (value.dailyDrip.blockedReason === undefined ||
-          isDailyDripBlockedReason(value.dailyDrip.blockedReason)))) &&
     isNullableString(value.nextRefillAt) &&
     isNullableString(value.nextAllotmentAt) &&
     isCreditsAutoTopUpSettings(value.autoTopUp) &&

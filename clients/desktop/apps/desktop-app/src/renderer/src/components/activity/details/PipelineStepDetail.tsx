@@ -477,7 +477,6 @@ export function PipelineStepDetail({
           {logSources.richLogFile !== undefined && (
             <SegmentedControl
               label="Log view"
-              shape="capsule"
               width="content"
               value={logViewMode}
               onChange={(mode): void => {

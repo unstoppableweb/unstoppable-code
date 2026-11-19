@@ -894,6 +894,9 @@ export class DelegationRouteRuntime {
                 {
                   workspaceId: owner.projectId,
                   allowNoNativeAuthFallback: false,
+                  // Delegation has its own launch refusal for a signed-out
+                  // provider (`delegation/discovery.ts`); keep its behavior.
+                  refuseNoBillingSource: false,
                   signal,
                   // E2E mock routes keep the proxy's normal expiry.
                   retainRoutesUntilDisposed: !mock,

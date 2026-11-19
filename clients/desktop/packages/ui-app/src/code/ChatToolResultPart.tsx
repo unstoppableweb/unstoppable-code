@@ -4,7 +4,7 @@ import type { JSX } from 'react';
 import { CollapsibleBlock } from '@canopy/ui-shared/components';
 import { WrenchIcon } from '@canopy/ui-shared/icons';
 import { useCapabilities } from '@canopy/app-state';
-import { readPortalChatPartVisual } from '@canopy/protocol/portal';
+import { readRemoteControlChatPartVisual } from '@canopy/protocol/remote-control/shell';
 import { ChatVisualBlock } from './ChatVisualBlock';
 import { useChatVisualHost, type ChatVisualOwner } from './chat-visual-host';
 
@@ -21,7 +21,10 @@ export function readChatToolResultVisual(
   data: unknown,
   fallbackMessageId?: string,
 ): ChatVisualOwner | undefined {
-  const reference = readPortalChatPartVisual({ kind: 'tool_result', data });
+  const reference = readRemoteControlChatPartVisual({
+    kind: 'tool_result',
+    data,
+  });
   if (!reference || typeof data !== 'object' || data === null) return undefined;
   const messageId =
     'messageId' in data && typeof data.messageId === 'string'

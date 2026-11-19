@@ -1,5 +1,30 @@
 // Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
 
+exports[`Remote Control access to code review state (CAN-4167 equivalence) keeps each controller to the code review channels it had 1`] = `
+{
+  "browser": {
+    "code-review:arm": false,
+    "code-review:get": false,
+    "code-review:save-comments": false,
+  },
+  "desktop": {
+    "code-review:arm": true,
+    "code-review:get": true,
+    "code-review:save-comments": true,
+  },
+  "hosted": {
+    "code-review:arm": false,
+    "code-review:get": false,
+    "code-review:save-comments": false,
+  },
+  "mobile": {
+    "code-review:arm": false,
+    "code-review:get": false,
+    "code-review:save-comments": false,
+  },
+}
+`;
+
 exports[`code review scheduling (CAN-4167 golden) arms through IPC and generates every artifact once 1`] = `
 {
   "calls": [
@@ -126,6 +151,22 @@ exports[`code review scheduling (CAN-4167 golden) queues one rerun for a request
   "third": {
     "status": "queued",
   },
+}
+`;
+
+exports[`code review scheduling (CAN-4167 golden) refuses a write over an unreadable review and leaves the file as it is 1`] = `
+{
+  "arm": "Couldn't update this code review because code-review.json could not be read safely. Keep the original file and repair it before trying again.",
+  "calls": [],
+  "read": {
+    "annotations": null,
+    "armed": false,
+    "dataModelDiff": null,
+    "logicDiff": null,
+    "threads": 0,
+  },
+  "save": "Couldn't update this code review because code-review.json could not be read safely. Keep the original file and repair it before trying again.",
+  "unchanged": true,
 }
 `;
 

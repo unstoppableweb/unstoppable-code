@@ -17,8 +17,8 @@ import {
   SHARED_CONTAINER_VIEWER_PROJECT_ID,
   TERMINAL_USER_CLOSE_SIGNAL,
   type ManagedTerminalCommand,
-  type PortalEntityEnvelope,
-  type PortalTarget,
+  type RemoteControlEntityEnvelope,
+  type RemoteControlTarget,
   type TerminalKillRequest,
   type TerminalResizeRequest,
   type TerminalRestoreRequest,
@@ -29,7 +29,7 @@ import {
   type TerminalWriteRequest,
   type TerminalWriteDisposition,
 } from '@canopy/desktop-shared/types';
-import { worktreeScopedParentLocalId } from '@canopy/protocol/portal';
+import { worktreeScopedParentLocalId } from '@canopy/protocol/remote-control/shell';
 import { validateId, validateOptionalRepoId } from '../lib/validation';
 import { assertNotSplitLocked } from './split-lock-service';
 import {
@@ -299,7 +299,7 @@ function validateManagedCommand(
 
 function sessionMatchesTarget(
   session: TerminalSession,
-  target?: PortalTarget,
+  target?: RemoteControlTarget,
 ): boolean {
   if (!target) {
     return true;
@@ -1045,14 +1045,14 @@ export function closeTerminal(
   });
 }
 
-export function terminalSessionToPortalEntity(
+export function terminalSessionToRemoteControlEntity(
   session: TerminalSession,
   options: {
     includeBuffer?: boolean;
     running?: boolean;
     exited?: boolean;
   } = {},
-): PortalEntityEnvelope {
+): RemoteControlEntityEnvelope {
   const buffer = options.includeBuffer
     ? workerTerminal.replayText(session.id)
     : null;
@@ -1077,14 +1077,14 @@ export function terminalSessionToPortalEntity(
   };
 }
 
-export function listTerminalPortalEntities(
-  target?: PortalTarget,
-): PortalEntityEnvelope[] {
+export function listTerminalRemoteControlEntities(
+  target?: RemoteControlTarget,
+): RemoteControlEntityEnvelope[] {
   return workerTerminal
     .list()
     .filter((session) => sessionMatchesTarget(session, target))
     .map((session) =>
-      terminalSessionToPortalEntity(session, {
+      terminalSessionToRemoteControlEntity(session, {
         includeBuffer: target?.terminalLocalId === session.id,
       }),
     );

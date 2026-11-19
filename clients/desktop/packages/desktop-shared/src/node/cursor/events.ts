@@ -117,6 +117,9 @@ interface TextStream {
 export const CURSOR_CHAT_LIMIT_MESSAGE =
   'Cursor response exceeded the local chat limit.';
 
+/** The projection refused a turn past its bound; the message is the surface's copy. */
+export class CursorProjectionLimitError extends Error {}
+
 /**
  * Bounds one turn's projection at 8 MiB of notification JSON or 4,096 blocks,
  * because every block is held in memory until the turn ends. The bound is the
@@ -213,7 +216,8 @@ export class CursorEventProjection {
    * pre-update guard would have rejected.
    */
   private admitBlock(): void {
-    if (this.blockCount >= 4096) throw new Error(this.limitMessage);
+    if (this.blockCount >= 4096)
+      throw new CursorProjectionLimitError(this.limitMessage);
     this.blockCount += 1;
   }
 
@@ -221,7 +225,7 @@ export class CursorEventProjection {
     this.bytes += bytes;
     if (!tool) this.nonToolBytes += bytes;
     if (this.bytes > MAX_TURN_BYTES || this.nonToolBytes > MAX_NON_TOOL_BYTES)
-      throw new Error(this.limitMessage);
+      throw new CursorProjectionLimitError(this.limitMessage);
   }
 
   update(

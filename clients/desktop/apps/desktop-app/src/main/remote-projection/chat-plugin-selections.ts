@@ -11,8 +11,8 @@ import {
   type ChatTabPluginSelections,
   type InvocableInventoryEnableRef,
   type PersistedChatTab,
-  type PortalCommandEnvelope,
-  type PortalInvocableChatTarget,
+  type RemoteControlCommandEnvelope,
+  type RemoteControlInvocableChatTarget,
 } from '@canopy/desktop-shared/types';
 import { isBotProjectId } from '@canopy/protocol/chat-targets';
 import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
@@ -20,27 +20,27 @@ import { appendEnableRef } from '@canopy/desktop-shared/lib/slash-invocable-inve
 import { validateId } from '../lib/validation';
 import { resolveStandaloneChatTarget } from '../services/standalone-chat-service';
 import type { InvocableChatScope } from '../services/editor-service';
-import { queryPortalChatState } from './chat-state-query';
-import type { PortalAdapterContext } from './adapter-context';
+import { queryRemoteControlChatState } from './chat-state-query';
+import type { RemoteControlAdapterContext } from './adapter-context';
 import { isRecord } from './validation';
 
 /** A chat named by a Portal payload; standalone chats may omit their project. */
-export type PortalChatReference =
-  | Extract<PortalInvocableChatTarget, { kind: 'worktree' }>
+export type RemoteControlChatReference =
+  | Extract<RemoteControlInvocableChatTarget, { kind: 'worktree' }>
   | { kind: 'standalone'; projectLocalId?: string; chatId: string };
 
-export interface ResolvedPortalChat {
+export interface ResolvedRemoteControlChat {
   scope: InvocableChatScope;
   tab: PersistedChatTab;
 }
 
 /**
- * Validate an untrusted `PortalInvocableChatTarget`. Ids must pass the shared
+ * Validate an untrusted `RemoteControlInvocableChatTarget`. Ids must pass the shared
  * validator; embedded chat scopes are not reachable through the Portal.
  */
 export function readInvocableChatTarget(
   value: unknown,
-): PortalInvocableChatTarget | null {
+): RemoteControlInvocableChatTarget | null {
   if (!isRecord(value) || typeof value.chatId !== 'string') return null;
   try {
     validateId(value.chatId, 'chatId');
@@ -85,11 +85,11 @@ export function readInvocableChatTarget(
  * state query. Fails the command and returns null when the chat is missing,
  * archived, or chat state is unavailable.
  */
-export async function resolvePortalChat(
-  command: PortalCommandEnvelope,
-  context: PortalAdapterContext,
-  chat: PortalChatReference,
-): Promise<ResolvedPortalChat | null> {
+export async function resolveRemoteControlChat(
+  command: RemoteControlCommandEnvelope,
+  context: RemoteControlAdapterContext,
+  chat: RemoteControlChatReference,
+): Promise<ResolvedRemoteControlChat | null> {
   let scope: InvocableChatScope;
   if (chat.kind === 'worktree') {
     scope = {
@@ -112,20 +112,25 @@ export async function resolvePortalChat(
       standalone: true,
     };
   }
-  const tab = await readPortalChatTab(command, context, scope, chat.chatId);
+  const tab = await readRemoteControlChatTab(
+    command,
+    context,
+    scope,
+    chat.chatId,
+  );
   return tab ? { scope, tab } : null;
 }
 
 /** Read a chat's current canonical tab, failing the command when absent. */
-async function readPortalChatTab(
-  command: PortalCommandEnvelope,
-  context: PortalAdapterContext,
+async function readRemoteControlChatTab(
+  command: RemoteControlCommandEnvelope,
+  context: RemoteControlAdapterContext,
   scope: InvocableChatScope,
   chatId: string,
 ): Promise<PersistedChatTab | null> {
   let snapshot;
   try {
-    snapshot = await queryPortalChatState(context, {
+    snapshot = await queryRemoteControlChatState(context, {
       projectId: scope.projectId,
       worktreeId: scope.worktreeId,
     });
@@ -153,12 +158,12 @@ async function readPortalChatTab(
  * Re-read a resolved chat's latest canonical tab, failing the command when
  * the chat is gone.
  */
-export async function rereadPortalChat(
-  command: PortalCommandEnvelope,
-  context: PortalAdapterContext,
-  chat: ResolvedPortalChat,
-): Promise<ResolvedPortalChat | null> {
-  const tab = await readPortalChatTab(
+export async function rereadRemoteControlChat(
+  command: RemoteControlCommandEnvelope,
+  context: RemoteControlAdapterContext,
+  chat: ResolvedRemoteControlChat,
+): Promise<ResolvedRemoteControlChat | null> {
+  const tab = await readRemoteControlChatTab(
     command,
     context,
     chat.scope,
@@ -174,15 +179,15 @@ export async function rereadPortalChat(
  * selections change before it commits. Returns the committed selections, or
  * null after failing the command.
  */
-export async function enablePortalPluginRef(
-  command: PortalCommandEnvelope,
-  context: PortalAdapterContext,
-  chat: ResolvedPortalChat,
+export async function enableRemoteControlPluginRef(
+  command: RemoteControlCommandEnvelope,
+  context: RemoteControlAdapterContext,
+  chat: ResolvedRemoteControlChat,
   enableRef: InvocableInventoryEnableRef,
 ): Promise<ChatTabPluginSelections | null> {
   const current = normalizePluginSelections(chat.tab.pluginSelections);
   const selections = appendEnableRef(current, enableRef);
-  const committed = await commitPortalPluginSelections(
+  const committed = await commitRemoteControlPluginSelections(
     command,
     context,
     chat,
@@ -201,10 +206,10 @@ export async function enablePortalPluginRef(
  * standalone chat, after its summary is re-projected. Any other outcome fails
  * the command and returns null.
  */
-export async function commitPortalPluginSelections(
-  command: PortalCommandEnvelope,
-  context: PortalAdapterContext,
-  chat: ResolvedPortalChat,
+export async function commitRemoteControlPluginSelections(
+  command: RemoteControlCommandEnvelope,
+  context: RemoteControlAdapterContext,
+  chat: ResolvedRemoteControlChat,
   selections: ChatTabPluginSelections,
   expected?: ChatTabPluginSelections,
   deferredToolsAllowed?: boolean,

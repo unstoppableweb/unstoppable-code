@@ -18,11 +18,11 @@ import {
   type ReactNode,
 } from 'react';
 import type {
-  PortalAskUserQuestion,
-  PortalAskUserQuestionAnswer,
-  PortalAskUserQuestionState,
-} from '@canopy/protocol/portal';
-import { validateQuestionControlAnswers } from '@canopy/protocol/portal';
+  RemoteControlAskUserQuestion,
+  RemoteControlAskUserQuestionAnswer,
+  RemoteControlAskUserQuestionState,
+} from '@canopy/protocol/remote-control/shell';
+import { validateQuestionControlAnswers } from '@canopy/protocol/remote-control/shell';
 import { MessagesSquare, ChevronDownMediumIcon } from '../../icons/AppIcons';
 import { ControlButton, Button } from '../Button';
 import { ChoiceField, ChoiceMark } from '../Choice';
@@ -95,8 +95,8 @@ export interface AnsweredQuestionDisplay {
 
 /** Map projected protocol answers into the normalized answered-display rows. */
 export function answersToDisplay(
-  answers: readonly PortalAskUserQuestionAnswer[],
-  questions?: readonly PortalAskUserQuestion[],
+  answers: readonly RemoteControlAskUserQuestionAnswer[],
+  questions?: readonly RemoteControlAskUserQuestion[],
 ): AnsweredQuestionDisplay[] {
   if (!Array.isArray(answers)) return [];
   return answers.flatMap((answer: unknown, i: number) => {
@@ -206,7 +206,7 @@ export interface AskUserQuestionDraft {
 
 export interface AskUserQuestionCardProps {
   /** Projected protocol state for this question request. */
-  state: PortalAskUserQuestionState;
+  state: RemoteControlAskUserQuestionState;
   /** Optional host markdown renderer for question/header text. */
   renderMarkdown?: (markdown: string) => ReactNode;
   /** Hard-disable all controls (e.g. host not connected). */
@@ -220,7 +220,7 @@ export interface AskUserQuestionCardProps {
   /** Which action last failed, so the matching retry copy is shown. */
   errorKind?: 'submit' | 'dismiss' | null;
   /** Submit the structured answers (raw freeform; host redacts for display). */
-  onSubmit: (answers: PortalAskUserQuestionAnswer[]) => void;
+  onSubmit: (answers: RemoteControlAskUserQuestionAnswer[]) => void;
   /** Dismiss the question without answering. */
   onDismiss: () => void;
   /**
@@ -254,7 +254,7 @@ interface QuestionForm {
 }
 
 function seededForm(
-  questions: readonly PortalAskUserQuestion[],
+  questions: readonly RemoteControlAskUserQuestion[],
   defaultFirstOption: boolean,
 ): QuestionForm {
   return {
@@ -314,7 +314,7 @@ function draftFromForm(form: QuestionForm): AskUserQuestionDraft {
 
 function initialForm(
   draft: AskUserQuestionDraft | undefined,
-  questions: readonly PortalAskUserQuestion[],
+  questions: readonly RemoteControlAskUserQuestion[],
   defaultFirstOption: boolean,
 ): QuestionForm {
   return draft
@@ -325,13 +325,13 @@ function initialForm(
 /** Short `select` lists read faster as visible rows than behind a dropdown. */
 const SELECT_AS_ROWS_MAX_OPTIONS = 5;
 
-type PresentedControl = PortalAskUserQuestion['control'];
+type PresentedControl = RemoteControlAskUserQuestion['control'];
 
 /**
  * Whether a choice question offers "Other" for the person's own answer: every
  * choice does, unless the provider cannot accept one.
  */
-function offersOwnAnswer(question: PortalAskUserQuestion): boolean {
+function offersOwnAnswer(question: RemoteControlAskUserQuestion): boolean {
   const choice =
     question.control === undefined ||
     question.control === 'buttons' ||
@@ -344,7 +344,9 @@ function offersOwnAnswer(question: PortalAskUserQuestion): boolean {
  * always renders as checkbox rows: the native list box cannot take our
  * styling and hides multiple selection behind modifier-clicks.
  */
-function presentedControl(question: PortalAskUserQuestion): PresentedControl {
+function presentedControl(
+  question: RemoteControlAskUserQuestion,
+): PresentedControl {
   return question.control === 'select' &&
     (question.multiSelect === true ||
       question.options.length <= SELECT_AS_ROWS_MAX_OPTIONS)
@@ -365,13 +367,15 @@ function presentedControl(question: PortalAskUserQuestion): PresentedControl {
 function ChoiceShortcut({ index }: { index: number }): JSX.Element | null {
   if (index >= 26) return null;
   return (
-    // The cap is 18px on the row's 20px text line, so 1px down centres it.
+    // The cap is 18px on the row's 20px text line, so 1px down centres it:
+    // 9px from the row's top and bottom. 1px in from the row's 8px padding
+    // puts it 9px from the end too, and its corner nests in the row's.
     <span
       aria-hidden="true"
       data-testid="ask-user-question-choice-shortcut"
-      className="ml-auto mt-px flex opacity-0 group-hover/option:opacity-100 group-focus-visible/option:opacity-100 option-focus-visible-inside:opacity-100"
+      className="ml-auto mr-px mt-px flex opacity-0 group-hover/option:opacity-100 group-focus-visible/option:opacity-100 option-focus-visible-inside:opacity-100"
     >
-      <Kbd shortcut={[String.fromCharCode(65 + index)]} />
+      <Kbd shortcut={[String.fromCharCode(65 + index)]} nest="option-row" />
     </span>
   );
 }
@@ -386,7 +390,7 @@ function selectedOptionValue(
   return index === -1 ? null : String(index);
 }
 
-function isDirectField(question: PortalAskUserQuestion): boolean {
+function isDirectField(question: RemoteControlAskUserQuestion): boolean {
   return (
     question.control === 'text' ||
     question.control === 'textarea' ||
@@ -541,7 +545,7 @@ function AskUserQuestionCardImpl({
     [commitForm],
   );
 
-  const answers = useMemo<PortalAskUserQuestionAnswer[]>(
+  const answers = useMemo<RemoteControlAskUserQuestionAnswer[]>(
     () =>
       state.questions.map((q, idx) => {
         const selectedOptions = Array.from(selections.get(idx) ?? []);

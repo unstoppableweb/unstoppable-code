@@ -19,7 +19,7 @@ export {
   detectClaudeQuotaReached,
   detectCodexQuotaReached,
   readClaudeQuotaResetsAt,
-} from '@canopy/desktop-shared/portal/provider-usage-limit';
+} from '@canopy/desktop-shared/remote-control/provider-usage-limit';
 
 type UnknownRecord = Record<string, unknown>;
 

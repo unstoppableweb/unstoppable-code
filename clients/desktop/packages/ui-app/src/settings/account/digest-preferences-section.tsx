@@ -4,6 +4,7 @@ import type { JSX } from 'react';
 import { SettingsLink, useSettingsBrand } from '../host';
 import { ACCOUNT_DIGEST_OWNER } from '../digests/digest-api';
 import { DigestPreferencesCard } from '../digests/digest-preferences-card';
+import { digestPreferencesDescription } from '../digests/digest-format';
 
 /**
  * The viewer's own work-digest cadence toggles, plus a way into the archive of
@@ -20,10 +21,10 @@ export function DigestPreferencesSection(): JSX.Element {
     <DigestPreferencesCard
       owner={ACCOUNT_DIGEST_OWNER}
       title="Work digests"
-      // "your recent work" rather than "what you shipped": digests go to
-      // everyone on a team, and "shipped" reads as engineering jargon to the
-      // marketers, designers, and PMs who also get one.
-      description={`A periodic summary of your recent work, generated from your ${brand.displayName} activity and emailed to you.`}
+      description={digestPreferencesDescription({
+        kind: 'account',
+        productName: brand.displayName,
+      })}
       testIdPrefix="account"
       footer={
         <SettingsLink

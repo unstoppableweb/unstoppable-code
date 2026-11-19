@@ -14,7 +14,7 @@ import type {
   GatewayModelConfig,
   GatewayModelEntry,
 } from '@canopy/protocol/llm-gateway';
-import type { AutoResumeReason } from '@canopy/protocol/portal';
+import type { AutoResumeReason } from '@canopy/protocol/remote-control/shell';
 import type { SelectionRefOwner } from '@canopy/protocol/plugins';
 import type {
   CommandShellDefinition,

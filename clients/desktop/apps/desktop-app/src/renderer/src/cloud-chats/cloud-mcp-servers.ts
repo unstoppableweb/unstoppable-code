@@ -1,10 +1,10 @@
 import {
   resolveSelectedMcpServers,
   selectedMcpServerKey,
-  type PortalChatTabPluginSelections,
-  type PortalPluginCatalog,
-  type PortalPluginCatalogMcpServer,
-} from '@canopy/protocol/portal';
+  type RemoteControlChatTabPluginSelections,
+  type RemoteControlPluginCatalog,
+  type RemoteControlPluginCatalogMcpServer,
+} from '@canopy/protocol/remote-control/shell';
 import type { McpServersSectionItem } from '@canopy/ui-app';
 
 /** A cloud chat's MCP server row, with the catalog ids its link opens. */
@@ -14,7 +14,7 @@ export interface CloudMcpServerItem extends McpServersSectionItem {
 }
 
 function status(
-  server: PortalPluginCatalogMcpServer,
+  server: RemoteControlPluginCatalogMcpServer,
 ): Pick<
   CloudMcpServerItem,
   'authStatus' | 'authStatusLabel' | 'canConnect' | 'connectActionLabel'
@@ -69,14 +69,14 @@ function status(
  * this computer is asked about a cloud server.
  */
 export function cloudChatMcpServerItems(
-  catalog: PortalPluginCatalog | null,
-  selections: PortalChatTabPluginSelections,
-  unavailable: readonly PortalPluginCatalogMcpServer[] = [],
+  catalog: RemoteControlPluginCatalog | null,
+  selections: RemoteControlChatTabPluginSelections,
+  unavailable: readonly RemoteControlPluginCatalogMcpServer[] = [],
 ): CloudMcpServerItem[] {
   if (catalog === null) return [];
   // The picker offers only servers the web core runs now; the rail shows
   // every selected one, with its state.
-  const plugins: PortalPluginCatalog = {
+  const plugins: RemoteControlPluginCatalog = {
     ...catalog,
     mcpServers: [...catalog.mcpServers, ...unavailable],
   };

@@ -163,7 +163,7 @@ export function RemoteControlPairing({
         {actions.map((action, index) => (
           <Button
             key={action.testId ?? index}
-            variant={action.primary === true ? 'primary' : 'outline'}
+            variant={action.primary === true ? 'primary' : 'secondary'}
             size="lg"
             disabled={action.disabled === true}
             onClick={action.onSelect}

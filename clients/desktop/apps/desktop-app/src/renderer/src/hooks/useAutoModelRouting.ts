@@ -112,9 +112,9 @@ export function useAutoModelRoutingAvailability(
 
   if (!flagEnabled || capability !== true) return { offered: false };
   // Auto may route to any model in the library, so it needs unlocked access
-  // (CAN-4028). Checked ahead of the funding chain: a non-payer's daily
-  // credits make that chain look healthy, and the row would then be offered
-  // for a router the server refuses. The same shared lock the model rows use.
+  // (CAN-4028). Checked ahead of the funding chain: a non-payer's leftover
+  // credits can make that chain look healthy, and the row would then be
+  // offered for a router the server refuses. The same shared lock the model rows use.
   const lock = modelLibraryRowLock(
     resolveModelLibraryLock(isGuest, libraryAccess),
   );

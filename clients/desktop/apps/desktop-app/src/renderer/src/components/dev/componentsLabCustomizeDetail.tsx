@@ -13,6 +13,7 @@ import {
 import {
   AgentReadDetail,
   AutomationReadDetail,
+  CustomizeEntryWorksWith,
   Button,
   CapabilityDetailLayout,
   CustomizePublisher,
@@ -708,7 +709,21 @@ function CatalogPluginPage(): JSX.Element {
           homepage: 'https://example.com',
           categories: ['Development'],
           components: { skills: 2, mcpServers: 1, commands: 1, agents: 0 },
+          items: [
+            { key: 'skill:review', type: 'Skill', name: 'review' },
+            { key: 'skill:summarize', type: 'Skill', name: 'summarize' },
+            { key: 'mcp:github', type: 'MCP server', name: 'GitHub' },
+          ],
         }}
+        worksWith={
+          <CustomizeEntryWorksWith
+            entry={{
+              ...LAB_ENTRY,
+              state: 'available',
+              providerSupport: { claude: true, codex: false },
+            }}
+          />
+        }
         logo={
           <CustomizeEntryLogo
             entry={{ ...LAB_ENTRY, state: 'available' }}

@@ -34,8 +34,8 @@
  *   `ActivityPanelHostActions.onRunScript` / `.onCancelScript` (imported
  *   type-only from the activity module — no second script-action interface is
  *   created, and files under `code/activity/*` are not edited here).
- * - Those callbacks take the protocol `PortalScriptDescriptor` /
- *   `PortalScriptRunProjection` (both require `scriptKey`), while the portal's
+ * - Those callbacks take the protocol `RemoteControlScriptDescriptor` /
+ *   `RemoteControlScriptRunProjection` (both require `scriptKey`), while the portal's
  *   `PortalScript*Entity` values carry an optional `scriptKey`; the portal maps
  *   entity→protocol at the boundary and only offers Launch/Stop when a
  *   `scriptKey` is present.
@@ -49,9 +49,9 @@
 import { WorktreeTopBarSurface } from '@canopy/ui-shared/components';
 import type { JSX, ReactNode } from 'react';
 import type {
-  PortalScriptDescriptor,
-  PortalScriptRunProjection,
-} from '@canopy/protocol/portal';
+  RemoteControlScriptDescriptor,
+  RemoteControlScriptRunProjection,
+} from '@canopy/protocol/remote-control/shell';
 import { Button } from '@canopy/ui-shared/components/Button';
 import {
   BranchIcon,
@@ -145,8 +145,8 @@ export interface WorktreeTopBarProps {
   /** Branch shown by the built-in status summary (unused with `statusContent`). */
   readonly branchLabel?: string;
   readonly baseBranchLabel?: string;
-  readonly launchScript?: PortalScriptDescriptor;
-  readonly launchRun?: PortalScriptRunProjection;
+  readonly launchScript?: RemoteControlScriptDescriptor;
+  readonly launchRun?: RemoteControlScriptRunProjection;
   readonly launchPending?: boolean;
   readonly launchStopping?: boolean;
   readonly commandsDisabled?: boolean;
@@ -169,7 +169,7 @@ export interface WorktreeTopBarProps {
  * enumerated terminal list.
  */
 function isLaunchRunActive(
-  run: PortalScriptRunProjection | undefined,
+  run: RemoteControlScriptRunProjection | undefined,
 ): boolean {
   return run?.status === 'queued' || run?.status === 'running';
 }

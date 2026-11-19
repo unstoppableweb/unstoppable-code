@@ -56,6 +56,7 @@ import {
   type MarketplaceInfo,
   type PluginInfo,
   type RetryItemHarnessInstallRequest,
+  type PluginManifestPreviewResult,
 } from '@canopy/protocol/plugins';
 import {
   installItemForHarnesses,
@@ -94,6 +95,13 @@ import {
 import { sendToWebContents } from '../lib/web-contents-send';
 import { analyzeSubjectCapabilityPackage } from '../pipelines/pipeline-package-service';
 import type { PipelinePackageAnalysisSummary } from '@canopy/execution-engine/types/pipeline';
+
+/** A catalog's marketplace or plugin name: a short, non-empty string. */
+function isCatalogName(value: unknown): value is string {
+  return (
+    typeof value === 'string' && value.trim() !== '' && value.length <= 256
+  );
+}
 
 function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -970,6 +978,26 @@ export function registerPluginHandlers(): void {
         pluginSourcePath,
         componentFile,
       ),
+  );
+  registerIpcHandler(
+    PLUGINS_CHANNELS.PREVIEW_MANIFEST,
+    async (
+      _event,
+      marketplaceId: unknown,
+      pluginName: unknown,
+    ): Promise<IPCResult<PluginManifestPreviewResult>> => {
+      if (!isCatalogName(marketplaceId) || !isCatalogName(pluginName))
+        return {
+          success: false,
+          error: 'A preview needs a marketplace and a plugin name.',
+        };
+      const { previewPluginManifest } =
+        await import('./plugin-manifest-preview');
+      return {
+        success: true,
+        data: await previewPluginManifest(marketplaceId, pluginName),
+      };
+    },
   );
   registerIpcHandler(
     PLUGINS_CHANNELS.INSTALL_PLUGIN,

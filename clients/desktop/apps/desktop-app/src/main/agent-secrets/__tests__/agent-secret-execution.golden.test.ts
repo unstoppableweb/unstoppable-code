@@ -143,8 +143,8 @@ import { LOCAL_DESKTOP_AUTHORITY_ID } from '../../canopy-runtime/desktop-runtime
 import { registerFilePreviewHandlers } from '../../ipc/file-preview';
 import { getFileBrowserRoots } from '../../lib/file-browser-roots';
 import {
-  readPortalFilePreview,
-  savePortalFile,
+  readRemoteControlFilePreview,
+  saveRemoteControlFile,
 } from '../../services/files-service';
 import { readDiff } from '../../services/diff-service';
 import {
@@ -165,7 +165,7 @@ import {
   createEmptyTranscriptReducerState,
   readChildToolLivenessStamp,
 } from '@canopy/agent-transcript';
-import { isTerminalRuntimeChatEvent } from '@canopy/agent-transcript/portal/runtime-chat-projection';
+import { isTerminalRuntimeChatEvent } from '@canopy/agent-transcript/remote-control/runtime-chat-projection';
 import { isCanopyAuthFailureEventData } from '@canopy/protocol/auth-recovery';
 import {
   isAiCreditsNoBillingSourceEventData,
@@ -379,7 +379,7 @@ function stdout(result: { text: string }): string {
 }
 
 /** A Portal read of `relativePath` in `folder`, as the file root `repo`. */
-async function readPortalFilePreviewOf(
+async function readRemoteControlFilePreviewOf(
   folder: string,
   relativePath: string,
 ): Promise<{ content: string }> {
@@ -395,7 +395,7 @@ async function readPortalFilePreviewOf(
     roots: [fileRoot],
     rootMap: new Map([['repo', fileRoot]]),
   });
-  return readPortalFilePreview({
+  return readRemoteControlFilePreview({
     projectId: scope.projectId,
     worktreeId: scope.worktreeId,
     fileRootLocalId: 'repo',
@@ -1595,17 +1595,17 @@ describe('WriteSecretsFile', () => {
       fileRootLocalId: 'repo',
       relativePath: '.env.local',
     };
-    const preview = await readPortalFilePreview(target);
+    const preview = await readRemoteControlFilePreview(target);
     expect(preview.content).toBe("API_TOKEN='[secret:API_TOKEN]'\n");
     await expect(
-      savePortalFile({ ...target, content: preview.content }),
+      saveRemoteControlFile({ ...target, content: preview.content }),
     ).rejects.toThrow('holds secrets');
     expect(readFileSync(join(root, '.env.local'), 'utf8')).toContain(CANARY);
   });
 
   it('refuses to save a redacted view back once its values are gone', async () => {
     writeFileSync(join(root, 'config.txt'), `KEY=${CANARY}\n`);
-    const preview = await readPortalFilePreviewOf(root, 'config.txt');
+    const preview = await readRemoteControlFilePreviewOf(root, 'config.txt');
     expect(preview.content).toBe('KEY=[secret:API_TOKEN]\n');
     // The values that redacted it go (the chat closed, the store is new).
     setChatSecretStoreForTests(storeAt('after'));
@@ -1616,12 +1616,12 @@ describe('WriteSecretsFile', () => {
       relativePath: 'config.txt',
     };
     await expect(
-      savePortalFile({ ...target, content: preview.content }),
+      saveRemoteControlFile({ ...target, content: preview.content }),
     ).rejects.toThrow('holds secrets');
     expect(readFileSync(join(root, 'config.txt'), 'utf8')).toContain(CANARY);
     // A marker the file itself holds saves as any text does.
     writeFileSync(join(root, 'notes.txt'), 'see [secret:API_TOKEN]\n');
-    await savePortalFile({
+    await saveRemoteControlFile({
       ...target,
       relativePath: 'notes.txt',
       content: 'see [secret:API_TOKEN], edited\n',
@@ -1642,9 +1642,9 @@ describe('WriteSecretsFile', () => {
     await missing.ensureLoaded();
     expect(missing.isDamaged()).toBe(true);
     expect(missing.secretFileValuesLost(file)).toBe(true);
-    await expect(readPortalFilePreviewOf(root, '.env.kept')).rejects.toThrow(
-      SECRET_VIEW_HIDDEN_NOTICE,
-    );
+    await expect(
+      readRemoteControlFilePreviewOf(root, '.env.kept'),
+    ).rejects.toThrow(SECRET_VIEW_HIDDEN_NOTICE);
     // A store that never registered a file starts empty, not damaged.
     const fresh = storeAt('fresh');
     await fresh.ensureLoaded();
@@ -1866,7 +1866,7 @@ describe('WriteSecretsFile', () => {
       sizeBytes: Buffer.byteLength(text),
       modifiedAtMs: 1,
     });
-    const preview = await readPortalFilePreview({
+    const preview = await readRemoteControlFilePreview({
       projectId: SHARED_CONTAINER_VIEWER_PROJECT_ID,
       worktreeId: 'container-1',
       fileRootLocalId: 'repo',
@@ -2076,9 +2076,9 @@ describe('WriteSecretsFile', () => {
     });
     expect(run.isError).toBe(true);
     expect(run.text).toBe(SECRET_STORE_DAMAGED_MESSAGE);
-    await expect(readPortalFilePreviewOf(root, '.env.damaged')).rejects.toThrow(
-      SECRET_VIEW_HIDDEN_NOTICE,
-    );
+    await expect(
+      readRemoteControlFilePreviewOf(root, '.env.damaged'),
+    ).rejects.toThrow(SECRET_VIEW_HIDDEN_NOTICE);
     // A scoped read that names the file by its root reads that file,
     // whatever `absolutePath` says.
     writeFileSync(join(root, 'harmless.txt'), 'nothing');
@@ -3925,5 +3925,186 @@ describe('storage backstop refused census', () => {
       ]).toEqual([label, decisions(structuredClone(fixture))]);
       expectNoCanary(JSON.stringify(projected));
     }
+  });
+});
+
+/*
+ * CAN-7244: the secret-safe view of a scoped read checks the file the
+ * dispatcher read. A scoped read names a root and a path inside it, and the
+ * dispatcher reads that, not `absolutePath`, so the view checks that file too.
+ */
+describe('the file a scoped view checks (CAN-7244)', () => {
+  const event = { sender: { id: 1 } };
+  const target = (): { projectId: string; worktreeId: string } => ({
+    projectId: scope.projectId,
+    worktreeId: scope.worktreeId,
+  });
+  const rootsOf = (
+    ...folders: Array<[id: string, path: string]>
+  ): Awaited<ReturnType<typeof getFileBrowserRoots>> => {
+    const roots = folders.map(([id, path]) => ({
+      repoId: id,
+      repoName: id,
+      absolutePath: path,
+      rootKind: 'git-repo' as const,
+      gitAware: true,
+      excludedDescendantRoots: [],
+    }));
+    return {
+      roots,
+      rootMap: new Map(roots.map((each) => [each.repoId, each])),
+    };
+  };
+  const register = (): void => {
+    registerFilePreviewHandlers(
+      createDesktopRuntime({ shutdownTimeoutMs: 1_000 }),
+      () => ({
+        principalId: 'local',
+        clientInstanceId: 'electron-web-contents:1',
+        authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
+        interfaceKind: 'desktop',
+        grants: ['worker.filesystem.read'],
+      }),
+    );
+  };
+  /** A scoped `file:read-content` naming `file`, with a harmless absolutePath. */
+  const readScoped = async (file: {
+    fileRootId: string;
+    relativePath: string;
+  }): Promise<FileContentResponse> =>
+    (await Promise.resolve(
+      handlers.get(IPC_CHANNELS.fileReadContent)?.(event, {
+        absolutePath: join(realpathSync(root), 'harmless.txt'),
+        workspaceTarget: target(),
+        file,
+      }),
+    )) as FileContentResponse;
+  /** The read's outcome, as the renderer would get it. */
+  const outcome = (read: Promise<FileContentResponse>): Promise<unknown> =>
+    read.then(
+      (response) => response,
+      (error: unknown) => error,
+    );
+
+  beforeEach(() => {
+    writeFileSync(join(root, 'harmless.txt'), 'nothing to hide\n');
+    writeFileSync(join(root, 'notes.txt'), 'plain notes\n');
+  });
+
+  it('refuses the view when the file names a root that is no longer one of the worktree’s', async () => {
+    register();
+    // The dispatcher reads with the root; it is gone by the view's check.
+    jest
+      .mocked(getFileBrowserRoots)
+      .mockResolvedValueOnce(rootsOf(['repo', realpathSync(root)]))
+      .mockResolvedValue(rootsOf(['other', realpathSync(root)]));
+    const refused = await outcome(
+      readScoped({ fileRootId: 'repo', relativePath: 'notes.txt' }),
+    );
+    expect(refused).toBeInstanceOf(SecretViewUnavailableError);
+    expect(refused).not.toBeInstanceOf(SecretViewHiddenError);
+    expect(getFileBrowserRoots).toHaveBeenCalledTimes(2);
+
+    // A root the worktree never had is never read, so nothing is shown.
+    jest.mocked(getFileBrowserRoots).mockClear();
+    jest
+      .mocked(getFileBrowserRoots)
+      .mockResolvedValue(rootsOf(['repo', realpathSync(root)]));
+    const missing = await readScoped({
+      fileRootId: 'unknown',
+      relativePath: 'notes.txt',
+    });
+    expect(missing.content).toBe('');
+  });
+
+  it.each([
+    ['a parent segment', '../outside.env'],
+    ['a parent segment after a folder', 'nested/../../outside.env'],
+    ['a lone parent', '..'],
+    ['a backslash parent', '..\\outside.env'],
+    ['an absolute path', '/outside.env'],
+    ['a current-folder segment', './outside.env'],
+    ['an empty segment', 'nested//outside.env'],
+  ])(
+    'never reads or checks a file outside the root through %s',
+    async (_case, relativePath) => {
+      writeFileSync(join(dir, 'outside.env'), `API_TOKEN=${CANARY}\n`);
+      mkdirSync(join(root, 'nested'), { recursive: true });
+      register();
+      jest
+        .mocked(getFileBrowserRoots)
+        .mockResolvedValue(rootsOf(['repo', realpathSync(root)]));
+      const result = await outcome(
+        readScoped({ fileRootId: 'repo', relativePath }),
+      );
+      // The dispatcher refuses it before any read, so the view helper never
+      // runs: the roots were read once, by the dispatcher.
+      expect(result).toBeInstanceOf(Error);
+      expectNoCanary(String(result));
+      expect(getFileBrowserRoots).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('checks the file a symlink in the worktree points at, which is the file the dispatcher read', async () => {
+    await call('write_secrets_file', {
+      path: '.env.real',
+      format: 'dotenv',
+      entries: { API_TOKEN: 'API_TOKEN' },
+    });
+    const real = join(realpathSync(root), '.env.real');
+    symlinkSync('.env.real', join(root, 'relative-link.txt'));
+    symlinkSync(real, join(root, 'absolute-link.txt'));
+    mkdirSync(join(root, 'nested'));
+    symlinkSync('../.env.real', join(root, 'nested', 'parent-link.txt'));
+    register();
+    jest
+      .mocked(getFileBrowserRoots)
+      .mockResolvedValue(rootsOf(['repo', realpathSync(root)]));
+    const links = [
+      'relative-link.txt',
+      'absolute-link.txt',
+      'nested/parent-link.txt',
+    ];
+    // Read through a link, the file's values are redacted like the file's.
+    for (const relativePath of links) {
+      const response = await readScoped({ fileRootId: 'repo', relativePath });
+      expect(response.content).toBe("API_TOKEN='[secret:API_TOKEN]'\n");
+    }
+
+    // Once the store loses the file's values, a view through any link to it
+    // is withheld: the view checks the linked file, not `absolutePath`.
+    writeFileSync(join(dir, 'store', 'chat-secrets.json'), '{ not json');
+    const damaged = storeAt('store');
+    setChatSecretStoreForTests(damaged);
+    await damaged.ensureLoaded();
+    expect(damaged.secretFileValuesLost(real)).toBe(true);
+    for (const relativePath of links)
+      await expect(
+        readScoped({ fileRootId: 'repo', relativePath }),
+      ).rejects.toThrow(SECRET_VIEW_HIDDEN_NOTICE);
+    // The same harmless file, read by itself, is still shown.
+    const plain = (await Promise.resolve(
+      handlers.get(IPC_CHANNELS.fileReadContent)?.(event, {
+        absolutePath: join(realpathSync(root), 'harmless.txt'),
+        workspaceTarget: target(),
+        file: { fileRootId: 'repo', relativePath: 'harmless.txt' },
+      }),
+    )) as FileContentResponse;
+    expect(plain.content).toBe('nothing to hide\n');
+  });
+
+  it('never reads a secrets file outside every root through a symlink in the worktree', async () => {
+    writeFileSync(join(dir, 'outside.env'), `API_TOKEN=${CANARY}\n`);
+    symlinkSync(join(dir, 'outside.env'), join(root, 'escape.txt'));
+    register();
+    jest
+      .mocked(getFileBrowserRoots)
+      .mockResolvedValue(rootsOf(['repo', realpathSync(root)]));
+    const result = await outcome(
+      readScoped({ fileRootId: 'repo', relativePath: 'escape.txt' }),
+    );
+    expect(result).toBeInstanceOf(Error);
+    expectNoCanary(String(result));
+    expect(getFileBrowserRoots).toHaveBeenCalledTimes(1);
   });
 });

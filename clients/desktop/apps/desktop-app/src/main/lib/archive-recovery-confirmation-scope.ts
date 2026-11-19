@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { ArchiveRecoveryReceipt } from '@canopy/desktop-shared/node/archive-recovery-store';
-import type { ProjectDeletionPendingRecovery } from '@canopy/protocol/portal/project-deletion-discard';
+import type { ProjectDeletionPendingRecovery } from '@canopy/protocol/remote-control/shell/project-deletion-discard';
 
 const confirmed = new AsyncLocalStorage<{
   workspaceId: string;

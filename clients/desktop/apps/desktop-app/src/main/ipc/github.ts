@@ -14,12 +14,6 @@ import {
   GitHubAuthFailureError,
   githubAuthFailureCode,
 } from '../lib/github-push-auth-failure';
-import { registerWorktreePrActions } from '../services/pr-worktree-actions';
-import type {
-  PortalPrCreateBlockedReason,
-  PortalPrMergeBlockedReason,
-  PortalPullRequestRepoStatus,
-} from '@canopy/protocol/portal';
 import {
   beginPrMergeProgress,
   recordPrMergeProgress,
@@ -44,7 +38,7 @@ import {
   type SearchPullRequestsResponse,
   type GetRepoSlugRequest,
   type GetRepoSlugResponse,
-  type PortalPullRequestState,
+  type RemoteControlPullRequestState,
 } from '@canopy/desktop-shared/types';
 import { NoDispatchableModelError } from '../lib/default-model-lane-resolver';
 import type {
@@ -152,10 +146,8 @@ import {
   type GitHubPullRequestIpcDispatcher,
 } from '../canopy-runtime/github-pull-request-dispatch';
 import {
-  createPullRequestDirectly,
   dispatchedPullRequestCreate,
   dispatchedPullRequestMerge,
-  mergePullRequestDirectly,
   type PullRequestMergeStep,
   updatePullRequestBaseForIpc,
   type PullRequestCreateStep,
@@ -903,59 +895,6 @@ export function releaseIdleSplitLocksForRendererLifecycle(): number {
       hasInFlightSplitExecute(workspaceId, worktreeId) ||
       isSplitTemporaryWorkspaceInFlight(workspaceId, worktreeId),
   );
-}
-
-/**
- * Single source of truth for remote create-PR eligibility: the returned reason
- * being `undefined` IS `canCreate`, so a hidden button always has an
- * explanation attached to it.
- */
-function resolvePrCreateBlockedReason(input: {
-  status: PortalPullRequestRepoStatus | null;
-  prLookupAvailable: boolean;
-  branch: string;
-  baseBranch: string | null;
-  hasOrigin: boolean;
-  hasChanges: boolean;
-  behindRemote: boolean;
-}): PortalPrCreateBlockedReason | undefined {
-  if (input.status?.state === 'open' || input.status?.state === 'draft') {
-    return 'pr_open';
-  }
-  if (!input.hasOrigin) return 'no_remote';
-  if (!input.prLookupAvailable) return 'pr_status_unavailable';
-  if (input.branch === 'HEAD') return 'detached_head';
-  if (input.branch === input.baseBranch) return 'base_branch';
-  if (!input.hasChanges) return 'no_changes';
-  if (input.behindRemote) return 'needs_pull';
-  return undefined;
-}
-
-/** Merge twin of {@link resolvePrCreateBlockedReason}. */
-function resolvePrMergeBlockedReason(input: {
-  status: PortalPullRequestRepoStatus | null;
-  dirty: boolean;
-  unpushed: boolean;
-}): PortalPrMergeBlockedReason | undefined {
-  const status = input.status;
-  if (status?.state !== 'open' && status?.state !== 'draft') return 'no_pr';
-  if (status.state === 'draft') return 'draft';
-  if (status.hasConflicts === true) return 'conflicts';
-  if (status.mergeReady !== true) {
-    // GitHub's mergeable state already folds in required checks and reviews,
-    // so name the signal the user can see rather than inventing a cause.
-    if (status.checkStatus === 'failing') return 'checks_failing';
-    if (status.checkStatus === 'pending') return 'checks_pending';
-    if (
-      status.reviewStatus === 'pending' ||
-      status.reviewStatus === 'changes-requested'
-    ) {
-      return 'review_pending';
-    }
-    return 'not_ready';
-  }
-  if (input.dirty || input.unpushed) return 'local_changes';
-  return undefined;
 }
 
 /** Request metadata describes an original action, never broadens its git scope. */
@@ -1913,7 +1852,7 @@ export function registerGitHubHandlers(
     (
       _event: IpcMainInvokeEvent,
       request: { projectId: string; worktreeId: string },
-    ): Promise<PortalPullRequestState> => {
+    ): Promise<RemoteControlPullRequestState> => {
       validateId(request.projectId, 'projectId');
       validateId(request.worktreeId, 'worktreeId');
       return refreshPullRequestState({
@@ -3526,117 +3465,6 @@ export function registerGitHubHandlers(
       );
     },
   );
-
-  registerWorktreePrActions({
-    create: (request) => {
-      assertWritableScope(request.projectId);
-      return createWorktreePr.run(request, createPullRequestDirectly);
-    },
-    merge: (request) => {
-      assertWritableScope(request.projectId);
-      return mergeWorktreePr.run(request, mergePullRequestDirectly);
-    },
-    state: async (target) => {
-      const { repoEntries } = await resolveAllRepoEntries(target);
-      const state = await refreshPullRequestState({
-        workspaceLocalId: target.projectId,
-        worktreeLocalId: target.worktreeId,
-      });
-      const repos = await Promise.all(
-        repoEntries.map(async (entry) => {
-          const repoId = entry.repoId ?? SINGLE_REPO_USAGE_REPO_ID;
-          const projectedRepo =
-            state.repos?.find((repo) => repo.repoId === repoId) ??
-            (repoEntries.length === 1 ? state.repos?.[0] : undefined);
-          const status = projectedRepo?.status ?? null;
-          const [origin, dirty, branch] = await Promise.all([
-            getRemoteUrl(entry.repoPath),
-            hasUncommittedChanges(entry.repoPath),
-            getCurrentBranch(entry.repoPath),
-          ]);
-          const resolvedBase = await resolvePrBaseBranchForRepo({
-            ...target,
-            repoId: entry.repoId,
-            repoPath: entry.repoPath,
-          }).catch(() => null);
-          const divergence = origin
-            ? await readRemoteBranchDivergence(entry.repoPath, branch)
-            : null;
-          const changes = await repoHasChanges(
-            entry.repoPath,
-            target.projectId,
-            target.worktreeId,
-            entry.repoId,
-            dirty,
-            resolvedBase,
-          );
-          const actionBaseBranch =
-            (status?.state === 'open' || status?.state === 'draft') &&
-            status.baseRefName
-              ? status.baseRefName
-              : resolvedBase?.baseBranch;
-          const unpushed =
-            divergence?.remoteBranchExists === true
-              ? divergence.ahead > 0
-              : status?.state === 'open' ||
-                status?.state === 'draft' ||
-                changes;
-          return {
-            repoId,
-            repoName: entry.repoName,
-            status,
-            published: origin ? divergence?.remoteBranchExists : false,
-            baseBranch: actionBaseBranch,
-            headBranch: branch,
-            createBlockedReason: resolvePrCreateBlockedReason({
-              status,
-              prLookupAvailable: projectedRepo?.prLookupAvailable === true,
-              branch,
-              baseBranch: actionBaseBranch ?? null,
-              hasOrigin: Boolean(origin),
-              hasChanges: changes,
-              behindRemote: (divergence?.behind ?? 0) > 0,
-            }),
-            mergeBlockedReason: resolvePrMergeBlockedReason({
-              status,
-              dirty,
-              unpushed,
-            }),
-            cleanForMerge: !dirty && !unpushed,
-            mergeWarning:
-              status?.unresolvedReviewThreadCount === undefined ||
-              status.unresolvedReviewThreadCount > 0,
-          };
-        }),
-      );
-      // One dirty sibling blocks every merge, so a clean repo still has to say
-      // why its button is gone.
-      const allClean = repos.every((repo) => repo.cleanForMerge);
-      return {
-        busy:
-          isGitActionActive(target) ||
-          isSplitLocked(target.projectId, target.worktreeId),
-        repos: repos.map((repo) => {
-          const mergeBlockedReason =
-            repo.mergeBlockedReason ??
-            (allClean ? undefined : 'other_repo_changes');
-          return {
-            repoId: repo.repoId,
-            repoName: repo.repoName,
-            status: repo.status,
-            published: repo.published,
-            baseBranch: repo.baseBranch,
-            headBranch: repo.headBranch,
-            mergeWarning: repo.mergeWarning,
-            createBlockedReason: repo.createBlockedReason,
-            mergeBlockedReason,
-            canCreate: repo.createBlockedReason === undefined,
-            canMerge: mergeBlockedReason === undefined,
-          };
-        }),
-      };
-    },
-  });
 
   registerIpcHandler(
     IPC_CHANNELS.githubStartMergeConflictResolution,

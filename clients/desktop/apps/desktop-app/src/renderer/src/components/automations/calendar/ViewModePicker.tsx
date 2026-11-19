@@ -30,7 +30,6 @@ export function ViewModePicker({
       options={OPTIONS}
       onChange={onChange}
       label="View mode"
-      shape="capsule"
       width="content"
     />
   );

@@ -74,7 +74,7 @@ import {
   resolveSharedContainerViewerFileForRead,
 } from '../shared-containers/read/viewer-root';
 import { getSharedContainerReader } from '../shared-containers/read/reader';
-import { resolvePortalFileLink } from '../services/files-service';
+import { resolveRemoteControlFileLink } from '../services/files-service';
 
 type FileContentKind = FilePreviewResponse['kind'];
 
@@ -320,7 +320,7 @@ async function resolveTranscriptFileReference(
   request: FileReferenceResolveRequest,
 ): Promise<FileReferenceResolveResponse> {
   if (request.projectId === SHARED_CONTAINER_VIEWER_PROJECT_ID) {
-    const link = await resolvePortalFileLink(request);
+    const link = await resolveRemoteControlFileLink(request);
     if (!link) return null;
     const { rootMap } = await getFileBrowserRoots(
       request.projectId,

@@ -185,7 +185,7 @@ export function isDefaultCoworkWorkspaceName(name: string): boolean {
  * The synthetic repo id standing for "the workspace root itself", and the name
  * shown for it. This is the one declaration: `@canopy/desktop-shared/types`
  * re-exports it for the desktop runtime, and `apps/web` re-exports it from
- * `portal-chat-selectors`, so neither keeps a copy that could drift. The
+ * `remote-control-chat-selectors`, so neither keeps a copy that could drift. The
  * desktop send path resolves an omitted `selectedRepoId` to this sentinel and
  * `validateOptionalRepoId` whitelists it, so it is the correct wire value for
  * an explicit workspace-root selection.

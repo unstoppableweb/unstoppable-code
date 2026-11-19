@@ -2,10 +2,10 @@ import {
   accountMcpAccountName,
   type AccountMcpConnection,
 } from '@canopy/protocol/mcp-servers';
-import type { PortalPluginCatalogMcpServer } from '@canopy/protocol/portal';
+import type { RemoteControlPluginCatalogMcpServer } from '@canopy/protocol/remote-control/shell';
 
 type AccountFields = Pick<
-  PortalPluginCatalogMcpServer,
+  RemoteControlPluginCatalogMcpServer,
   | 'configName'
   | 'connectionId'
   | 'connectionState'
@@ -45,10 +45,10 @@ function accountFields(connection: AccountMcpConnection): AccountFields {
  * changes nothing.
  */
 export function mergeCatalogAccountMcpServers(
-  deviceRows: readonly PortalPluginCatalogMcpServer[],
+  deviceRows: readonly RemoteControlPluginCatalogMcpServer[],
   deviceServerIds: readonly string[],
   connections: readonly AccountMcpConnection[],
-): PortalPluginCatalogMcpServer[] {
+): RemoteControlPluginCatalogMcpServer[] {
   const deviceServers = new Set(deviceServerIds);
   const curated = connections.filter(
     (connection) =>
@@ -61,7 +61,7 @@ export function mergeCatalogAccountMcpServers(
           .length >= 2,
     )
     .map(
-      (connection): PortalPluginCatalogMcpServer => ({
+      (connection): RemoteControlPluginCatalogMcpServer => ({
         serverId: connection.serverKey,
         configId: connection.configId,
         serverName: connection.displayName,

@@ -161,7 +161,7 @@ export function PrivateMemoryInlineToggle({
       />
       <Tooltip label={PRIVATE_MEMORY_EXPLANATION}>
         <Button
-          variant="ghost-quiet"
+          variant="ghost"
           size="sm"
           iconOnly
           data-testid={`${dataTestId}-info`}

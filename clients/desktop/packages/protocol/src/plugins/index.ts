@@ -31,6 +31,7 @@ export * from './selection-ref-owner';
 export * from './harness-compatibility';
 export * from './harness-installs';
 export * from './stand-ins';
+export * from './manifest-preview';
 
 /**
  * The public GitHub package for a manifest-relative path inside an official

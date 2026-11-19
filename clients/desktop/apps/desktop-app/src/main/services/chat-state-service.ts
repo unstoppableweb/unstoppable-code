@@ -5,9 +5,9 @@ import {
   revokeClosedChatSecrets,
   revokeScopeChatSecrets,
 } from '../agent-secrets/lifecycle';
-import { TrackedPlanImplementationInputSchema } from '@canopy/protocol/portal';
+import { TrackedPlanImplementationInputSchema } from '@canopy/protocol/remote-control/shell';
 import { supersedeToolInterruptions } from '@canopy/agent-transcript/settlement';
-import { readAutoResumeMetadata } from '@canopy/protocol/portal';
+import { readAutoResumeMetadata } from '@canopy/protocol/remote-control/shell';
 import type {
   ChildStreamCompatibilityPageRequest,
   ChildStreamCompatibilityPageReply,
@@ -54,7 +54,7 @@ import {
   clearOpenCodeForkPlanReview,
   prepareOpenCodeVisibleFork,
 } from '@canopy/desktop-shared/lib/opencode-fork-context';
-import type { ChatPlanReviewApproval } from '@canopy/protocol/portal';
+import type { ChatPlanReviewApproval } from '@canopy/protocol/remote-control/shell';
 import {
   DELEGATION_TRANSCRIPT_CHAT_LOG,
   DELEGATION_TRANSCRIPT_CHAT_STREAM,
@@ -67,7 +67,7 @@ import type {
 } from '../lib/chat-delegation-log';
 import { persistedDelegationSnapshot } from '../agents/delegation/card-persistence';
 import { CHAT_CUSTOM_TITLE_MAX_LENGTH } from '@canopy/protocol';
-import { validateQuestionControlAnswers } from '@canopy/protocol/portal';
+import { validateQuestionControlAnswers } from '@canopy/protocol/remote-control/shell';
 import type { ChatTurnLifecycleEvent } from '@canopy/protocol/canopy-core';
 import {
   setTurnLifecycleEndedLookup,
@@ -152,12 +152,12 @@ import { reopenAsyncQuestionMutations } from './async-question-reopen';
 import type {
   ChatInputDeliveryEvent,
   ChatSteeringCapabilities,
-} from '@canopy/protocol/portal';
-import { readChatInputDeliveryFailure } from '@canopy/protocol/portal/input-delivery';
+} from '@canopy/protocol/remote-control/shell';
+import { readChatInputDeliveryFailure } from '@canopy/protocol/remote-control/shell/input-delivery';
 import { prepareCodexItemFields } from './chat-transcript-field-preparation';
 import { admittedResultCall } from '@canopy/agent-transcript/lib/admitted-result-call';
 import { toolResultNeedsRead } from '../lib/chat-transcript-artifacts';
-import { portalToolOccurrenceId } from '@canopy/protocol/portal';
+import { remoteControlToolOccurrenceId } from '@canopy/protocol/remote-control/shell';
 import {
   PROVIDER_EVENT_ADMISSION_MAX_TOOLS,
   PROVIDER_EVENT_ADMISSION_MAX_BYTES,
@@ -219,8 +219,8 @@ import type {
   ModelHarness,
   PersistedChatMessage,
   PersistedCommandReceipt,
-  PortalChatSendIdentity,
-  PortalChatSendReceiptProbe,
+  RemoteControlChatSendIdentity,
+  RemoteControlChatSendReceiptProbe,
   PersistedHostQueuedMessage,
   PersistedChatTab,
   PersistedPendingQuestion,
@@ -230,7 +230,7 @@ import type {
 import {
   chatAgentSent,
   type AgentSentInfo,
-} from '@canopy/protocol/portal/external-agent-sender';
+} from '@canopy/protocol/remote-control/shell/external-agent-sender';
 import {
   isRetiredPlanChatScope,
   RETIRED_PLAN_CHAT_MESSAGE,
@@ -3334,9 +3334,9 @@ export function storageSessionDiagnostic(
   };
 }
 
-function matchesPortalSendReceipt(
+function matchesRemoteControlSendReceipt(
   receipt: PersistedCommandReceipt,
-  identity: PortalChatSendIdentity,
+  identity: RemoteControlChatSendIdentity,
 ): boolean {
   return (
     receipt.outcome === 'applied' &&
@@ -3517,12 +3517,12 @@ export class ChatStateService implements ChatStateCommandPort {
     );
   }
 
-  public async getPortalSendReceipt(request: {
+  public async getRemoteControlSendReceipt(request: {
     projectId: string;
     worktreeId: string;
     commandId: string;
-    identity: PortalChatSendIdentity;
-  }): Promise<PortalChatSendReceiptProbe> {
+    identity: RemoteControlChatSendIdentity;
+  }): Promise<RemoteControlChatSendReceiptProbe> {
     validateId(request.projectId, 'projectId');
     validateId(request.worktreeId, 'worktreeId');
     validateId(request.commandId, 'commandId');
@@ -3532,12 +3532,12 @@ export class ChatStateService implements ChatStateCommandPort {
       return { outcome: 'conflict' };
     const receipt =
       (await this.repository.getReceipt(request, request.commandId)) ??
-      (await this.repository.getPortalSendReceipt(
+      (await this.repository.getRemoteControlSendReceipt(
         request,
         request.identity.userMessageId,
       ));
     if (receipt) {
-      return matchesPortalSendReceipt(receipt, request.identity)
+      return matchesRemoteControlSendReceipt(receipt, request.identity)
         ? { outcome: 'matched', receipt }
         : { outcome: 'conflict' };
     }
@@ -6567,7 +6567,7 @@ export class ChatStateService implements ChatStateCommandPort {
           },
         );
       }
-      const probe = await this.getPortalSendReceipt({
+      const probe = await this.getRemoteControlSendReceipt({
         ...scope,
         commandId: envelope.commandId,
         identity: options.portalSend,
@@ -7422,7 +7422,7 @@ export class ChatStateService implements ChatStateCommandPort {
           : { authoritative: true, call: address };
       if (!pairing.authoritative) return;
       const anchor = pairing.call ?? address;
-      const occurrenceId = portalToolOccurrenceId(
+      const occurrenceId = remoteControlToolOccurrenceId(
         anchor.rowId,
         anchor.blockOrdinal,
       );
@@ -12465,11 +12465,11 @@ export class ChatStateService implements ChatStateCommandPort {
         scope,
         (current, _revision, transaction) => {
           if (options.portalSend) {
-            const receipt = transaction.getPortalSendReceipt(
+            const receipt = transaction.getRemoteControlSendReceipt(
               command.userMessageId,
             );
             if (receipt) {
-              precommitResult = matchesPortalSendReceipt(
+              precommitResult = matchesRemoteControlSendReceipt(
                 receipt,
                 options.portalSend,
               )

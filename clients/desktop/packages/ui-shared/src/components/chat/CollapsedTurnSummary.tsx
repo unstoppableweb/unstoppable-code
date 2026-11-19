@@ -38,7 +38,7 @@ import {
 import type {
   TurnOutcomeCounts,
   TurnOutcomeStepDetail,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import { RichHoverTooltip } from '../RichHoverTooltip';
 import { useIsPhone } from '../useMediaQuery';
 import { describeStepCounts, type StepKind } from './step-words';
@@ -54,7 +54,7 @@ import { TurnWorkHeader } from './TurnWorkHeader';
 
 /**
  * Tool-counts summary surfaced on collapsed turn groups. Mirrors the
- * `PortalChatTurnGroupEntity.summary` shape from `@canopy/protocol` so the
+ * `RemoteControlChatTurnGroupEntity.summary` shape from `@canopy/protocol` so the
  * desktop and the web portal can pass the wire counts straight through.
  */
 export interface TurnSummary {

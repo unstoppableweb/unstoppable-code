@@ -1,5 +1,5 @@
 import type { FileViewMode } from '@canopy/app-state';
-import type { PortalFilePreview } from '@canopy/protocol/portal';
+import type { RemoteControlFilePreview } from '@canopy/protocol/remote-control/shell';
 import {
   DOCX_MEDIA_TYPE,
   XLSX_MEDIA_TYPE,
@@ -9,7 +9,7 @@ import { VIDEO_PREVIEW_EXTENSIONS } from '@canopy/protocol/document-preview';
 /**
  * How the shared {@link import('./FileViewer').FileViewer} should render a
  * file's text content. `image`/binary are out of scope for the neutral
- * text-only {@link PortalFilePreview} (its `content` is always a string), so a
+ * text-only {@link RemoteControlFilePreview} (its `content` is always a string), so a
  * non-previewable file falls through to `code`. `pdf`/`docx`/`xlsx`/`pptx`/`video`
  * are rich-document kinds served by the host-injected byte resolver; hosts opt
  * in per kind through `supportedDocumentKinds`.
@@ -119,7 +119,7 @@ export function fileRenderKindForMediaType(
  * `language` for every file.
  */
 export function resolveFileRenderKind(
-  preview: Pick<PortalFilePreview, 'path' | 'language'>,
+  preview: Pick<RemoteControlFilePreview, 'path' | 'language'>,
 ): FileRenderKind {
   const extension = fileExtension(preview.path);
   if (MARKDOWN_EXTENSIONS.has(extension) || preview.language === 'markdown') {

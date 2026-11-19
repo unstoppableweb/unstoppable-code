@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   validateQuestionControlAnswers,
-  type PortalAskUserQuestion,
-  type PortalAskUserQuestionAnswer,
-} from '@canopy/protocol/portal';
+  type RemoteControlAskUserQuestion,
+  type RemoteControlAskUserQuestionAnswer,
+} from '@canopy/protocol/remote-control/shell';
 import {
   clearQuestionPromptProgress,
   readQuestionPromptProgress,
@@ -22,7 +22,7 @@ import {
 export type QuestionStepKind = 'choice' | 'multi' | 'text' | 'field';
 
 export function questionStepKind(
-  question: PortalAskUserQuestion,
+  question: RemoteControlAskUserQuestion,
 ): QuestionStepKind {
   const { control } = question;
   // A private value without answers asks in the masked field, whatever its
@@ -48,7 +48,9 @@ export function questionStepKind(
  * unless the provider cannot accept one (`allowOther: false`). Otherwise the
  * composer keeps sending chat messages, as it does while a plan waits.
  */
-export function questionAcceptsText(question: PortalAskUserQuestion): boolean {
+export function questionAcceptsText(
+  question: RemoteControlAskUserQuestion,
+): boolean {
   const kind = questionStepKind(question);
   if (kind === 'text') return true;
   // A private value's typed answer would show in the composer and its draft.
@@ -57,10 +59,10 @@ export function questionAcceptsText(question: PortalAskUserQuestion): boolean {
 }
 
 function answerFor(
-  question: PortalAskUserQuestion,
+  question: RemoteControlAskUserQuestion,
   selected: readonly string[],
   text: string,
-): PortalAskUserQuestionAnswer {
+): RemoteControlAskUserQuestionAnswer {
   const freeform = text.trim();
   return {
     ...(question.id ? { questionId: question.id } : {}),
@@ -76,7 +78,7 @@ function answerFor(
  * cannot answer it.
  */
 export function questionPromptPlaceholder(
-  question: PortalAskUserQuestion,
+  question: RemoteControlAskUserQuestion,
 ): string {
   if (!questionAcceptsText(question)) return 'Send a message instead';
   return questionStepKind(question) === 'text'
@@ -84,13 +86,16 @@ export function questionPromptPlaceholder(
     : 'Or type your own answer';
 }
 
-const EMPTY_QUESTION: PortalAskUserQuestion = { question: '', options: [] };
+const EMPTY_QUESTION: RemoteControlAskUserQuestion = {
+  question: '',
+  options: [],
+};
 const NO_SELECTION: readonly string[] = [];
 
 export interface QuestionPromptState {
   readonly step: number;
   readonly stepCount: number;
-  readonly question: PortalAskUserQuestion;
+  readonly question: RemoteControlAskUserQuestion;
   readonly kind: QuestionStepKind;
   /** Typing in the composer answers the current question. */
   readonly acceptsText: boolean;
@@ -139,8 +144,8 @@ export function useQuestionPrompt({
   onSubmit,
 }: {
   readonly requestId: string;
-  readonly questions: readonly PortalAskUserQuestion[];
-  readonly onSubmit: (answers: PortalAskUserQuestionAnswer[]) => void;
+  readonly questions: readonly RemoteControlAskUserQuestion[];
+  readonly onSubmit: (answers: RemoteControlAskUserQuestionAnswer[]) => void;
 }): QuestionPromptState {
   const [step, setStep] = useState(
     () => readQuestionPromptProgress(requestId)?.step ?? 0,
@@ -184,7 +189,7 @@ export function useQuestionPrompt({
 
   const stepCount = questions.length;
   const safeStep = Math.min(step, Math.max(0, stepCount - 1));
-  const question = useMemo<PortalAskUserQuestion>(
+  const question = useMemo<RemoteControlAskUserQuestion>(
     () => questions[safeStep] ?? EMPTY_QUESTION,
     [questions, safeStep],
   );
@@ -197,7 +202,7 @@ export function useQuestionPrompt({
   const fieldValue = texts.get(safeStep) ?? '';
 
   const stepAnswer = useCallback(
-    (index: number, text: string): PortalAskUserQuestionAnswer => {
+    (index: number, text: string): RemoteControlAskUserQuestionAnswer => {
       const entry = questions[index];
       if (!entry) return { question: '', selectedOptions: [] };
       return answerFor(entry, selections.get(index) ?? [], text);
@@ -233,7 +238,10 @@ export function useQuestionPrompt({
   );
 
   const stepError = useCallback(
-    (index: number, answer: PortalAskUserQuestionAnswer): string | null => {
+    (
+      index: number,
+      answer: RemoteControlAskUserQuestionAnswer,
+    ): string | null => {
       const entry = questions[index];
       if (!entry) return null;
       return validateQuestionControlAnswers([entry], [answer]) ?? null;

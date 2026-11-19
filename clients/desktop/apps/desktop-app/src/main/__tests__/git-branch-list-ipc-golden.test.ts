@@ -18,7 +18,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { decodeWorktreeBaseBranch } from '@canopy/protocol/portal';
+import { decodeWorktreeBaseBranch } from '@canopy/protocol/remote-control/shell';
 import { baseBranchRef } from '@canopy/ui-app';
 import {
   CANOPY_IN_PROCESS_WORKER_TARGET_ID,
@@ -102,6 +102,9 @@ import { RemoteHostConnection } from '../remote-control/client/host-connection';
 import { RemoteUploadStore } from '../remote-control/host/uploads';
 import { RpcPeer } from '../remote-control/transport/rpc-peer';
 import type { SecureSession } from '../remote-control/transport/session-manager';
+import type { IpcMainInvokeEvent } from 'electron';
+import type { DeviceKind } from '@canopy/protocol/device-relay';
+import { deriveDesktopIpcCaller } from '../canopy-runtime/desktop-ipc-caller';
 import type * as WaitDiagnostics from '../observability/chat-wait-diagnostics';
 
 jest.mock('../observability/chat-wait-diagnostics', () => {
@@ -463,6 +466,8 @@ let runtime: DesktopCanopyDispatcher | undefined;
 function registerHandlers(
   daemonGitRoute?: () => DaemonGitRoute,
   unusedGit = false,
+  resolveCaller: (event: IpcMainInvokeEvent) => CanopyCallerDescriptor = () =>
+    desktopCaller,
 ): void {
   const unused = (): never => {
     throw new Error('The direct Git runtime was touched.');
@@ -481,7 +486,7 @@ function registerHandlers(
   );
   const accessors = {
     dispatcher: runtime,
-    resolveCaller: (): CanopyCallerDescriptor => desktopCaller,
+    resolveCaller,
     ...(daemonGitRoute && { daemonGitRoute }),
   };
   registerWorktreeHandlers(() => null, accessors);
@@ -1411,7 +1416,7 @@ describe('daemon branch-list route equivalence', () => {
     }
   });
 
-  it('keeps production, Windows, remote bridges, non-window and app-managed requests direct without lazy dependencies', async () => {
+  it('keeps Windows, remote bridges, non-window and app-managed requests direct without lazy dependencies', async () => {
     const direct = jest.fn(() =>
       Promise.resolve({
         branches: [],
@@ -1424,7 +1429,8 @@ describe('daemon branch-list route equivalence', () => {
       params?: WorkerGitBranchListParams;
       caller?: CanopyCallerDescriptor;
     }> = [
-      { options: { selectable: undefined } },
+      // CAN-4729: production selects nothing on Windows (CAN-4732, CAN-5943).
+      { options: { selectable: undefined, platform: 'win32' } },
       { options: { platform: 'win32' } },
       { caller: { ...desktopCaller, clientInstanceId: 'remote-bridge:1' } },
       { caller: { ...desktopCaller, interfaceKind: 'portal' } },
@@ -1469,6 +1475,10 @@ describe('daemon branch-list route equivalence', () => {
     // Linux is eligible; a selected query must reach the client.
     await list(routeFor({ platform: 'linux' }));
     expect(query).toHaveBeenCalledTimes(1);
+    // CAN-4729: production selection reaches the daemon on macOS and Linux.
+    await list(routeFor({ selectable: undefined, platform: 'darwin' }));
+    await list(routeFor({ selectable: undefined, platform: 'linux' }));
+    expect(query).toHaveBeenCalledTimes(3);
     for (const operation of [
       'git.remote.get',
       'git.worktree.health.get',
@@ -1579,12 +1589,12 @@ describe('exact Git identity through branch entry points', () => {
       const homeOptions = createOptionsForNewWorktreeBaseTarget(homeTarget);
       expect(homeOptions?.baseBranch).toBe(`remote:${name}`);
 
-      const portalBase = baseBranchRef({
+      const remoteControlBase = baseBranchRef({
         kind: 'branch',
         branchName: name,
         isRemote: true,
       });
-      expect(decodeWorktreeBaseBranch(portalBase)).toEqual({
+      expect(decodeWorktreeBaseBranch(remoteControlBase)).toEqual({
         branchName: name,
         isRemote: true,
       });
@@ -1592,7 +1602,7 @@ describe('exact Git identity through branch entry points', () => {
         { entry: 'Home default', base: homeOptions, tip: selected },
         {
           entry: 'Portal and scheduled explicit base',
-          base: { baseBranch: portalBase },
+          base: { baseBranch: remoteControlBase },
           tip: selected,
         },
         {
@@ -2453,4 +2463,175 @@ describe('exact worktree bases negotiated by desktop peers', () => {
       git(repo, ['update-ref', '-d', 'refs/heads/release']);
     }
   });
+});
+
+describe('paired controllers never reach the daemon Git route (CAN-4729)', () => {
+  // Real caller derivation, as main wires it: the bridge window that replays
+  // a paired controller's calls, and one tracked local window.
+  const RENDERER_URL = 'file:///canopy/renderer/index.html';
+  class FramedSender extends FakeSender {
+    readonly mainFrame = {
+      url: RENDERER_URL,
+      detached: false,
+      isDestroyed: (): boolean => false,
+    };
+    getURL(): string {
+      return RENDERER_URL;
+    }
+  }
+  const localWindow = new FramedSender(41);
+  const bridgeSender = new FramedSender(42);
+  const resolveCaller = (event: IpcMainInvokeEvent): CanopyCallerDescriptor =>
+    deriveDesktopIpcCaller(event, {
+      getAppWindows: () => [
+        { isDestroyed: (): boolean => false, webContents: localWindow },
+      ],
+      packagedRendererUrls: [RENDERER_URL],
+      resolveRemoteBridgeSender: (sender) =>
+        sender === bridgeSender ? 'controller-device' : null,
+    });
+  const daemonContact = jest.fn(
+    (): Promise<never> =>
+      Promise.reject(new Error('The daemon was contacted.')),
+  );
+  const hostContext = jest.fn(() => Promise.resolve({ authorityId: 'daemon' }));
+  const connections = jest.fn(() => ({
+    get: (): Promise<{
+      client: { signal: AbortSignal; query: typeof daemonContact };
+    }> =>
+      Promise.resolve({
+        client: { signal: new AbortController().signal, query: daemonContact },
+      }),
+  }));
+  const route = (): DaemonGitRoute =>
+    createDaemonGitRoute({
+      lifetime: createElectronDaemonCallerLifetime(),
+      hostContext,
+      connections,
+      workspaceType: () => 'single-repo',
+      resolveWorktreeTargetIds: (projectId, worktreeId) => ({
+        projectId,
+        worktreeId,
+      }),
+      platform: 'darwin',
+      selectable: new Set(['git.branch.list']),
+      execution: () => ({ childEnvironment: {} }),
+    });
+  const handlerFor = (
+    channel: string,
+  ): ((event: unknown, request: unknown) => Promise<unknown>) => {
+    const handler = mockHandlers.get(channel);
+    if (!handler) throw new Error(`${channel} was not registered`);
+    return handler;
+  };
+  const REQUESTS = [
+    [
+      IPC_CHANNELS.worktreeListBranches,
+      { projectId: FRESH_WS, worktreeId: WORKTREE },
+    ],
+    [IPC_CHANNELS.homeListBranchTargets, { workspaceId: FRESH_WS }],
+  ] as const;
+  // What each kind's channel list lets through to the bridge.
+  const ALLOWED: Record<DeviceKind, readonly string[]> = {
+    desktop: [
+      IPC_CHANNELS.worktreeListBranches,
+      IPC_CHANNELS.homeListBranchTargets,
+    ],
+    mobile: [IPC_CHANNELS.homeListBranchTargets],
+    browser: [],
+    hosted: [],
+  };
+
+  beforeEach(async () => {
+    await runtime?.shutdown();
+    registerHandlers(route, false, resolveCaller);
+    jest.clearAllMocks();
+  });
+
+  afterAll(async () => {
+    await runtime?.shutdown();
+    registerHandlers();
+  });
+
+  it('contacts the daemon for the tracked local window (positive control)', async () => {
+    await handlerFor(IPC_CHANNELS.worktreeListBranches)(
+      { sender: localWindow, senderFrame: localWindow.mainFrame },
+      { projectId: FRESH_WS, worktreeId: WORKTREE },
+    ).catch(() => undefined);
+    expect(daemonContact).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['desktop', 'mobile', 'browser', 'hosted'] as const)(
+    'keeps a real %s controller session off the daemon',
+    async (kind) => {
+      const hub = new InMemoryRelayHub();
+      const controllerDevice = createTestDevice(hub, 'Controller');
+      const hostDevice = createTestDevice(hub, 'Host');
+      const { initiator, responder } = await openControlSession(
+        controllerDevice,
+        hostDevice,
+      );
+      const bridged: string[] = [];
+      const host = new RemoteHostSession({
+        session: responder,
+        kind,
+        attributedDeviceId: 'controller-device',
+        createBridge: (): Promise<hostBridge.HostBridge> =>
+          Promise.resolve({
+            window: null,
+            getChatInterest: (): undefined => undefined,
+            invoke: (channel, [request]): Promise<unknown> => {
+              bridged.push(channel);
+              return handlerFor(channel)(
+                { sender: bridgeSender, senderFrame: bridgeSender.mainFrame },
+                request,
+              );
+            },
+            post: noop,
+            onPush: () => noop,
+            onClosed: () => noop,
+            destroy: noop,
+          }),
+        mainWindowPushes: { subscribe: (): (() => void) => noop },
+        uploads: new RemoteUploadStore(join(dir, 'controller-kind-uploads')),
+        readFile: (): Promise<never> =>
+          Promise.reject(new Error('Unexpected file read')),
+        disposition: (): 'tunnel' => 'tunnel',
+        isAuthorized: (): boolean => true,
+        version: PEER_VERSION,
+        hello: (): typeof PEER_HELLO => PEER_HELLO,
+        onClose: noop,
+      });
+      const controller = new RpcPeer(initiator, {
+        onRequest: (): Promise<never> =>
+          Promise.reject(new Error('Unexpected host request')),
+        onEvent: noop,
+      });
+      try {
+        await controller.request(REMOTE_METHODS.hello, {
+          version: PEER_VERSION,
+        });
+        for (const [channel, request] of REQUESTS) {
+          const outcome = controller.request(REMOTE_METHODS.invoke, {
+            channel,
+            args: [request],
+          });
+          if (ALLOWED[kind].includes(channel))
+            await expect(outcome).resolves.toBeDefined();
+          else await expect(outcome).rejects.toBeDefined();
+        }
+        expect(bridged).toEqual(ALLOWED[kind]);
+        expect(hostContext).not.toHaveBeenCalled();
+        expect(connections).not.toHaveBeenCalled();
+        expect(daemonContact).not.toHaveBeenCalled();
+      } finally {
+        controller.close('closed');
+        host.rpc.close('closed');
+        for (const device of [controllerDevice, hostDevice]) {
+          device.manager.dispose();
+          device.endpoint.stop();
+        }
+      }
+    },
+  );
 });

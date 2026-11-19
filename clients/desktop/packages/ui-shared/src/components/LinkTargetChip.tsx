@@ -102,7 +102,7 @@ export function LinkTargetChip({
       {onDismiss && (
         <Tooltip label={dismissLabel}>
           <Button
-            variant="ghost-quiet"
+            variant="ghost"
             size="sm"
             iconOnly
             touchArea="contained"

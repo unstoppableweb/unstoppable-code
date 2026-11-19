@@ -2,9 +2,9 @@
 
 import { useMemo, useState, type JSX } from 'react';
 import type {
-  PortalPipelineRunJob,
-  PortalPipelineRunProjection,
-} from '@canopy/protocol/portal';
+  RemoteControlPipelineRunJob,
+  RemoteControlPipelineRunProjection,
+} from '@canopy/protocol/remote-control/shell';
 import {
   DagProgressBar,
   Disclosure,
@@ -16,9 +16,9 @@ import {
 import { computeDagTiers } from '@canopy/ui-shared/lib/dag-tiers';
 import { Surface } from '@canopy/ui-shared/components';
 
-interface RichPipelineRun extends PortalPipelineRunProjection {
+interface RichPipelineRun extends RemoteControlPipelineRunProjection {
   readonly progress?: { completedSteps: number; totalSteps: number };
-  readonly jobs?: PortalPipelineRunJob[];
+  readonly jobs?: RemoteControlPipelineRunJob[];
 }
 
 export function isActivePipelineStatus(status: string): boolean {
@@ -83,7 +83,9 @@ function isStepComplete(status: string): boolean {
  * (older host): with no dependency data, claiming everything runs in parallel
  * would be a guess, and one group is what this rendered before.
  */
-function buildTiers(jobsList: readonly PortalPipelineRunJob[]): string[][] {
+function buildTiers(
+  jobsList: readonly RemoteControlPipelineRunJob[],
+): string[][] {
   const known = new Set(jobsList.map((job) => job.jobId));
   if (!jobsList.some((job) => job.needs !== undefined)) {
     return [jobsList.map((job) => job.jobId)];
@@ -103,7 +105,7 @@ function buildTiers(jobsList: readonly PortalPipelineRunJob[]): string[][] {
 }
 
 export function buildDagInputs(
-  jobsList: readonly PortalPipelineRunJob[] | undefined,
+  jobsList: readonly RemoteControlPipelineRunJob[] | undefined,
 ): {
   tiers: string[][];
   jobs: Record<string, DagJobMeta>;
@@ -181,7 +183,7 @@ function PipelineRunRow({
  * `sectionOverrides` seam instead.
  */
 export interface PipelineRunsSectionProps {
-  readonly runs: readonly PortalPipelineRunProjection[];
+  readonly runs: readonly RemoteControlPipelineRunProjection[];
 }
 
 export function PipelineRunsSection({

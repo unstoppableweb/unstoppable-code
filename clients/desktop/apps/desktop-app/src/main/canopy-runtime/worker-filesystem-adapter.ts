@@ -13,7 +13,7 @@ import type {
   FileTreeRootsResponse,
 } from '@canopy/desktop-shared/types';
 import { IdentifierValidationError } from '../lib/identifier-validation-error';
-import { PortalServiceError } from '../services/portal-service-error';
+import { RemoteControlServiceError } from '../services/remote-control-service-error';
 import { LOCAL_DESKTOP_AUTHORITY_ID } from './desktop-runtime-identity';
 
 export interface WorkerFilesystemServices {
@@ -40,7 +40,7 @@ export function requireDesktopScope(scope: CanopyWorkspaceScope): {
   worktreeId: string;
 } {
   if (scope.workspaceId === undefined || scope.worktreeId === undefined) {
-    throw new PortalServiceError(
+    throw new RemoteControlServiceError(
       'invalid_payload',
       'Desktop filesystem operations require workspaceId and worktreeId.',
     );
@@ -95,7 +95,7 @@ export function translateFilesServiceError(
   error: unknown,
 ): WorkerFilesystemAdapterError {
   if (error instanceof WorkerFilesystemAdapterError) return error;
-  if (error instanceof PortalServiceError) {
+  if (error instanceof RemoteControlServiceError) {
     const kind =
       error.code === 'invalid_payload' || error.code === 'invalid_target'
         ? 'invalid_argument'

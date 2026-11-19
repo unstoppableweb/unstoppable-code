@@ -23,6 +23,7 @@ import { AcpClientError, connectAcp, type AcpClient } from '../acp';
 import { isTransientAcpFailure } from './acp-failure';
 import {
   CursorEventProjection,
+  CursorProjectionLimitError,
   type CursorTerminalAction,
   type CursorToolInvocation,
 } from './events';
@@ -297,6 +298,16 @@ export interface CursorTurnRequest {
   promptTimeoutMs?: number | null;
 }
 
+/**
+ * A stop the driver discovered itself (CAN-7117): a tool that completed
+ * without reaching the approval gate, the projection's output bound, or a
+ * failure projecting or delivering an update to the host.
+ */
+export type CursorTurnFailureKind =
+  | 'unapproved_tool'
+  | 'output_limit'
+  | 'event_delivery';
+
 export interface CursorTurnResult {
   sessionId?: string;
   isError: boolean;
@@ -307,6 +318,14 @@ export interface CursorTurnResult {
   stopReason?: string;
   contextLost: boolean;
   integrityFailure?: string;
+  /** Why the driver stopped the turn itself, set with `integrityFailure`. */
+  failureKind?: CursorTurnFailureKind;
+  /**
+   * The error behind an `event_delivery` or `output_limit` stop, for local
+   * logs only. Non-enumerable, so neither spreading nor serializing the
+   * result carries it (CAN-7117).
+   */
+  readonly runtimeCause?: unknown;
   /** The account change Cursor asked for when it refused the turn. */
   actionRequired?: CursorTerminalAction;
   /** True when `inheritedContext` was sent and the turn ended normally. */
@@ -411,7 +430,11 @@ export async function runCursorTurn(
   // Only servers this turn actually handed the CLI may ask for permission;
   // a request naming any other server is denied and keeps its anchor.
   const knownMcpServerNames = new Set<string>();
-  const integrity: { failure?: string } = {};
+  const integrity: {
+    failure?: string;
+    kind?: CursorTurnFailureKind;
+    cause?: unknown;
+  } = {};
   /** Set when the child process itself failed (spawn error), so the catch
    * below can tell a real failure from a cancellation. */
   let childFailure: Error | undefined;
@@ -446,10 +469,24 @@ export async function runCursorTurn(
   const result = async (
     partial: Omit<CursorTurnResult, 'responseText'>,
   ): Promise<CursorTurnResult> => {
+    // Read before awaiting: `partial` was built from `integrity` in this same
+    // tick, and a late update must not pair its error with this kind.
+    const cause = partial.failureKind ? integrity.cause : undefined;
     // However the turn ended, text the projection is still holding back is
     // the provider's output: release it (masked) rather than drop it.
     for (const event of projection.finish()) await host.emit(event);
-    return { ...partial, responseText: projection.getResponseText() };
+    const ended: CursorTurnResult = {
+      ...partial,
+      responseText: projection.getResponseText(),
+    };
+    if (cause !== undefined)
+      Object.defineProperty(ended, 'runtimeCause', {
+        configurable: false,
+        enumerable: false,
+        writable: false,
+        value: cause,
+      });
+    return ended;
   };
   try {
     await mkdir(request.profileDir, { recursive: true, mode: 0o700 });
@@ -821,6 +858,8 @@ export async function runCursorTurn(
             ) {
               integrity.failure =
                 'Cursor ran a tool without reaching the approval hook, so the session was stopped. Reconnect Cursor before trying again.';
+              integrity.kind = 'unapproved_tool';
+              integrity.cause = undefined;
               abort.abort();
               return;
             }
@@ -836,6 +875,11 @@ export async function runCursorTurn(
             // bounded-output limit) instead of the generic ACP handler error.
             integrity.failure =
               error instanceof Error ? error.message : 'Cursor chat failed.';
+            integrity.kind =
+              error instanceof CursorProjectionLimitError
+                ? 'output_limit'
+                : 'event_delivery';
+            integrity.cause = error;
             abort.abort();
           }
         }
@@ -1130,6 +1174,7 @@ export async function runCursorTurn(
         cancelled: false,
         message: integrity.failure,
         integrityFailure: integrity.failure,
+        ...(integrity.kind ? { failureKind: integrity.kind } : {}),
         contextLost,
         inheritedContextDelivered,
       });
@@ -1177,6 +1222,7 @@ export async function runCursorTurn(
         cancelled: false,
         message: integrity.failure,
         integrityFailure: integrity.failure,
+        ...(integrity.kind ? { failureKind: integrity.kind } : {}),
         contextLost,
         inheritedContextDelivered,
       });

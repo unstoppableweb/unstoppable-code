@@ -137,8 +137,11 @@ const skillRow = (
 });
 
 const NEW = { sourceId: 'custom:app', skillName: 'notes' };
-/** Installed from GitHub: main's cloud-copy analyser takes custom skills only. */
-const INSTALLED = { sourceId: 'github:acme/tools', skillName: 'lint' };
+/**
+ * Installed from GitHub: offered only with CAN-6943's flag on, which main
+ * enforces again.
+ */
+const INSTALLED = { sourceId: 'github:acme:tools', skillName: 'lint' };
 const EDITED = { sourceId: 'custom:app', skillName: 'edited' };
 const SHARED = { sourceId: 'custom:app', skillName: 'shared' };
 const CLOUD_COPY = {
@@ -186,7 +189,7 @@ describe('this computer’s items in a cloud chat’s picker (CAN-6176)', () => 
   it('offers a new custom skill and an edited one to update, never a plugin, a server or a skill it can’t copy', () => {
     // A web core that predates the uploads mark (CAN-6725) can't say which
     // plugins this desktop copied, so none is offered.
-    const items = localUploadRows(local, cloud, 'claude', false).map(
+    const items = localUploadRows(local, cloud, 'claude', false, false).map(
       localPickerItem,
     );
     expect(items).toEqual([
@@ -214,8 +217,8 @@ describe('this computer’s items in a cloud chat’s picker (CAN-6176)', () => 
   });
 
   it('reads an unknown harness as Claude’s', () => {
-    expect(localUploadRows(local, cloud, 'not-a-harness', true)).toEqual(
-      localUploadRows(local, cloud, 'claude', true),
+    expect(localUploadRows(local, cloud, 'not-a-harness', true, false)).toEqual(
+      localUploadRows(local, cloud, 'claude', true, false),
     );
   });
 
@@ -273,7 +276,7 @@ describe('this computer’s plugins, by what this desktop uploaded (CAN-6725)', 
     pluginEntry({ marketplaceId: THEIRS, pluginName: 'elsewhere' }, {}),
   ];
   const offered = (thisDesktopUploads: boolean): string[] =>
-    localUploadRows(plugins, uploaded, 'claude', thisDesktopUploads).map(
+    localUploadRows(plugins, uploaded, 'claude', thisDesktopUploads, false).map(
       (row) => row.localEntry.entryId,
     );
 
@@ -284,9 +287,13 @@ describe('this computer’s plugins, by what this desktop uploaded (CAN-6725)', 
     expect(offered(true)).not.toContain(
       pluginEntryId({ marketplaceId: LOCAL, pluginName: 'copied' }),
     );
-    const fresh = localUploadRows(plugins, uploaded, 'claude', true).find(
-      (row) => row.name === 'fresh',
-    );
+    const fresh = localUploadRows(
+      plugins,
+      uploaded,
+      'claude',
+      true,
+      false,
+    ).find((row) => row.name === 'fresh');
     expect(fresh && localPickerItem(fresh)).toEqual({
       key: pluginEntryId({ marketplaceId: LOCAL, pluginName: 'fresh' }),
       name: 'fresh',
@@ -325,5 +332,105 @@ describe('this computer’s plugins, by what this desktop uploaded (CAN-6725)', 
       ].sort(),
     );
     expect(offered(false)).toEqual([]);
+  });
+});
+
+describe("skills installed from GitHub, a URL or a local folder, behind CAN-6943's flag", () => {
+  const GITHUB = { sourceId: 'github:acme:tools', skillName: 'lint' };
+  const URL_SKILL = {
+    sourceId: 'url:https:__example.com_skills',
+    skillName: 'fetch',
+  };
+  const LOCAL_FOLDER = {
+    sourceId: 'local:_Users_me_skills',
+    skillName: 'draft',
+  };
+  const CHANGED = { sourceId: 'github:acme:tools', skillName: 'changed' };
+  const IN_STEP = { sourceId: 'github:acme:tools', skillName: 'steady' };
+  const BUILT_IN = { sourceId: 'builtin:app', skillName: 'bundled' };
+  const OTHER_SOURCE = { sourceId: 'marketplace:acme', skillName: 'other' };
+  const installedRow = (
+    ref: { sourceId: string; skillName: string },
+    share?: CatalogSkillRow['cloudShare'],
+    origin: CatalogSkillRow['origin'] = 'installed',
+  ): CatalogSkillRow => ({
+    ...skillRow(ref.skillName, share),
+    entryId: skillEntryId(ref),
+    sourceId: ref.sourceId,
+    origin,
+  });
+  const installed: LocalCatalog = {
+    bundledMarketplaceIds: new Set(),
+    entries: [
+      skillEntry(GITHUB),
+      skillEntry(URL_SKILL),
+      skillEntry(LOCAL_FOLDER),
+      skillEntry(CHANGED),
+      skillEntry(IN_STEP),
+      { ...skillEntry(BUILT_IN), source: 'bundled' },
+      skillEntry(OTHER_SOURCE),
+      // A skill a plugin brings is copied as its plugin, never on its own.
+      {
+        ...skillEntry({ sourceId: 'local-tools', skillName: 'review' }),
+        source: 'plugin',
+      },
+    ],
+    skills: [
+      installedRow(GITHUB),
+      installedRow(URL_SKILL),
+      installedRow(LOCAL_FOLDER),
+      // Its source updated it since its copy: "Update in cloud".
+      installedRow(CHANGED, {
+        role: 'author',
+        remoteId: SHARE_ID,
+        linkedContentHash: HASH,
+        localContentHash: 'b'.repeat(64),
+      }),
+      installedRow(IN_STEP, {
+        role: 'author',
+        remoteId: SHARE_ID,
+        linkedContentHash: HASH,
+        localContentHash: HASH,
+      }),
+      installedRow(BUILT_IN, undefined, 'builtin'),
+      installedRow(OTHER_SOURCE),
+    ],
+  };
+  const offered = (installedSkills: boolean): unknown[] =>
+    localUploadRows(installed, cloud, 'claude', true, installedSkills).map(
+      localPickerItem,
+    );
+
+  it('offers none of them while the flag is off', () => {
+    expect(offered(false)).toEqual([]);
+  });
+
+  it("offers each new one to add and a changed one to update, never one in step, a built-in, a plugin's or another source's", () => {
+    expect(offered(true)).toEqual([
+      {
+        key: skillEntryId(GITHUB),
+        name: 'lint',
+        kind: 'skill',
+        replacing: false,
+      },
+      {
+        key: skillEntryId(URL_SKILL),
+        name: 'fetch',
+        kind: 'skill',
+        replacing: false,
+      },
+      {
+        key: skillEntryId(LOCAL_FOLDER),
+        name: 'draft',
+        kind: 'skill',
+        replacing: false,
+      },
+      {
+        key: skillEntryId(CHANGED),
+        name: 'changed',
+        kind: 'skill',
+        replacing: true,
+      },
+    ]);
   });
 });

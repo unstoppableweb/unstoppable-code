@@ -231,7 +231,6 @@ export function StepDetailPanel({
           onChange={handleModeSwitch}
           disabled={readonly}
           width="fill"
-          shape="capsule"
         />
       </FormField>
 

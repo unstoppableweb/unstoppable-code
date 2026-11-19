@@ -9,12 +9,12 @@ import type {
   SaveProjectHooksRequest,
   SaveWorkspaceHooksRequest,
   SaveWorkspaceRepoHooksRequest,
-  PortalEntityEnvelope,
-  PortalHookRun,
-  PortalHookSummary,
+  RemoteControlEntityEnvelope,
+  RemoteControlHookRun,
+  RemoteControlHookSummary,
   WorktreeData,
 } from '@canopy/desktop-shared/types';
-import { worktreeScopedParentLocalId } from '@canopy/protocol/portal';
+import { worktreeScopedParentLocalId } from '@canopy/protocol/remote-control/shell';
 import { validateId } from '../lib/validation';
 import { createHookKey } from '@canopy/desktop-shared/hooks';
 import type { HookIdentity } from '../lib/hook-initiated-work';
@@ -24,7 +24,7 @@ import {
   type HookRunPreparation,
   type RunHookOptions,
 } from '../lib/hook-runner';
-import { PortalServiceError } from './portal-service-error';
+import { RemoteControlServiceError } from './remote-control-service-error';
 import {
   getResolvedHookActions,
   type ResolvedHookMap,
@@ -93,7 +93,7 @@ export async function getWorktreePausedHookKeys(input: {
     (candidate) => candidate.id === input.worktreeId,
   );
   if (!worktree) {
-    throw new PortalServiceError(
+    throw new RemoteControlServiceError(
       'not_found',
       `Worktree ${input.worktreeId} not found in project ${input.projectId}`,
     );
@@ -132,7 +132,7 @@ export async function changeWorktreeHookPause(
       error instanceof ScriptHookSettingsRefusedError &&
       error.reason === 'not-found'
     ) {
-      throw new PortalServiceError('not_found', error.message);
+      throw new RemoteControlServiceError('not_found', error.message);
     }
     throw error;
   }
@@ -188,7 +188,7 @@ export async function changeListedHookPause(
   if ('hookKey' in input.selection) {
     const { hookKey } = input.selection;
     if (!hooks.some((hook) => hook.hookKey === hookKey)) {
-      throw new PortalServiceError(
+      throw new RemoteControlServiceError(
         'not_found',
         `Hook ${hookKey} was not found.`,
       );
@@ -220,7 +220,7 @@ const NOOP_SUCCESS: HookRunResponse = {
 const RUN_TAIL_MAX_BYTES = 8 * 1024;
 const MANUAL_RUN_REQUIRES_ACTIVE_PR = 'Manual run requires an active PR';
 
-export async function portalHookRunAvailability(
+export async function remoteControlHookRunAvailability(
   input: {
     projectId: string;
     worktreeId: string;
@@ -228,7 +228,9 @@ export async function portalHookRunAvailability(
     repoId?: string;
   },
   readSnapshot: typeof readCurrentPrTrackingSnapshot = readCurrentPrTrackingSnapshot,
-): Promise<Pick<PortalHookSummary, 'runDisabled' | 'runDisabledReason'>> {
+): Promise<
+  Pick<RemoteControlHookSummary, 'runDisabled' | 'runDisabledReason'>
+> {
   const repoStorageKey =
     input.target === 'project'
       ? getProjectRepoStorageKey()
@@ -268,8 +270,8 @@ function manualHookIdentity(request: HookRunRequest): HookIdentity {
   };
 }
 
-function noActivePrError(message: string): PortalServiceError {
-  return new PortalServiceError('execution_failed', message);
+function noActivePrError(message: string): RemoteControlServiceError {
+  return new RemoteControlServiceError('execution_failed', message);
 }
 
 /**
@@ -282,7 +284,7 @@ export function runHookCommand(
   request: HookRunRequest,
   options: {
     portalCommandId?: string;
-    onRunUpdate?: (run: PortalHookRun) => void;
+    onRunUpdate?: (run: RemoteControlHookRun) => void;
     getWindow?: RunHookOptions['getWindow'];
     onEnqueued?: RunHookOptions['onEnqueued'];
     onStarted?: RunHookOptions['onStarted'];
@@ -423,7 +425,7 @@ export async function resolveHookForRun(request: HookRunRequest): Promise<{
     (candidate) => candidate.id === request.repoId,
   );
   if (!repo) {
-    throw new PortalServiceError('not_found', 'Repo not found.');
+    throw new RemoteControlServiceError('not_found', 'Repo not found.');
   }
   const workspaceRootPath = getWorkspaceWorktreeRootRepoDir(
     request.workspaceId,
@@ -468,7 +470,7 @@ function resolvedHookRunOptions(args: {
     >;
   };
   portalCommandId?: string;
-  onRunUpdate?: (run: PortalHookRun) => void;
+  onRunUpdate?: (run: RemoteControlHookRun) => void;
   getWindow?: RunHookOptions['getWindow'];
   onEnqueued?: RunHookOptions['onEnqueued'];
   onStarted?: RunHookOptions['onStarted'];
@@ -477,7 +479,7 @@ function resolvedHookRunOptions(args: {
 }): RunHookOptions {
   const emit = async (
     ref: HookRunLogRef,
-    status: PortalHookRun['status'],
+    status: RemoteControlHookRun['status'],
     finishedAt?: string,
     activeActionIndex?: number,
   ): Promise<void> => {
@@ -489,7 +491,7 @@ function resolvedHookRunOptions(args: {
       runId: ref.runId,
       maxLines: 80,
     }).catch(() => ({ lines: [] }));
-    const run = buildPortalHookRun({
+    const run = buildRemoteControlHookRun({
       projectId: args.projectId,
       worktreeId: args.worktreeId,
       hook: args.hook,
@@ -564,7 +566,7 @@ export async function readLatestHookRunTail(request: {
   worktreeId: string;
   hookKey: string;
   maxLines?: number;
-}): Promise<{ lines: string[]; run?: PortalHookRun }> {
+}): Promise<{ lines: string[]; run?: RemoteControlHookRun }> {
   validateId(request.projectId, 'projectId');
   validateId(request.worktreeId, 'worktreeId');
   const runs = await listHookRuns({
@@ -588,7 +590,7 @@ export async function readHookRunTail(request: {
   worktreeId: string;
   runId: string;
   maxLines?: number;
-}): Promise<{ lines: string[]; run?: PortalHookRun }> {
+}): Promise<{ lines: string[]; run?: RemoteControlHookRun }> {
   validateId(request.projectId, 'projectId');
   validateId(request.worktreeId, 'worktreeId');
   validateId(request.runId, 'runId');
@@ -601,7 +603,7 @@ export async function readHookRunTail(request: {
   if (!meta) return { lines };
   return {
     lines,
-    run: buildPortalHookRun({
+    run: buildRemoteControlHookRun({
       projectId: request.projectId,
       worktreeId: request.worktreeId,
       hook: meta.hook,
@@ -653,17 +655,17 @@ export async function loadWorktreeHookRuns(request: {
   );
 }
 
-function buildPortalHookRun(input: {
+function buildRemoteControlHookRun(input: {
   projectId: string;
   worktreeId: string;
   hook: HookDescriptor;
   runId: string;
-  status: PortalHookRun['status'];
+  status: RemoteControlHookRun['status'];
   outputTail: string;
   startedAt?: string;
   finishedAt?: string;
   activeActionIndex?: number;
-}): PortalHookRun {
+}): RemoteControlHookRun {
   return {
     workspaceLocalId: input.projectId,
     worktreeLocalId: input.worktreeId,
@@ -718,7 +720,7 @@ export async function listHooks(input?: {
   workspaceId?: string;
   projectId?: string;
   worktreeId?: string;
-}): Promise<PortalHookSummary[]> {
+}): Promise<RemoteControlHookSummary[]> {
   const workspaceLocalId =
     input?.workspaceLocalId ?? input?.workspaceId ?? input?.projectId;
   const worktreeLocalId = input?.worktreeLocalId ?? input?.worktreeId;
@@ -761,7 +763,7 @@ export async function listHooks(input?: {
     return settleAll(
       rows.map(async (row) => ({
         ...row,
-        ...(await portalHookRunAvailability({
+        ...(await remoteControlHookRunAvailability({
           projectId: workspaceLocalId,
           worktreeId: worktreeLocalId,
           target: row.target,
@@ -836,7 +838,7 @@ export async function listHooks(input?: {
   return settleAll(
     rows.map(async (row) => ({
       ...row,
-      ...(await portalHookRunAvailability({
+      ...(await remoteControlHookRunAvailability({
         projectId: workspaceLocalId,
         worktreeId: worktreeLocalId,
         target: row.target,
@@ -852,7 +854,7 @@ export async function listHookRuns(input?: {
   workspaceId?: string;
   projectId?: string;
   worktreeId?: string;
-}): Promise<PortalHookRun[]> {
+}): Promise<RemoteControlHookRun[]> {
   const workspaceLocalId =
     input?.workspaceLocalId ?? input?.workspaceId ?? input?.projectId;
   const worktreeLocalId = input?.worktreeLocalId ?? input?.worktreeId;
@@ -863,7 +865,7 @@ export async function listHookRuns(input?: {
     maxLines: 80,
   });
   return runs.map(
-    ({ meta, lines }): PortalHookRun => ({
+    ({ meta, lines }): RemoteControlHookRun => ({
       workspaceLocalId,
       worktreeLocalId,
       localId: meta.runId,
@@ -942,15 +944,15 @@ export async function saveWorkspaceRepoHooksFromService(
       error instanceof ScriptHookSettingsRefusedError &&
       error.reason === 'not-found'
     ) {
-      throw new PortalServiceError('not_found', error.message);
+      throw new RemoteControlServiceError('not_found', error.message);
     }
     throw error;
   }
 }
 
-export function hookToPortalEntity(
-  hook: PortalHookSummary,
-): PortalEntityEnvelope {
+export function hookToRemoteControlEntity(
+  hook: RemoteControlHookSummary,
+): RemoteControlEntityEnvelope {
   return {
     entityType: 'hook_descriptor',
     localId: hook.hookId,

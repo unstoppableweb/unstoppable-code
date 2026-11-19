@@ -117,13 +117,12 @@ function buildWorktree(
       } catch (error) {
         throw codeGraphBuildRefusal(error);
       }
+      // The host's message stays here; the generation's local diagnostic
+      // records its class and errno.
       if (!response.ok) {
         throw response.message === CODE_GRAPH_UNAVAILABLE_MESSAGE
           ? codeGraphUnavailableError()
-          : codeGraphBuildFailedError(
-              'build_error',
-              new Error(response.message),
-            );
+          : codeGraphBuildFailedError('build_error');
       }
       return codeGraphWorktreeBuildResult(
         response.result,

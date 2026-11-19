@@ -4,10 +4,10 @@ import { realpath } from 'node:fs/promises';
 import { dirname, join, posix, sep, win32 } from 'node:path';
 import { promisify } from 'node:util';
 import type {
-  PortalChangedFile,
-  PortalChangedFilesPayload,
-  PortalDiffPayload,
-  PortalDiffReadPayload,
+  RemoteControlChangedFile,
+  RemoteControlChangedFilesPayload,
+  RemoteControlDiffPayload,
+  RemoteControlDiffReadPayload,
 } from '@canopy/desktop-shared/types';
 import { getResolvedGitExecutableForSpawn } from '../lib/git-executable';
 import { resolveWorktreeCwd } from '../lib/resolve-worktree';
@@ -20,7 +20,7 @@ import { validateId } from '../lib/validation';
 import { resolveEffectiveBaseBranchForRepo } from '../lib/worktree-base-branches';
 import { listWorkspaceWorktreeRepoEntries } from '../lib/worktree-repo-entries';
 import { isMultiRepoWorkspace } from '../lib/workspace-registry';
-import { PortalServiceError } from './portal-service-error';
+import { RemoteControlServiceError } from './remote-control-service-error';
 import {
   secretSafeView,
   SecretViewUnavailableError,
@@ -30,7 +30,7 @@ import { getSharedContainerReader } from '../shared-containers/read/reader';
 import { resolveSharedContainerViewerReadRoots } from '../shared-containers/read/viewer-root';
 
 const execFileAsync = promisify(execFile);
-type DiffReadSource = NonNullable<PortalDiffReadPayload['source']>;
+type DiffReadSource = NonNullable<RemoteControlDiffReadPayload['source']>;
 export function getNullDiffSourceForPlatform(
   platform: NodeJS.Platform = process.platform,
 ): string {
@@ -39,7 +39,9 @@ export function getNullDiffSourceForPlatform(
 
 const NULL_DIFF_SOURCE = getNullDiffSourceForPlatform();
 
-export function normalizeStatus(value: string): PortalChangedFile['status'] {
+export function normalizeStatus(
+  value: string,
+): RemoteControlChangedFile['status'] {
   const status = value.trim();
   switch (status) {
     case 'DD':
@@ -116,20 +118,20 @@ function isPathInsideRoot(pathValue: string, rootPath: string): boolean {
 
 function normalizeDiffPath(value: string): string {
   if (win32.isAbsolute(value) || /^[a-zA-Z]:/.test(value)) {
-    throw new PortalServiceError(
+    throw new RemoteControlServiceError(
       'invalid_target',
       'Diff path must be relative.',
     );
   }
   const normalizedInput = value.replace(/\\/g, '/');
   if (posix.isAbsolute(normalizedInput)) {
-    throw new PortalServiceError(
+    throw new RemoteControlServiceError(
       'invalid_target',
       'Diff path must be relative.',
     );
   }
   if (normalizedInput.split('/').some((segment) => segment === '..')) {
-    throw new PortalServiceError(
+    throw new RemoteControlServiceError(
       'invalid_target',
       'Diff path cannot traverse outside the worktree.',
     );
@@ -175,7 +177,7 @@ async function validateDiffPathInsideWorktree(
   const absolutePath = join(cwd, ...relativePath.split('/'));
   const targetReal = await resolveNearestExistingAncestor(absolutePath);
   if (!isPathInsideRoot(targetReal, rootReal)) {
-    throw new PortalServiceError(
+    throw new RemoteControlServiceError(
       'invalid_target',
       'Diff path is outside the selected worktree.',
     );
@@ -186,11 +188,11 @@ async function validateDiffPathInsideWorktree(
 function parseNameStatus(
   output: string,
   committed: boolean,
-): PortalChangedFile[] {
+): RemoteControlChangedFile[] {
   if (!output) {
     return [];
   }
-  return output.split('\n').flatMap((line): PortalChangedFile[] => {
+  return output.split('\n').flatMap((line): RemoteControlChangedFile[] => {
     const fields = line.split('\t');
     const code = fields[0] ?? '';
     const filePath = fields[fields.length - 1] ?? '';
@@ -222,7 +224,7 @@ type NumstatEntry =
  * `git status` / `git diff --name-status`.
  *
  * Binary files surface as `-` for both fields in numstat output; they are
- * recorded as binary (REG-3024), so the caller's PortalChangedFile carries
+ * recorded as binary (REG-3024), so the caller's RemoteControlChangedFile carries
  * `binary: true` and keeps `insertions` / `deletions` undefined.
  */
 function parseNumstat(output: string): Map<string, NumstatEntry> {
@@ -249,9 +251,9 @@ function parseNumstat(output: string): Map<string, NumstatEntry> {
 }
 
 function mergeNumstatIntoFiles(
-  files: PortalChangedFile[],
+  files: RemoteControlChangedFile[],
   numstat: Map<string, NumstatEntry>,
-): PortalChangedFile[] {
+): RemoteControlChangedFile[] {
   return files.map((file) => {
     const entry = numstat.get(file.filePath);
     if (!entry) return file;
@@ -275,14 +277,17 @@ function normalizeDiffReadSource(value: unknown): DiffReadSource {
   ) {
     return value;
   }
-  throw new PortalServiceError('invalid_payload', 'Invalid diff source.');
+  throw new RemoteControlServiceError(
+    'invalid_payload',
+    'Invalid diff source.',
+  );
 }
 
 function mergeChangedFiles(
-  uncommitted: PortalChangedFile[],
-  committed: PortalChangedFile[],
-): PortalChangedFile[] {
-  const files = new Map<string, PortalChangedFile>();
+  uncommitted: RemoteControlChangedFile[],
+  committed: RemoteControlChangedFile[],
+): RemoteControlChangedFile[] {
+  const files = new Map<string, RemoteControlChangedFile>();
   for (const file of committed) {
     files.set(file.filePath, file);
   }
@@ -370,7 +375,7 @@ async function resolveCommittedDiffBase(
 async function listChangedFilesAtPath(
   cwd: string,
   options: { estimateUntrackedLines?: boolean } = {},
-): Promise<PortalChangedFile[]> {
+): Promise<RemoteControlChangedFile[]> {
   const [status, numstatOutput] = await Promise.all([
     git(
       [
@@ -389,26 +394,28 @@ async function listChangedFilesAtPath(
   if (!status) {
     return [];
   }
-  const files = status.split('\n').flatMap((line): PortalChangedFile[] => {
-    const code = line.slice(0, 2);
-    const rawPath = line.slice(3);
-    if (!rawPath) {
-      return [];
-    }
-    const renameParts = rawPath.split(' -> ');
-    const filePath = renameParts[renameParts.length - 1] ?? rawPath;
-    const renamedFrom = renameParts.length > 1 ? renameParts[0] : undefined;
-    return [
-      {
-        filePath,
-        status: normalizeStatus(code),
-        staged: code[0] !== ' ' && code[0] !== '?',
-        ...(renamedFrom !== undefined
-          ? { renamedFrom, previousPath: renamedFrom }
-          : {}),
-      },
-    ];
-  });
+  const files = status
+    .split('\n')
+    .flatMap((line): RemoteControlChangedFile[] => {
+      const code = line.slice(0, 2);
+      const rawPath = line.slice(3);
+      if (!rawPath) {
+        return [];
+      }
+      const renameParts = rawPath.split(' -> ');
+      const filePath = renameParts[renameParts.length - 1] ?? rawPath;
+      const renamedFrom = renameParts.length > 1 ? renameParts[0] : undefined;
+      return [
+        {
+          filePath,
+          status: normalizeStatus(code),
+          staged: code[0] !== ' ' && code[0] !== '?',
+          ...(renamedFrom !== undefined
+            ? { renamedFrom, previousPath: renamedFrom }
+            : {}),
+        },
+      ];
+    });
   const withNumstat = mergeNumstatIntoFiles(files, parseNumstat(numstatOutput));
   if (options.estimateUntrackedLines === false) {
     return withNumstat;
@@ -444,7 +451,7 @@ async function listChangedFilesAtPath(
 export async function listChangedFiles(
   workspaceId: string,
   worktreeId: string,
-): Promise<PortalChangedFile[]> {
+): Promise<RemoteControlChangedFile[]> {
   validateId(workspaceId, 'workspaceId');
   validateId(worktreeId, 'worktreeId');
   const cwd = resolveWorktreeCwd(workspaceId, worktreeId);
@@ -456,7 +463,7 @@ async function listCommittedChangedFilesAtPath(
   worktreeId: string,
   cwd: string,
   repoId?: string,
-): Promise<PortalChangedFile[]> {
+): Promise<RemoteControlChangedFile[]> {
   const base = await resolveCommittedDiffBase(
     workspaceId,
     worktreeId,
@@ -469,7 +476,7 @@ async function listCommittedChangedFilesAtPath(
 async function listCommittedChangedFilesForBase(
   cwd: string,
   base: CommittedDiffBase | null,
-): Promise<PortalChangedFile[]> {
+): Promise<RemoteControlChangedFile[]> {
   if (!base) {
     return [];
   }
@@ -504,7 +511,7 @@ async function listCommittedChangedFilesForBase(
 export async function listCommittedChangedFiles(
   workspaceId: string,
   worktreeId: string,
-): Promise<PortalChangedFile[]> {
+): Promise<RemoteControlChangedFile[]> {
   validateId(workspaceId, 'workspaceId');
   validateId(worktreeId, 'worktreeId');
   const cwd = resolveWorktreeCwd(workspaceId, worktreeId);
@@ -514,7 +521,7 @@ export async function listCommittedChangedFiles(
 export async function listChangedFileSets(
   workspaceId: string,
   worktreeId: string,
-): Promise<PortalChangedFilesPayload> {
+): Promise<RemoteControlChangedFilesPayload> {
   validateId(workspaceId, 'workspaceId');
   validateId(worktreeId, 'worktreeId');
   if (workspaceId === SHARED_CONTAINER_VIEWER_PROJECT_ID) {
@@ -531,8 +538,8 @@ export async function listChangedFileSets(
     const reader = getSharedContainerReader();
     const sets = await Promise.all(
       roots.map(async (root) => {
-        const uncommitted: PortalChangedFile[] = [];
-        const committed: PortalChangedFile[] = [];
+        const uncommitted: RemoteControlChangedFile[] = [];
+        const committed: RemoteControlChangedFile[] = [];
         let cursor: string | undefined;
         do {
           const page = await reader.listRepositoryTree({
@@ -585,8 +592,8 @@ export async function listChangedFileSets(
         ),
       ]).catch(() => [[], []] as const);
       const withRepoIdentity = (
-        file: PortalChangedFile,
-      ): PortalChangedFile => ({
+        file: RemoteControlChangedFile,
+      ): RemoteControlChangedFile => ({
         ...file,
         repoId: repo.repoId,
         repoName: repo.repoName,
@@ -616,8 +623,8 @@ export async function listChangedFileSets(
 }
 
 export async function readDiff(
-  request: PortalDiffReadPayload,
-): Promise<PortalDiffPayload> {
+  request: RemoteControlDiffReadPayload,
+): Promise<RemoteControlDiffPayload> {
   validateId(request.workspaceId, 'workspaceId');
   validateId(request.worktreeId, 'worktreeId');
   if (request.workspaceId === SHARED_CONTAINER_VIEWER_PROJECT_ID) {
@@ -631,7 +638,7 @@ export async function readDiff(
         ? roots[0]
         : undefined;
     if (!revisionId || !root) {
-      throw new PortalServiceError(
+      throw new RemoteControlServiceError(
         'invalid_target',
         'Diff root is unavailable.',
       );
@@ -732,7 +739,7 @@ export async function readDiff(
         );
       } catch (error) {
         if (error instanceof SecretViewUnavailableError)
-          throw new PortalServiceError('invalid_target', error.message);
+          throw new RemoteControlServiceError('invalid_target', error.message);
         if (request.path) throw error;
       }
     }
@@ -860,7 +867,7 @@ async function withholdSecretPatch(
     await secretSafeView({ kind: 'patch', patch, paths });
   } catch (error) {
     if (error instanceof SecretViewUnavailableError)
-      throw new PortalServiceError('invalid_target', error.message);
+      throw new RemoteControlServiceError('invalid_target', error.message);
     throw error;
   }
 }

@@ -17,7 +17,7 @@ import {
   RemoteSessionManager,
   signHostedDelegation,
 } from '@canopy/remote-session';
-import { withPortalDbClient } from './harness/db.mjs';
+import { withRemoteControlDbClient } from './harness/db.mjs';
 
 /** The harness web server's SECRET_ENCRYPTION_KEY_V1 (see web-server.mjs). */
 const HARNESS_MASTER_KEY = Buffer.alloc(32, 1);
@@ -64,7 +64,7 @@ function openHarnessEnvelope(envelope, keyVersion, aad) {
  * the hosted service does it. Null until the account has created one.
  */
 export async function loadHostedRootIdentity(userId) {
-  const row = await withPortalDbClient(async (client) => {
+  const row = await withRemoteControlDbClient(async (client) => {
     const result = await client.query(
       `SELECT device_id, sealed_private_key, key_version
          FROM hosted_remote_controller_devices WHERE user_id = $1`,

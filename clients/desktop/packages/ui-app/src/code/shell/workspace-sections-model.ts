@@ -18,7 +18,7 @@ import {
 /**
  * Minimal structural snapshot the sections layer consumes. A host may pass
  * its full `SessionViewModel`, but browser-local projections that omit
- * unrelated collections (e.g. the web portal's `PortalSessionShellState`
+ * unrelated collections (e.g. the web portal's `RemoteControlSessionShellState`
  * without `chatProjects`) satisfy this shape too.
  */
 export interface WorkspaceSectionsSnapshot {
@@ -45,7 +45,7 @@ export interface WorkspaceContentChat {
 
 /**
  * The chat-summary fields a worktree row's attention roll-up reads, a
- * structural subset of the wire's `PortalChatSummaryEntity`.
+ * structural subset of the wire's `RemoteControlChatSummaryEntity`.
  */
 export interface WorktreeChatAttentionSummary {
   readonly workspaceLocalId?: string;

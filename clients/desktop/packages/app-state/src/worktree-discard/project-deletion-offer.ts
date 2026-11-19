@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { ProjectDeletionDiscardDescription } from '@canopy/protocol/portal/project-deletion-discard';
+import type { ProjectDeletionDiscardDescription } from '@canopy/protocol/remote-control/shell/project-deletion-discard';
 
 /**
  * CAN-5337: a project deletion the host refused, offered to the mounted

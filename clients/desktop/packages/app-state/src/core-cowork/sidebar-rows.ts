@@ -1,11 +1,11 @@
-import type { PortalSessionShellState } from '@canopy/protocol/portal';
+import type { RemoteControlSessionShellState } from '@canopy/protocol/remote-control/shell';
 import type {
   CoreCoworkProject,
   CoreCoworkTask,
 } from './create-core-cowork-store';
 
-type ShellWorkspace = PortalSessionShellState['workspaces'][number];
-type ShellWorktree = PortalSessionShellState['worktrees'][number];
+type ShellWorkspace = RemoteControlSessionShellState['workspaces'][number];
+type ShellWorktree = RemoteControlSessionShellState['worktrees'][number];
 
 /** The branch a repoless cloud task row carries, as the web projects it. */
 export const CORE_COWORK_TASK_BRANCH = 'cloud';

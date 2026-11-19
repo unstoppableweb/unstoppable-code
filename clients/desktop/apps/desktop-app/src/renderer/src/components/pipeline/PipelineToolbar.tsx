@@ -85,7 +85,6 @@ export function PipelineViewModeControls(
         value={props.view}
         options={READ_VIEW_OPTIONS}
         onChange={props.onViewChange}
-        shape="capsule"
         width="content"
       />
     );
@@ -96,7 +95,6 @@ export function PipelineViewModeControls(
       value={props.view}
       options={EDIT_VIEW_OPTIONS}
       onChange={props.onViewChange}
-      shape="capsule"
       width="content"
     />
   );

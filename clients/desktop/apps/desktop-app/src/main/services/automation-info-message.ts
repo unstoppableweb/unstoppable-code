@@ -4,7 +4,7 @@ import type {
 } from '@canopy/desktop-shared/types';
 import { isInternalChatRequest } from '@canopy/desktop-shared/lib/internal-chat-row';
 import { isUsageInitiationSource } from '@canopy/desktop-shared/lib/turn-utils';
-import { readAutoResumeMetadata } from '@canopy/protocol/portal';
+import { readAutoResumeMetadata } from '@canopy/protocol/remote-control/shell';
 
 function getRequestInitiationSource(
   request: unknown,

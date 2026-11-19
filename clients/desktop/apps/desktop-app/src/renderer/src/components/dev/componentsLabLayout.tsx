@@ -6,6 +6,7 @@ import {
   DialogModal,
   Fact,
   FactList,
+  FormField,
   Inline,
   InlineMention,
   SettingsRowsGroup,
@@ -34,7 +35,7 @@ import {
 export function FactsSpecimen(): JSX.Element {
   return (
     <div className="flex flex-col gap-6">
-      <SpecimenPanel title="FactList, columns (a panel's facts)">
+      <SpecimenPanel title="FactList, columns" hint="A panel's facts">
         <SpecimenGrid min={280}>
           <SpecimenCell label="Default: auto label column, xs">
             <FactList>
@@ -66,7 +67,7 @@ export function FactsSpecimen(): JSX.Element {
           </SpecimenCell>
         </SpecimenGrid>
       </SpecimenPanel>
-      <SpecimenPanel title="FactList, stacked (stat tiles)">
+      <SpecimenPanel title="FactList, stacked" hint="Stat tiles">
         <FactList layout="stacked" columns={4} valueSize="large">
           <Fact label="Chats" numeric>
             128
@@ -143,7 +144,10 @@ export function FactsSpecimen(): JSX.Element {
           </SpecimenCell>
         </SpecimenGrid>
       </SpecimenPanel>
-      <SpecimenPanel title="ValueRows (figures in panels, sheets and popovers)">
+      <SpecimenPanel
+        title="ValueRows"
+        hint="Figures in panels, sheets and popovers"
+      >
         <div className="max-w-110">
           <ValueRows>
             <ValueRow label="Input tokens" value="1.2M" share="61%" />
@@ -157,7 +161,7 @@ export function FactsSpecimen(): JSX.Element {
           </ValueRows>
         </div>
       </SpecimenPanel>
-      <SpecimenPanel title="Settings rows (a detail page's facts)">
+      <SpecimenPanel title="Settings rows" hint="A detail page's facts">
         <div className="max-w-160">
           <SettingsRowsSection title="Repository">
             <SettingsRowsGroup>
@@ -208,7 +212,10 @@ export function DialogSpecimen(): JSX.Element {
   const [tab, setTab] = useState<'general' | 'members'>('general');
   return (
     <div className="flex flex-col gap-6">
-      <SpecimenPanel title="DialogModal, 24px section inset with a footer">
+      <SpecimenPanel
+        title="A form in a dialog"
+        hint="16px title, 13px subtitle, Close on the title's line; content 24px from every side"
+      >
         <DialogFrame height={340}>
           {(container): ReactNode => (
             <DialogModal
@@ -234,7 +241,48 @@ export function DialogSpecimen(): JSX.Element {
           )}
         </DialogFrame>
       </SpecimenPanel>
-      <SpecimenPanel title='variant="confirm"'>
+      <SpecimenPanel
+        title="No subtitle, a longer body"
+        hint="Blocks sit 16px apart; the footer's buttons are 20px under the last one"
+      >
+        <DialogFrame height={420}>
+          {(container): ReactNode => (
+            <DialogModal
+              title="Invite a teammate"
+              onClose={noop}
+              portalContainer={container}
+              trapFocus={false}
+              closeOnEscape={false}
+              noEnterAnimation
+              maxWidth="md"
+              footer={
+                <>
+                  <Button size="compact">Cancel</Button>
+                  <Button size="compact" variant="primary">
+                    Send invite
+                  </Button>
+                </>
+              }
+            >
+              <FormField label="Email">
+                {(control) => (
+                  <TextInput {...control} defaultValue="ana@example.com" />
+                )}
+              </FormField>
+              <FormField
+                label="Note"
+                description="Shown in the invitation email."
+              >
+                {(control) => <TextInput {...control} placeholder="Optional" />}
+              </FormField>
+            </DialogModal>
+          )}
+        </DialogFrame>
+      </SpecimenPanel>
+      <SpecimenPanel
+        title="A confirmation"
+        hint="The same title; no Close and no divider"
+      >
         <DialogFrame height={260}>
           {(container): ReactNode => (
             <DialogModal
@@ -261,7 +309,10 @@ export function DialogSpecimen(): JSX.Element {
           )}
         </DialogFrame>
       </SpecimenPanel>
-      <SpecimenPanel title="Tabs in a dialog header (TabBar compact, dialog inset)">
+      <SpecimenPanel
+        title="Tabs under the header"
+        hint="The body lays itself out and lines up on the same 24px"
+      >
         <DialogFrame height={320}>
           {(container): ReactNode => (
             <DialogModal

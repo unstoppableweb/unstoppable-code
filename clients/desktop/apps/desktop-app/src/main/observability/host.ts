@@ -34,7 +34,6 @@ import {
 import { isAntigravityHarnessEnabled } from '../antigravity/feature-flag';
 import { isCursorHarnessEnabled } from '../cursor/feature-flag';
 import { getFeatureFlagService } from '../feature-flags';
-import { getLastDailyCreditGrantStatus } from '../lib/daily-credit-grant-telemetry';
 import {
   fetchMockControlPlaneRecord,
   getMockLlmOrigin,
@@ -55,7 +54,6 @@ type CodexAdmin = ReturnType<
 
 export interface DesktopObservabilityHost extends ObservabilityHostServices {
   readPreferences: typeof readPreferencesFile;
-  dailyCreditGrantStatus: typeof getLastDailyCreditGrantStatus;
   claude: {
     checkAuthStatus: typeof checkClaudeAuthStatusObserved;
     readOauthCredentials: typeof readClaudeOauthCredentialsResult;
@@ -121,7 +119,6 @@ export function createDesktopObservabilityHost(): DesktopObservabilityHost {
     readAuditRetentionDays: async () =>
       (await readPreferencesFile()).auditRetentionDays,
     readPreferences: () => readPreferencesFile(),
-    dailyCreditGrantStatus: () => getLastDailyCreditGrantStatus(),
     claude: {
       checkAuthStatus: (...args) => checkClaudeAuthStatusObserved(...args),
       readOauthCredentials: (...args) =>

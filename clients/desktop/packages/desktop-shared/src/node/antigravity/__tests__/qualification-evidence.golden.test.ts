@@ -119,6 +119,35 @@ describe('summarizeQualificationEvidence', () => {
   });
 });
 
+describe('executable source', () => {
+  it('records executableSource', () => {
+    const managed = summarizeQualificationEvidence(
+      evidence({
+        executableSource: 'managed',
+        additionalDirectories: { advertised: true, accepted: true },
+      }),
+    );
+    expect(managed.executableSource).toBe('managed');
+    expect(managed.statements).toEqual([
+      'VIEW-03: Antigravity 1.5.1 (managed copy) read calls completed: 1; write: 1; execute: 1; titles are the legacy read_file/write_file/run_command names (live evidence 2026-11-17T12:00:00.000Z).',
+      'CHAT-03: Antigravity 1.5.1 (managed copy) sent 3 tool calls, every one identified as read, write, execute or mcp_<server>_<tool> (live evidence 2026-11-17T12:00:00.000Z).',
+      'CHAT-06: Antigravity 1.5.1 (managed copy) advertised additionalDirectories and accepted a session with one (live evidence 2026-11-17T12:00:00.000Z).',
+    ]);
+    expect(
+      summarizeQualificationEvidence(evidence({ executableSource: 'override' }))
+        .statements[0],
+    ).toMatch(/^VIEW-03: Antigravity 1\.5\.1 \(ANTIGRAVITY_EXECUTABLE copy\) /);
+    expect(
+      summarizeQualificationEvidence(evidence({ executableSource: 'path' }))
+        .statements[0],
+    ).toMatch(/^VIEW-03: Antigravity 1\.5\.1 \(PATH copy\) /);
+    // Evidence written before the field existed names no source.
+    const older = summarizeQualificationEvidence(evidence());
+    expect(older.executableSource).toBeNull();
+    expect(older.statements[0]).toMatch(/^VIEW-03: Antigravity 1\.5\.1 read /);
+  });
+});
+
 describe('denied and failed tool calls', () => {
   it('does not count a denied call toward native titles and names it', () => {
     const summary = summarizeQualificationEvidence(

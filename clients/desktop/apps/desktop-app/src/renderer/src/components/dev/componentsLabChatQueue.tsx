@@ -30,7 +30,7 @@ export const CHAT_QUEUE_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
   },
   {
     id: 'chat-queued-message-row',
-    name: 'QueuedMessageRow',
+    name: 'Queued message row',
     group: 'Unified',
     note: 'One compact row per queued message: drag handle, leading label, files, one line of text, status, Steer, Send now and a more menu, in the tray and drawer surfaces.',
     source: `${CHAT}/QueuedMessageRow.tsx`,
@@ -39,7 +39,7 @@ export const CHAT_QUEUE_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
   },
   {
     id: 'chat-queued-message-actions',
-    name: 'QueuedMessageActions',
+    name: 'Queued message actions',
     group: 'Unified',
     note: 'The action strip on a queued-message bubble: Edit and Clear in its corner, Steer, Interrupt, Try again and Run now under it, each hidden or disabled by the row’s state.',
     source: `${CHAT}/QueuedMessageActions.tsx`,
@@ -48,7 +48,7 @@ export const CHAT_QUEUE_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
   },
   {
     id: 'chat-queued-message-reason',
-    name: 'QueuedMessageReason',
+    name: 'Queued message reason',
     group: 'Unified',
     note: 'Why a queued message is waiting: a free-text reason, or a host reason in the stacked or inline layout.',
     source: `${CHAT}/QueuedMessageReason.tsx`,
@@ -57,7 +57,7 @@ export const CHAT_QUEUE_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
   },
   {
     id: 'chat-queued-message-settings-held-warning',
-    name: 'QueuedMessageSettingsHeldWarning',
+    name: 'Held settings warning',
     group: 'Unified',
     note: 'A focusable warning beside Steer and Interrupt that names the settings waiting for background work and what each action does.',
     source: `${CHAT}/QueuedMessageSettingsHeldWarning.tsx`,
@@ -66,7 +66,7 @@ export const CHAT_QUEUE_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
   },
   {
     id: 'chat-plan-copy-action',
-    name: 'PlanCopyAction',
+    name: 'Copy plan action',
     group: 'Unified',
     note: 'The one Copy plan control in four looks; it stays in view but inert, with the reason, when the plan text is loading, missing or truncated.',
     source: `${CHAT}/PlanCopyAction.tsx`,
@@ -75,7 +75,7 @@ export const CHAT_QUEUE_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
   },
   {
     id: 'chat-status-announcer',
-    name: 'StatusAnnouncer',
+    name: 'Status announcer',
     group: 'Unified',
     note: 'A polite, visually hidden live region that speaks each announcement and clears it after four seconds.',
     source: `${CHAT}/StatusAnnouncer.tsx`,
@@ -84,7 +84,7 @@ export const CHAT_QUEUE_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
   },
   {
     id: 'chat-task-stop-button',
-    name: 'TaskStopButton',
+    name: 'Task stop button',
     group: 'Unified',
     note: 'Always-visible Stop for a running task row in the chip, row and drawer looks; it reads Stopping and disables while the stop is in flight.',
     source: `${CHAT}/TaskStopButton.tsx`,
@@ -93,7 +93,7 @@ export const CHAT_QUEUE_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
   },
   {
     id: 'chat-step-row',
-    name: 'StepRow',
+    name: 'Step row',
     group: 'Unified',
     note: 'The clean look’s one quiet row for every agent step: icon, words, detail, a shimmer while running, a failure in words and a chevron when it opens.',
     source: `${CHAT}/StepRow.tsx`,
@@ -111,7 +111,7 @@ export const CHAT_QUEUE_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
   },
   {
     id: 'chat-steering-request-title',
-    name: 'SteeringRequestTitle',
+    name: 'Steering request title',
     group: 'Unified',
     note: 'The title row above a delegate’s steering request, in the block and inline layouts, with or without the delegate named.',
     source: `${CHAT}/SteeringRequestTitle.tsx`,

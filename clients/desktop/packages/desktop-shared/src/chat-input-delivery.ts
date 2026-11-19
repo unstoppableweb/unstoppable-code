@@ -1,11 +1,11 @@
 import {
   parseChatAgentSentInfo,
   parseChatWatcherFiredInfo,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import type {
   ChatInputDeliveryView,
   ChatSteeringCapabilities,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import {
   getExecutionHarnessForModel,
   resolveModelAlias,
@@ -22,7 +22,7 @@ import {
   sessionApprovalWithinTurn,
   type TurnApproval,
 } from './lib/send-approval-narrowing';
-import type { ChatInputDeliveryLedger } from '@canopy/protocol/portal';
+import type { ChatInputDeliveryLedger } from '@canopy/protocol/remote-control/shell';
 import { isInternalChatRequest } from './lib/internal-chat-row';
 import { isGeneratedInputRequest } from './lib/input-request-kind';
 

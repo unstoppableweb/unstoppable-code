@@ -18,10 +18,10 @@ import {
   type ChatTabPluginSelections,
   type InvocableInventoryProvider,
   type PersistedChatTab,
-  type PortalEditorListInvocablesResult,
-  type PortalEditorListSlashCommandsPayload,
-  type PortalEditorSlashCommandOption,
-  type PortalPluginCatalog,
+  type RemoteControlEditorListInvocablesResult,
+  type RemoteControlEditorListSlashCommandsPayload,
+  type RemoteControlEditorSlashCommandOption,
+  type RemoteControlPluginCatalog,
 } from '@canopy/desktop-shared/types';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
@@ -36,7 +36,7 @@ import {
   resolveChatInvocable,
   type InvocableChatScope,
 } from '../services/editor-service';
-import { PortalServiceError } from '../services/portal-service-error';
+import { RemoteControlServiceError } from '../services/remote-control-service-error';
 import { resolveStandaloneChatTarget } from '../services/standalone-chat-service';
 import type { DesktopIpcCallerResolver } from './file-tree';
 import { registerIpcHandler } from './register';
@@ -84,7 +84,7 @@ function isInvocableProvider(
 }
 
 function invalid(message: string): never {
-  throw new PortalServiceError('invalid_payload', message);
+  throw new RemoteControlServiceError('invalid_payload', message);
 }
 
 function readProvider(value: unknown): InvocableInventoryProvider | undefined {
@@ -113,7 +113,7 @@ async function readChatTab(
       candidate.id === chatId && (candidate.kind ?? 'chat') === 'chat',
   );
   if (!tab)
-    throw new PortalServiceError('not_found', 'The chat was not found.');
+    throw new RemoteControlServiceError('not_found', 'The chat was not found.');
   return tab;
 }
 
@@ -138,7 +138,7 @@ async function resolveChat(
       chatId: target.chatId,
     });
     if (!resolved.entryId || resolved.isArchived)
-      throw new PortalServiceError(
+      throw new RemoteControlServiceError(
         'not_found',
         'The active chat was not found.',
       );
@@ -156,8 +156,8 @@ async function resolveChat(
 
 export function registerEditorMenuHandlers(runtime: EditorMenuRuntime): void {
   registerIpcHandler<
-    [PortalEditorListSlashCommandsPayload],
-    { commands: PortalEditorSlashCommandOption[] }
+    [RemoteControlEditorListSlashCommandsPayload],
+    { commands: RemoteControlEditorSlashCommandOption[] }
   >(IPC_CHANNELS.editorListSlashCommands, async (event, payload) => {
     if (!isRecord(payload)) invalid('Invalid editor slash-commands payload.');
     validateId(payload.projectId, 'projectId');
@@ -177,7 +177,7 @@ export function registerEditorMenuHandlers(runtime: EditorMenuRuntime): void {
 
   registerIpcHandler<
     [{ target: unknown; providerType?: unknown }],
-    PortalEditorListInvocablesResult
+    RemoteControlEditorListInvocablesResult
   >(IPC_CHANNELS.editorListInvocables, async (event, payload) => {
     if (!isRecord(payload)) invalid('Invalid invocable list payload.');
     const providerType = readProvider(payload.providerType);
@@ -235,7 +235,7 @@ export function registerEditorMenuHandlers(runtime: EditorMenuRuntime): void {
     };
   });
 
-  registerIpcHandler<[{ projectId: unknown }], PortalPluginCatalog>(
+  registerIpcHandler<[{ projectId: unknown }], RemoteControlPluginCatalog>(
     IPC_CHANNELS.pluginCatalogList,
     async (_event, payload) => {
       if (!isRecord(payload)) invalid('Invalid plugin catalog payload.');

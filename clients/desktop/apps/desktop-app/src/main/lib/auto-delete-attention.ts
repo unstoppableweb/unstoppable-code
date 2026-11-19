@@ -5,8 +5,8 @@ import { z } from 'zod';
 import {
   AutoDeleteAttentionSchema,
   type AutoDeleteAttention,
-} from '@canopy/protocol/portal/auto-delete-attention';
-import type { WorktreeRecoveryDescription } from '@canopy/protocol/portal/worktree-recovery';
+} from '@canopy/protocol/remote-control/shell/auto-delete-attention';
+import type { WorktreeRecoveryDescription } from '@canopy/protocol/remote-control/shell/worktree-recovery';
 import { getAutoDeleteAttentionFilePath } from './paths';
 import { writeFileAtomically } from './atomic-file';
 import { isErrnoException } from './type-guards';

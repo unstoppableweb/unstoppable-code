@@ -94,7 +94,7 @@ export function RowActionButton({
   return (
     <Tooltip label={label}>
       <Button
-        variant={destructive ? 'ghost-destructive' : 'ghost-quiet'}
+        variant={destructive ? 'ghost-destructive' : 'ghost'}
         size="sm"
         iconOnly
         disabled={disabled}

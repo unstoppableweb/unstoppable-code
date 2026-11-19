@@ -1,11 +1,11 @@
 import { lstat } from 'node:fs/promises';
 import { getWorkspaceWorktreeDir } from './paths';
 import { isErrnoException } from './type-guards';
-import type { AutoDeleteAttention } from '@canopy/protocol/portal/auto-delete-attention';
+import type { AutoDeleteAttention } from '@canopy/protocol/remote-control/shell/auto-delete-attention';
 import { AutoDeleteInspectionError } from './auto-delete-inspection-error';
 import { W5CommitRefusedError } from '@canopy/desktop-shared/node/w5-commit-log/errors';
 import { logMainProcessWarn } from './main-process-logging';
-import type { WorktreeRecoveryDescription } from '@canopy/protocol/portal/worktree-recovery';
+import type { WorktreeRecoveryDescription } from '@canopy/protocol/remote-control/shell/worktree-recovery';
 import {
   describeWorktreeDiscard,
   withTypedArchiveRefusal,

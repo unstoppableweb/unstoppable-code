@@ -37,9 +37,9 @@ import {
   flattenFilesTabSearchTree,
 } from './files-tab-search';
 import type {
-  PortalCodeViewerSelection,
-  PortalFileTreeNode,
-} from '@canopy/protocol/portal';
+  RemoteControlCodeViewerSelection,
+  RemoteControlFileTreeNode,
+} from '@canopy/protocol/remote-control/shell';
 import {
   Surface,
   FileRootGroupRow,
@@ -133,7 +133,7 @@ function saveRootGroupExpansion(
 
 /**
  * Files tab for the activity panel: a flat listing of one directory's entries
- * via the shared {@link FileTreeRow}. `PortalFileTreeNode` is a per-directory
+ * via the shared {@link FileTreeRow}. `RemoteControlFileTreeNode` is a per-directory
  * cache (`{ name, isDir }`), so lazy expansion (loading a directory's children
  * on click) is a host action wired by the adopt tickets — here directories call
  * {@link FilesTabProps.onOpenDirectory} and files call
@@ -154,7 +154,7 @@ export interface FilesTabProps {
   readonly canMentionPath?: (relativePath: string) => boolean;
   readonly search?: FilesTabSearch;
   /** One directory's listing: plain entry names within `currentDir`. */
-  readonly entries: readonly PortalFileTreeNode[];
+  readonly entries: readonly RemoteControlFileTreeNode[];
   readonly onOpenFile?: (name: string) => void;
   readonly onOpenDirectory?: (name: string) => void;
   /**
@@ -177,7 +177,7 @@ export interface FilesTabProps {
   readonly workspaceLocalId?: string;
   readonly worktreeLocalId?: string;
   readonly fileRootLocalId?: string;
-  readonly onSelectFile?: (selection: PortalCodeViewerSelection) => void;
+  readonly onSelectFile?: (selection: RemoteControlCodeViewerSelection) => void;
   /** All selectable file roots; a switcher renders when there is more than one. */
   readonly roots?: readonly FilesTabRoot[];
   readonly activeRootLocalId?: string;

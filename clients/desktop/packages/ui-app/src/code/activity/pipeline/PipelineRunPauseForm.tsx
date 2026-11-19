@@ -124,7 +124,7 @@ function PipelineRunPauseField({
   readonly error?: string;
   readonly onChange: (value: PipelineRunPauseScalar) => void;
 }): JSX.Element {
-  const testId = `portal-pipeline-pause-field-${field.key}`;
+  const testId = `remote-control-pipeline-pause-field-${field.key}`;
   return (
     <FormField label={field.label} error={error}>
       {(control) =>
@@ -300,7 +300,7 @@ export function PipelineRunPauseForm({
             type="button"
             variant="primary"
             size="compact"
-            data-testid="portal-pipeline-pause-submit"
+            data-testid="remote-control-pipeline-pause-submit"
             disabled={!canSubmit || submitting}
             onClick={(): void =>
               onSubmit(

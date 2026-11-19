@@ -35,7 +35,7 @@ import { DocumentPencilIcon, PickIcon } from '../../icons/AppIcons';
 import { capitalizeFirstLetter } from '../../lib/text-format';
 import { useStepBadges, useStepTense } from '../chat-look';
 import { StepBadge } from './StepBadge';
-import type { PortalChatToolFamily } from './tool-display-info';
+import type { RemoteControlChatToolFamily } from './tool-display-info';
 import type { AnsweredQuestionDisplay } from './AskUserQuestionCard';
 import {
   isRequestSecretsToolName,
@@ -3545,7 +3545,7 @@ export function getToolDisplayInfo(
 // closed-union lookup instead of a switch on free-form names.
 // ---------------------------------------------------------------------------
 
-const NAME_TO_FAMILY: Record<string, PortalChatToolFamily> = {
+const NAME_TO_FAMILY: Record<string, RemoteControlChatToolFamily> = {
   Read: 'read',
   ReadLines: 'read',
   ReadManyFiles: 'read',
@@ -3591,7 +3591,7 @@ const NAME_TO_FAMILY: Record<string, PortalChatToolFamily> = {
 };
 
 /**
- * Derive a `PortalChatToolFamily` from a raw tool name. Used by the hosts
+ * Derive a `RemoteControlChatToolFamily` from a raw tool name. Used by the hosts
  * that feed the shared `ToolCallCard` so the icon dispatch can stay a
  * closed-union lookup instead of a switch on free-form names.
  */
@@ -3599,7 +3599,7 @@ export function getToolFamilyFromName(
   rawToolName: string,
   scope?: ToolDisplayScope,
   input = '',
-): PortalChatToolFamily {
+): RemoteControlChatToolFamily {
   const { toolName } = normalizeCloudToolDisplay(rawToolName, input);
   if (isComputerUseToolName(toolName)) return 'computer-use';
   // A delegation spawn is agent work; every other delegation tool lists,
@@ -3652,9 +3652,9 @@ export function getToolFamilyFromName(
 export function getToolDisplayFamily(
   toolName: string,
   input: string,
-  suppliedFamily?: PortalChatToolFamily,
+  suppliedFamily?: RemoteControlChatToolFamily,
   scope?: ToolDisplayScope,
-): PortalChatToolFamily {
+): RemoteControlChatToolFamily {
   if (suppliedFamily && suppliedFamily !== 'bash') return suppliedFamily;
   const derivedFamily = getToolFamilyFromName(toolName, scope, input);
   if (

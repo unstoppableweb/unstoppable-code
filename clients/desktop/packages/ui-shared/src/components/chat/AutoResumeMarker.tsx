@@ -2,7 +2,7 @@ import { memo, type JSX, type MouseEvent } from 'react';
 import {
   readAutoResumeMetadata,
   type AutoResumeMetadata,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import { useChatAppName } from '../chat-look';
 import { ChatCopyAction } from './ChatCopyAction';
 import { getWindow } from '../../panels/window-registry';

@@ -15,7 +15,7 @@ import {
   SharedContainerArtifactBudgetError,
   SharedContainerPublishRefusalError,
 } from './errors';
-import type { PortalChatMessage } from '@canopy/protocol/portal';
+import type { RemoteControlChatMessage } from '@canopy/protocol/remote-control/shell';
 
 export interface RevisionArtifact {
   artifactId: string;
@@ -185,10 +185,10 @@ export function rewritePublishedChatData<T>(
 }
 
 export function appendPublishedAttachmentPaths(
-  message: PortalChatMessage,
+  message: RemoteControlChatMessage,
   sourcePaths: readonly string[] | undefined,
   replacements: ReadonlyMap<string, string>,
-): PortalChatMessage {
+): RemoteControlChatMessage {
   const attachmentPaths = Array.from(
     new Set(
       (sourcePaths ?? []).flatMap((sourcePath) => {

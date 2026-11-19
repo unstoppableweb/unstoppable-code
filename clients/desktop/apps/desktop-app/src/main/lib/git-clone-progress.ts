@@ -1,4 +1,4 @@
-import { repositoryNameFromCloneUrl } from '@canopy/protocol/portal';
+import { repositoryNameFromCloneUrl } from '@canopy/protocol/remote-control/shell';
 import type { CloneJobPhase } from '@canopy/desktop-shared/types';
 
 /** One parsed `git clone --progress` status line. */

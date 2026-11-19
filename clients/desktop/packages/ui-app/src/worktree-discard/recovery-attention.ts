@@ -1,6 +1,6 @@
 import type { CanopyClient } from '@canopy/app-core';
 import type { WorktreeRecoveryListResult } from '@canopy/protocol/canopy-core';
-import type { WorktreeRecoveryDescription } from '@canopy/protocol/portal/worktree-recovery';
+import type { WorktreeRecoveryDescription } from '@canopy/protocol/remote-control/shell/worktree-recovery';
 
 type Hold = NonNullable<WorktreeRecoveryListResult['resolutions']>[number];
 type Project = Omit<WorktreeRecoveryListResult, 'check'> & {

@@ -36,7 +36,7 @@ export function SettingsPagesSpecimen(): JSX.Element {
           <SpecimenCell label="Named for its list">
             <SettingsBackButton label="Environments" onClick={noop} />
           </SpecimenCell>
-          <SpecimenCell label="Long list name">
+          <SpecimenCell label="Long list name" wide>
             <SettingsBackButton
               label="Environments for the payments team in the staging organization"
               onClick={noop}
@@ -108,7 +108,10 @@ export function SettingsSaveBarSpecimen(): JSX.Element {
   const [saving, setSaving] = useState(false);
   return (
     <div className="flex flex-col gap-6">
-      <SpecimenPanel title="SettingsSaveBar, without a card slot (sticks to the page bottom)">
+      <SpecimenPanel
+        title="SettingsSaveBar, without a card slot"
+        hint="Sticks to the page bottom"
+      >
         <div className="flex flex-col gap-4">
           {(
             [
@@ -315,7 +318,10 @@ export function AgentAccessSpecimen(): JSX.Element {
       <SpecimenPanel title="AgentAccessEditor">
         <LiveAgentAccess max={40} />
       </SpecimenPanel>
-      <SpecimenPanel title="AgentAccessEditor, groups off (tools unavailable)">
+      <SpecimenPanel
+        title="AgentAccessEditor, groups off"
+        hint="Tools unavailable"
+      >
         <LiveAgentAccess max={40} initial="off" />
       </SpecimenPanel>
       <SpecimenPanel title="AgentAccessEditor, over the tool limit">

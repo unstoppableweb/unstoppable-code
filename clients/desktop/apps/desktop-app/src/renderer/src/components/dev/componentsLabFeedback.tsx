@@ -63,7 +63,7 @@ const noop = (): void => undefined;
 export function NoticeSpecimen(): JSX.Element {
   return (
     <div className="flex flex-col gap-6">
-      <SpecimenPanel title="Intents (title, then message)">
+      <SpecimenPanel title="Intents" hint="Title, then message">
         {INTENTS.map(({ intent, title, body }) => (
           <SpecimenCell key={intent} label={intent} wide>
             <div className="w-full">
@@ -229,7 +229,10 @@ export function FailureSpecimen(): JSX.Element {
   const [retrying, setRetrying] = useState(false);
   return (
     <div className="flex flex-col gap-6">
-      <SpecimenPanel title="ErrorBanner (a failure inside a page or panel)">
+      <SpecimenPanel
+        title="ErrorBanner"
+        hint="A failure inside a page or panel"
+      >
         <SpecimenCell label="Message only" wide>
           <div className="w-full">
             <ErrorBanner
@@ -261,7 +264,7 @@ export function FailureSpecimen(): JSX.Element {
           </div>
         </SpecimenCell>
       </SpecimenPanel>
-      <SpecimenPanel title="ErrorState (the whole panel failed)">
+      <SpecimenPanel title="ErrorState" hint="The whole panel failed">
         <ErrorState
           message="Couldn’t load pull requests."
           details="GraphQL: rate limit exceeded"

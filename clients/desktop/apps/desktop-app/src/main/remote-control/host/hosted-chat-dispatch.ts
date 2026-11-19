@@ -1,4 +1,4 @@
-import type { ExternalAgentSender } from '@canopy/protocol/portal';
+import type { ExternalAgentSender } from '@canopy/protocol/remote-control/shell';
 import { RpcPublicError } from '../transport/rpc-peer';
 import type {
   ChatCommand,

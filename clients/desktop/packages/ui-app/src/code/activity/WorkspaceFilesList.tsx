@@ -145,7 +145,7 @@ export function WorkspaceFilesList({
   return (
     <div
       className="flex flex-col gap-2 text-xs"
-      data-testid="portal-workspace-files"
+      data-testid="remote-control-workspace-files"
     >
       <p className="fg-secondary">
         Files you send in chats and finished files created by agents are shared

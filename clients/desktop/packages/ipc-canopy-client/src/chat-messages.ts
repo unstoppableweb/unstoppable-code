@@ -13,10 +13,10 @@ import {
   createCursorAssistantPatchProjector,
   isCursorAssistantPatchEvent,
   isTerminalRuntimeChatEvent,
-  runtimeChatEventToPortalMessage,
+  runtimeChatEventToRemoteControlMessage,
   type CursorAssistantPatchProjector,
-} from '@canopy/agent-transcript/portal/runtime-chat-projection';
-import type { ToolFamilyResolver } from '@canopy/agent-transcript/portal/persisted-chat-projection';
+} from '@canopy/agent-transcript/remote-control/runtime-chat-projection';
+import type { ToolFamilyResolver } from '@canopy/agent-transcript/remote-control/persisted-chat-projection';
 import {
   COWORK_HOME_WORKTREE_ID,
   STANDALONE_CHAT_PROJECT_ID,
@@ -167,7 +167,7 @@ export function subscribeChatMessages(
     }
     const message =
       cursorPatches?.apply(event.data) ??
-      runtimeChatEventToPortalMessage({
+      runtimeChatEventToRemoteControlMessage({
         scope,
         workspaceLocalId,
         worktreeLocalId,

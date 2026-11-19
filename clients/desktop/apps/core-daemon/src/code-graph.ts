@@ -4,12 +4,17 @@ import { readFile } from 'node:fs/promises';
 import { totalmem } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import {
+  CanopyOperationError,
   defineRuntimeModule,
   type ExecutionAccounting,
   type GenericResourceMetadata,
   type RuntimeModule,
 } from '@canopy/core-runtime';
 import {
+  filesystemScopeError,
+  filesystemSnapshotFailure,
+  isFilesystemSnapshotUnavailable,
+  isUnreadablePathError,
   readFilesystemScope,
   readFilesystemWorkspaceIndexEntry,
   type FilesystemScopeResolver,
@@ -267,8 +272,10 @@ export async function createDaemonCodeGraphModule(
 
   /**
    * The worktree's directory and layout from the tracking records. Every
-   * selector is validated there before a path is built; an unknown or
-   * unreadable worktree is not a scope this daemon serves.
+   * selector is validated there before a path is built; an unknown worktree
+   * is not a scope this daemon serves. Records the system refused to read
+   * (`EACCES`, `EIO`) are a failed build, not a missing worktree; the error
+   * names no path.
    */
   async function resolveWorktree(
     workspaceId: string,
@@ -284,7 +291,14 @@ export async function createDaemonCodeGraphModule(
           'roots',
         )
       ).roots;
-    } catch {
+    } catch (error) {
+      if (isFilesystemSnapshotUnavailable(error))
+        throw codeGraphBuildFailedError('internal', error);
+      if (isUnreadablePathError(error))
+        throw codeGraphBuildFailedError(
+          'internal',
+          filesystemScopeError('roots', 'snapshotUnavailable', error),
+        );
       throw codeGraphScopeNotFoundError();
     }
     const workspaceRoot = roots.find((root) => root.kind === 'workspace-root');
@@ -666,14 +680,13 @@ export async function createDaemonCodeGraphModule(
               report,
             );
           }
+          // The host's message stays here; its class and errno go on the
+          // generation report.
           if (!response.ok)
             throw withCodeGraphGenerationReport(
               response.message === UNAVAILABLE_MESSAGE
                 ? codeGraphUnavailableError()
-                : codeGraphBuildFailedError(
-                    'build_error',
-                    new Error(response.message),
-                  ),
+                : codeGraphBuildFailedError('build_error'),
               report,
             );
           return {
@@ -742,6 +755,9 @@ export async function createDaemonCodeGraphModule(
   /**
    * Every read resolves its worktree first, so the synchronous ports find it;
    * a worktree this daemon can't resolve is the reads' own not-found refusal.
+   * Records the system refused to read are the Files reads' codeless
+   * `snapshotUnavailable` failure, not `invalidState`, which callers read as
+   * a missing graph.
    */
   async function scoped<Value>(
     scope: { workspaceId: string; worktreeId: string },
@@ -749,7 +765,11 @@ export async function createDaemonCodeGraphModule(
   ): Promise<CodeGraphReadWorkerOutcome<Value>> {
     try {
       await remember(scope.workspaceId, scope.worktreeId);
-    } catch {
+    } catch (error) {
+      const cause =
+        error instanceof CanopyOperationError ? error.runtimeCause : undefined;
+      if (isFilesystemSnapshotUnavailable(cause))
+        throw filesystemSnapshotFailure(cause);
       return {
         ok: false,
         request: 'not-found',

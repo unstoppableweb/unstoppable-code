@@ -330,6 +330,10 @@ import {
   type CorePlanAdapter,
 } from './core-plan-adapter';
 import {
+  createCoreReviewAdapter,
+  type CoreReviewAdapter,
+} from './core-review-adapter';
+import {
   createCoreOperationAdapter,
   type CoreOperationAdapter,
 } from './core-operation-adapter';
@@ -351,6 +355,7 @@ import {
 import { setDeferredToolReloads } from '../deferred-tools/reload-coordinator';
 import { emitChatTurnWait } from '../agent-runs/turn-runs';
 import { createHookQueuePayloadStore } from '../lib/hook-queue-store';
+import { PipelineTransientRetries } from '../pipelines/transient-error-retry-scheduler';
 import type { CostService } from '../cost-index/service';
 import type { ObservabilityReadModel } from '@canopy/core-runtime/observability';
 import {
@@ -572,6 +577,8 @@ export interface CreateDesktopRuntimeOptions {
   annotationAdapter?: CoreAnnotationAdapter;
   /** Handler logic for `core.plan.*`; tests may inject an isolated adapter. */
   planAdapter?: CorePlanAdapter;
+  /** Handler logic for `core.review.*`; tests may inject an isolated adapter. */
+  reviewAdapter?: CoreReviewAdapter;
   /**
    * The operation service behind `core.operation.*`; tests may inject one
    * over an isolated ledger. The runtime closes it at shutdown.
@@ -886,6 +893,8 @@ export interface DesktopCanopyDispatcher extends CanopyDispatcher<
    * operation with its gates, target queue and cancellation.
    */
   readonly initiatedWork: InitiatedWorkEngine;
+  /** A pipeline's automatic transient retries (CAN-4175), started from main. */
+  readonly pipelineTransientRetries: PipelineTransientRetries;
   readonly hookChatClaims: HookChatClaims;
   /** Queued hook chats and pipelines (CAN-5081). */
   readonly hookQueue: HookQueue;
@@ -1607,6 +1616,7 @@ export function createDesktopRuntime(
     options.annotationAdapter ??
     createCoreAnnotationAdapter({ publish: publishFileAnnotationsUpdated });
   const planAdapter = options.planAdapter ?? createCorePlanAdapter();
+  const reviewAdapter = options.reviewAdapter ?? createCoreReviewAdapter();
   const operationAdapter =
     options.operationAdapter ?? createCoreOperationAdapter();
   let catalogDispatcher: DesktopCanopyDispatcher | null = null;
@@ -1753,6 +1763,7 @@ export function createDesktopRuntime(
     workerCodeGraphReadAdapter,
     annotationAdapter,
     planAdapter,
+    reviewAdapter,
     operationQueriesAndInstructions,
     ...(options.adapters ?? []),
   ];
@@ -1970,6 +1981,7 @@ export function createDesktopRuntime(
       ),
       ownedAdapter('core.annotation', annotationAdapter),
       ownedAdapter('core.plan', planAdapter),
+      ownedAdapter('core.review', reviewAdapter),
       owned(
         'core.operation',
         operationAdapter.queries,
@@ -2143,6 +2155,7 @@ export function createDesktopRuntime(
       logMainProcessWarn(`[initiated-work] ${context} failed`, error);
     },
   });
+  const pipelineTransientRetries = new PipelineTransientRetries(initiatedWork);
   const hookChatClaims = new HookChatClaims({
     operations: operationAdapter.service,
   });
@@ -2784,6 +2797,7 @@ export function createDesktopRuntime(
     hookChatClaims,
     hookQueue,
     pipelineRuns,
+    pipelineTransientRetries,
     pipelineHostRequests,
     queryWorkspaceListForLegacyIpc: refuseOnceShuttingDown(
       queryWorkspaceListForLegacyIpc,

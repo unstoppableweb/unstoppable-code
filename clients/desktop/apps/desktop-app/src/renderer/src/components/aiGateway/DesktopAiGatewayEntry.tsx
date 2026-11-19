@@ -141,7 +141,7 @@ export function AiGatewaySetupLink({
   return (
     <div className="flex items-center gap-2">
       <Button
-        variant="ghost-accent"
+        variant="ghost"
         size="compact"
         data-testid={testId}
         onClick={() => onOpen()}

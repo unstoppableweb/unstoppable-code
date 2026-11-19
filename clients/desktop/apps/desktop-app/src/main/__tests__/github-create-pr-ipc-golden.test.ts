@@ -121,17 +121,6 @@ jest.mock('../lib/github-pr-read-model', () => ({
   readGitHubPullRequestProjection: (...args: unknown[]): unknown =>
     mockReadGitHubPullRequestProjection(...args),
 }));
-// The Portal's create_auto action, as the composition root installs it.
-let mockWorktreePrActions:
-  | { create: (request: unknown) => Promise<unknown> }
-  | undefined;
-jest.mock('../services/pr-worktree-actions', () => ({
-  registerWorktreePrActions: (actions: {
-    create: (request: unknown) => Promise<unknown>;
-  }): void => {
-    mockWorktreePrActions = actions;
-  },
-}));
 jest.mock('../lib/git', () => ({
   isGitRepo: jest.fn(() => Promise.resolve(false)),
   getCurrentBranch: jest.fn(() => Promise.resolve('feature-branch')),
@@ -1004,16 +993,6 @@ describe('github:create-pr through core.pullRequest.create', () => {
       'refs/remotes/origin/feature-branch^{commit}',
     );
     expect(instruction).not.toHaveBeenCalled();
-    expect(createRequests()).toHaveLength(1);
-  });
-
-  it("keeps the direct create for the Portal's create_auto action", async () => {
-    if (!mockWorktreePrActions) throw new Error('PR actions not registered');
-
-    await mockWorktreePrActions.create(REQUEST);
-
-    expect(instruction).not.toHaveBeenCalled();
-    expect(mockOctokit.repos.getBranch).not.toHaveBeenCalled();
     expect(createRequests()).toHaveLength(1);
   });
 });

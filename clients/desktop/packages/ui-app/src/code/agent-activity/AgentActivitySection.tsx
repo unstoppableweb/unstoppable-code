@@ -23,9 +23,9 @@ export interface AgentActivitySectionProps {
    * rows under its header.
    */
   readonly artifactItems?: readonly ReactNode[];
-  /** Pipeline run rows, full width below the artifact cards. */
+  /** Pipeline run cards, full width below the rows. */
   readonly pipelineRunItems?: readonly ReactNode[];
-  /** Watched GitHub workflow run rows, full width at the end. */
+  /** Watched GitHub workflow run rows, listed after the artifact rows. */
   readonly githubRunItems?: readonly ReactNode[];
   readonly variant: 'active' | 'completed';
   readonly defaultExpanded?: boolean;
@@ -82,25 +82,22 @@ export const AgentActivitySection = memo(function AgentActivitySection({
           className={`${REPLAY_BLOCK_CLASS} flex flex-col gap-2 ${variant === 'active' ? 'max-h-[min(240px,35vh)] overflow-y-auto' : ''}`}
           data-testid="agent-activity-items"
         >
-          {artifactItems.length > 0 ? (
-            // Under the header's words: each row's icon on its text line.
+          {artifactItems.length + githubRunItems.length > 0 ? (
+            // One list under the header's words: each row's icon on its text
+            // line, the watched GitHub runs after what the turn made.
             <div
               className="flex flex-col pl-5.5"
-              data-testid="agent-activity-artifact-items"
+              data-testid="agent-activity-row-items"
             >
               <CapabilityTileLayoutProvider layout="row">
                 {artifactItems}
               </CapabilityTileLayoutProvider>
+              {githubRunItems}
             </div>
           ) : null}
           {pipelineRunItems.length > 0 ? (
             <Stack gap="inline" data-testid="agent-activity-pipeline-run-items">
               {pipelineRunItems}
-            </Stack>
-          ) : null}
-          {githubRunItems.length > 0 ? (
-            <Stack gap="inline" data-testid="agent-activity-github-run-items">
-              {githubRunItems}
             </Stack>
           ) : null}
         </div>

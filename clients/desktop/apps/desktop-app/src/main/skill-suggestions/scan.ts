@@ -5,6 +5,7 @@ import {
   enqueueBackgroundHelperTask,
 } from '../lib/background-helper-queue';
 import { logMainProcessWarn } from '../lib/main-process-logging';
+import { isHelperNoBillingSourceError } from '../agents/helper-no-billing-source';
 import {
   findChainCandidates,
   findPromptCandidates,
@@ -18,6 +19,7 @@ import type {
   chooseScanModel,
   InventorySkill,
   runSkillSuggestionScanModel,
+  ScanModelRun,
   validateScanOutput,
   ValidatedSuggestion,
 } from './clustering-generator';
@@ -350,6 +352,12 @@ async function scanPartition(
     await deps.readPreferences(),
     partition,
   );
+  // A signed-out provider with no billing source (CAN-7062) counts as not
+  // run, like a cancelled scan: `lastScanAt` does not advance, so these turns
+  // still count once the user signs in, and no warning is logged per pass.
+  if (choice.kind === 'skip' && choice.noBillingSource === true) {
+    return { outcome: 'cancelled', candidateCount };
+  }
   if (choice.kind === 'skip') {
     logMainProcessWarn('[skill-suggestions] partition scan skipped', {
       reason: choice.reason,
@@ -377,11 +385,20 @@ async function scanPartition(
     inventory: await deps.loadInventory(),
     priorSuggestions: existing.filter((entry) => !isOpenSuggestion(entry)),
   });
-  const run = await enqueueBackgroundHelperTask({
-    priority: BACKGROUND_HELPER_PRIORITIES.skillSuggestions,
-    task: () =>
-      generator.runSkillSuggestionScanModel(prepared, choice, partition),
-  });
+  let run: ScanModelRun;
+  try {
+    run = await enqueueBackgroundHelperTask({
+      priority: BACKGROUND_HELPER_PRIORITIES.skillSuggestions,
+      task: () =>
+        generator.runSkillSuggestionScanModel(prepared, choice, partition),
+    });
+  } catch (error) {
+    // Refused before any spawn on a cold auth cache (CAN-7062): not run.
+    if (isHelperNoBillingSourceError(error)) {
+      return { outcome: 'cancelled', candidateCount };
+    }
+    throw error;
+  }
   // A gate closed mid-run throws the result away before anything is written.
   if (!deps.isAllowed()) {
     run.finalize(

@@ -1,14 +1,14 @@
 import type {
-  PortalChatEventPayload,
-  PortalChatMessage,
-} from '@canopy/protocol/portal';
+  RemoteControlChatEventPayload,
+  RemoteControlChatMessage,
+} from '@canopy/protocol/remote-control/shell';
 import type {
   ConversationPresentation,
   ConversationProjectedMessage,
 } from '@canopy/app-core/conversation';
 
 export interface ConversationHostBridgeTarget {
-  emitChatMessage(payload: PortalChatEventPayload): void;
+  emitChatMessage(payload: RemoteControlChatEventPayload): void;
   /**
    * Open the turn's timer under its local user message id; the canonical id
    * lets the target match Auto-routing attribution recorded from the receipt.
@@ -69,7 +69,7 @@ function toMessage(
     readonly name: string;
     readonly image?: string;
   },
-): PortalChatMessage {
+): RemoteControlChatMessage {
   const timestamp = Date.parse(message.occurredAt);
   const author =
     message.author ??

@@ -9,7 +9,7 @@ import type {
   DelegationDeliveryReceipt,
   DelegationStopReceipt,
 } from '../types';
-import type { ChatInputAdmission } from '@canopy/protocol/portal/input-delivery';
+import type { ChatInputAdmission } from '@canopy/protocol/remote-control/shell/input-delivery';
 
 export function routeFixture(
   overrides: Partial<ResolvedAgentRouteSnapshot> = {},

@@ -175,7 +175,7 @@ export function PlanReviewCommentActions({
     <>
       <Tooltip label="Edit unsubmitted comment">
         <Button
-          variant="ghost-quiet"
+          variant="ghost"
           size="sm"
           iconOnly
           onClick={onEdit}
@@ -188,7 +188,7 @@ export function PlanReviewCommentActions({
       </Tooltip>
       <Tooltip label="Delete unsubmitted comment">
         <Button
-          variant="ghost-quiet"
+          variant="ghost"
           size="sm"
           iconOnly
           onClick={onDelete}
@@ -285,7 +285,7 @@ export function PlanReviewThread({
       >
         {onToggleCollapsed && (
           <Button
-            variant="ghost-quiet"
+            variant="ghost"
             size="sm"
             iconOnly
             onClick={onToggleCollapsed}

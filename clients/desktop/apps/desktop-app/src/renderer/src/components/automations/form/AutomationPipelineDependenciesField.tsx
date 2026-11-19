@@ -74,7 +74,7 @@ export function AutomationPipelineDependenciesField({
                   {nameFor(entry)}
                 </span>
                 <Button
-                  variant="ghost-quiet"
+                  variant="ghost"
                   size="compact"
                   disabled={disabled}
                   onClick={(): void =>

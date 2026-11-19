@@ -44,6 +44,8 @@ import type {
   SharedSkillDetail,
 } from '@canopy/desktop-shared/types/skills';
 import { runSkillMutation, skillMutationPending } from './skill-mutations';
+import { CloudCopyConsentStore } from './cloud-copy-consents';
+import { isInstalledSkillSourceId } from './installed-skill-cloud-copy';
 import {
   SKILL_REPLACEMENT_JOURNAL,
   hasPendingSkillReplacement,
@@ -1010,7 +1012,8 @@ function removeSkillUnlocked(
     if (isCustomSourceId(sourceId))
       recordSharedItemLocalUninstall({ kind: 'skill', localId });
     const shareLinks = readSkillShareLinks();
-    if (shareLinks[localId]) {
+    const link = shareLinks[localId];
+    if (link && !keepsInstalledCloudCopyLink(sourceId, localId, link)) {
       delete shareLinks[localId];
       writeSkillShareLinks(shareLinks);
     }
@@ -1035,6 +1038,28 @@ function removeSkillUnlocked(
     const message = error instanceof Error ? error.message : String(error);
     return { success: false, error: message };
   }
+}
+
+/**
+ * Whether uninstalling keeps a skill's link to its cloud copy (CAN-6943):
+ * only for a skill installed from GitHub, a URL or a local folder whose cloud
+ * copy's consent names that same copy. The copy stays in the account, and a
+ * reinstall finds it again instead of starting a second one. Every other
+ * link, a custom skill's included, goes with the skill as before.
+ */
+function keepsInstalledCloudCopyLink(
+  sourceId: string,
+  localId: string,
+  link: ShareRemoteMetadata,
+): boolean {
+  if (!isInstalledSkillSourceId(sourceId)) return false;
+  const consent =
+    CloudCopyConsentStore.inSkillsRoot(getSkillsRootDir()).get(localId);
+  return (
+    consent !== null &&
+    consent.remoteId === link.remoteId &&
+    consent.accountId === link.accountId
+  );
 }
 
 const MAX_CUSTOM_SKILL_FILES = 100;
@@ -1542,6 +1567,105 @@ export async function readRawSkill(skillId: string): Promise<string> {
   if (!identity) {
     throw new Error('Invalid skill id.');
   }
+  return readSkillFileOf(identity, skillId);
+}
+
+/** The lock sources an installed skill's cloud copy may come from (CAN-6943). */
+const INSTALLED_CLOUD_COPY_SOURCE_TYPES: readonly string[] = [
+  'github',
+  'url',
+  'local',
+];
+
+/**
+ * The SKILL.md of a skill installed from GitHub, a URL or a local folder, for
+ * its cloud copy (CAN-6943): only a lock entry of that source, read through
+ * the same guarded path as `readRawSkill`. `readRawSkill` itself keeps
+ * reading local-folder installs only, so its other callers are unchanged.
+ */
+export async function readInstalledSkillForCloudCopy(
+  skillId: string,
+): Promise<string> {
+  return readSkillFileOf(installedCloudCopyIdentity(skillId), skillId);
+}
+
+/** Entries a folder fingerprint walks before it refuses: twice the package cap. */
+const INSTALLED_FINGERPRINT_MAX_ENTRIES = 2 * 1024;
+
+/**
+ * A fingerprint of an installed skill's whole folder (CAN-6943): every
+ * path, each file's SHA-256 and each link's target, without following links.
+ * Its cloud copy's consent records it, so a change to any supporting file,
+ * not only SKILL.md, shows the copy as out of date. Same identity and folder
+ * checks as `readInstalledSkillForCloudCopy`.
+ */
+export async function fingerprintInstalledSkillForCloudCopy(
+  skillId: string,
+): Promise<string> {
+  const { sourceId, skillName } = installedCloudCopyIdentity(skillId);
+  await assertStoredSkillContext(`${sourceId}/${skillName}`);
+  const resolved = await resolveCanonicalSkillDirForRead(sourceId, skillName);
+  if (resolved.status !== 'ok') throw new Error('Invalid skill id.');
+  const fingerprint = createHash('sha256');
+  let entries = 0;
+  const walk = async (dir: string, relativeDir: string): Promise<void> => {
+    for (const name of (await fsp.readdir(dir)).sort()) {
+      entries += 1;
+      if (entries > INSTALLED_FINGERPRINT_MAX_ENTRIES)
+        throw new Error('This skill has too many files to compare.');
+      const absolute = path.join(dir, name);
+      const relative = relativeDir === '' ? name : `${relativeDir}/${name}`;
+      const stats = await fsp.lstat(absolute);
+      if (stats.isSymbolicLink()) {
+        fingerprint.update(
+          `link\0${relative}\0${await fsp.readlink(absolute)}\n`,
+        );
+      } else if (stats.isDirectory()) {
+        fingerprint.update(`dir\0${relative}\n`);
+        await walk(absolute, relative);
+      } else if (stats.isFile()) {
+        const content = createHash('sha256')
+          .update(await fsp.readFile(absolute))
+          .digest('hex');
+        fingerprint.update(`file\0${relative}\0${content}\n`);
+      } else {
+        fingerprint.update(`other\0${relative}\n`);
+      }
+    }
+  };
+  await walk(resolved.path, '');
+  return fingerprint.digest('hex');
+}
+
+function installedCloudCopyIdentity(skillId: string): {
+  sourceId: string;
+  skillName: string;
+} {
+  const lastSlash = skillId.lastIndexOf('/');
+  const sourceId = skillId.slice(0, Math.max(lastSlash, 0));
+  const skillName = skillId.slice(lastSlash + 1);
+  if (
+    lastSlash < 0 ||
+    !isSafeSegment(sourceId) ||
+    !isSafeSegment(skillName) ||
+    isBuiltinSourceId(sourceId) ||
+    isCustomSourceId(sourceId)
+  )
+    throw new Error('Invalid skill id.');
+  const lockEntry = readLockFile().skills[getLockKey(sourceId, skillName)];
+  if (
+    lockEntry === undefined ||
+    lockEntry.sourceId !== sourceId ||
+    !INSTALLED_CLOUD_COPY_SOURCE_TYPES.includes(lockEntry.sourceType)
+  )
+    throw new Error('Invalid skill id.');
+  return { sourceId, skillName };
+}
+
+async function readSkillFileOf(
+  identity: { sourceId: string; skillName: string },
+  skillId: string,
+): Promise<string> {
   const { sourceId, skillName } = identity;
   await assertStoredSkillContext(`${sourceId}/${skillName}`);
   const resolvedSkillDir = await resolveCanonicalSkillDirForRead(

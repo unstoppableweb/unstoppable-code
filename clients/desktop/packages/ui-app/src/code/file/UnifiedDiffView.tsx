@@ -210,7 +210,7 @@ function FileSection({
 
 /**
  * Dependency-free renderer for a {@link
- * import('@canopy/protocol/portal').PortalDiffPayload} `patch` string.
+ * import('@canopy/protocol/remote-control/shell').RemoteControlDiffPayload} `patch` string.
  *
  * Parses the patch ({@link parseUnifiedPatch}) and renders it the way desktop's
  * Monaco diff editor reads: no git headers, old/new line-number gutters,

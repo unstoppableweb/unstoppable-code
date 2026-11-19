@@ -1,5 +1,5 @@
-import type { PortalChatMessage } from '@canopy/protocol/portal';
-import { readChatPromptSource } from '@canopy/protocol/portal';
+import type { RemoteControlChatMessage } from '@canopy/protocol/remote-control/shell';
+import { readChatPromptSource } from '@canopy/protocol/remote-control/shell';
 import type { SentPromptSummary } from '@canopy/app-state';
 import { hostMessagePresentation } from '@canopy/ui-shared/components';
 
@@ -26,7 +26,7 @@ export function isPersonPromptText(text: string): boolean {
 
 /** The transcript side of a {@link SentPromptSummary}. */
 export function summarizeTranscriptPrompts(
-  messages: readonly PortalChatMessage[],
+  messages: readonly RemoteControlChatMessage[],
 ): Pick<SentPromptSummary, 'latest' | 'promptCount'> {
   let latest: SentPromptSummary['latest'] = null;
   let promptCount = 0;

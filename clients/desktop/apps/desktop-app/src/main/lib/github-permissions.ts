@@ -214,5 +214,7 @@ export async function probeGitHubPermissions(
       canListRepos: false,
       error: `Unable to verify GitHub permissions: ${message}`,
     };
+  } finally {
+    getGitHubBrokerCredentialPort().revoke(grant.lease);
   }
 }

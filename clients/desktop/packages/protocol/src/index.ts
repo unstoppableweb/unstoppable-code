@@ -1,4 +1,4 @@
-export * from './portal';
+export * from './remote-control/shell';
 export * from './models';
 export * from './ai-gateway-models';
 export * from './auth-recovery';

@@ -16,7 +16,7 @@ import {
   type ChatTranscriptHostControls,
 } from '@canopy/ui-app/chat-panel';
 import { useChatStore as useSharedChatStore } from '@canopy/app-state';
-import { projectPersistedChatTranscript } from '@canopy/desktop-shared/portal/persisted-chat-projection';
+import { projectPersistedChatTranscript } from '@canopy/desktop-shared/remote-control/persisted-chat-projection';
 import {
   type AppAdvisorJson,
   type WorktreeSelection,

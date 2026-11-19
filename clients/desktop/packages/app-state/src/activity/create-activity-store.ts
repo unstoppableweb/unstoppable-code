@@ -2,9 +2,9 @@ import { create } from 'zustand';
 import type { StoreApi, UseBoundStore } from 'zustand';
 import type { CanopyClient, SessionViewModel } from '@canopy/app-core';
 import type {
-  PortalChangedFiles,
-  PortalPrStatus,
-} from '@canopy/protocol/portal';
+  RemoteControlChangedFiles,
+  RemoteControlPrStatus,
+} from '@canopy/protocol/remote-control/shell';
 import { createClientStore } from '../create-client-store';
 import { resolveActivitySectionOrder } from './section-order';
 
@@ -64,7 +64,7 @@ export function selectSectionOrder(
 export function selectChangedFiles(
   state: ActivityState,
   worktreeLocalId: string,
-): PortalChangedFiles | undefined {
+): RemoteControlChangedFiles | undefined {
   return state.snapshot?.changedFiles[worktreeLocalId];
 }
 
@@ -72,7 +72,7 @@ export function selectChangedFiles(
 export function selectPrStatus(
   state: ActivityState,
   worktreeLocalId: string,
-): PortalPrStatus | undefined {
+): RemoteControlPrStatus | undefined {
   return state.snapshot?.prStatuses[worktreeLocalId];
 }
 

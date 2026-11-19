@@ -259,9 +259,7 @@ function MonthCalendar({
           return (
             <Button
               key={index}
-              variant={
-                isSelected ? 'primary' : isToday ? 'ghost-accent' : 'ghost'
-              }
+              variant={isSelected ? 'primary' : 'ghost'}
               size="compact"
               iconOnly
               touchArea="contained"
@@ -277,7 +275,12 @@ function MonthCalendar({
               }}
               onClick={() => onPick(day)}
             >
-              {index + 1}
+              {/* Today reads in the accent ink until it is the chosen day. */}
+              {isToday && !isSelected ? (
+                <span className="fg-accent">{index + 1}</span>
+              ) : (
+                index + 1
+              )}
             </Button>
           );
         })}

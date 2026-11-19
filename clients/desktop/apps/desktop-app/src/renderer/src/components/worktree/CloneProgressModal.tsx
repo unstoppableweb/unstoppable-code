@@ -1,4 +1,4 @@
-import { repositoryCloneErrorMessage } from '@canopy/protocol/portal';
+import { repositoryCloneErrorMessage } from '@canopy/protocol/remote-control/shell';
 import { toAppError } from '@canopy/protocol/app-errors';
 import {
   reportClientAppError,

@@ -1,4 +1,4 @@
-import type { PortalChatSummaryEntity } from '@canopy/protocol/portal';
+import type { RemoteControlChatSummaryEntity } from '@canopy/protocol/remote-control/shell';
 import { mapWithConcurrency } from '../lib/concurrency';
 import { listWorktreeChatSummaries } from './chat-service';
 
@@ -15,7 +15,7 @@ export async function listWorktreeChatSummaryBatch(
   targets: readonly WorktreeChatSummaryTarget[],
   read: (
     target: WorktreeChatSummaryTarget,
-  ) => Promise<PortalChatSummaryEntity[]> = (target) =>
+  ) => Promise<RemoteControlChatSummaryEntity[]> = (target) =>
     listWorktreeChatSummaries({
       workspaceId: target.workspaceLocalId,
       worktreeId: target.worktreeLocalId,
@@ -23,7 +23,7 @@ export async function listWorktreeChatSummaryBatch(
 ): Promise<
   Array<{
     target: WorktreeChatSummaryTarget;
-    summaries: PortalChatSummaryEntity[];
+    summaries: RemoteControlChatSummaryEntity[];
   }>
 > {
   return mapWithConcurrency([...targets], 4, async (target) => ({

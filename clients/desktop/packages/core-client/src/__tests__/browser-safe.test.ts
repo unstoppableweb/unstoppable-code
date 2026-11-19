@@ -34,7 +34,7 @@ describe('browser-safe root', () => {
     expect(offenders).toEqual([]);
   });
 
-  it('keeps Node isolated in src/node and exports exactly . and ./node', () => {
+  it('keeps Node isolated in src/node and exports exactly ., ./node and ./outcome', () => {
     expect(existsSync(join(srcRoot, 'node', 'index.ts'))).toBe(true);
     for (const file of productionFiles(srcRoot)) {
       const source = readFileSync(file, 'utf8');
@@ -52,6 +52,7 @@ describe('browser-safe root', () => {
         : undefined;
     expect(exportsField).toEqual({
       '.': './src/index.ts',
+      './outcome': './src/outcome.ts',
       './node': './src/node/index.ts',
     });
   });

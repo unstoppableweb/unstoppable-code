@@ -1,7 +1,7 @@
 import type {
-  PortalChatMessage,
-  PortalQueuedMessage,
-} from '@canopy/protocol/portal';
+  RemoteControlChatMessage,
+  RemoteControlQueuedMessage,
+} from '@canopy/protocol/remote-control/shell';
 import {
   createChatStore,
   type ChatStoreState,
@@ -2106,7 +2106,7 @@ describe('cloud chat thread binding (CAN-4185)', () => {
       id: string,
       text: string,
       createdAtMs: number,
-    ): PortalChatMessage => ({
+    ): RemoteControlChatMessage => ({
       messageId: id,
       chatId: target.key,
       role: 'user',
@@ -2114,7 +2114,7 @@ describe('cloud chat thread binding (CAN-4185)', () => {
       text,
       createdAtMs,
     });
-    const queue = (...ids: string[]): PortalQueuedMessage[] =>
+    const queue = (...ids: string[]): RemoteControlQueuedMessage[] =>
       ids.map((id) => ({
         id: `q-${id}`,
         text: '',
@@ -2159,7 +2159,7 @@ describe('cloud chat thread binding (CAN-4185)', () => {
   it('a host-owned thread that closes while it holds a host echo hands the message back to the host once', async () => {
     const { store, thread, ids } = hostOwnedOnStore('streaming');
     await flush();
-    const echo: PortalChatMessage = {
+    const echo: RemoteControlChatMessage = {
       messageId: 'u1',
       chatId: target.key,
       role: 'user',
@@ -2167,7 +2167,7 @@ describe('cloud chat thread binding (CAN-4185)', () => {
       text: 'Go',
       createdAtMs: 5,
     };
-    const queued: PortalQueuedMessage = {
+    const queued: RemoteControlQueuedMessage = {
       id: 'q1',
       text: 'Go',
       origin: 'portal',
@@ -2188,7 +2188,10 @@ describe('cloud chat thread binding (CAN-4185)', () => {
   it('a host-owned thread holds two queued sends with the same text until their own rows land', async () => {
     const { store, ids } = hostOwnedOnStore('streaming');
     await flush();
-    const echo = (id: string, createdAtMs: number): PortalChatMessage => ({
+    const echo = (
+      id: string,
+      createdAtMs: number,
+    ): RemoteControlChatMessage => ({
       messageId: id,
       chatId: target.key,
       role: 'user',
@@ -2196,7 +2199,7 @@ describe('cloud chat thread binding (CAN-4185)', () => {
       text: 'yes',
       createdAtMs,
     });
-    const queued = (id: string): PortalQueuedMessage => ({
+    const queued = (id: string): RemoteControlQueuedMessage => ({
       id: `q-${id}`,
       text: 'yes',
       origin: 'portal',
@@ -2472,7 +2475,9 @@ describe('cloud chat thread binding (CAN-4185)', () => {
         })),
     );
     await flush();
-    const shown = state.hydrate.mock.calls.at(-1)?.[1] as PortalChatMessage[];
+    const shown = state.hydrate.mock.calls.at(
+      -1,
+    )?.[1] as RemoteControlChatMessage[];
     expect(shown.map((each) => each.parts?.[0]?.data)).toEqual([
       { completedAt: 2, outcome: 'failed', endReason: 'failed' },
       { completedAt: 2, outcome: 'cancelled', endReason: 'cancelled' },
@@ -2506,7 +2511,9 @@ describe('cloud chat thread binding (CAN-4185)', () => {
       autoRoutedModelLabel: 'Model X',
     });
     await flush();
-    const shown = state.hydrate.mock.calls.at(-1)?.[1] as PortalChatMessage[];
+    const shown = state.hydrate.mock.calls.at(
+      -1,
+    )?.[1] as RemoteControlChatMessage[];
     expect(shown.map((each) => each.parts?.[0]?.data)).toEqual([
       {
         completedAt: 2,
@@ -2558,7 +2565,7 @@ describe('cloud chat thread binding (CAN-4185)', () => {
       hostOwnsRuntime: true,
     });
     await flush();
-    const timer = (): PortalChatMessage | undefined =>
+    const timer = (): RemoteControlChatMessage | undefined =>
       store
         .getState()
         .threads[
@@ -3150,7 +3157,7 @@ describe('cloud chat thread binding (CAN-4185)', () => {
         });
         lives[0]?.push(liveTurn('Hello', { startedAt: STARTED_AT }));
         await flush();
-        const timer = (shown(state) as PortalChatMessage[]).find(
+        const timer = (shown(state) as RemoteControlChatMessage[]).find(
           (each) => each.messageId === 'p1:turn-timer',
         );
         expect(timer?.parts).toEqual([

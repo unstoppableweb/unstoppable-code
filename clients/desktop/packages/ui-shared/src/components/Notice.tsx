@@ -297,12 +297,6 @@ interface NoticeContentProps extends Omit<
   errorRecordingDisabled?: boolean;
   /** Catalog code when the caller knows why this displayed failure occurred. */
   displayErrorCode?: AppErrorCode;
-  /**
-   * The tray's hairline edge. `neutral` everywhere except `ErrorBanner`, the
-   * one surface allowed a destructive edge (docs/design/feedback.md#notice).
-   * @internal Not for direct callers; use `ErrorBanner`.
-   */
-  edge?: NoticeEdge;
 }
 
 /** Destructive notices name a stable operation in telemetry. */
@@ -382,9 +376,19 @@ function defaultIcon(intent: NoticeIntent): JSX.Element {
  * a toast card's roomier content: 16px to the copy on every side and the
  * dismiss control 12px from the corner, under the card's 20px corners;
  * `settings` sits among settings cards and shares their corners and inset, so
- * its glyph and buttons line up with the rows' labels and controls.
+ * its glyph and buttons line up with the rows' labels and controls. `menu`
+ * is a status line among the rows of a surface that lists rows (a menu, the
+ * composer's drawer): the rows' 8px inset, so the glyph sits in their icon
+ * column and the copy starts where their labels do, and one line is a row's
+ * 32px. Pair it with `surface="none"`: the host is the surface, and a tray's
+ * corners cannot nest in it.
  */
-export type NoticeShape = 'default' | 'composer' | 'toast' | 'settings';
+export type NoticeShape =
+  | 'default'
+  | 'composer'
+  | 'toast'
+  | 'settings'
+  | 'menu';
 
 const NoticeShapeContext = createContext<NoticeShape>('default');
 
@@ -397,6 +401,7 @@ const ACTION_SIZE_BY_SHAPE: Record<NoticeShape, NoticeButtonSize> = {
   composer: 'compact',
   toast: 'md',
   settings: 'compact',
+  menu: 'compact',
 };
 
 /** The tray's corners: the composer box, a toast card, a settings card. */
@@ -405,6 +410,8 @@ const TRAY_RADIUS_BY_SHAPE: Record<NoticeShape, string> = {
   composer: 'rounded-xl',
   toast: 'rounded-2xl',
   settings: 'rounded-lg',
+  // A menu row's corner, for the rare menu line that keeps a tray.
+  menu: 'rounded-md',
 };
 
 /**
@@ -508,9 +515,6 @@ export function ComposerNoticeStack({
  * - `className` is for placement only (margins, width). Surface, inset,
  *   radius, typography, and color are owned here.
  */
-/** The tray's hairline edge; only `ErrorBanner` asks for `destructive`. */
-export type NoticeEdge = 'neutral' | 'destructive';
-
 export function Notice({
   intent = 'neutral',
   icon,
@@ -536,7 +540,6 @@ export function Notice({
   displayErrorCode,
   errorRecordingChokePoint = 'notice',
   errorRecordingDisabled = false,
-  edge = 'neutral',
   className = '',
   ...rest
 }: NoticeProps): JSX.Element {
@@ -605,11 +608,7 @@ export function Notice({
       data-notice-surface={surface}
       className={`flex gap-2 text-xs fg-primary ${
         surface === 'tray'
-          ? `bg-base bg-[linear-gradient(var(--bg-subtle),var(--bg-subtle))] ring-[length:var(--border-hairline)] ${
-              edge === 'destructive'
-                ? 'ring-line-destructive'
-                : 'ring-line-secondary'
-            } ${TRAY_RADIUS_BY_SHAPE[resolvedShape]}`
+          ? `bg-base bg-[linear-gradient(var(--bg-subtle),var(--bg-subtle))] ring-[length:var(--border-hairline)] ring-line-secondary ${TRAY_RADIUS_BY_SHAPE[resolvedShape]}`
           : ''
       } ${
         composerShape
@@ -625,11 +624,26 @@ export function Notice({
             : resolvedShape === 'settings'
               ? // The settings card's inset (SettingsGroup).
                 'px-4 py-3'
-              : 'px-3 py-2'
+              : resolvedShape === 'menu'
+                ? // A menu row's inset; the 28px glyph line plus 2px above
+                  // and below makes one line a row's 32px.
+                  'px-2 py-0.5'
+                : 'px-3 py-2'
       } ${trailingActions ? 'items-center' : 'items-start'} ${className}`}
       {...rest}
     >
-      <div className="@container/notice flex min-w-0 flex-1 flex-col gap-2">
+      <div
+        // The container query moves a narrow notice's actions under its
+        // copy, and it also hides the copy's width from the notice's parent.
+        // A menu sizes to its widest row, so a menu line stays out of it:
+        // the menu widens for the copy (up to its cap) instead of wrapping
+        // it in the width of the short rows above.
+        className={
+          resolvedShape === 'menu'
+            ? 'flex min-w-0 flex-1 flex-col gap-2'
+            : '@container/notice flex min-w-0 flex-1 flex-col gap-2'
+        }
+      >
         <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2">
           <div
             // The copy has a 5px line inset; the glyph follows that inset
@@ -761,7 +775,7 @@ export function Notice({
       </div>
       {onDismiss && (
         <Button
-          variant="ghost-overlay"
+          variant="ghost"
           size="sm"
           iconOnly
           onClick={onDismiss}

@@ -3,10 +3,10 @@
 import { useState, type JSX } from 'react';
 import { useCanopyClient, useWorkspaceCapabilities } from '@canopy/app-state';
 import type {
-  PortalProviderUsageAccount,
-  PortalProviderUsageEntry,
-  PortalProviderUsageProjection,
-} from '@canopy/protocol/portal';
+  RemoteControlProviderUsageAccount,
+  RemoteControlProviderUsageEntry,
+  RemoteControlProviderUsageProjection,
+} from '@canopy/protocol/remote-control/shell';
 import {
   AntigravityAccountCard,
   getModelCatalogProviderLabel,
@@ -25,13 +25,15 @@ import {
 
 interface ProviderQuotaPanelProps {
   workspaceLocalId: string;
-  projection?: PortalProviderUsageProjection;
+  projection?: RemoteControlProviderUsageProjection;
   disabled?: boolean;
   isVisible: boolean;
 }
 
 /** A short state beside a proxy account that cannot serve now. */
-function accountState(account: PortalProviderUsageAccount): string | null {
+function accountState(
+  account: RemoteControlProviderUsageAccount,
+): string | null {
   if (account.signInRequired) return 'Needs sign-in';
   switch (account.status) {
     case 'disabled':
@@ -57,7 +59,7 @@ function AccountProxyAccounts({
   providerLabel,
   nowMs,
 }: {
-  accounts: PortalProviderUsageAccount[];
+  accounts: RemoteControlProviderUsageAccount[];
   providerLabel: string;
   nowMs: number;
 }): JSX.Element {
@@ -89,7 +91,9 @@ function AccountProxyAccounts({
   );
 }
 
-function entryWindows(entry: PortalProviderUsageEntry): UsageLimitCard[] {
+function entryWindows(
+  entry: RemoteControlProviderUsageEntry,
+): UsageLimitCard[] {
   return entry.windows.map((window) => ({
     key: window.id,
     title: window.label,
@@ -113,7 +117,7 @@ function QuotaGroup({
   entry,
   nowMs,
 }: {
-  entry: PortalProviderUsageEntry;
+  entry: RemoteControlProviderUsageEntry;
   nowMs: number;
 }): JSX.Element {
   const authenticated = entry.authState === 'authenticated';
@@ -181,7 +185,7 @@ function QuotaGroup({
 
 /** The newest read across the groups the panel shows. */
 function projectionUpdatedAt(
-  projection: PortalProviderUsageProjection,
+  projection: RemoteControlProviderUsageProjection,
 ): number | null {
   return newestUsageUpdate([
     ...projection.providers.flatMap((entry) =>
@@ -198,7 +202,7 @@ function projectionUpdatedAt(
  * neither blocks nor reports a failure for the next.
  */
 function accountsSignature(
-  projection: PortalProviderUsageProjection | undefined,
+  projection: RemoteControlProviderUsageProjection | undefined,
 ): string {
   return (projection?.providers ?? [])
     .map(
@@ -242,8 +246,9 @@ function QuotaCards({
   const refresh = async (): Promise<void> => {
     if (disabled === true || refreshing) return;
     setRefreshState({ signature, refreshing: true, failed: false });
-    const providers: Array<PortalProviderUsageEntry['provider'] | 'opencode'> =
-      projection.providers.map((entry) => entry.provider);
+    const providers: Array<
+      RemoteControlProviderUsageEntry['provider'] | 'opencode'
+    > = projection.providers.map((entry) => entry.provider);
     if (projection.openCodeAccounts) providers.push('opencode');
     const results = await Promise.allSettled(
       providers.map((provider) =>

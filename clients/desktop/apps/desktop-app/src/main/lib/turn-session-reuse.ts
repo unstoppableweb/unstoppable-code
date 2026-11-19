@@ -3,7 +3,7 @@ import type {
   ChatSendMessageRequest,
   SettingsHeldChange,
 } from '@canopy/desktop-shared/types';
-import { orderedSettingsHeldChanges } from '@canopy/protocol/portal';
+import { orderedSettingsHeldChanges } from '@canopy/protocol/remote-control/shell';
 import {
   chatHasNativeBackgroundWork,
   canPreserveSessionCapabilitySnapshot,

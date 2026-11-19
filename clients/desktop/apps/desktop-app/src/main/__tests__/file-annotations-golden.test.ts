@@ -70,14 +70,14 @@ jest.mock('../lib/code-review-registry', () => ({
       : null,
 }));
 
-jest.mock('../lib/code-review-persistence', () => ({
+jest.mock('../canopy-tools/review-comment-core-client', () => ({
   readReviewCommentThread: (request: { threadId?: string }): Promise<unknown> =>
     Promise.resolve(
       request.threadId === undefined
         ? { ok: true, mode: 'all', threads: [] }
         : { ok: false, error: 'Comment thread not found.' },
     ),
-  appendReviewCommentReply: (): Promise<unknown> =>
+  replyToReviewCommentThread: (): Promise<unknown> =>
     Promise.reject(new Error('Unexpected review reply.')),
 }));
 

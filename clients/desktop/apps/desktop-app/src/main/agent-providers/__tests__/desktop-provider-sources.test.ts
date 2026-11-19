@@ -59,8 +59,8 @@ jest.mock('../../agents/work-owner', () => ({
   resolveAiCreditsScopeOwner: jest.fn(() => Promise.resolve(undefined)),
 }));
 jest.mock('../provider-usage-projection', () => ({
-  projectPortalProviderUsage: jest.fn(),
-  readPortalProviderUsageAccountProxySource: jest.fn(),
+  projectRemoteControlProviderUsage: jest.fn(),
+  readRemoteControlProviderUsageAccountProxySource: jest.fn(),
 }));
 jest.mock('../../observability', () => ({
   getObservabilityService: jest.fn(),

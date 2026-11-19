@@ -36,7 +36,7 @@ import {
 } from '../lib/paths';
 import {
   runSerializedPluginMutation,
-  setPortalMcpConfigEnabled,
+  setRemoteControlMcpConfigEnabled,
 } from '../services/plugin-catalog-service';
 import {
   loadMarketplacesCacheOnly,
@@ -374,7 +374,11 @@ export const installedItemService = createInstalledItemStatusService({
   logError: logMainProcessError,
   async setMcpEnabled(ref, enabled) {
     if (ref.kind === 'mcp-config') {
-      await setPortalMcpConfigEnabled(ref.serverId, ref.configId, enabled);
+      await setRemoteControlMcpConfigEnabled(
+        ref.serverId,
+        ref.configId,
+        enabled,
+      );
       return;
     }
     if (ref.kind !== 'account-mcp') throw new Error('Not an MCP target.');

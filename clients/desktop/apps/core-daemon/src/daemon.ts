@@ -106,6 +106,7 @@ import {
   CORE_TRANSPORT_QUERY_DEFINITIONS,
   CORE_WORKSPACE_METADATA_GRANTS,
   WORKER_FILESYSTEM_ENTRY_INSTRUCTION_DEFINITIONS,
+  WORKER_GIT_GRANTS,
   type CanopyCallerDescriptor,
   type CanopyRuntimeDescriptor,
 } from '@canopy/protocol/canopy-core';
@@ -186,8 +187,10 @@ const REPOSITORY_PROBE_TIMEOUT_MS = 30_000;
 
 /**
  * Every authenticated peer proved the owner-only token, so it is the same OS
- * user. Clients get runtime reads, their own lease, and filesystem reads; the
- * control plane serves the reads only while the connection holds its lease.
+ * user. Clients get runtime reads, their own lease, filesystem reads and Git
+ * reads (`worker.git.read`, CAN-4729: a same-user peer can already run Git as
+ * that user); the control plane serves the reads only while the connection
+ * holds its lease. No peer gets `worker.git.write`.
  * Where the daemon serves terminals (CAN-5088), they also get
  * `worker.terminal.read` and `.write`, lease-bound the same way: a same-user
  * peer can already start any process as that user. Where it serves the code
@@ -257,6 +260,8 @@ function connectionCaller(
       // q-20: every daemon token holder may save integration credentials.
       'core.integration.write',
       'worker.filesystem.read',
+      // CAN-4729: Git reads only, lease-bound like the filesystem reads.
+      WORKER_GIT_GRANTS.read,
       ...terminalGrants,
       ...codeGraphGrants,
       ...scriptGrants,

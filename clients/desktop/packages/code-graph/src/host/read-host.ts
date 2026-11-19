@@ -37,6 +37,7 @@ import {
   resolveCustomLanguages,
 } from '../languages/custom-config';
 import { CodeGraphParserRuntime } from '../parser/runtime';
+import { classifyCodeGraphReadDatabaseError } from '../io-failure';
 import type {
   CodeGraphBaseIdentityReadResult,
   CodeGraphLanguagesValidation,
@@ -61,50 +62,6 @@ function containsAsciiIdentityControl(value: string): boolean {
 export function readLastBuildAt(db: CodeGraphDatabase): number | null {
   const lastBuildRaw = getMetadataValue(db, 'last_build_at');
   return lastBuildRaw === null ? null : Number(lastBuildRaw);
-}
-
-export function classifyCodeGraphReadDatabaseError(
-  error: unknown,
-): 'permission-denied' | 'busy' | 'corrupt' | 'unsupported-schema' | 'io' {
-  const code =
-    typeof error === 'object' && error !== null && 'code' in error
-      ? error.code
-      : undefined;
-  const sqliteCode =
-    typeof error === 'object' && error !== null && 'errcode' in error
-      ? error.errcode
-      : undefined;
-  const primary = typeof sqliteCode === 'number' ? sqliteCode & 255 : undefined;
-  const message = error instanceof Error ? error.message.slice(0, 512) : '';
-  if (
-    code === 'EACCES' ||
-    code === 'EPERM' ||
-    primary === 3 ||
-    primary === 8 ||
-    primary === 23
-  )
-    return 'permission-denied';
-  if (
-    primary === 5 ||
-    primary === 6 ||
-    code === 'SQLITE_BUSY' ||
-    code === 'SQLITE_LOCKED' ||
-    /database is (busy|locked)/i.test(message)
-  )
-    return 'busy';
-  if (
-    primary === 11 ||
-    primary === 26 ||
-    /not a database|database disk image is malformed/i.test(message)
-  )
-    return 'corrupt';
-  if (
-    primary === 1 ||
-    primary === 17 ||
-    /no such table|no such column|unsupported schema/i.test(message)
-  )
-    return 'unsupported-schema';
-  return 'io';
 }
 
 function safeMarker(value: unknown): number | null {
@@ -422,7 +379,7 @@ function sameFile(left: FileIdentity, right: FileIdentity): boolean {
   return left.dev === right.dev && left.ino === right.ino;
 }
 
-/** The same completion rule as `hasCompletedCodeGraph`, on an open handle. */
+/** The same completion rule as `readCodeGraphCompletion`, on an open handle. */
 function hasCompletedBuild(db: CodeGraphDatabase): boolean {
   try {
     return (

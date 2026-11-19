@@ -1,7 +1,7 @@
 'use client';
 
 import { createContext, useContext, type JSX, type ReactNode } from 'react';
-import type { ChatAgentSentInfo } from '@canopy/protocol/portal';
+import type { ChatAgentSentInfo } from '@canopy/protocol/remote-control/shell';
 
 export type AgentSentSender = ChatAgentSentInfo['sender'];
 

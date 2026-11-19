@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useSyncExternalStore } from 'react';
-import type { PortalChatMessage } from '@canopy/protocol';
+import type { RemoteControlChatMessage } from '@canopy/protocol';
 import type { ChatVisualHost, ChatVisualOwner } from './chat-visual-host';
 import { chatVisualOwnerKey } from './chat-visual-reader';
 import { readChatToolResultVisual } from './ChatToolResultPart';
@@ -136,7 +136,7 @@ export function useChatVisualsPublisher(
 
 /** Every visual the messages carry, in transcript order, once each. */
 export function collectChatVisualOwners(
-  messages: readonly PortalChatMessage[],
+  messages: readonly RemoteControlChatMessage[],
 ): ChatVisualOwner[] {
   const owners: ChatVisualOwner[] = [];
   const seen = new Set<string>();

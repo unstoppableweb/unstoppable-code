@@ -38,9 +38,9 @@ export interface CloudAuthBenefit {
  * and bring other people in. Guest-specific surfaces opt into a separate first
  * row so an ordinary signed-out user is never described as a guest.
  *
- * There is deliberately no free-credits row. The daily free AI Credits are
- * opt-in (off until the user turns them on from Home or Settings), so signing
- * in alone does not deliver them and the list must not promise it.
+ * There is deliberately no free-credits row. Free daily AI Credits are no
+ * longer offered and a new account starts at zero, so signing in alone does
+ * not deliver credits and the list must not promise it.
  *
  * These icons all share one drawing family (24×24, `fill="none"`, 2px
  * `currentColor` stroke). Swapping one for a filled Material glyph on a

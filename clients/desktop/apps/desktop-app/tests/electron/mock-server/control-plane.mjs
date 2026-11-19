@@ -11,7 +11,7 @@
 // ── Scenario object shape (the single JSON contract all surfaces code against) ──
 //
 //   {
-//     // Canopy Cloud surface slice (account / portal / capabilities overrides).
+//     // Canopy Cloud surface slice (account / capabilities overrides).
 //     cloud?:     object,
 //     // LLM surface slice (canned conversation selection, helper fingerprints,
 //     // streaming/usage/stop-reason overrides) — WP-MOCK-LLM.

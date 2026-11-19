@@ -77,7 +77,7 @@ export function DrawerAndEntriesSpecimen(): JSX.Element {
         </SpecimenGrid>
       </SpecimenPanel>
 
-      <SpecimenPanel title="DrawerWatcherControl (hover for the preview)">
+      <SpecimenPanel title="DrawerWatcherControl" hint="Hover for the preview">
         <SpecimenGrid min={220}>
           <SpecimenCell label="Labelled action with a preview">
             <DrawerWatcherControl
@@ -172,7 +172,7 @@ export function DrawerAndEntriesSpecimen(): JSX.Element {
         </SpecimenGrid>
       </SpecimenPanel>
 
-      <SpecimenPanel title="EntrySurfaceIcon (hover for the tooltip)">
+      <SpecimenPanel title="EntrySurfaceIcon" hint="Hover for the tooltip">
         <SpecimenGrid min={180}>
           <SpecimenCell label="Cloud + desktop">
             <EntrySurfaceIcon

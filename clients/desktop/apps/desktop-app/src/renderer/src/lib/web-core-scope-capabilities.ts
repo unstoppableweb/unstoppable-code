@@ -35,6 +35,13 @@ export interface WebCoreScopeOptions {
    * for review; unset reads as off.
    */
   readonly delegationTranscriptReads?: boolean;
+  /**
+   * A cloud chat stops its own delegates over the web core relay (CAN-7245):
+   * a card's Stop and the drawer's Stop and Stop all, through the shared
+   * cloud delegation store. Off until it is switched on for review; unset
+   * reads as off.
+   */
+  readonly delegationStop?: boolean;
 }
 
 /**
@@ -150,6 +157,9 @@ function buildWebCoreScopeCapabilities(
     ...(options.delegationTranscriptReads === true
       ? { delegationTranscriptReads: true }
       : {}),
+    // Stop and Stop all for the chat's own delegates, over the web core
+    // (CAN-7245). Load changes stays off: no retained worktree is here.
+    ...(options.delegationStop === true ? { delegationStop: true } : {}),
     // Unset would mean "every section the workspace type shows" and "the
     // whole worktree's diff". A cloud scope shows the sections the web core
     // feeds: its agent tasks and background processes, which the web core
@@ -189,7 +199,7 @@ export function webCoreScopeCapabilities(
     entry = new Map();
     cache.set(host, entry);
   }
-  const key = `${String(options.durableTerminals)}:${String(options.costInsights === true)}:${String(options.sessionBreakdown === true)}:${String(options.taskFork === true)}:${String(options.delegationTranscriptReads === true)}`;
+  const key = `${String(options.durableTerminals)}:${String(options.costInsights === true)}:${String(options.sessionBreakdown === true)}:${String(options.taskFork === true)}:${String(options.delegationTranscriptReads === true)}:${String(options.delegationStop === true)}`;
   let capabilities = entry.get(key);
   if (capabilities === undefined) {
     capabilities = buildWebCoreScopeCapabilities(host, options);

@@ -17,7 +17,6 @@ import {
   hasEscapeEnabledOverlay,
   OverlayScrollArea,
   StatusGlyph,
-  SpinnerStyleProvider,
   Surface,
 } from '@canopy/ui-shared/components';
 import { MinusIcon } from '@canopy/ui-shared/icons/AppIcons';
@@ -449,180 +448,176 @@ export function ComposerWorkDrawer({
   useEscapeToClose(sectionRef, expanded, () => closeCard(false));
   if (shown.length === 0) return null;
   return (
-    <SpinnerStyleProvider value="comet">
-      <DrawerRowPresentationContext.Provider value="drawer">
-        <div
-          ref={sectionRef}
-          data-testid="composer-work-drawer"
-          data-chat-cancel-shortcut-ignore={expanded ? 'true' : undefined}
-          // The stack's inset from the composer's edges lives here alone,
-          // so the pills and the floating card start on the chat text line.
-          className="canopy-composer-work-drawer flex min-w-0 flex-col px-3 pb-2"
+    <DrawerRowPresentationContext.Provider value="drawer">
+      <div
+        ref={sectionRef}
+        data-testid="composer-work-drawer"
+        data-chat-cancel-shortcut-ignore={expanded ? 'true' : undefined}
+        // The stack's inset from the composer's edges lives here alone,
+        // so the pills and the floating card start on the chat text line.
+        className="canopy-composer-work-drawer flex min-w-0 flex-col px-3 pb-2"
+      >
+        <DrawerReveal
+          expanded={expanded}
+          animate={animate}
+          closingHeight={closingHeight}
+          revealRef={revealRef}
         >
-          <DrawerReveal
-            expanded={expanded}
-            animate={animate}
-            closingHeight={closingHeight}
-            revealRef={revealRef}
-          >
-            {/* The card's gap to the pills is padding, so it closes with it. */}
-            <div className="pb-2">
-              <Surface
-                as="section"
-                variant="card"
-                // The rows' 12px corners nest inside the card's 16px corner.
-                size="drawer"
-                id={cardId}
-                aria-label={shownKind?.label ?? 'Work'}
-                className="min-w-0"
+          {/* The card's gap to the pills is padding, so it closes with it. */}
+          <div className="pb-2">
+            <Surface
+              as="section"
+              variant="card"
+              // The rows' 12px corners nest inside the card's 16px corner.
+              size="drawer"
+              id={cardId}
+              aria-label={shownKind?.label ?? 'Work'}
+              className="min-w-0"
+            >
+              <div
+                ref={cardBodyRef}
+                className={`${DRAWER_CARD_GROUP_CLASS} flex min-w-0 flex-col p-1`}
               >
-                <div
-                  ref={cardBodyRef}
-                  className={`${DRAWER_CARD_GROUP_CLASS} flex min-w-0 flex-col p-1`}
-                >
-                  <div className="flex min-h-8 items-center gap-1.5 pl-2.75 pr-1 text-s fg-tertiary">
-                    <span
-                      ref={labelRef}
-                      className="inline-flex items-center gap-1.5"
-                    >
-                      {shownKind?.label}
-                      {shownKind?.key !== 'queued' &&
-                      shownKind?.count !== undefined ? (
-                        <Count value={shownKind.count} />
-                      ) : null}
-                    </span>
-                    <div className="ml-auto flex items-center gap-0">
-                      {/* The card's own actions show on hover, focus or
+                <div className="flex min-h-8 items-center gap-1.5 pl-2.75 pr-1 text-s fg-tertiary">
+                  <span
+                    ref={labelRef}
+                    className="inline-flex items-center gap-1.5"
+                  >
+                    {shownKind?.label}
+                    {shownKind?.key !== 'queued' &&
+                    shownKind?.count !== undefined ? (
+                      <Count value={shownKind.count} />
+                    ) : null}
+                  </span>
+                  <div className="ml-auto flex items-center gap-0">
+                    {/* The card's own actions show on hover, focus or
                           touch; its close button always shows. One mounted
                           instance, hidden for kinds without them, so a Stop
                           all waiting for its confirmation keeps it across a
                           switch or a close. */}
-                      {cardControls ? (
-                        <span
-                          hidden={!shownKind?.controls}
-                          className={`flex items-center ${DRAWER_CARD_ACTIONS_CLASS}`}
-                        >
-                          {cardControls}
-                        </span>
-                      ) : null}
-                      <Button
-                        variant="ghost-quiet"
-                        size="compact"
-                        iconOnly
-                        aria-label={`Hide ${shownKind?.label.toLowerCase() ?? 'work'}`}
-                        data-testid="composer-work-card-close"
-                        onClick={(event): void => closeCard(event.detail > 0)}
+                    {cardControls ? (
+                      <span
+                        hidden={!shownKind?.controls}
+                        className={`flex items-center ${DRAWER_CARD_ACTIONS_CLASS}`}
                       >
-                        <MinusIcon />
-                      </Button>
-                    </div>
+                        {cardControls}
+                      </span>
+                    ) : null}
+                    <Button
+                      variant="ghost"
+                      size="compact"
+                      iconOnly
+                      aria-label={`Hide ${shownKind?.label.toLowerCase() ?? 'work'}`}
+                      data-testid="composer-work-card-close"
+                      onClick={(event): void => closeCard(event.detail > 0)}
+                    >
+                      <MinusIcon />
+                    </Button>
                   </div>
-                  <OverlayScrollArea
-                    viewportRef={
-                      background?.viewportRef ?? sections?.viewportRef
-                    }
-                    viewportProps={{
-                      'data-testid': 'composer-work-drawer-list',
-                    }}
-                    className="[--background-drawer-list-max:min(18.25rem,calc(35vh+1.5rem))]"
-                    // Rounded like its rows, 4px inside the card's corners, so a
-                    // row cut by the list's edge while scrolling keeps their
-                    // corner.
-                    viewport="drawer"
-                    viewportClassName="max-h-[var(--background-drawer-list-max)]"
-                    edgeFadeSize={6}
-                    edgeFadeTopSize={16}
-                  >
-                    {/* The kind sliding out lies over the new one until it
-                        has left. */}
-                    <div className="relative">
-                      {kinds.map(({ key, label, content }) => {
-                        const outgoing =
-                          leaving === key && shownKind?.key !== key;
-                        return (
-                          <div
-                            key={key}
-                            ref={(node: HTMLDivElement | null): void => {
-                              if (node) groupRefs.current.set(key, node);
-                              else groupRefs.current.delete(key);
-                            }}
-                            hidden={shownKind?.key !== key && !outgoing}
-                            inert={outgoing}
-                            aria-hidden={outgoing || undefined}
-                            className={
-                              outgoing
-                                ? 'pointer-events-none absolute inset-x-0 top-0'
-                                : undefined
-                            }
-                            data-work-group={label}
-                          >
-                            {content}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </OverlayScrollArea>
                 </div>
-              </Surface>
-            </div>
-          </DrawerReveal>
-          <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-            {shown.map(({ key, label, count, glyph, attention }) => {
-              const isOpen = open?.key === key;
-              return (
-                <Button
-                  key={key}
-                  ref={(node: HTMLButtonElement | null): void => {
-                    if (node) pillRefs.current.set(key, node);
-                    else pillRefs.current.delete(key);
+                <OverlayScrollArea
+                  viewportRef={background?.viewportRef ?? sections?.viewportRef}
+                  viewportProps={{
+                    'data-testid': 'composer-work-drawer-list',
                   }}
-                  // At rest a pill takes the faint `tinted` fill; the open one
-                  // the raised `secondary` fill, so it stands out. Neither
-                  // draws a border, so opening one moves nothing.
-                  variant={isOpen ? 'secondary' : 'tinted'}
-                  size="compact"
-                  leadingIcon={glyph !== undefined}
-                  aria-expanded={isOpen}
-                  aria-controls={cardId}
-                  data-testid="composer-work-pill"
-                  data-work-kind={key}
-                  onClick={(event): void => {
-                    if (isOpen || !expanded) {
-                      prepareToggle(!isOpen, event.detail > 0);
-                    }
-                    // Another pill on an open card: the content slides
-                    // toward the new pill's side. Keyboard switches are
-                    // instant.
-                    if (open && !isOpen && event.detail > 0) {
-                      const order = shown.map((kind) => kind.key);
-                      switchFrom.current = {
-                        height:
-                          cardBodyRef.current?.getBoundingClientRect().height ??
-                          0,
-                        direction:
-                          order.indexOf(key) > order.indexOf(open.key) ? 1 : -1,
-                      };
-                      setLeaving(open.key);
-                    } else setLeaving(null);
-                    setSelected(isOpen ? null : key);
-                  }}
+                  className="[--background-drawer-list-max:min(18.25rem,calc(35vh+1.5rem))]"
+                  // Rounded like its rows, 4px inside the card's corners, so a
+                  // row cut by the list's edge while scrolling keeps their
+                  // corner.
+                  viewport="drawer"
+                  viewportClassName="max-h-[var(--background-drawer-list-max)]"
+                  edgeFadeSize={6}
+                  edgeFadeTopSize={16}
                 >
-                  {/* The pill's own inset and gap, as every
+                  {/* The kind sliding out lies over the new one until it
+                        has left. */}
+                  <div className="relative">
+                    {kinds.map(({ key, label, content }) => {
+                      const outgoing =
+                        leaving === key && shownKind?.key !== key;
+                      return (
+                        <div
+                          key={key}
+                          ref={(node: HTMLDivElement | null): void => {
+                            if (node) groupRefs.current.set(key, node);
+                            else groupRefs.current.delete(key);
+                          }}
+                          hidden={shownKind?.key !== key && !outgoing}
+                          inert={outgoing}
+                          aria-hidden={outgoing || undefined}
+                          className={
+                            outgoing
+                              ? 'pointer-events-none absolute inset-x-0 top-0'
+                              : undefined
+                          }
+                          data-work-group={label}
+                        >
+                          {content}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </OverlayScrollArea>
+              </div>
+            </Surface>
+          </div>
+        </DrawerReveal>
+        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+          {shown.map(({ key, label, count, glyph, attention }) => {
+            const isOpen = open?.key === key;
+            return (
+              <Button
+                key={key}
+                ref={(node: HTMLButtonElement | null): void => {
+                  if (node) pillRefs.current.set(key, node);
+                  else pillRefs.current.delete(key);
+                }}
+                // At rest a pill takes the faint `tinted` fill; the open one
+                // the raised `secondary` fill, so it stands out. Neither
+                // draws a border, so opening one moves nothing.
+                variant={isOpen ? 'secondary' : 'ghost'}
+                size="compact"
+                leadingIcon={glyph !== undefined}
+                aria-expanded={isOpen}
+                aria-controls={cardId}
+                data-testid="composer-work-pill"
+                data-work-kind={key}
+                onClick={(event): void => {
+                  if (isOpen || !expanded) {
+                    prepareToggle(!isOpen, event.detail > 0);
+                  }
+                  // Another pill on an open card: the content slides
+                  // toward the new pill's side. Keyboard switches are
+                  // instant.
+                  if (open && !isOpen && event.detail > 0) {
+                    const order = shown.map((kind) => kind.key);
+                    switchFrom.current = {
+                      height:
+                        cardBodyRef.current?.getBoundingClientRect().height ??
+                        0,
+                      direction:
+                        order.indexOf(key) > order.indexOf(open.key) ? 1 : -1,
+                    };
+                    setLeaving(open.key);
+                  } else setLeaving(null);
+                  setSelected(isOpen ? null : key);
+                }}
+              >
+                {/* The pill's own inset and gap, as every
                       icon-first capsule: the glyph at its default size leads the
                       label, with no slot or spinner override. */}
-                  {glyph ? <StatusGlyph tone="state" state={glyph} /> : null}
-                  <span className={attention ? 'fg-warning-strong' : undefined}>
-                    {label}
-                  </span>
-                  {count === undefined ? null : (
-                    <span className="fg-quaternary">{count}</span>
-                  )}
-                </Button>
-              );
-            })}
-          </div>
+                {glyph ? <StatusGlyph tone="state" state={glyph} /> : null}
+                <span className={attention ? 'fg-warning-strong' : undefined}>
+                  {label}
+                </span>
+                {count === undefined ? null : (
+                  <span className="fg-quaternary">{count}</span>
+                )}
+              </Button>
+            );
+          })}
         </div>
-      </DrawerRowPresentationContext.Provider>
-    </SpinnerStyleProvider>
+      </div>
+    </DrawerRowPresentationContext.Provider>
   );
 }

@@ -4,7 +4,7 @@ import type {
   AgentSentInfo,
   ChatWatcherFiredInfo,
   ToolMessageSender,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import { REPLAY_MASK_CLASS } from '../../lib/replay-privacy';
 import { AgentSentMarker } from './AgentSentMarker';
 import { SubagentIcon } from '../../icons/SubagentIcon';

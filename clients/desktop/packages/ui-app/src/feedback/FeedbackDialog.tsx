@@ -247,7 +247,6 @@ export function FeedbackDialog({
                 <span className={FIELD_LABEL_CLASSNAME}>Type</span>
                 <SegmentedControl
                   label="Feedback type"
-                  shape="capsule"
                   width="content"
                   value={type}
                   options={REPORT_TYPE_OPTIONS.map((option) => ({

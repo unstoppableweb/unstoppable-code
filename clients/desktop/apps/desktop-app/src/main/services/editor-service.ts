@@ -5,7 +5,7 @@ import {
   isAgentModel,
   resolvePersistedChatExecutionHarness,
   type ChatTabPluginSelections,
-  type HostPortalEditorFileMentionOption,
+  type HostRemoteControlEditorFileMentionOption,
   type InvocableInventoryEnableRef,
   type InvocableInventoryEntry,
   type InvocableInventoryProvider,
@@ -13,11 +13,11 @@ import {
   type ModelHarness,
   type PersistedChatTab,
   type PluginSelectionTombstones,
-  type PortalEditorInvocableOption,
-  type PortalEditorListFileMentionsPayload,
-  type PortalEditorListInvocablesResult,
-  type PortalEditorListSlashCommandsPayload,
-  type PortalEditorSlashCommandOption,
+  type RemoteControlEditorInvocableOption,
+  type RemoteControlEditorListFileMentionsPayload,
+  type RemoteControlEditorListInvocablesResult,
+  type RemoteControlEditorListSlashCommandsPayload,
+  type RemoteControlEditorSlashCommandOption,
   type SlashCommandData,
   type WorktreeData,
 } from '@canopy/desktop-shared/types';
@@ -48,12 +48,12 @@ import {
 } from '../plugins/invocable-inventory-service';
 import { prepareCodexCompatibilityPlugin } from '../plugins/plugin-service';
 import { fitListResult } from '../remote-projection/result-budget';
-import { createPortalCaller } from '../remote-projection/portal-caller';
+import { createRemoteControlCaller } from '../remote-projection/remote-control-caller';
 import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
-import { PortalServiceError } from './portal-service-error';
+import { RemoteControlServiceError } from './remote-control-service-error';
 import { buildFileIndexes } from './files-service';
-import { selectPortalFileReference } from '../remote-projection/portal-file-reference-selection';
-import type { PortalFileReferenceScope } from '../remote-projection/portal-file-reference-selection';
+import { selectRemoteControlFileReference } from '../remote-projection/remote-control-file-reference-selection';
+import type { RemoteControlFileReferenceScope } from '../remote-projection/remote-control-file-reference-selection';
 
 const MENTION_DEFAULT_LIMIT = 50;
 const MENTION_MAX_LIMIT = 200;
@@ -71,7 +71,7 @@ function editorReadCaller(
 ): CanopyCallerDescriptor {
   return 'caller' in attribution
     ? attribution.caller
-    : createPortalCaller(attribution, ['core.worktree.read']);
+    : createRemoteControlCaller(attribution, ['core.worktree.read']);
 }
 
 /** The worktree row through `core.worktree.get`; null when it can't be read. */
@@ -100,9 +100,9 @@ async function readWorktree(
  * empty.
  */
 export async function listEditorSlashCommands(
-  payload: PortalEditorListSlashCommandsPayload,
+  payload: RemoteControlEditorListSlashCommandsPayload,
   session: EditorReadAttribution,
-): Promise<PortalEditorSlashCommandOption[]> {
+): Promise<RemoteControlEditorSlashCommandOption[]> {
   validateId(payload.projectId, 'projectId');
   validateId(payload.worktreeId, 'worktreeId');
 
@@ -152,9 +152,9 @@ function fuzzyContains(query: string, target: string): boolean {
  * payload stays small over the wire.
  */
 export async function listEditorFileMentions(
-  payload: PortalEditorListFileMentionsPayload,
-  referenceScope?: PortalFileReferenceScope,
-): Promise<HostPortalEditorFileMentionOption[]> {
+  payload: RemoteControlEditorListFileMentionsPayload,
+  referenceScope?: RemoteControlFileReferenceScope,
+): Promise<HostRemoteControlEditorFileMentionOption[]> {
   validateId(payload.projectId, 'projectId');
   validateId(payload.worktreeId, 'worktreeId');
 
@@ -173,10 +173,10 @@ export async function listEditorFileMentions(
       worktreeId: payload.worktreeId,
     });
   } catch (error) {
-    if (error instanceof PortalServiceError) {
+    if (error instanceof RemoteControlServiceError) {
       throw error;
     }
-    throw new PortalServiceError(
+    throw new RemoteControlServiceError(
       'execution_failed',
       error instanceof Error ? error.message : String(error),
     );
@@ -189,17 +189,17 @@ export async function listEditorFileMentions(
     );
     const repo = repos[0];
     if (repos.length !== 1 || !repo)
-      throw new PortalServiceError(
+      throw new RemoteControlServiceError(
         'invalid_target',
         'The selector root is not in the authorized file catalog.',
       );
     if (!referenceScope)
-      throw new PortalServiceError(
+      throw new RemoteControlServiceError(
         'invalid_target',
         'The selector requires an authorized Portal session.',
       );
     return [
-      await selectPortalFileReference({
+      await selectRemoteControlFileReference({
         scope: referenceScope,
         repo,
         relativePath: payload.selector.relativePath,
@@ -207,7 +207,7 @@ export async function listEditorFileMentions(
       }),
     ];
   }
-  const results: HostPortalEditorFileMentionOption[] = [];
+  const results: HostRemoteControlEditorFileMentionOption[] = [];
   for (const repo of response.repos) {
     for (const file of repo.files) {
       if (file.isIgnored) continue;
@@ -268,7 +268,7 @@ function chatInventoryProvider(
 ): ModelHarness {
   const provider = inventoryProviderForTab(tab);
   if (requestedProvider !== undefined && requestedProvider !== provider) {
-    throw new PortalServiceError(
+    throw new RemoteControlServiceError(
       'invalid_payload',
       'providerType does not match the chat.',
     );
@@ -324,7 +324,7 @@ async function listProviderInventory(
 ): Promise<ListInvocableInventoryResponse> {
   const listed = await listInvocableInventory({ providerType: provider });
   if (!listed.success || !listed.data) {
-    throw new PortalServiceError(
+    throw new RemoteControlServiceError(
       'execution_failed',
       listed.error ?? 'The invocable inventory is unavailable.',
     );
@@ -355,7 +355,7 @@ function portableCategory(label: string | undefined): string | undefined {
 
 function toInvocableOption(
   command: SlashCommandData & { category?: string },
-): PortalEditorInvocableOption {
+): RemoteControlEditorInvocableOption {
   const entry = command.inventoryEntry;
   const category = portableCategory(command.category);
   const pluginName =
@@ -400,7 +400,7 @@ export async function listChatInvocables(input: {
   providerType?: InvocableInventoryProvider;
   /** Who the worktree read is attributed to. */
   session: EditorReadAttribution;
-}): Promise<PortalEditorListInvocablesResult> {
+}): Promise<RemoteControlEditorListInvocablesResult> {
   const { scope, tab } = input;
   const context = await resolveChatInvocableContext(
     scope,
@@ -459,7 +459,7 @@ export async function prepareChatInvocable(input: {
     (candidate) => candidate.id === input.entryId,
   );
   if (!entry) {
-    throw new PortalServiceError(
+    throw new RemoteControlServiceError(
       'not_found',
       'The selected item is no longer available.',
     );
@@ -470,7 +470,7 @@ export async function prepareChatInvocable(input: {
       entry.enableRef.pluginName,
     ).catch(() => null);
     if (!prepared?.success) {
-      throw new PortalServiceError(
+      throw new RemoteControlServiceError(
         'execution_failed',
         'Could not enable the selected item.',
       );
@@ -536,7 +536,7 @@ export async function resolveChatInvocable(input: {
     ...(projectPath ? { projectPath } : {}),
   });
   if (!resolved.success || !resolved.data) {
-    throw new PortalServiceError(
+    throw new RemoteControlServiceError(
       'not_found',
       resolved.error ?? 'The selected item is no longer available.',
     );

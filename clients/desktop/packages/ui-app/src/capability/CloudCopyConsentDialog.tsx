@@ -86,6 +86,11 @@ export interface CloudCopyConsentDialogProps {
     readonly kind: 'skill' | 'plugin';
     readonly name: string;
   };
+  /**
+   * Whether the dialog offers "Keep the cloud copy up to date": for a skill
+   * the host can keep in step. Off, any later change asks again.
+   */
+  readonly offerKeepInStep: boolean;
   /** A cloud copy exists and this replaces it with the current files. */
   readonly replacing: boolean;
   /** Who sees the copy this adds or updates; private for a new copy. */
@@ -116,6 +121,7 @@ export interface CloudCopyConsentDialogProps {
  */
 export function CloudCopyConsentDialog({
   subject,
+  offerKeepInStep,
   replacing,
   audience,
   analysis,
@@ -143,7 +149,9 @@ export function CloudCopyConsentDialog({
     setAdding(true);
     setError(null);
     try {
-      await onAdd({ keepInStep: subject.kind === 'skill' && keepInStep });
+      await onAdd({
+        keepInStep: subject.kind === 'skill' && offerKeepInStep && keepInStep,
+      });
     } catch (caught) {
       setError(
         caught instanceof Error && caught.message !== ''
@@ -254,7 +262,7 @@ export function CloudCopyConsentDialog({
             </ul>
           </div>
         )}
-        {subject.kind === 'skill' && (
+        {subject.kind === 'skill' && offerKeepInStep && (
           <ChoiceField
             data-testid="cloud-copy-consent-keep-in-step"
             checked={keepInStep}

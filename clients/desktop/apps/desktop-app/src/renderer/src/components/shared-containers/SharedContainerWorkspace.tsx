@@ -601,7 +601,7 @@ function SharedContainerTopBar({
     >
       {canFork && (
         <Button
-          variant="outline"
+          variant="secondary"
           size="sm"
           data-testid="shared-container-fork-open-modal"
           onClick={onFork}
@@ -673,7 +673,7 @@ function SharedContainerNotice({
       {onRetry !== undefined && (
         <Button
           className=""
-          variant="outline"
+          variant="secondary"
           size="sm"
           data-testid="shared-container-retry"
           onClick={onRetry}

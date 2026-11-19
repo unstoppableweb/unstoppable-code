@@ -1,5 +1,5 @@
 import { sanitizeImportedUserText } from './terminal-user-text';
-import type { ChatInputDeliveryRow } from '@canopy/protocol/portal';
+import type { ChatInputDeliveryRow } from '@canopy/protocol/remote-control/shell';
 import { observeInputDelivery } from '../services/chat-input-delivery-state';
 import { formatPendingSystemInstructionBlock } from '@canopy/desktop-shared/lib/pending-system-instructions';
 import { isInputLedger } from '@canopy/desktop-shared/chat-input-delivery';

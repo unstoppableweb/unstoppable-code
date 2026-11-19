@@ -1,17 +1,17 @@
 import { Badge, Count } from './Badge';
 import type { JSX, ReactNode } from 'react';
 import type {
-  PortalMcpConnectionMetadata,
-  PortalPluginCatalogMemberInventory,
-} from '@canopy/protocol/portal';
+  RemoteControlMcpConnectionMetadata,
+  RemoteControlPluginCatalogMemberInventory,
+} from '@canopy/protocol/remote-control/shell';
 import { Heading } from './Heading';
 import { PluginModNotice, pluginModRows } from './PluginModMembers';
 
 export interface PluginMemberDetailsProps {
-  inventory: PortalPluginCatalogMemberInventory;
+  inventory: RemoteControlPluginCatalogMemberInventory;
   hooksStripped?: boolean;
   mcpUnavailable?: boolean;
-  connectionState?: PortalMcpConnectionMetadata['connectionState'];
+  connectionState?: RemoteControlMcpConnectionMetadata['connectionState'];
   toolsEditor?: ReactNode;
 }
 

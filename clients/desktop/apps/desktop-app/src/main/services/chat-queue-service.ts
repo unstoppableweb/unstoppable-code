@@ -1,5 +1,5 @@
 import { DELEGATION_NOTICE_KIND } from '@canopy/agent-actions';
-import { readAutoResumeMetadata } from '@canopy/protocol/portal';
+import { readAutoResumeMetadata } from '@canopy/protocol/remote-control/shell';
 import {
   agentSendAcceptanceReceipt,
   reportAgentSendAccepted,
@@ -101,7 +101,7 @@ import type {
   ChatTurnPhase,
   QueuedMessageRetryBlockedReason,
   SettingsHeldChange,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import {
   canRecoverCodexTurn,
   evaluateTurnAdmission,

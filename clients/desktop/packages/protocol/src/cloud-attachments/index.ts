@@ -180,11 +180,15 @@ export function mediaTypeForAttachmentFilename(
   return MEDIA_TYPE_BY_EXTENSION[extension] ?? null;
 }
 
-export function portalAttachmentMediaTypeForFilename(filename: string): string {
+export function remoteControlAttachmentMediaTypeForFilename(
+  filename: string,
+): string {
   return mediaTypeForAttachmentFilename(filename) ?? 'application/octet-stream';
 }
 
-export function isPortalAttachmentMediaType(value: unknown): value is string {
+export function isRemoteControlAttachmentMediaType(
+  value: unknown,
+): value is string {
   return (
     isCloudAttachmentMediaType(value) || value === 'application/octet-stream'
   );

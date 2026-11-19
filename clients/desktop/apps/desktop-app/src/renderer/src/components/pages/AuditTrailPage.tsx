@@ -1040,7 +1040,6 @@ export function AuditTrailPage(): JSX.Element {
                   label="Transcript view"
                   value={transcriptViewMode}
                   width="content"
-                  shape="capsule"
                   options={[
                     {
                       value: 'rich',

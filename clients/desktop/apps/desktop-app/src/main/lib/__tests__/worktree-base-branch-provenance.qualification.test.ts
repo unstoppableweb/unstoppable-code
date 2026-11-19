@@ -6,7 +6,7 @@ import type {
   WorktreeData,
 } from '@canopy/desktop-shared/types';
 import type { WorktreePrStatus } from '@canopy/desktop-shared/types/github';
-import type { ExternalAgentSender } from '@canopy/protocol/portal';
+import type { ExternalAgentSender } from '@canopy/protocol/remote-control/shell';
 
 jest.mock('electron', () => ({
   app: { isPackaged: false, getPath: (): string => '/tmp' },

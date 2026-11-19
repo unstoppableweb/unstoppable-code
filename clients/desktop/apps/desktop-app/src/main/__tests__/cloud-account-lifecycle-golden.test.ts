@@ -227,6 +227,15 @@ function fakeCloud(
   if (url.pathname === `${API}/desktop-auth/current-key`) {
     return Promise.resolve(new Response(null, { status: 204 }));
   }
+  if (url.pathname === `${API}/auth-link` && method === 'POST') {
+    return Promise.resolve(
+      key !== undefined && keys.has(key)
+        ? Response.json({ url: `${BASE}/auth/consume?code=one-time` })
+        : new Response(JSON.stringify({ error: 'Invalid API key' }), {
+            status: 401,
+          }),
+    );
+  }
   return Promise.resolve(new Response('Not found', { status: 404 }));
 }
 
@@ -718,6 +727,49 @@ const OAUTH_ENTRY: CanopyCloudAccountEntry = {
   createdAt: '2026-11-16T00:00:00.000Z',
   updatedAt: '2026-11-16T00:00:00.000Z',
 };
+
+// The renderer hands the authenticated cloud page channel only a same-origin
+// path; main mints the one-time link with the stored key, which never leaves
+// main, and opens the page signed out when there is no account.
+describe('authenticated cloud page', () => {
+  it('opens a page signed in with a minted link, signed out without an account, and refuses an off-origin destination', async () => {
+    const signedOut = await invoke(
+      IPC_CHANNELS.settingsOpenAuthenticatedCloudPage,
+      '/settings/billing',
+    );
+    const opensSignedOut = [...browserOpens];
+    await invoke(IPC_CHANNELS.settingsSaveCanopyCloudApiKey, {
+      apiKey: 'csk_manual_one',
+    });
+    browserOpens.length = 0;
+    resetTrace();
+    const signedIn = await invoke(
+      IPC_CHANNELS.settingsOpenAuthenticatedCloudPage,
+      '/settings/billing',
+    );
+    expect({
+      signedOut,
+      opensSignedOut,
+      signedIn,
+      opensSignedIn: [...browserOpens],
+      requests: [...requests].map(unbrand),
+    }).toEqual({
+      signedOut: true,
+      opensSignedOut: [`${BASE}/settings/billing`],
+      signedIn: true,
+      opensSignedIn: [`${BASE}/auth/consume?code=one-time`],
+      requests: ['POST /api/v1/<brand-api>/auth-link auth=<csk_manual_one>'],
+    });
+    browserOpens.length = 0;
+    await expect(
+      invoke(
+        IPC_CHANNELS.settingsOpenAuthenticatedCloudPage,
+        '//evil.example.test/settings',
+      ),
+    ).rejects.toThrow('same-origin path');
+    expect(browserOpens).toEqual([]);
+  });
+});
 
 describe('browser key revocation', () => {
   it('revokes the replaced browser key on a manual save, and the browser key on disconnect', async () => {

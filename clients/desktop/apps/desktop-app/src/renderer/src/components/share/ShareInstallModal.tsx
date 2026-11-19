@@ -328,7 +328,7 @@ function navigationContextKey(): string {
   return JSON.stringify([
     navigation.activePage,
     navigation.settingsOpen,
-    navigation.canopyPortalOpen,
+    navigation.remoteControlDialogOpen,
     worktree,
     worktreeChats[worktree]?.activeTabId ?? '',
   ]);

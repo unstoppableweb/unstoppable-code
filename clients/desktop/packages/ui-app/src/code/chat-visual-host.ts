@@ -31,13 +31,6 @@ export type ChatVisualHost = {
    * promise; false or a rejection there opens the dialog too.
    */
   expand?(owner: ChatVisualOwner): boolean | Promise<boolean>;
-  /**
-   * A same-origin URL where this host serves the visual frame's shell
-   * document. A host sets it when its own page policy would apply to an inline
-   * frame and block the visual's scripts; the frame then loads from here.
-   * Absent, visuals are framed inline.
-   */
-  frameUrl?: string;
 };
 
 const ChatVisualHostContext = createContext<ChatVisualHost | null>(null);

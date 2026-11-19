@@ -29,8 +29,10 @@ import { WORKSPACE_GLYPH_RADIUS_CLASS } from './WorkspaceKindBadge';
  *   `glow-on-accent-hover` overlay selected. Pressed: a touch darker again.
  * - Focus: the neutral `shadow-field-focus` halo, and a dark ring when
  *   unselected.
- * - Disabled: the quiet ring unselected; the disabled fill and ink selected,
- *   never the accent.
+ * - Disabled: the quiet ring unselected; selected, the muted fill with the
+ *   disabled ink, never the accent. The fill is the translucent `bg-muted`,
+ *   so the box reads the same on a page, a card or a white group; the opaque
+ *   `bg-disabled` all but vanished on the page surface.
  *
  * `Checkbox` and `Radio` draw the native input itself as the mark, so the
  * real control stays visible and clickable (and reachable by `.check()` in UI
@@ -68,8 +70,8 @@ const INPUT_MARK_CLASS = [
   'checked:data-[force-state=pressed]:[background-image:linear-gradient(var(--glow-on-accent-pressed),var(--glow-on-accent-pressed))]',
   // Focus: the neutral halo, and a dark ring when unselected.
   'focus-visible:shadow-field-focus focus-visible:ring-fg-secondary',
-  // Disabled: quiet ring; selected takes the disabled fill, not the accent.
-  'disabled:cursor-not-allowed disabled:ring-line-disabled disabled:checked:bg-disabled',
+  // Disabled: quiet ring; selected takes the muted fill, not the accent.
+  'disabled:cursor-not-allowed disabled:ring-line-disabled disabled:checked:bg-muted',
 ].join(' ');
 
 /**
@@ -77,7 +79,7 @@ const INPUT_MARK_CLASS = [
  * checked radio in its group also matches `:indeterminate`.
  */
 const CHECKBOX_MIXED_CLASS =
-  'indeterminate:bg-accent indeterminate:ring-0 enabled:indeterminate:hover:[background-image:linear-gradient(var(--glow-on-accent-hover),var(--glow-on-accent-hover))] disabled:indeterminate:bg-disabled';
+  'indeterminate:bg-accent indeterminate:ring-0 enabled:indeterminate:hover:[background-image:linear-gradient(var(--glow-on-accent-hover),var(--glow-on-accent-hover))] disabled:indeterminate:bg-muted';
 
 const MARK_REVEAL_CLASS: Record<ChoiceKind, string> = {
   checkbox: 'peer-checked:opacity-100 peer-indeterminate:opacity-100',
@@ -90,7 +92,7 @@ const MARK_OFF =
 const MARK_ON =
   'bg-accent group-hover/choice-row:[background-image:linear-gradient(var(--glow-on-accent-hover),var(--glow-on-accent-hover))] data-[force-state=hover]:[background-image:linear-gradient(var(--glow-on-accent-hover),var(--glow-on-accent-hover))] data-[force-state=pressed]:[background-image:linear-gradient(var(--glow-on-accent-pressed),var(--glow-on-accent-pressed))]';
 const MARK_DISABLED_OFF = 'ring-1 ring-inset ring-line-disabled';
-const MARK_DISABLED_ON = 'bg-disabled';
+const MARK_DISABLED_ON = 'bg-muted';
 
 type Glyph = 'check' | 'dash' | 'dot';
 

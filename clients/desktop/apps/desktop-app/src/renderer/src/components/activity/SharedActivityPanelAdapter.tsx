@@ -40,9 +40,9 @@ import type {
 import { isBotProjectId } from '@canopy/protocol/chat-targets';
 import { isActivitySectionVisibleForTarget } from '@canopy/app-state';
 import type {
-  PortalChatTodoProjection,
-  PortalWorktreeSummaryEntity,
-} from '@canopy/protocol/portal';
+  RemoteControlChatTodoProjection,
+  RemoteControlWorktreeSummaryEntity,
+} from '@canopy/protocol/remote-control/shell';
 import {
   changedFilesHeaderHasContent,
   ActivityPanel as SharedActivityPanel,
@@ -378,7 +378,7 @@ function SharedActivityPanelAdapterContents({
     [activeChatTabId, activeChatTab],
   );
   const worktreeSummaries = useMemo<
-    readonly PortalWorktreeSummaryEntity[]
+    readonly RemoteControlWorktreeSummaryEntity[]
   >(() => {
     if (!selectedWorktree || !summary) return [];
     return [
@@ -396,7 +396,7 @@ function SharedActivityPanelAdapterContents({
       },
     ];
   }, [selectedWorktree, summary, summaryGenerating]);
-  const todoLists = useMemo<readonly PortalChatTodoProjection[]>(() => {
+  const todoLists = useMemo<readonly RemoteControlChatTodoProjection[]>(() => {
     if (!selectedWorktree || !activeChat.activeTabId) return [];
     // Only ordinary todos get the `todo:` prefix: task todos already carry
     // globally unique ids, and the prefix keeps the two lists collision-free

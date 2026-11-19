@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState, type JSX } from 'react';
-import type { PortalDiffReadPayload } from '@canopy/protocol/portal';
+import type { RemoteControlDiffReadPayload } from '@canopy/protocol/remote-control/shell';
 import {
   diffViewerKey,
   useFileViewerStore,
@@ -34,7 +34,7 @@ import { UnifiedDiffView } from './UnifiedDiffView';
  * edit affordance — so no capability gate is needed.
  */
 export interface DiffViewerProps {
-  readonly request: PortalDiffReadPayload;
+  readonly request: RemoteControlDiffReadPayload;
   /** Notified when a file row is clicked (host may open its focused diff). */
   readonly onSelectFile?: (filePath: string) => void;
 }

@@ -254,18 +254,6 @@ export const DESKTOP_OPERATIONS = {
     posthogEvent: 'billing:model_access_update',
     contextKeys: ['recovery_source', 'model_id', 'library_access'],
   },
-  'canopy.daily_credit_grant': {
-    kind: 'product',
-    posthogEvent: 'billing:daily_credit_grant_update',
-    // The server's grant outcome only (CAN-4633); never balances or account
-    // details.
-    contextKeys: [
-      'grant_status',
-      'grant_blocked_reason',
-      'grant_amount',
-      'grant_source',
-    ],
-  },
   'canopy.credits_recovery': {
     kind: 'product',
     posthogEvent: 'billing:credits_recovery_view',
@@ -309,9 +297,6 @@ export const DESKTOP_OPERATIONS = {
       'failure_detail',
       'sub_agent_failure_category',
       'trigger_type',
-      // The daily-drip outcome main last saw, on `no_credits` failures only
-      // (CAN-4633).
-      'daily_credit_grant_status',
       // The selection the turn started with; `model` is the one that served
       // it (CAN-5233). May be an Agent id, like `chat:message_send.model`.
       'requested_model',

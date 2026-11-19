@@ -208,7 +208,7 @@ function NotificationCard({
           </span>
           <Tooltip label="Dismiss notification">
             <Button
-              variant="ghost-quiet"
+              variant="ghost"
               size="sm"
               iconOnly
               onClick={handleDismissClick}

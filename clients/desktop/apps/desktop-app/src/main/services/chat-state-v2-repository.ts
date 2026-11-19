@@ -2100,7 +2100,7 @@ export class ChatStateV2Repository {
       (receipt) => receipt.commandId === commandId,
     );
   }
-  public async getPortalSendReceipt(
+  public async getRemoteControlSendReceipt(
     scope: ChatScopeKey,
     userMessageId: string,
   ): Promise<PersistedCommandReceipt | undefined> {

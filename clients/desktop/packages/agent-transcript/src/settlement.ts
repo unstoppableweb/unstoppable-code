@@ -1,7 +1,7 @@
 import {
   TOOL_SETTLEMENT_OUTPUT,
   readToolInterruption,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import type { PersistedChatMessage, ToolInterruption } from './types';
 import { isRootUserTurnBoundary } from './lib/turn-boundary';
 

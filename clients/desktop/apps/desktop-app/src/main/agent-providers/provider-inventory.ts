@@ -14,12 +14,12 @@ import {
   type WorkerAgentUsageWindow,
 } from '@canopy/protocol/canopy-core';
 import type {
-  PortalProviderUsageAccount,
-  PortalProviderUsageEntry,
-  PortalProviderUsageError,
-  PortalProviderUsageProjection,
-  PortalProviderUsageWindow,
-} from '@canopy/protocol/portal';
+  RemoteControlProviderUsageAccount,
+  RemoteControlProviderUsageEntry,
+  RemoteControlProviderUsageError,
+  RemoteControlProviderUsageProjection,
+  RemoteControlProviderUsageWindow,
+} from '@canopy/protocol/remote-control/shell';
 import { THINKING_LEVELS, type ThinkingLevel } from '@canopy/protocol/thinking';
 import type {
   AgentProviderAuthStatus,
@@ -38,7 +38,7 @@ export interface ProviderInventoryInputs {
   /** One entry per supported provider; a missing entry reads as `error`. */
   readonly authStates: ProviderAuthStates;
   readonly checkedAt: string;
-  readonly usage: PortalProviderUsageProjection | null;
+  readonly usage: RemoteControlProviderUsageProjection | null;
   /** True when the organization's model policy blocks the model. */
   readonly isBlocked: (modelId: string) => boolean;
   /** Receives the one warning a truncated model list logs. */
@@ -236,7 +236,7 @@ function projectModels(
 }
 
 function projectUsageError(
-  error: PortalProviderUsageError,
+  error: RemoteControlProviderUsageError,
 ): NonNullable<WorkerAgentProviderUsageLimit['error']> {
   return {
     kind: error.kind,
@@ -245,7 +245,7 @@ function projectUsageError(
 }
 
 function projectWindow(
-  window: PortalProviderUsageWindow,
+  window: RemoteControlProviderUsageWindow,
 ): WorkerAgentUsageWindow | undefined {
   const id = window.id.slice(0, MAX_USAGE_TEXT_LENGTH);
   const label = window.label.slice(0, MAX_USAGE_TEXT_LENGTH);
@@ -286,7 +286,7 @@ function projectWindow(
 }
 
 function projectWindows(
-  windows: readonly PortalProviderUsageWindow[],
+  windows: readonly RemoteControlProviderUsageWindow[],
 ): WorkerAgentUsageWindow[] {
   return windows
     .slice(0, WORKER_AGENT_PROVIDER_MAX_USAGE_WINDOWS)
@@ -299,7 +299,7 @@ type WorkerAgentUsageAccount = NonNullable<
 >['accounts'][number];
 
 function projectAccount(
-  account: PortalProviderUsageAccount,
+  account: RemoteControlProviderUsageAccount,
 ): WorkerAgentUsageAccount {
   const projected: WorkerAgentUsageAccount = {
     status: account.status,
@@ -318,7 +318,7 @@ function projectAccount(
 }
 
 export function projectProviderUsageLimit(
-  entry: PortalProviderUsageEntry | undefined,
+  entry: RemoteControlProviderUsageEntry | undefined,
 ): WorkerAgentProviderUsageLimit | null {
   if (entry === undefined) return null;
   return {

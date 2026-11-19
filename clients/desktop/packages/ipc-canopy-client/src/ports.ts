@@ -9,7 +9,7 @@ import type {
 } from '@canopy/app-core';
 import type { MarketplaceSourcesClient } from '@canopy/app-core/client';
 import type { AccountOrganizationSettingsClient } from '@canopy/app-core/settings';
-import type { ToolFamilyResolver } from '@canopy/agent-transcript/portal/persisted-chat-projection';
+import type { ToolFamilyResolver } from '@canopy/agent-transcript/remote-control/persisted-chat-projection';
 import type { FeedbackReportClient } from '@canopy/protocol/feedback-report';
 import type { RemoteIpcTransport } from '@canopy/protocol/remote-control';
 import type { TerminalOutputEvent } from '@canopy/protocol/terminal';

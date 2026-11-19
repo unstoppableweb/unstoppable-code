@@ -56,7 +56,6 @@ import { remoteBridgeWindows } from '../remote-control/host/bridge-window';
 import { registerChatEventOutputHandlers } from './chat-event-output';
 import { registerSessionTransferHandlers } from './session-transfer';
 import { registerSettingsHandlers } from './settings';
-import { registerDailyCreditDripHandlers } from './daily-credit-drip';
 import { registerStandaloneChatHandlers } from './standalone-chat';
 import { registerWorkEntryHandlers } from './work-entries';
 import { registerArchivedWorkEntryHandlers } from './work-entries-archived';
@@ -71,6 +70,7 @@ import { registerApprovalHandlers } from './approvals';
 import { registerSecretRequestHandlers } from './secret-requests';
 import { registerCopilotConnectionHandlers } from './copilot-connection';
 import { registerOpenCodeConnectionHandlers } from './opencode-connection';
+import { registerAntigravityRuntimeHandlers } from './antigravity-runtime';
 import { registerAccountProxyHandlers } from './account-proxy';
 import { registerLocalModelGatewayHandlers } from './local-model-gateway';
 import { registerCursorConnectionHandlers } from './cursor-connection';
@@ -176,18 +176,6 @@ import {
 } from './desktop-session-snapshot';
 import { registerArchivedContainerHandlers } from './archived-containers';
 import { initTransientErrorRetryService } from '../lib/transient-error-retry-service';
-import { broadcastPipelineExecutionEvent } from '../pipelines/pipeline-execution-event-broadcaster';
-import { initTransientErrorRetryScheduler } from '../pipelines/transient-error-retry-scheduler';
-import {
-  listPipelineExecutionControls,
-  listPipelineExecutionInitiatedRuns,
-} from '../pipelines/pipeline-worker-dispatch';
-import {
-  listPausedPipelineExecutions,
-  readStoredPipelineExecution,
-} from '../pipelines/pipeline-worker-host';
-import { resumePipelineExecutionFromMain } from '../pipelines/pipeline-resume-service';
-import { readPreferencesFile } from '../lib/preferences-store';
 import { registerReferencePreviewHandlers } from './reference-previews';
 import {
   getBrowserService,
@@ -286,17 +274,6 @@ export function registerAllIpcHandlers(
   let stopInitiatedPresentation: () => void = () => undefined;
 
   initTransientErrorRetryService(getMainWindow);
-  initTransientErrorRetryScheduler({
-    emitEvent: broadcastPipelineExecutionEvent,
-    resume: resumePipelineExecutionFromMain,
-    readPreferences: readPreferencesFile,
-    engine: canopyRuntime.dispatcher.initiatedWork,
-    listRetryRuns: listPipelineExecutionInitiatedRuns,
-    listExecutionControls: listPipelineExecutionControls,
-    readExecution: readStoredPipelineExecution,
-    listPausedExecutions: listPausedPipelineExecutions,
-    getWindow: getMainWindow,
-  });
 
   registerProjectHandlers(
     getMainWindow,
@@ -333,7 +310,11 @@ export function registerAllIpcHandlers(
   registerRunsHandlers();
   registerSharedContainerHandlers(canopyRuntime);
   registerDetectedPlansHandlers(getMainWindow);
-  registerCodeReviewHandlers(getMainWindow);
+  registerCodeReviewHandlers(
+    getMainWindow,
+    canopyRuntime.dispatcher,
+    canopyRuntime.resolveCaller,
+  );
   registerPlanFileVisibilityHandlers();
   registerApprovalHandlers();
   registerSecretRequestHandlers();
@@ -341,6 +322,7 @@ export function registerAllIpcHandlers(
   registerCursorConnectionHandlers();
   registerCopilotConnectionHandlers();
   registerOpenCodeConnectionHandlers();
+  registerAntigravityRuntimeHandlers();
   registerAccountProxyHandlers();
   registerLocalModelGatewayHandlers();
   registerFileAnnotationsHandlers(
@@ -416,7 +398,6 @@ export function registerAllIpcHandlers(
   stopInitiatedPresentation = (): void => initiatedPresentation.stop();
   registerSessionTransferHandlers(getMainWindow);
   registerSettingsHandlers(canopyRuntime);
-  registerDailyCreditDripHandlers();
   registerReferencePreviewHandlers();
   registerGitExecutableHandlers(getMainWindow, canopyRuntime);
   registerDeepLinkHandlers();

@@ -6,7 +6,7 @@ import {
 import {
   openCodeAccountMetadataSchema,
   type OpenCodeAccountSnapshot,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import {
   peekOpenCodeAccounts,
   publishOpenCodeAccounts,

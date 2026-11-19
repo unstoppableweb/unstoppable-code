@@ -1,8 +1,8 @@
 import type {
-  PortalCommandPayloadMap,
-  PortalCommandType,
-  SubmitBrowserPortalCommandResponse,
-} from '@canopy/protocol/portal';
+  RemoteControlCommandPayloadMap,
+  RemoteControlCommandType,
+  SubmitBrowserRemoteControlCommandResponse,
+} from '@canopy/protocol/remote-control/shell';
 
 /**
  * Shell commands (CAN-5985): the chat, Orchestrator, editor and activity
@@ -36,10 +36,10 @@ export interface ShellCommandArgs<Payload> {
  * refusal; a rejected promise means the outcome is unknown or the command
  * never left this client.
  */
-export type ShellCommandReceipt = SubmitBrowserPortalCommandResponse;
+export type ShellCommandReceipt = SubmitBrowserRemoteControlCommandResponse;
 
 /** Mutating shell commands and the Portal command each one carries. */
-export const SHELL_COMMAND_PORTAL_TYPES = {
+export const SHELL_COMMAND_REMOTE_CONTROL_TYPES = {
   'chat.send': 'portal.chat.send',
   'chat.cancel': 'portal.chat.cancel',
   'chat.cancelTurn': 'portal.chat.cancel_turn',
@@ -78,10 +78,10 @@ export const SHELL_COMMAND_PORTAL_TYPES = {
   'plan.delete': 'portal.plan.delete',
   'summary.refresh': 'portal.summary.refresh',
   'watcher.delete': 'portal.watcher.delete',
-} as const satisfies Readonly<Record<string, PortalCommandType>>;
+} as const satisfies Readonly<Record<string, RemoteControlCommandType>>;
 
 /** Read-only shell commands and the Portal command each one carries. */
-export const SHELL_QUERY_PORTAL_TYPES = {
+export const SHELL_QUERY_REMOTE_CONTROL_TYPES = {
   'editor.fileMentions': 'portal.editor.list_file_mentions',
   'editor.slashCommands': 'portal.editor.list_slash_commands',
   'editor.invocables': 'portal.editor.list_invocables',
@@ -92,19 +92,20 @@ export const SHELL_QUERY_PORTAL_TYPES = {
   'pipeline.execution': 'portal.pipeline.execution.get',
   /** A cowork project's archived and deleted Work Entries (CAN-5986). */
   'workEntries.archived': 'portal.workspace.archived_work_entries.list',
-} as const satisfies Readonly<Record<string, PortalCommandType>>;
+} as const satisfies Readonly<Record<string, RemoteControlCommandType>>;
 
-export type ShellCommandName = keyof typeof SHELL_COMMAND_PORTAL_TYPES;
-export type ShellQueryName = keyof typeof SHELL_QUERY_PORTAL_TYPES;
+export type ShellCommandName = keyof typeof SHELL_COMMAND_REMOTE_CONTROL_TYPES;
+export type ShellQueryName = keyof typeof SHELL_QUERY_REMOTE_CONTROL_TYPES;
 
 /** The Portal payload of one shell operation. */
-export type ShellCommandPayload<Type extends keyof PortalCommandPayloadMap> =
-  PortalCommandPayloadMap[Type];
+export type ShellCommandPayload<
+  Type extends keyof RemoteControlCommandPayloadMap,
+> = RemoteControlCommandPayloadMap[Type];
 
 export type ShellCommandMap = {
   [K in ShellCommandName]: {
     args: ShellCommandArgs<
-      ShellCommandPayload<(typeof SHELL_COMMAND_PORTAL_TYPES)[K]>
+      ShellCommandPayload<(typeof SHELL_COMMAND_REMOTE_CONTROL_TYPES)[K]>
     >;
     result: ShellCommandReceipt;
   };
@@ -113,7 +114,7 @@ export type ShellCommandMap = {
 export type ShellQueryMap = {
   [K in ShellQueryName]: {
     args: ShellCommandArgs<
-      ShellCommandPayload<(typeof SHELL_QUERY_PORTAL_TYPES)[K]>
+      ShellCommandPayload<(typeof SHELL_QUERY_REMOTE_CONTROL_TYPES)[K]>
     >;
     result: ShellCommandReceipt;
   };

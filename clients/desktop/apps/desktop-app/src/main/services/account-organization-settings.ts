@@ -30,7 +30,7 @@ import {
   type SettingsSubscriptionScope,
 } from '@canopy/protocol/settings';
 import type { CanopyCloudCredentialContext } from '../canopy-cloud/client';
-import type { StrictAuthenticatedPortalResult } from '../canopy-cloud/authenticated-portal';
+import type { StrictAuthenticatedCloudPageResult } from '../canopy-cloud/authenticated-cloud-page';
 import { sendToWebContents } from '../lib/web-contents-send';
 import { isRecord } from '../lib/type-guards';
 import { logMainProcessWarn } from '../lib/main-process-logging';
@@ -160,11 +160,11 @@ export interface AccountOrganizationSettingsDeps<
     this: void,
     listener: (accountId: string | null) => void,
   ): () => void;
-  openStrictPortalPage(
+  openStrictCloudPage(
     this: void,
     path: string,
     credentialContext: CanopyCloudCredentialContext,
-  ): Promise<StrictAuthenticatedPortalResult>;
+  ): Promise<StrictAuthenticatedCloudPageResult>;
   paymentHandoffAvailable(this: void, accountId: string): Promise<boolean>;
   /** Table calls routed through existing desktop orchestration. */
   resolveOrchestrated?: SettingsOrchestrationResolver;
@@ -686,7 +686,7 @@ export function createAccountOrganizationSettingsService<
     if ((await deps.currentAccountId()) !== accountId)
       return { ok: false, reason: 'identity_changed' };
     try {
-      const result = await deps.openStrictPortalPage(path, credentials);
+      const result = await deps.openStrictCloudPage(path, credentials);
       return result.ok &&
         request.intent.kind === 'top-up' &&
         request.intent.reason === 'unlock_models'

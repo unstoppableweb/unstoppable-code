@@ -86,7 +86,7 @@ export function ArchivedRowActionsMenu({
       >
         <Button
           ref={triggerRef}
-          variant="ghost-quiet"
+          variant="ghost"
           size="sm"
           iconOnly
           aria-label={`More actions for ${itemName}`}

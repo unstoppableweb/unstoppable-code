@@ -7,12 +7,12 @@ import {
   offerWorktreeDiscard,
   offerLifecycleJournalQuarantine,
 } from '@canopy/app-state';
-import type { AutoDeleteAttention } from '@canopy/protocol/portal/auto-delete-attention';
-import { formatWorktreeRecoveryReason } from '@canopy/protocol/portal/worktree-recovery';
+import type { AutoDeleteAttention } from '@canopy/protocol/remote-control/shell/auto-delete-attention';
+import { formatWorktreeRecoveryReason } from '@canopy/protocol/remote-control/shell/worktree-recovery';
 import {
   LIFECYCLE_JOURNAL_UNREADABLE_REFUSAL,
   LIFECYCLE_JOURNAL_DIRECTORY_UNREADABLE_REFUSAL,
-} from '@canopy/protocol/portal/lifecycle-journal-refusal';
+} from '@canopy/protocol/remote-control/shell/lifecycle-journal-refusal';
 import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { Notice, NoticeButton } from '@canopy/ui-shared/components';
 

@@ -1,6 +1,6 @@
 import { API_PIPELINE_TRIGGER_TYPES } from '../pipelines';
 import { z } from 'zod';
-import { externalAgentSenderSchema } from '../portal/external-agent-sender';
+import { externalAgentSenderSchema } from '../remote-control/shell/external-agent-sender';
 import {
   normalizeSidebarItemGroupName,
   SIDEBAR_ITEM_GROUP_NAME_LIMIT,

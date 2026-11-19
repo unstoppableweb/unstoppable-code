@@ -2,11 +2,11 @@ import {
   unavailableWorktreeRecovery,
   worktreeRecoveryStoppingPoint,
   type WorktreeRecoveryDescription,
-} from '@canopy/protocol/portal/worktree-recovery';
+} from '@canopy/protocol/remote-control/shell/worktree-recovery';
 import type { DestructiveRecoveryRecord } from '../w5-destructive-journal';
 import { lstat, readFile, readdir, realpath } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
-import { LIFECYCLE_JOURNAL_ENTRY_NAME_PATTERN } from '@canopy/protocol/portal/lifecycle-journal';
+import { LIFECYCLE_JOURNAL_ENTRY_NAME_PATTERN } from '@canopy/protocol/remote-control/shell/lifecycle-journal';
 import type { W5CommitLogFileStore } from '@canopy/core-runtime/node/w5/commit-log-file-store';
 import { W5CommitRefusedError } from '@canopy/core-runtime/node/w5/commit-log/errors';
 import { currentW5CommitScope } from '@canopy/core-runtime/node/w5/commit-scope';

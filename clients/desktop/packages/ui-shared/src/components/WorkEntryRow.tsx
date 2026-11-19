@@ -458,9 +458,8 @@ function WorkEntryRowImpl({
     useState<WorkEntryRowPoint | null>(null);
   const [menuOpenedFromKeyboard, setMenuOpenedFromKeyboard] = useState(false);
   /** The document body the right-click anchor portals into. */
-  const [menuPortalBody, setMenuPortalBody] = useState<HTMLElement | null>(
-    null,
-  );
+  const [menuRemoteControlBody, setMenuPortalBody] =
+    useState<HTMLElement | null>(null);
   // Opened from the row, the menu cannot rely on the ••• button: on a compact
   // row with a fine pointer it is display:none, so it has an all-zero rect and
   // cannot take focus.
@@ -864,12 +863,12 @@ function WorkEntryRowImpl({
           })
         : renderMenuItems !== undefined &&
           menuOpen &&
-          menuPortalBody !== null && (
+          menuRemoteControlBody !== null && (
             <WorkEntryRowFloatingMenu
               anchorPoint={menuAnchorPoint}
               menuButtonRef={menuButtonRef}
               returnFocusRef={menuReturnFocusRef}
-              portalBody={menuPortalBody}
+              portalBody={menuRemoteControlBody}
               onClose={closeMenu}
               label={menuLabel}
               testId={testIdFor('-menu-popover')}
@@ -993,7 +992,7 @@ function WorkEntryRowLeadingSlot({
         data-row-status={status}
       >
         {status === 'working' || status === 'background' ? (
-          // Follows Labs → Comet spinners; the comet keeps its 12px slot.
+          // The ring keeps the status slot's 12px.
           <ThinkingSpinner
             tone={status === 'working' ? 'accent' : 'tertiary'}
             sizePx={12}

@@ -52,10 +52,10 @@ export interface DetailMoreMenuProps {
    */
   readonly size?: 'compact';
   /**
-   * `secondary` (default) for a detail's action bar; `ghost-overlay` for a
+   * `secondary` (default) for a detail's action bar; `ghost` for a
    * header whose other controls are ghost, such as a Home section's.
    */
-  readonly variant?: 'secondary' | 'ghost-overlay';
+  readonly variant?: 'secondary' | 'ghost';
   /** Where the menu opens; a trigger at a right edge opens it leftwards. */
   readonly placement?: 'bottom-left' | 'bottom-right';
 }

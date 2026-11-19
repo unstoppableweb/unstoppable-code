@@ -155,11 +155,12 @@ export const externalAgentComputerSchema = z.strictObject({
   online: z.boolean(),
   agents: z.enum(['connected', 'not_connected', 'removal_pending']),
   /**
-   * True when hosted agents still reach this computer through the retiring
-   * Remote Control path, so it must be connected before that path turns off
-   * (CAN-6039).
+   * Retired with Portal (CAN-5986): always `false`. Optional on the wire so a
+   * server may stop sending it; the web still sends it because older desktops
+   * parse a strict schema that requires it. A follow-up stops sending it and
+   * drops the field once those desktops age out (CAN-7216).
    */
-  viaPortal: z.boolean(),
+  viaPortal: z.boolean().default(false),
 });
 export type ExternalAgentComputer = z.infer<typeof externalAgentComputerSchema>;
 
@@ -168,12 +169,13 @@ export const externalAgentComputerListSchema = z.strictObject({
     .array(externalAgentComputerSchema)
     .max(EXTERNAL_AGENT_COMPUTERS_MAX),
   /**
-   * Computers agents reach only through the retiring Remote Control path and
-   * the relay cannot see, so they have no relay row to connect (CAN-6039).
+   * Retired with Portal (CAN-5986): always empty. Optional on the wire for the
+   * same reason as `viaPortal`, with the same follow-up (CAN-7216).
    */
   portalOnly: z
     .array(z.strictObject({ remoteId: z.uuid(), name: z.string().max(120) }))
-    .max(EXTERNAL_AGENT_COMPUTERS_MAX),
+    .max(EXTERNAL_AGENT_COMPUTERS_MAX)
+    .default([]),
 });
 export type ExternalAgentComputerList = z.infer<
   typeof externalAgentComputerListSchema

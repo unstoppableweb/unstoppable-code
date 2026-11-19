@@ -5,7 +5,7 @@ export {
   chatFilesNotAttachedNotice,
   composerRefusalNotice,
   composerRefusedUserMessageId,
-  composerRecoveryPortalTranscript,
+  composerRecoveryRemoteControlTranscript,
   applyComposerRecovery,
   canRestoreComposerDraft,
   composerRecoveryTranscriptHead,

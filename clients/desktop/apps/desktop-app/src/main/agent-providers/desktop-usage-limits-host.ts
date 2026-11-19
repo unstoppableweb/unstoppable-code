@@ -5,7 +5,7 @@ import type {
   ProviderUsageSummary,
   UsageFetchErrorKind,
 } from '@canopy/protocol/observability';
-import type { OpenCodeAccountSnapshot } from '@canopy/protocol/portal';
+import type { OpenCodeAccountSnapshot } from '@canopy/protocol/remote-control/shell';
 import type {
   UsageLimitAccount,
   UsageLimitBucket,

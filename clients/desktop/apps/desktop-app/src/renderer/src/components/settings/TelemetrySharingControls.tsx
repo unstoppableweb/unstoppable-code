@@ -104,8 +104,6 @@ function ScopeSelector({
   testIdPrefix,
   onSelect,
 }: ScopeSelectorProps): JSX.Element {
-  // Early access: the capsule of the compact Settings buttons.
-  const shape = 'capsule';
   // Always render the currently-selected scope even when it is not in the
   // available set (e.g. a persisted `team`/`organization` value while the
   // account is still resolving, or after membership was lost). Without this the
@@ -160,7 +158,6 @@ function ScopeSelector({
       width="content"
       disabled={disabled}
       dataTestId={`${testIdPrefix}-selector`}
-      shape={shape}
     />
   );
 }

@@ -34,7 +34,7 @@ const BROKEN_IMAGE_SRC = 'data:image/png;base64,AAAA';
 export function KeysAndMarkdownSpecimen(): JSX.Element {
   return (
     <div className="flex flex-col gap-6">
-      <SpecimenPanel title="KbdChip (a Button's shortcut)">
+      <SpecimenPanel title="KbdChip" hint="A Button's shortcut">
         <SpecimenGrid min={180}>
           <SpecimenCell label="Primary">
             <Button variant="primary" shortcut="⌘P" onClick={noop}>

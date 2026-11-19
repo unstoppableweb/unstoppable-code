@@ -9,7 +9,7 @@ import {
   type WorkerAgentProviderAuthState,
   type WorkerAgentProviderId,
 } from '@canopy/protocol/canopy-core';
-import type { PortalProviderUsageProjection } from '@canopy/protocol/portal';
+import type { RemoteControlProviderUsageProjection } from '@canopy/protocol/remote-control/shell';
 import { isOllamaSupportedOnPlatform } from '@canopy/desktop-shared/platform-capabilities';
 import type { ModelRegistrySnapshot } from '@canopy/desktop-shared/types';
 import type { WorkOwner } from '@canopy/protocol/llm-gateway';
@@ -39,7 +39,7 @@ export interface DesktopProviderSources {
     probe: boolean,
     scope: CanopyWorkspaceScope,
   ): Promise<WorkerAgentProviderAuthState>;
-  readUsage(): Promise<PortalProviderUsageProjection>;
+  readUsage(): Promise<RemoteControlProviderUsageProjection>;
   resolveOwner(scope: CanopyWorkspaceScope): Promise<unknown>;
   refreshPolicy(owner: unknown): Promise<void>;
   isBlocked(modelId: string, owner: unknown): boolean;
@@ -146,12 +146,12 @@ const productionSources = {
       }
     }
   },
-  async readUsage(): Promise<PortalProviderUsageProjection> {
+  async readUsage(): Promise<RemoteControlProviderUsageProjection> {
     const { getObservabilityService } = await import('../observability');
     const usage = await import('./provider-usage-projection');
-    return usage.projectPortalProviderUsage(
+    return usage.projectRemoteControlProviderUsage(
       getObservabilityService().getUsageOverview(),
-      await usage.readPortalProviderUsageAccountProxySource(),
+      await usage.readRemoteControlProviderUsageAccountProxySource(),
     );
   },
   async resolveOwner(

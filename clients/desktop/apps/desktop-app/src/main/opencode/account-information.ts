@@ -1,4 +1,4 @@
-import type { OpenCodeAccountSnapshot } from '@canopy/protocol/portal';
+import type { OpenCodeAccountSnapshot } from '@canopy/protocol/remote-control/shell';
 
 // Owned by the connection/discovery lifecycle. Never persisted: a previous
 // account must not reappear from disk before native discovery has completed.

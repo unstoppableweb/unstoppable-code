@@ -3,7 +3,7 @@ import {
   W5RecoveryStatusSchema,
   type W5RecoveryApi,
   type W5RecoveryStatus,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 
 export function createW5RecoveryApi(ipc: {
   invoke(channel: string): Promise<unknown>;

@@ -266,7 +266,7 @@ export function UnavailableRemoveAction({
       variant="ghost"
       size="compact"
       onClick={onRemove}
-      data-testid="portal-plugins-remove-unavailable"
+      data-testid="remote-control-plugins-remove-unavailable"
       aria-label={`${CAPABILITY_REMOVE_LABEL} ${name}`}
     >
       {CAPABILITY_REMOVE_LABEL}

@@ -7,7 +7,7 @@ import {
   useState,
 } from 'react';
 import type { PluginInfo } from '@canopy/protocol/plugins';
-import type { PortalPluginCatalogMemberSummary } from '@canopy/protocol/portal';
+import type { RemoteControlPluginCatalogMemberSummary } from '@canopy/protocol/remote-control/shell';
 import {
   McpServerLogo,
   type McpServerLogoProps,
@@ -21,6 +21,8 @@ import {
   CapabilityDetailLayout,
   ComponentSection,
   DataTable,
+  PluginContentsTable,
+  type PluginContentsRow,
   DropdownMenuItem,
   FloatingMenu,
   type CustomizeRowMenuItem,
@@ -48,13 +50,18 @@ export interface PluginCatalogDetailModel {
   brandMark?: boolean;
   categories: readonly string[];
   components: Pick<
-    PortalPluginCatalogMemberSummary,
+    RemoteControlPluginCatalogMemberSummary,
     'skills' | 'mcpServers' | 'commands' | 'agents'
   >;
   /** New Customize: the tile's publisher line, in place of "By author". */
   publisher?: ReactNode;
   /** New Customize: the marketplace it is listed in, for the Marketplace row. */
   marketplace?: { name: string; onOpen?: () => void };
+  /**
+   * New Customize: its contents by name, where a listing or an installed
+   * copy names them (`customizeCatalogContents`); the counts cover the rest.
+   */
+  items?: readonly PluginContentsRow[];
 }
 
 export interface PluginCatalogDetailProps {
@@ -76,6 +83,8 @@ export interface PluginCatalogDetailProps {
    * among the facts.
    */
   status?: ReactNode;
+  /** New Customize: the Works with table, as the tile's chips read it. */
+  worksWith?: ReactNode;
 }
 
 /**
@@ -223,6 +232,27 @@ function PluginCatalogAddChoices({
   );
 }
 
+/**
+ * What the named rows leave out: the kinds the listing counts that no copy
+ * names, which arrive with the plugin when it is added.
+ */
+function unnamedNote(entry: PluginCatalogDetailModel): string | null {
+  const named = (type: string): number =>
+    (entry.items ?? []).filter((item) => item.type === type).length;
+  const counted = (count: number, noun: string): string | null =>
+    count > 0 ? `${count} ${noun}${count === 1 ? '' : 's'}` : null;
+  // Per kind: what the listing counts beyond the names it gave.
+  const left = [
+    counted(entry.components.skills - named('Skill'), 'skill'),
+    counted(entry.components.mcpServers - named('MCP server'), 'MCP server'),
+    counted(entry.components.commands, 'command'),
+    counted(entry.components.agents, 'agent'),
+  ].filter((part): part is string => part !== null);
+  return left.length > 0
+    ? `Also ${left.join(', ')}, named once it's added.`
+    : null;
+}
+
 /** The kinds a listing counts, in the Contents table's order. */
 const CONTENT_KINDS: readonly {
   readonly key: keyof PluginCatalogDetailModel['components'];
@@ -243,6 +273,7 @@ export function PluginCatalogDetail({
   logo,
   layout = false,
   status,
+  worksWith,
 }: PluginCatalogDetailProps): JSX.Element {
   // Customize's light logo plate, only while New Customize is on.
   const logoPlate = useCustomizeDiscoveryEnabled();
@@ -326,34 +357,46 @@ export function PluginCatalogDetail({
                 </>
               ) : undefined,
           }}
+          worksWith={worksWith}
           contents={
             <ComponentSection title="Contents">
-              {/* The listing counts each kind; names and files arrive
+              {entry.items && entry.items.length > 0 ? (
+                <>
+                  <PluginContentsTable rows={entry.items} />
+                  {unnamedNote(entry) && (
+                    <p className="text-xs fg-tertiary">{unnamedNote(entry)}</p>
+                  )}
+                </>
+              ) : (
+                <>
+                  {/* The listing counts each kind; names and files arrive
                   with the plugin when it is added. */}
-              <DataTable
-                caption="Contents"
-                testId="plugin-catalog-detail-contents"
-                rows={CONTENT_KINDS.filter(
-                  ({ key }) => entry.components[key] > 0,
-                )}
-                rowKey={({ key }) => key}
-                emptyLabel={includedNote}
-                columns={[
-                  {
-                    key: 'kind',
-                    header: 'Kind',
-                    render: ({ label }) => label,
-                  },
-                  {
-                    key: 'count',
-                    header: 'Count',
-                    align: 'right',
-                    render: ({ key }) => entry.components[key],
-                  },
-                ]}
-              />
-              {componentCount > 0 && (
-                <p className="text-xs fg-tertiary">{includedNote}</p>
+                  <DataTable
+                    caption="Contents"
+                    testId="plugin-catalog-detail-contents"
+                    rows={CONTENT_KINDS.filter(
+                      ({ key }) => entry.components[key] > 0,
+                    )}
+                    rowKey={({ key }) => key}
+                    emptyLabel={includedNote}
+                    columns={[
+                      {
+                        key: 'kind',
+                        header: 'Kind',
+                        render: ({ label }) => label,
+                      },
+                      {
+                        key: 'count',
+                        header: 'Count',
+                        align: 'right',
+                        render: ({ key }) => entry.components[key],
+                      },
+                    ]}
+                  />
+                  {componentCount > 0 && (
+                    <p className="text-xs fg-tertiary">{includedNote}</p>
+                  )}
+                </>
               )}
             </ComponentSection>
           }

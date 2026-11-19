@@ -228,7 +228,10 @@ const CLEANUP_NOTICE_CASES: readonly {
 
 function SidebarBatchCleanupFailureNoticeSection(): JSX.Element {
   return (
-    <SpecimenPanel title="SidebarBatchCleanupFailureNotice (a closed batch whose background cleanup failed)">
+    <SpecimenPanel
+      title="SidebarBatchCleanupFailureNotice"
+      hint="A closed batch whose background cleanup failed"
+    >
       <SpecimenGrid min={320}>
         {CLEANUP_NOTICE_CASES.map(({ label, props }) => (
           <SpecimenCell key={label} label={label}>
@@ -250,7 +253,10 @@ function SidebarBatchCleanupFailureNoticeSection(): JSX.Element {
 
 function SidebarBatchRemovalNoticeSection(): JSX.Element {
   return (
-    <SpecimenPanel title="SidebarBatchRemovalNotice (renders nothing when every row succeeded)">
+    <SpecimenPanel
+      title="SidebarBatchRemovalNotice"
+      hint="Renders nothing when every row succeeded"
+    >
       <SpecimenGrid min={320}>
         {NOTICE_CASES.map(({ label, props }) => (
           <SpecimenCell key={label} label={label}>
@@ -523,18 +529,25 @@ function SidebarGroupMenuSection(): JSX.Element {
     },
   ];
   return (
-    <SpecimenPanel title="<sidebar-item-group-menu> entries: Add to group and Move to group">
+    <SpecimenPanel
+      title="Group menu entries"
+      hint="<sidebar-item-group-menu>: Add to group and Move to group"
+    >
       <SpecimenGrid min={280}>
         {cases.map(({ label, items }) => (
           <SpecimenCell key={label} label={label}>
             {items.length === 0 ? (
               <span className="text-xs fg-tertiary">(no entry)</span>
             ) : (
-              <WorktreeActionsMenu
-                items={items}
-                accessibleLabel={label}
-                alwaysVisible
-              />
+              // The menu's trigger is placed against its row; this box
+              // stands in for the row, so the trigger stays in its cell.
+              <div className="relative h-9 w-9">
+                <WorktreeActionsMenu
+                  items={items}
+                  accessibleLabel={label}
+                  alwaysVisible
+                />
+              </div>
             )}
           </SpecimenCell>
         ))}

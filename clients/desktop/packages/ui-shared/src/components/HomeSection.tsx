@@ -90,7 +90,7 @@ function HomeSectionsRestore(): JSX.Element | null {
     <div className="px-4">
       <Button
         ref={context.registerRestore}
-        variant="ghost-overlay"
+        variant="ghost"
         size="compact"
         onClick={context.restore}
       >
@@ -170,7 +170,7 @@ export function HomeSection({
       <div className="px-4">
         <Button
           ref={restoreButton}
-          variant="ghost-overlay"
+          variant="ghost"
           size="compact"
           onClick={(): void => setHidden(false)}
         >
@@ -210,7 +210,7 @@ export function HomeSection({
             >
               <DetailMoreMenu
                 name={typeof title === 'string' ? title : 'this section'}
-                variant="ghost-overlay"
+                variant="ghost"
                 size="compact"
                 placement="bottom-right"
                 triggerTestId={`home-section-more-${sectionId}`}

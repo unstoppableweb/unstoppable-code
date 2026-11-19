@@ -411,6 +411,11 @@ function ScriptActionsReviewBody({
   );
 
   const loadError = scripts.error;
+  // Recording only: the banner's copy stays the legacy string.
+  const errorCodeProp =
+    scripts.appError === null
+      ? {}
+      : { displayErrorCode: scripts.appError.code };
   let body: ReactNode;
   if (snapshot === null) {
     body =
@@ -418,6 +423,7 @@ function ScriptActionsReviewBody({
         <ErrorBanner
           errorSource="script-actions-review-body-load"
           className=""
+          {...errorCodeProp}
           error={loadError ?? "Couldn't load scripts."}
           onRetry={(): void => {
             void refresh();
@@ -449,6 +455,7 @@ function ScriptActionsReviewBody({
             <ErrorBanner
               errorSource="script-actions-load-review"
               className=""
+              {...errorCodeProp}
               error={`${loadError} Showing the last results.`}
               onRetry={runRescan}
               retryLabel="Rescan"

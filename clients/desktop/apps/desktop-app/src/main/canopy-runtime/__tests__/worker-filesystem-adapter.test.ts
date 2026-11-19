@@ -1,6 +1,6 @@
 import { pathToFileURL } from 'node:url';
 import { WORKSPACE_ROOT_REPO_ID } from '@canopy/desktop-shared/types';
-import { PortalServiceError } from '../../services/portal-service-error';
+import { RemoteControlServiceError } from '../../services/remote-control-service-error';
 import { IdentifierValidationError } from '../../lib/identifier-validation-error';
 
 import {
@@ -153,15 +153,15 @@ describe('createWorkerFilesystemAdapter', () => {
 
   it.each([
     [
-      new PortalServiceError('invalid_payload', 'bad payload'),
+      new RemoteControlServiceError('invalid_payload', 'bad payload'),
       'invalid_argument',
     ],
     [
-      new PortalServiceError('invalid_target', 'bad target'),
+      new RemoteControlServiceError('invalid_target', 'bad target'),
       'invalid_argument',
     ],
-    [new PortalServiceError('not_found', 'missing'), 'not_found'],
-    [new PortalServiceError('execution_failed', 'failed'), 'internal'],
+    [new RemoteControlServiceError('not_found', 'missing'), 'not_found'],
+    [new RemoteControlServiceError('execution_failed', 'failed'), 'internal'],
     [
       new IdentifierValidationError('Invalid projectId: must be lowercase'),
       'invalid_argument',

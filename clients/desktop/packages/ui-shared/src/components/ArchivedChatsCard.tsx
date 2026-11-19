@@ -106,7 +106,7 @@ function ArchivedChatsCardRow({
         {item.restorable ? (
           <Tooltip label={restoreLabel}>
             <Button
-              variant="ghost-overlay"
+              variant="ghost"
               size="sm"
               iconOnly
               aria-label={restoreLabel}
@@ -127,7 +127,7 @@ function ArchivedChatsCardRow({
         ) : null}
         <Tooltip label="Summarize">
           <Button
-            variant="ghost-overlay"
+            variant="ghost"
             size="sm"
             iconOnly
             aria-label="Summarize"

@@ -1,6 +1,6 @@
 import type { JSX, Ref } from 'react';
 import {
-  Button,
+  FieldButton,
   FormField,
   TextInput,
   type TextInputDensity,
@@ -32,6 +32,9 @@ export function CanopyCloudApiKeyField({
   inputRef,
   density = 'default',
 }: CanopyCloudApiKeyFieldProps): JSX.Element {
+  // 14px in the 24px button of a 28px field, 16px in the 28px button of a
+  // 36px one.
+  const iconSize = density === 'settings' ? 14 : 16;
   return (
     <FormField label="API key">
       {(control) => (
@@ -47,20 +50,19 @@ export function CanopyCloudApiKeyField({
           placeholder="csk_xxxxxxxxxxxxxxxxxxxx"
           data-testid="settings-account-canopy-cloud-api-key-input"
           trailing={
-            <Button
-              variant="ghost"
-              size="compact"
-              iconOnly
+            <FieldButton
+              tone="ghost"
               data-settings-control="field"
               onClick={onToggleVisible}
               aria-label={visible ? 'Hide API key' : 'Show API key'}
-            >
-              {visible ? (
-                <EyeOffIcon size={16} aria-hidden />
-              ) : (
-                <EyeIcon size={16} aria-hidden />
-              )}
-            </Button>
+              icon={
+                visible ? (
+                  <EyeOffIcon size={iconSize} aria-hidden />
+                ) : (
+                  <EyeIcon size={iconSize} aria-hidden />
+                )
+              }
+            />
           }
         />
       )}

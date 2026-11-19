@@ -28,7 +28,7 @@ import {
 } from '@canopy/desktop-shared/types';
 import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
 import { toLegacyFileTreeMutationError } from '../canopy-runtime/worker-filesystem-mutation-adapter';
-import { PortalServiceError } from '../services/portal-service-error';
+import { RemoteControlServiceError } from '../services/remote-control-service-error';
 import { registerIpcHandler } from './register';
 import { sendToWebContents } from '../lib/web-contents-send';
 import { validateId } from '../lib/validation';
@@ -443,7 +443,7 @@ export function registerFileTreeHandlers(
         }
       }
       if (request?.operation !== 'delete')
-        throw new PortalServiceError(
+        throw new RemoteControlServiceError(
           'invalid_payload',
           'Unsupported file-tree mutation operation.',
         );

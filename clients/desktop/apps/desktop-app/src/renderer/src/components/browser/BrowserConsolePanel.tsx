@@ -63,7 +63,6 @@ export function BrowserConsolePanel({
             onChange={setFilter}
             label="Filter"
             width="content"
-            shape="capsule"
             options={[
               { value: 'all', label: 'All' },
               { value: 'errors', label: 'Errors' },
@@ -114,7 +113,7 @@ export function BrowserConsolePanel({
                       )}
                     </div>
                     <Button
-                      variant="ghost-quiet"
+                      variant="ghost"
                       size="compact"
                       onClick={(): void => {
                         void stageBrowserConsoleEntry(entry);

@@ -1,4 +1,4 @@
-import type { PortalWorkspaceLayout } from '@canopy/protocol/portal';
+import type { RemoteControlWorkspaceLayout } from '@canopy/protocol/remote-control/shell';
 import { chatTabLabel } from '@canopy/protocol';
 import { compareWorkspaces } from './workspace-sections-model';
 import { sidebarRowLabel, workspaceLayout } from './worktree-status';
@@ -21,7 +21,7 @@ export interface SidebarChatSearchWorkspace {
   readonly order?: number;
   readonly type?: 'single-repo' | 'multi-repo' | 'cowork';
   /** Placement axis — decides whether this workspace owns standalone chats. */
-  readonly layout?: PortalWorkspaceLayout;
+  readonly layout?: RemoteControlWorkspaceLayout;
 }
 
 /** Minimal worktree shape needed to label worktree-chat results. */

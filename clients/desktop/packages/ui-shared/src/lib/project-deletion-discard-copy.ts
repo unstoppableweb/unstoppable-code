@@ -1,4 +1,4 @@
-import type { WorktreeDiscardDescription } from '@canopy/protocol/portal/worktree-discard';
+import type { WorktreeDiscardDescription } from '@canopy/protocol/remote-control/shell/worktree-discard';
 import {
   WORKTREE_DISCARD_DISCONNECTED_WARNING,
   worktreeDiscardCopy,

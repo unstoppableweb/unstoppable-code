@@ -106,7 +106,10 @@ export function HomeAndResumeSpecimen(): JSX.Element {
         </SpecimenCell>
       </SpecimenPanel>
 
-      <SpecimenPanel title="HomeSection, grouped in HomeSections (hide one, then restore)">
+      <SpecimenPanel
+        title="HomeSection, grouped in HomeSections"
+        hint="Hide one, then restore"
+      >
         <HomeSections>
           <HomeSection
             sectionId="lab-suggestions"
@@ -130,7 +133,10 @@ export function HomeAndResumeSpecimen(): JSX.Element {
         </HomeSections>
       </SpecimenPanel>
 
-      <SpecimenPanel title="HomeSection on its own (hides with its own restore control)">
+      <SpecimenPanel
+        title="HomeSection on its own"
+        hint="Hides with its own restore control"
+      >
         <HomeSection
           sectionId="lab-solo"
           title="Pull requests"

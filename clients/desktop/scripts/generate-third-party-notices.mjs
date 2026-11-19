@@ -32,6 +32,23 @@ const PACKAGE_ROOTS = [
   'packages/ui-rich',
 ];
 
+const MOONSHINE_RUNTIME_VERSION = 'v0.1.6';
+
+function assertMoonshineRuntimePin() {
+  const pinPath = 'apps/canopy-dictate-linux/moonshine-runtime.txt';
+  const pinned = readFileSync(join(root, pinPath), 'utf8')
+    .split('\n')
+    .some(
+      (line) =>
+        /^linux-x64\s+(\S+)\s/.exec(line)?.[1] === MOONSHINE_RUNTIME_VERSION,
+    );
+  if (!pinned) {
+    throw new Error(
+      `${pinPath} must pin linux-x64 to ${MOONSHINE_RUNTIME_VERSION}, the Moonshine Voice version declared in BUNDLED_TOOLS. Update the Moonshine Voice and ONNX Runtime entries and re-vendor scripts/vendor/moonshine-voice and scripts/vendor/onnxruntime.`,
+    );
+  }
+}
+
 const BUNDLED_TOOLS = [
   {
     label: 'Node.js (private desktop interpreter and standalone SEA runtime)',
@@ -64,6 +81,31 @@ const BUNDLED_TOOLS = [
       'https://github.com/openai/codex/tree/rust-v0.159.0/codex-rs/vendor/bubblewrap',
     license: 'LGPL-2.0-or-later',
     licensePath: 'scripts/vendor/bubblewrap/COPYING',
+  },
+  // The Linux dictation runtime. Its versions are static because the pin lives
+  // in apps/canopy-dictate-linux/moonshine-runtime.txt (read by build.sh), not
+  // in package.json; assertMoonshineRuntimePin() keeps the two in step.
+  {
+    label: 'Moonshine Voice (libmoonshine.so, Linux x64 dictation runtime)',
+    version: MOONSHINE_RUNTIME_VERSION,
+    source: `https://github.com/moonshine-ai/moonshine/tree/${MOONSHINE_RUNTIME_VERSION}`,
+    license: `MIT and bundled third-party licenses. Components compiled into libmoonshine.so keep their own licenses, listed under core/third-party/ in the upstream source at ${MOONSHINE_RUNTIME_VERSION}.`,
+    licensePath: 'scripts/vendor/moonshine-voice/LICENSE',
+  },
+  {
+    label: 'ONNX Runtime (libonnxruntime.so.1, Linux x64 dictation runtime)',
+    version: '1.23.2',
+    source: 'https://github.com/microsoft/onnxruntime/tree/v1.23.2',
+    license:
+      "MIT and bundled third-party licenses. Microsoft's third-party notices for this build follow in the next entry.",
+    licensePath: 'scripts/vendor/onnxruntime/LICENSE',
+  },
+  {
+    label: 'ONNX Runtime third-party notices (bundled in libonnxruntime.so.1)',
+    version: '1.23.2',
+    source: 'https://www.nuget.org/packages/Microsoft.ML.OnnxRuntime/1.23.2',
+    license: 'See the notices below.',
+    licensePath: 'scripts/vendor/onnxruntime/ThirdPartyNotices.txt',
   },
   {
     label: 'GitHub CLI',
@@ -406,7 +448,8 @@ function buildBundledToolNotices(rootPackage) {
     const source = rootPackage[tool.packageKey];
     return {
       ...tool,
-      version: source?.[tool.versionKey] ?? 'version unavailable',
+      version:
+        source?.[tool.versionKey] ?? tool.version ?? 'version unavailable',
     };
   });
 }
@@ -495,6 +538,7 @@ function renderNotices(
   return `${lines.join('\n').trimEnd()}\n`;
 }
 
+assertMoonshineRuntimePin();
 const rootPackage = readJson(join(root, 'package.json'));
 const lock = { packages: installedPackages() };
 const packageNotices = buildPackageNotices(lock);

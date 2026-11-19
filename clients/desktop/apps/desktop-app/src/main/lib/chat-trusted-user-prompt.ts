@@ -1,8 +1,8 @@
 import {
   readAutoResumeMetadata,
   type AutoResumeMetadata,
-} from '@canopy/protocol/portal';
-import { chatAgentSent } from '@canopy/protocol/portal/external-agent-sender';
+} from '@canopy/protocol/remote-control/shell';
+import { chatAgentSent } from '@canopy/protocol/remote-control/shell/external-agent-sender';
 import {
   requireProviderForModel,
   type AgentProviderType,

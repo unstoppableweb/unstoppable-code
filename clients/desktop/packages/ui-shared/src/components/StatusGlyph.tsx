@@ -14,7 +14,6 @@ import {
   type StatusGlyphShape,
   type StatusGlyphState,
 } from '../lib/status-glyph';
-import { useSpinnerStyle, type SpinnerStyle } from './spinner-style';
 import { ThinkingSpinner } from './ThinkingSpinner';
 
 /**
@@ -51,16 +50,14 @@ const ICONS: Readonly<
 };
 
 /**
- * The running spinner's box per spinner style, so it reads the same size as
- * the circle glyphs around it. Lucide draws its circle ~0.4px inside a 14px
- * box (13.2px across): the comet ring matches it at 13px, and the dot grid,
- * whose corner dots carry more visual weight, sits at its natural 10px.
+ * The running spinner's box, so it reads the same size as the stroke glyphs
+ * beside it. A 16px outline glyph fills about 82% of its box (13.2px across):
+ * the ring matches it at 13px.
  */
-const SPINNER_PX: Readonly<
-  Record<SpinnerStyle, Readonly<Record<StatusGlyphSize, number>>>
-> = {
-  dots: { 12: 10, 14: 10, 20: 16 },
-  comet: { 12: 11, 14: 13, 20: 18 },
+const SPINNER_PX: Readonly<Record<StatusGlyphSize, number>> = {
+  12: 11,
+  14: 13,
+  20: 18,
 };
 
 export interface StatusGlyphProps {
@@ -69,7 +66,7 @@ export interface StatusGlyphProps {
   readonly size?: StatusGlyphSize;
   /**
    * The running spinner's box, when it must match a smaller spinner beside
-   * it (a sidebar row's 10px grid). Defaults to the style's optical size
+   * it (a sidebar row's 10px ring). Defaults to the optical size
    * for `size` ({@link SPINNER_PX}).
    */
   readonly spinnerSize?: number;
@@ -103,8 +100,7 @@ export function StatusGlyph({
 }: StatusGlyphProps): JSX.Element {
   const spec = STATUS_GLYPHS[state];
   const box = BOX_CLASS[size];
-  const spinnerStyle = useSpinnerStyle();
-  const spinnerPx = spinnerSize ?? SPINNER_PX[spinnerStyle][size];
+  const spinnerPx = spinnerSize ?? SPINNER_PX[size];
   const ink =
     tone === 'neutral-except-failure' && state !== 'failed'
       ? 'fg-tertiary'

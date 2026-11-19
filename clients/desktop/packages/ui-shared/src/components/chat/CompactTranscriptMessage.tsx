@@ -60,7 +60,7 @@ export function CompactTranscriptMessage({
   return (
     <li
       className={isUser ? 'flex justify-end' : 'block'}
-      data-testid="portal-chat-message"
+      data-testid="remote-control-chat-message"
       data-status={status}
       data-role={role}
     >
@@ -72,13 +72,15 @@ export function CompactTranscriptMessage({
         >
           <span>{role}</span>
           {status !== 'complete' && status !== 'completed' && (
-            <span data-testid="portal-chat-message-status">· {status}</span>
+            <span data-testid="remote-control-chat-message-status">
+              · {status}
+            </span>
           )}
         </p>
         {content && (
           <p
             className={`whitespace-pre-wrap ${COPY_STYLE[tone.text]}`}
-            data-testid="portal-chat-message-content"
+            data-testid="remote-control-chat-message-content"
           >
             {content}
           </p>

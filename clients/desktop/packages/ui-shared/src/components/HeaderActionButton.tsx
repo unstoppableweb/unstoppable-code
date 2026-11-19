@@ -70,9 +70,9 @@ export const HeaderActionDefaultToneContext =
 
 /** Each tone is a quiet `Button` variant: ink at rest, a tinted hover. */
 const TONE_VARIANTS: Record<HeaderActionButtonTone, ButtonVariant> = {
-  accent: 'ghost-accent',
-  neutral: 'ghost-overlay',
-  warning: 'ghost-warning',
+  accent: 'ghost',
+  neutral: 'ghost',
+  warning: 'ghost',
   /** Irreversible or trash-bound actions (Delete permanently, Empty trash). */
   destructive: 'ghost-destructive',
 };

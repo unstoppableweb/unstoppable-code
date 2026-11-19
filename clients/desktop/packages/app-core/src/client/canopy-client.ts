@@ -54,28 +54,28 @@ import type {
   SidebarItemGroupMoveRequest,
 } from '@canopy/protocol/sidebar';
 import type {
-  PortalWorktreeBranchesListPayload,
-  PortalWorktreeBranchesListResult,
-  PortalChatInputDeliveryPayload,
-  PortalProviderUsageRefreshPayload,
-} from '@canopy/protocol/portal';
+  RemoteControlWorktreeBranchesListPayload,
+  RemoteControlWorktreeBranchesListResult,
+  RemoteControlChatInputDeliveryPayload,
+  RemoteControlProviderUsageRefreshPayload,
+} from '@canopy/protocol/remote-control/shell';
 import type {
   LifecycleJournalInspection,
   LifecycleJournalQuarantineRequest,
   LifecycleJournalQuarantineResult,
-} from '@canopy/protocol/portal/lifecycle-journal';
+} from '@canopy/protocol/remote-control/shell/lifecycle-journal';
 import type {
-  PortalProjectDeletionDiscardDescribePayload,
+  RemoteControlProjectDeletionDiscardDescribePayload,
   ProjectDeletionDiscardDescription,
-} from '@canopy/protocol/portal/project-deletion-discard';
+} from '@canopy/protocol/remote-control/shell/project-deletion-discard';
 import type {
-  PortalWorktreeDiscardDescribePayload,
-  PortalWorktreeDiscardPayload,
+  RemoteControlWorktreeDiscardDescribePayload,
+  RemoteControlWorktreeDiscardPayload,
   WorktreeDiscardDescription,
   WorktreeDiscardResult,
   WorktreeArchiveResult,
   WorktreeRemovalOutcome,
-} from '@canopy/protocol/portal/worktree-discard';
+} from '@canopy/protocol/remote-control/shell/worktree-discard';
 import type {
   ManagedDelegationExtendLifetimeLimitResult,
   ManagedDelegationLifetimeStatus,
@@ -133,62 +133,62 @@ import type {
   LinearTeamKeysResult,
 } from '@canopy/protocol/reference-previews';
 import type {
-  PortalChatHistoryChunk,
-  PortalChatHistoryRequest,
-  PortalAppAdvisorChatSummary,
-  PortalEntityEnvelope,
-  PortalChatCloudAttachmentRef,
-  PortalAppAdvisorSettings,
-  PortalAppAdvisorSettingsGetPayload,
-  PortalAppAdvisorSettingsSavePayload,
-  PortalChatThinkingLevel,
-  PortalChatQueueEntryPayload,
-  PortalChatQueueEditPayload,
-  PortalChatQueueSetEditLockPayload,
-  PortalDiffPayload,
-  PortalDiffReadPayload,
-  PortalDirectoryListing,
-  PortalFileDirectoryPayload,
-  PortalFileLinkResolvePayload,
-  PortalFileLinkResolution,
-  PortalFilePreview,
-  PortalFileReadPayload,
-  PortalFileRoot,
-  PortalFileRootsPayload,
-  PortalFileSavePayload,
-  PortalFileIndexPayload,
-  PortalFileIndex,
-  PortalFileCreatePayload,
-  PortalFileMkdirPayload,
-  PortalFileRenamePayload,
-  PortalFileDeletePayload,
-  PortalFileMutationResult,
-  PortalHookCancelPayload,
-  PortalHookRunPayload,
-  PortalPipelineCancelPayload,
-  PortalPipelineRunPayload,
-  PortalPlanDetail,
-  PortalPlanGetPayload,
-  PortalPlanUpdatePayload,
-  PortalPrActionPayload,
-  PortalPrCreatePayload,
-  PortalPrRefreshPayload,
-  PortalScriptCancelPayload,
-  PortalScriptRunPayload,
-  PortalSetSectionOrderPayload,
-  PortalWorkspaceClaudeMdGetPayload,
-  PortalWorkspaceClaudeMdSavePayload,
-  PortalWorkspaceCreatePayload,
-  PortalWorkspaceDeletePayload,
-  PortalWorkspaceReorderPayload,
-  PortalWorkspaceScriptsGetPayload,
-  PortalWorkspaceScriptsSavePayload,
-  PortalWorkspaceUpdatePayload,
-  PortalWorktreeArchivePayload,
-  PortalWorktreeCreatePayload,
-  PortalWorktreeReorderPayload,
-  PortalWorktreeUpdatePayload,
-} from '@canopy/protocol/portal';
+  RemoteControlChatHistoryChunk,
+  RemoteControlChatHistoryRequest,
+  RemoteControlAppAdvisorChatSummary,
+  RemoteControlEntityEnvelope,
+  RemoteControlChatCloudAttachmentRef,
+  RemoteControlAppAdvisorSettings,
+  RemoteControlAppAdvisorSettingsGetPayload,
+  RemoteControlAppAdvisorSettingsSavePayload,
+  RemoteControlChatThinkingLevel,
+  RemoteControlChatQueueEntryPayload,
+  RemoteControlChatQueueEditPayload,
+  RemoteControlChatQueueSetEditLockPayload,
+  RemoteControlDiffPayload,
+  RemoteControlDiffReadPayload,
+  RemoteControlDirectoryListing,
+  RemoteControlFileDirectoryPayload,
+  RemoteControlFileLinkResolvePayload,
+  RemoteControlFileLinkResolution,
+  RemoteControlFilePreview,
+  RemoteControlFileReadPayload,
+  RemoteControlFileRoot,
+  RemoteControlFileRootsPayload,
+  RemoteControlFileSavePayload,
+  RemoteControlFileIndexPayload,
+  RemoteControlFileIndex,
+  RemoteControlFileCreatePayload,
+  RemoteControlFileMkdirPayload,
+  RemoteControlFileRenamePayload,
+  RemoteControlFileDeletePayload,
+  RemoteControlFileMutationResult,
+  RemoteControlHookCancelPayload,
+  RemoteControlHookRunPayload,
+  RemoteControlPipelineCancelPayload,
+  RemoteControlPipelineRunPayload,
+  RemoteControlPlanDetail,
+  RemoteControlPlanGetPayload,
+  RemoteControlPlanUpdatePayload,
+  RemoteControlPrActionPayload,
+  RemoteControlPrCreatePayload,
+  RemoteControlPrRefreshPayload,
+  RemoteControlScriptCancelPayload,
+  RemoteControlScriptRunPayload,
+  RemoteControlSetSectionOrderPayload,
+  RemoteControlWorkspaceClaudeMdGetPayload,
+  RemoteControlWorkspaceClaudeMdSavePayload,
+  RemoteControlWorkspaceCreatePayload,
+  RemoteControlWorkspaceDeletePayload,
+  RemoteControlWorkspaceReorderPayload,
+  RemoteControlWorkspaceScriptsGetPayload,
+  RemoteControlWorkspaceScriptsSavePayload,
+  RemoteControlWorkspaceUpdatePayload,
+  RemoteControlWorktreeArchivePayload,
+  RemoteControlWorktreeCreatePayload,
+  RemoteControlWorktreeReorderPayload,
+  RemoteControlWorktreeUpdatePayload,
+} from '@canopy/protocol/remote-control/shell';
 import type {
   ScriptActionsCommandMap,
   ScriptActionsQueryMap,
@@ -272,8 +272,8 @@ export interface QueryMap
     ClaudeModsQueryMap,
     ShellQueryMap {
   'worktree.baseBranches': {
-    args: PortalWorktreeBranchesListPayload;
-    result: PortalWorktreeBranchesListResult;
+    args: RemoteControlWorktreeBranchesListPayload;
+    result: RemoteControlWorktreeBranchesListResult;
   };
   /** Read the authoritative managed-delegation allowance for one worktree. */
   'delegation.lifetimeStatus': {
@@ -309,22 +309,34 @@ export interface QueryMap
     args: LoadWorktreeTerminalStateRequest;
     result: LoadWorktreeTerminalStateResponse;
   };
-  'file.index': { args: PortalFileIndexPayload; result: PortalFileIndex };
+  'file.index': {
+    args: RemoteControlFileIndexPayload;
+    result: RemoteControlFileIndex;
+  };
   'file.resolveLink': {
-    args: PortalFileLinkResolvePayload;
-    result: PortalFileLinkResolution | null;
+    args: RemoteControlFileLinkResolvePayload;
+    result: RemoteControlFileLinkResolution | null;
   };
   'session.snapshot': { args: SessionSnapshotArgs; result: SessionViewModel };
-  /** Read a file's contents (canonical `PortalFilePreview` service response). */
-  'file.read': { args: PortalFileReadPayload; result: PortalFilePreview };
+  /** Read a file's contents (canonical `RemoteControlFilePreview` service response). */
+  'file.read': {
+    args: RemoteControlFileReadPayload;
+    result: RemoteControlFilePreview;
+  };
   /** Read a file (or combined) diff for a worktree. */
-  'diff.read': { args: PortalDiffReadPayload; result: PortalDiffPayload };
+  'diff.read': {
+    args: RemoteControlDiffReadPayload;
+    result: RemoteControlDiffPayload;
+  };
   /** List a worktree's file roots (repos / attachment roots) for the file tree. */
-  'file.roots': { args: PortalFileRootsPayload; result: PortalFileRoot[] };
+  'file.roots': {
+    args: RemoteControlFileRootsPayload;
+    result: RemoteControlFileRoot[];
+  };
   /** List one directory's entries under a file root, for lazy tree expansion. */
   'file.directory': {
-    args: PortalFileDirectoryPayload;
-    result: PortalDirectoryListing;
+    args: RemoteControlFileDirectoryPayload;
+    result: RemoteControlDirectoryListing;
   };
   /**
    * Lazily fetch one turn-aligned chunk of a chat's historical (synced)
@@ -333,11 +345,14 @@ export interface QueryMap
    * defined in TS-01; adapters wire the concrete mapping in TS-05.
    */
   'chat.history': {
-    args: PortalChatHistoryRequest;
-    result: PortalChatHistoryChunk;
+    args: RemoteControlChatHistoryRequest;
+    result: RemoteControlChatHistoryChunk;
   };
   /** Read one tracked plan's detail (Plans section, markdown viewer). */
-  'plan.get': { args: PortalPlanGetPayload; result: PortalPlanDetail };
+  'plan.get': {
+    args: RemoteControlPlanGetPayload;
+    result: RemoteControlPlanDetail;
+  };
   /**
    * Read a chat's persisted composer settings so the host can seed the shared
    * store on chat open (the counterpart of `chat.persistTabSettings`). `null`
@@ -348,16 +363,16 @@ export interface QueryMap
     result: ChatTabSettings | null;
   };
   'workspace.claudeMd.get': {
-    args: PortalWorkspaceClaudeMdGetPayload;
+    args: RemoteControlWorkspaceClaudeMdGetPayload;
     result: string | null;
   };
   'workspace.scripts.get': {
-    args: PortalWorkspaceScriptsGetPayload;
+    args: RemoteControlWorkspaceScriptsGetPayload;
     result: Readonly<Record<string, string>> | null;
   };
   'appAdvisor.settings.get': {
-    args: PortalAppAdvisorSettingsGetPayload;
-    result: PortalAppAdvisorSettings | null;
+    args: RemoteControlAppAdvisorSettingsGetPayload;
+    result: RemoteControlAppAdvisorSettings | null;
   };
   /**
    * The paired computer's Orchestrator chats, one row per tab in Work Entry
@@ -367,7 +382,7 @@ export interface QueryMap
    */
   'appAdvisor.chats': {
     args: Record<string, never>;
-    result: { readonly chats: readonly PortalAppAdvisorChatSummary[] };
+    result: { readonly chats: readonly RemoteControlAppAdvisorChatSummary[] };
   };
   /**
    * One worktree's plan, script, hook, pipeline and summary rows on the
@@ -378,7 +393,7 @@ export interface QueryMap
    */
   'worktree.activity': {
     args: { readonly projectId: string; readonly worktreeId: string };
-    result: { readonly entities: readonly PortalEntityEnvelope[] };
+    result: { readonly entities: readonly RemoteControlEntityEnvelope[] };
   };
   /**
    * Turn-level thumbs up/down ratings for one chat (CAN-1521), keyed by the
@@ -479,7 +494,7 @@ export interface ChatTabSettings {
   /** Whether a produced plan requires explicit approval before implementation. */
   readonly proposalMode: 'optional' | 'required';
   /** Composer thinking level (the wire union; `low` is hidden in the UI). */
-  readonly thinkingLevel: PortalChatThinkingLevel;
+  readonly thinkingLevel: RemoteControlChatThinkingLevel;
   /** Opaque provider tool-input carried across restart for a pending plan exit. */
   readonly pendingPlanExit?: Readonly<Record<string, unknown>>;
 }
@@ -564,7 +579,7 @@ export interface CommandMap
   };
   /** Refresh the current provider account on the explicitly selected host. */
   'providerUsage.refresh': {
-    args: PortalProviderUsageRefreshPayload & {
+    args: RemoteControlProviderUsageRefreshPayload & {
       readonly workspaceLocalId?: string;
     };
     result: void;
@@ -618,23 +633,23 @@ export interface CommandMap
   };
   /** Gated on capabilities.fileSystemAccess === 'read-write' by the caller, like file.save. */
   'file.create': {
-    args: PortalFileCreatePayload;
-    result: PortalFileMutationResult;
+    args: RemoteControlFileCreatePayload;
+    result: RemoteControlFileMutationResult;
   };
   /** Gated on capabilities.fileSystemAccess === 'read-write' by the caller, like file.save. */
   'file.mkdir': {
-    args: PortalFileMkdirPayload;
-    result: PortalFileMutationResult;
+    args: RemoteControlFileMkdirPayload;
+    result: RemoteControlFileMutationResult;
   };
   /** Gated on capabilities.fileSystemAccess === 'read-write' by the caller, like file.save. */
   'file.rename': {
-    args: PortalFileRenamePayload;
-    result: PortalFileMutationResult;
+    args: RemoteControlFileRenamePayload;
+    result: RemoteControlFileMutationResult;
   };
   /** Gated on capabilities.fileSystemAccess === 'read-write' by the caller, like file.save. */
   'file.delete': {
-    args: PortalFileDeletePayload;
-    result: PortalFileMutationResult;
+    args: RemoteControlFileDeletePayload;
+    result: RemoteControlFileMutationResult;
   };
 
   'session.end': { args: Record<string, never>; result: void };
@@ -642,29 +657,41 @@ export interface CommandMap
     args: PersistChatTabSettingsArgs;
     result: void;
   };
-  'chat.queue.cancel': { args: PortalChatQueueEntryPayload; result: void };
-  'chat.queue.edit': { args: PortalChatQueueEditPayload; result: void };
-  'chat.queue.force': { args: PortalChatQueueEntryPayload; result: void };
-  'chat.queue.steer': { args: PortalChatQueueEntryPayload; result: void };
+  'chat.queue.cancel': {
+    args: RemoteControlChatQueueEntryPayload;
+    result: void;
+  };
+  'chat.queue.edit': { args: RemoteControlChatQueueEditPayload; result: void };
+  'chat.queue.force': {
+    args: RemoteControlChatQueueEntryPayload;
+    result: void;
+  };
+  'chat.queue.steer': {
+    args: RemoteControlChatQueueEntryPayload;
+    result: void;
+  };
   'chat.inputDelivery': {
-    args: PortalChatInputDeliveryPayload;
+    args: RemoteControlChatInputDeliveryPayload;
     result: void;
   };
   'chat.queue.set_edit_lock': {
-    args: PortalChatQueueSetEditLockPayload;
+    args: RemoteControlChatQueueSetEditLockPayload;
     result: void;
   };
   /**
    * Write a file's contents. Gated on `capabilities.fileSystemAccess ===
-   * 'read-write'` by the caller; returns the re-read `PortalFilePreview` so the
+   * 'read-write'` by the caller; returns the re-read `RemoteControlFilePreview` so the
    * store can refresh its version/mtime conflict cookie.
    * Rejects with `FileSaveConflictError` when the supplied version is stale.
    * Other permission, missing-file and execution failures remain distinct.
    */
-  'file.save': { args: PortalFileSavePayload; result: PortalFilePreview };
+  'file.save': {
+    args: RemoteControlFileSavePayload;
+    result: RemoteControlFilePreview;
+  };
   /** Persist a workspace's activity-section order. */
   'activity.setSectionOrder': {
-    args: PortalSetSectionOrderPayload;
+    args: RemoteControlSetSectionOrderPayload;
     result: void;
   };
   /** Stop one native background task; gated by `backgroundTaskStop`. */
@@ -673,15 +700,15 @@ export interface CommandMap
     result: BackgroundTaskStopOutcome;
   };
   'workspace.create': {
-    args: PortalWorkspaceCreatePayload;
+    args: RemoteControlWorkspaceCreatePayload;
     result: WorkspaceCreateResult;
   };
   'workspace.update': {
-    args: PortalWorkspaceUpdatePayload;
+    args: RemoteControlWorkspaceUpdatePayload;
     result: void;
   };
   'workspace.delete': {
-    args: PortalWorkspaceDeletePayload;
+    args: RemoteControlWorkspaceDeletePayload;
     result: void;
   };
   /**
@@ -716,12 +743,12 @@ export interface CommandMap
     result: WorktreeRecoveryFinishResult;
   };
   'worktree.discard.describe': {
-    args: PortalWorktreeDiscardDescribePayload;
+    args: RemoteControlWorktreeDiscardDescribePayload;
     result: WorktreeDiscardDescription;
   };
   /** CAN-5336: user-only and permanent; binds to a description's token. */
   'worktree.discard': {
-    args: PortalWorktreeDiscardPayload;
+    args: RemoteControlWorktreeDiscardPayload;
     result: WorktreeDiscardResult;
   };
   /**
@@ -730,40 +757,40 @@ export interface CommandMap
    * by `projectDeletionDiscard`.
    */
   'workspace.delete.discard.describe': {
-    args: PortalProjectDeletionDiscardDescribePayload;
+    args: RemoteControlProjectDeletionDiscardDescribePayload;
     result: ProjectDeletionDiscardDescription;
   };
   'workspace.reorder': {
-    args: PortalWorkspaceReorderPayload;
+    args: RemoteControlWorkspaceReorderPayload;
     result: void;
   };
   'worktree.create': {
-    args: PortalWorktreeCreatePayload;
+    args: RemoteControlWorktreeCreatePayload;
     result: WorktreeCreateResult;
   };
   'worktree.update': {
-    args: PortalWorktreeUpdatePayload;
+    args: RemoteControlWorktreeUpdatePayload;
     result: void;
   };
   'worktree.archive': {
-    args: PortalWorktreeArchivePayload;
+    args: RemoteControlWorktreeArchivePayload;
     /** Legacy callers retain raw answers; recovery callers require a settled outcome. */
     result: WorktreeArchiveResult | WorktreeRemovalOutcome;
   };
   'worktree.reorder': {
-    args: PortalWorktreeReorderPayload;
+    args: RemoteControlWorktreeReorderPayload;
     result: void;
   };
   'workspace.claudeMd.save': {
-    args: PortalWorkspaceClaudeMdSavePayload;
+    args: RemoteControlWorkspaceClaudeMdSavePayload;
     result: void;
   };
   'workspace.scripts.save': {
-    args: PortalWorkspaceScriptsSavePayload;
+    args: RemoteControlWorkspaceScriptsSavePayload;
     result: void;
   };
   'appAdvisor.settings.save': {
-    args: PortalAppAdvisorSettingsSavePayload;
+    args: RemoteControlAppAdvisorSettingsSavePayload;
     result: void;
   };
   /**
@@ -776,7 +803,7 @@ export interface CommandMap
    */
   'chat.attachments.upload': {
     args: ChatAttachmentUploadArgs;
-    result: PortalChatCloudAttachmentRef;
+    result: RemoteControlChatCloudAttachmentRef;
   };
   /**
    * Activity actions (Scripts / Hooks sections). Fire-and-forget mutations: the
@@ -784,27 +811,27 @@ export interface CommandMap
    * activity snapshot. Gated on `capabilities.localExecution` / `pipelines` by
    * the caller (the web relay queues them for the paired desktop to execute).
    */
-  'script.run': { args: PortalScriptRunPayload; result: void };
-  'script.cancel': { args: PortalScriptCancelPayload; result: void };
-  'hook.run': { args: PortalHookRunPayload; result: void };
-  'hook.cancel': { args: PortalHookCancelPayload; result: void };
+  'script.run': { args: RemoteControlScriptRunPayload; result: void };
+  'script.cancel': { args: RemoteControlScriptCancelPayload; result: void };
+  'hook.run': { args: RemoteControlHookRunPayload; result: void };
+  'hook.cancel': { args: RemoteControlHookCancelPayload; result: void };
   /**
    * Pipeline + PR actions (Pipelines / Pull Request sections). Fire-and-forget:
    * queued and the resulting run / PR state streams back via the activity
    * snapshot. `pr.action` is the discriminated git-action union
    * (commit_and_push / push / pull / update_base_branch / create).
    */
-  'pipeline.run': { args: PortalPipelineRunPayload; result: void };
-  'pipeline.cancel': { args: PortalPipelineCancelPayload; result: void };
-  'pr.action': { args: PortalPrActionPayload; result: void };
-  'pr.create': { args: PortalPrCreatePayload; result: void };
-  'pr.refresh': { args: PortalPrRefreshPayload; result: void };
+  'pipeline.run': { args: RemoteControlPipelineRunPayload; result: void };
+  'pipeline.cancel': { args: RemoteControlPipelineCancelPayload; result: void };
+  'pr.action': { args: RemoteControlPrActionPayload; result: void };
+  'pr.create': { args: RemoteControlPrCreatePayload; result: void };
+  'pr.refresh': { args: RemoteControlPrRefreshPayload; result: void };
   /**
    * Update a tracked plan (Plans section: review status, content edits,
    * approve/dismiss). Fire-and-forget; the updated plan streams back via the
    * activity snapshot.
    */
-  'plan.update': { args: PortalPlanUpdatePayload; result: void };
+  'plan.update': { args: RemoteControlPlanUpdatePayload; result: void };
   /**
    * Stars the brand's source repository in app with the GitHub CLI's
    * account. Takes no args: the host resolves the repository. Gated by

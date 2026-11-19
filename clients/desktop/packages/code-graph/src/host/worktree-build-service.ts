@@ -2,7 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readdir, rm } from 'node:fs/promises';
 import * as path from 'node:path';
 import { performance } from 'node:perf_hooks';
-import type { CodeGraphSeedSource } from '../base-graph';
+import type { CodeGraphColdFallback, CodeGraphSeedSource } from '../base-graph';
+import {
+  codeGraphFailureClass,
+  type CodeGraphFailureClass,
+} from '../io-failure';
 import { fingerprintCustomLanguageInputs } from '../languages/custom-config';
 import type {
   CodeGraphBuildOptions,
@@ -52,10 +56,17 @@ export type CodeGraphWorktreeQueuePriority =
   | 'first-build'
   | 'worktree';
 
-/** What failed, for the observer to classify. */
+/**
+ * What failed, for the observer to classify. A worker response carries only
+ * its failure class and errno, never its message.
+ */
 export type CodeGraphWorktreeBuildFailureCause =
   | { kind: 'unavailable' }
-  | { kind: 'worker-response' }
+  | {
+      kind: 'worker-response';
+      failureClass?: CodeGraphFailureClass;
+      errno?: string;
+    }
   | { kind: 'error'; error: unknown };
 
 /** One generation, as the host's telemetry and diagnostics observe it. */
@@ -65,6 +76,8 @@ export interface CodeGraphWorktreeBuildObservation {
     response: Extract<CodeGraphWorkerBuildResponse, { ok: true }>;
     seededRepositoryCount: number;
     coldFallbackRepositoryCount: number;
+    /** The first cold fallback's closed reason and class, if any. */
+    coldFallback?: Omit<CodeGraphColdFallback, 'repoId'>;
     reusedRepositoryCount: number;
     preparationFailed: boolean;
     attemptId: string | undefined;
@@ -270,7 +283,7 @@ export function createCodeGraphWorktreeBuildService(
     worktreePath: string;
     repositories: CodeGraphRepositoryInput[];
     options?: CodeGraphBuildOptions;
-    reason: string;
+    fallback: Omit<CodeGraphColdFallback, 'repoId'>;
     workspaceLabel: string;
     priority: 'agent' | 'worktree';
     startFingerprint: string;
@@ -327,9 +340,9 @@ export function createCodeGraphWorktreeBuildService(
               status: 'existing-graph-reused' as const,
             }
           : {
+              ...input.fallback,
               repoId: repository.repoId,
               status: 'cold-fallback' as const,
-              reason: input.reason,
             },
       );
     }
@@ -353,6 +366,7 @@ export function createCodeGraphWorktreeBuildService(
     let seedStagingDir: string | undefined;
     let workerStarted = false;
     let preparationFailed = false;
+    let preparationFallback: Omit<CodeGraphColdFallback, 'repoId'> | undefined;
     let failureStage: CodeGraphWorktreeBuildStage = 'preflight';
     // The queue class the worker build was enqueued with, once known.
     let queuePriority: CodeGraphWorktreeQueuePriority | undefined;
@@ -430,7 +444,7 @@ export function createCodeGraphWorktreeBuildService(
       );
 
       const coldFallback = (
-        reason: string,
+        fallback: Omit<CodeGraphColdFallback, 'repoId'>,
       ): Promise<CodeGraphWorkerBuildResponse> =>
         runColdFallback({
           projectId: input.projectId,
@@ -438,7 +452,7 @@ export function createCodeGraphWorktreeBuildService(
           worktreePath,
           repositories,
           options: input.options,
-          reason,
+          fallback,
           workspaceLabel,
           priority: workerPriority,
           startFingerprint,
@@ -458,7 +472,7 @@ export function createCodeGraphWorktreeBuildService(
       const seeds = host.seeds;
       if (seeds === undefined) {
         // Without seeding, a first graph builds cold, with no staging copy.
-        response = await coldFallback('no seed source');
+        response = await coldFallback({ reason: 'no-seed-source' });
       } else {
         await removeAbandonedSeedStaging(seedStagingRoot);
         const preparedSeedStagingDir = path.join(seedStagingRoot, randomUUID());
@@ -471,7 +485,7 @@ export function createCodeGraphWorktreeBuildService(
             await fingerprintCustomLanguageInputs(worktreePath);
           const sourceByRepoId = await seeds.canonicalSources(input.projectId);
           const seedSources: CodeGraphSeedSource[] = [];
-          const coldFallbacks: Array<{ repoId: string; reason: string }> = [];
+          const coldFallbacks: CodeGraphColdFallback[] = [];
           failureStage = 'preflight';
           const graphAlreadyCompleted = await host.readCompletion(
             host.worktreeDbPath(input.projectId, input.worktreeId),
@@ -486,7 +500,7 @@ export function createCodeGraphWorktreeBuildService(
             if (canonicalRepoPath === undefined) {
               coldFallbacks.push({
                 repoId: repository.repoId,
-                reason: 'no canonical source repository',
+                reason: 'no-canonical-source',
               });
               continue;
             }
@@ -503,7 +517,7 @@ export function createCodeGraphWorktreeBuildService(
               if (source === null) {
                 coldFallbacks.push({
                   repoId: repository.repoId,
-                  reason: 'no compatible published base',
+                  reason: 'no-compatible-base',
                 });
               } else {
                 seedSources.push(source);
@@ -512,7 +526,8 @@ export function createCodeGraphWorktreeBuildService(
               seedCopyMs += performance.now() - copyStartedAt;
               coldFallbacks.push({
                 repoId: repository.repoId,
-                reason: error instanceof Error ? error.message : String(error),
+                reason: 'seed-copy-failed',
+                failureClass: codeGraphFailureClass(error),
               });
             }
           }
@@ -595,11 +610,11 @@ export function createCodeGraphWorktreeBuildService(
           }
           preparationFailed = true;
           failureStage = 'preflight';
-          response = await coldFallback(
-            `seed preparation failed: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          );
+          preparationFallback = {
+            reason: 'seed-preparation-failed',
+            failureClass: codeGraphFailureClass(error),
+          };
+          response = await coldFallback(preparationFallback);
         }
       }
 
@@ -618,6 +633,20 @@ export function createCodeGraphWorktreeBuildService(
           host.scheduleFollowup(input.projectId, input.worktreeId);
         }
         const outcomes = response.seedOutcomes ?? [];
+        const firstColdFallback = outcomes.find(
+          (outcome) => outcome.status === 'cold-fallback',
+        );
+        // A failed preparation built every repository cold for its reason.
+        const coldFallback =
+          preparationFallback ??
+          (firstColdFallback?.status === 'cold-fallback'
+            ? {
+                reason: firstColdFallback.reason,
+                ...(firstColdFallback.failureClass === undefined
+                  ? {}
+                  : { failureClass: firstColdFallback.failureClass }),
+              }
+            : undefined);
         observation.succeeded({
           response,
           seededRepositoryCount: outcomes.filter(
@@ -627,6 +656,7 @@ export function createCodeGraphWorktreeBuildService(
             ? repositories.length
             : outcomes.filter((outcome) => outcome.status === 'cold-fallback')
                 .length,
+          ...(coldFallback === undefined ? {} : { coldFallback }),
           reusedRepositoryCount: outcomes.filter(
             (outcome) => outcome.status === 'existing-graph-reused',
           ).length,
@@ -645,7 +675,14 @@ export function createCodeGraphWorktreeBuildService(
           fingerprintPersistOutcome,
         });
       } else {
-        fail({ kind: 'worker-response' });
+        // The worker's message stays here; only its class and errno go on.
+        fail({
+          kind: 'worker-response',
+          ...(response.failureClass === undefined
+            ? {}
+            : { failureClass: response.failureClass }),
+          ...(response.errno === undefined ? {} : { errno: response.errno }),
+        });
       }
       return response;
     } catch (error) {

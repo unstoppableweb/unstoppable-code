@@ -35,10 +35,14 @@ export interface DigestPreferences {
   monthlyAnchorDay: number;
 }
 
-/** A missing preference row means weekly-only. */
+/**
+ * Digests are opt-in: a missing preference row means every scheduled cadence
+ * is off. Each digest is generated with AI Credits, so nobody receives one
+ * until they turn a cadence on. On-demand digests don't depend on this.
+ */
 export const DEFAULT_DIGEST_PREFERENCES: DigestPreferences = {
   daily: false,
-  weekly: true,
+  weekly: false,
   monthly: false,
   weeklyAnchorDay: 1,
   monthlyAnchorDay: 1,
@@ -89,6 +93,31 @@ export function digestOrdinalDay(day: number): string {
     default:
       return `${value}th`;
   }
+}
+
+/**
+ * Whose digests a preferences card configures. The account sentence names the
+ * product, so it carries the host's brand display name.
+ */
+export type DigestPreferencesScope =
+  | { readonly kind: 'account'; readonly productName: string }
+  | { readonly kind: 'organization' };
+
+/**
+ * Description of a digest preferences card. Digests are opt-in and each one is
+ * generated with AI Credits, so the card says both; the wording matches the
+ * on-demand request form ("billed to your AI Credits based on usage"). The
+ * account and organization sentences differ in whose work and whose credits.
+ */
+export function digestPreferencesDescription(
+  scope: DigestPreferencesScope,
+): string {
+  // "your recent work" rather than "what you shipped": digests go to everyone
+  // on a team, and "shipped" reads as engineering jargon to the marketers,
+  // designers, and PMs who also get one.
+  return scope.kind === 'account'
+    ? `A periodic summary of your recent work, generated from your ${scope.productName} activity and emailed to you. Off until you turn it on. Each digest is billed to your AI Credits based on usage.`
+    : "A periodic summary of the organization's recent work, emailed to every owner and admin. Off until you turn it on. Each digest is billed to the organization's AI Credits based on usage.";
 }
 
 /** Description for the daily cadence. Constant; daily has no anchor. */

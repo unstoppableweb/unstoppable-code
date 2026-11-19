@@ -72,7 +72,6 @@ export function StatusCounts<TStatus extends string>({
       onChange={(next): void => onSelect(next === ALL_VALUE ? null : next)}
       label={ariaLabel}
       width="content"
-      shape="capsule"
       {...(testId === undefined ? {} : { dataTestId: testId })}
     />
   );

@@ -94,7 +94,7 @@ export function SidebarFooterBanner({
           className="-mr-1.5"
         >
           <Button
-            variant="ghost-quiet"
+            variant="ghost"
             size="sm"
             iconOnly
             onClick={trailingAction.onClick}

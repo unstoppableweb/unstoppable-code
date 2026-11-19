@@ -66,7 +66,7 @@ export function StepCard({
               <DragHandleIcon size="sm" />
             </ControlButton>
             <Button
-              variant="ghost-quiet"
+              variant="ghost"
               size="compact"
               iconOnly
               onClick={onDelete}

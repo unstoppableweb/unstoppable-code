@@ -1,250 +1,265 @@
-import { useEffect, useState, type JSX } from 'react';
 import {
-  Button,
-  Heading,
-  ListRow,
-  SegmentedControl,
-  Surface,
-} from '@canopy/ui-shared/components';
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type JSX,
+} from 'react';
+import { OverlayScrollArea, Surface } from '@canopy/ui-shared/components';
 import { applyTheme } from '@/lib/theme';
-import { ComponentsLabSheet } from './ComponentsLabSheet';
 import {
   LabColorModeContext,
-  LabOverviewContext,
+  type LabColorMode,
 } from './componentsLabStageContext';
+import { COMPONENTS_LAB_ENTRIES } from './componentsLabCatalog';
+import { ComponentsLabIntro } from './componentsLabIntro';
 import {
-  COMPONENTS_LAB_ENTRIES,
-  COMPONENTS_LAB_GROUPS,
-  type ComponentsLabEntry,
-} from './componentsLabCatalog';
+  ComponentsLabNav,
+  LAB_ALL,
+  LAB_OVERVIEW,
+  type LabThemeChoice,
+} from './componentsLabNav';
+import {
+  COMPONENTS_LAB_PAGES,
+  resolveComponentsLabTarget,
+  type ComponentsLabPage as LabPage,
+} from './componentsLabPages';
+import {
+  EntrySheet,
+  OnThisPage,
+  PageSheet,
+  scrollToHeading,
+} from './componentsLabPageSheet';
 
 /**
  * Localhost components library (`components-lab.vite.mts`, port 5188). The
- * layout follows the stageshow playground: a catalog grouped into the
- * unified shared components and the UI still waiting to be unified, one
- * specimen sheet at a time (or all of them), a Desktop / Phone width switch
- * and a light / dark switch. Specimens mount only the real shared
+ * shell is a sidebar on the page's rail fill beside one floating content
+ * card: the sidebar holds the search, the pages by section, and the theme
+ * switch; the card holds one page in a 760px column with an "On this page"
+ * list beside it. Specimens mount only the real shared
  * components; nothing here restyles them.
  *
- * With no `?component` the lab opens on the overview: one card per unified
- * component in a grid, each with its live stage, linking to its sheet.
- * `?component=<id>` opens one entry, `?component=all` every unified sheet in
- * one scroll (the capture view), `?width=phone` the 358px column, and
- * `?theme=dark` (or a dark system preference, when no theme is given)
- * starts in dark.
+ * With no `?component` the lab opens on the introduction. `?component=<id>`
+ * opens a page, or the page that holds that sheet, scrolled to it; each page
+ * opened is a history step, so Back returns to the last one.
+ * `?component=all` shows every unified sheet in one page-length scroll (the
+ * capture view). `?theme=dark` or `?theme=light` pins the color mode (with no
+ * theme, it follows the system). `?frame=1` draws the page alone, with no
+ * sidebar or card: open it in a 390px viewport to see or capture a page at a
+ * phone's width, with 16px gutters around the 358px column stageshow designs
+ * its compact layouts for.
  */
 
-type ColorMode = 'light' | 'dark';
-type PreviewWidth = 'desktop' | 'phone';
+const DARK_SCHEME_QUERY = '(prefers-color-scheme: dark)';
+const PREVIEW_ID = 'components-lab-preview';
 
-const ALL = 'all';
-const OVERVIEW = 'overview';
-// A 390px phone viewport with 16px gutters: the 358px column stageshow
-// designs its compact layouts for.
-const PHONE_VIEWPORT_PX = 390;
+type LabView =
+  | { readonly kind: 'overview' }
+  | { readonly kind: 'all' }
+  | {
+      readonly kind: 'page';
+      readonly page: LabPage;
+      readonly entryId?: string;
+    };
 
 function searchParam(name: string): string | null {
   return new URLSearchParams(window.location.search).get(name);
 }
 
-function initialColorMode(): ColorMode {
-  const theme = searchParam('theme');
-  if (theme === 'dark' || theme === 'light') return theme;
-  return window.matchMedia?.('(prefers-color-scheme: dark)').matches
-    ? 'dark'
-    : 'light';
-}
-
-function initialWidth(): PreviewWidth {
-  return searchParam('width') === 'phone' ? 'phone' : 'desktop';
-}
-
-function initialSelection(): string {
+function readView(): LabView {
   const id = searchParam('component');
-  if (id === ALL) return ALL;
-  return COMPONENTS_LAB_ENTRIES.some((entry) => entry.id === id) && id
-    ? id
-    : OVERVIEW;
+  if (id === LAB_ALL) return { kind: 'all' };
+  const target = resolveComponentsLabTarget(id);
+  return target ? { kind: 'page', ...target } : { kind: 'overview' };
 }
 
-function OverviewCard({
-  entry,
-  onOpen,
-}: {
-  readonly entry: ComponentsLabEntry;
-  readonly onOpen: (id: string) => void;
-}): JSX.Element {
-  const { Stage } = entry;
-  return (
-    <div
-      data-testid={`components-lab-card-${entry.id}`}
-      className="flex min-w-0 flex-col items-center gap-3"
-    >
-      <Surface
-        variant="outline"
-        className="pointer-events-none aspect-4/3 w-full overflow-hidden"
-      >
-        <LabOverviewContext.Provider value>
-          {Stage ? <Stage /> : null}
-        </LabOverviewContext.Provider>
-      </Surface>
-      <Button
-        variant="link"
-        aria-label={`Open the ${entry.name} sheet`}
-        onClick={(): void => onOpen(entry.id)}
-      >
-        {entry.name}
-      </Button>
-    </div>
-  );
+function viewId(view: LabView): string {
+  if (view.kind === 'page') return view.page.id;
+  return view.kind === 'all' ? LAB_ALL : LAB_OVERVIEW;
+}
+
+function readTheme(): LabThemeChoice {
+  const theme = searchParam('theme');
+  return theme === 'dark' || theme === 'light' ? theme : 'system';
+}
+
+function subscribeToSystemScheme(onChange: () => void): () => void {
+  const query = window.matchMedia(DARK_SCHEME_QUERY);
+  query.addEventListener('change', onChange);
+  return (): void => query.removeEventListener('change', onChange);
+}
+
+function systemColorMode(): LabColorMode {
+  return window.matchMedia(DARK_SCHEME_QUERY).matches ? 'dark' : 'light';
+}
+
+const UNIFIED_ENTRIES = COMPONENTS_LAB_ENTRIES.filter(
+  (entry) => entry.group === 'Unified',
+);
+
+/** The sheets of a view, in the 760px column. */
+function Sheets({ view }: { readonly view: LabView }): JSX.Element | null {
+  if (view.kind === 'page') return <PageSheet page={view.page} />;
+  if (view.kind === 'all') {
+    return (
+      <div className="flex flex-col gap-16">
+        {UNIFIED_ENTRIES.map((entry) => (
+          <EntrySheet key={entry.id} entry={entry} titleLevel={2} lead />
+        ))}
+      </div>
+    );
+  }
+  return null;
 }
 
 export function ComponentsLabPage(): JSX.Element {
-  const [colorMode, setColorMode] = useState<ColorMode>(initialColorMode);
-  const [width, setWidth] = useState<PreviewWidth>(initialWidth);
-  const [selected, setSelected] = useState<string>(initialSelection);
+  const [theme, setTheme] = useState<LabThemeChoice>(readTheme);
+  const [view, setView] = useState<LabView>(readView);
+  const [selection, setSelection] = useState(0);
+  const [framed] = useState(() => searchParam('frame') === '1');
+  const systemMode = useSyncExternalStore(
+    subscribeToSystemScheme,
+    systemColorMode,
+  );
+  const colorMode = theme === 'system' ? systemMode : theme;
+  const column = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     applyTheme('default', colorMode);
   }, [colorMode]);
 
+  // The theme describes how the page is shown, so it updates the current
+  // history entry; only opening a page adds one.
   useEffect(() => {
     const url = new URL(window.location.href);
-    url.searchParams.set('component', selected);
-    url.searchParams.set('theme', colorMode);
-    if (width === 'phone') url.searchParams.set('width', 'phone');
-    else url.searchParams.delete('width');
-    window.history.replaceState(null, '', url);
-  }, [selected, colorMode, width]);
+    if (theme === 'system') url.searchParams.delete('theme');
+    else url.searchParams.set('theme', theme);
+    window.history.replaceState(window.history.state, '', url);
+  }, [theme]);
 
-  const overview = selected === OVERVIEW;
-  const visible = overview
-    ? []
-    : selected === ALL
-      ? COMPONENTS_LAB_ENTRIES.filter((entry) => entry.group === 'Unified')
-      : COMPONENTS_LAB_ENTRIES.filter((entry) => entry.id === selected);
+  useEffect(() => {
+    // Back and Forward restore the entry's page and the theme its URL pins.
+    const onPopState = (): void => {
+      setView(readView());
+      setTheme(readTheme());
+    };
+    window.addEventListener('popstate', onPopState);
+    return (): void => window.removeEventListener('popstate', onPopState);
+  }, []);
 
-  return (
-    <Surface variant="pane">
-      <div className="flex min-h-screen fg-primary">
-        <Surface
-          as="nav"
-          aria-label="Components"
-          variant="section"
-          boundary="right"
-          extent="viewport"
-          className="sticky top-0 w-60 shrink-0 overflow-y-auto"
-        >
-          <div className="flex flex-col gap-4 px-2 py-4">
-            <div className="px-2">
-              <Heading level={1} variant="title">
-                Components
-              </Heading>
-            </div>
-            <ListRow
-              selected={selected === OVERVIEW}
-              aria-current={selected === OVERVIEW ? 'page' : undefined}
-              onClick={(): void => setSelected(OVERVIEW)}
-            >
-              Overview
-            </ListRow>
-            <ListRow
-              selected={selected === ALL}
-              aria-current={selected === ALL ? 'page' : undefined}
-              onClick={(): void => setSelected(ALL)}
-            >
-              All unified
-            </ListRow>
-            {COMPONENTS_LAB_GROUPS.map((group) => (
-              <div key={group} className="flex flex-col gap-0.5">
-                <div className="px-2 pb-1">
-                  <Heading level={2} variant="label">
-                    {group}
-                  </Heading>
-                </div>
-                {COMPONENTS_LAB_ENTRIES.filter(
-                  (entry) => entry.group === group,
-                ).map((entry) => (
-                  <ListRow
-                    key={entry.id}
-                    selected={selected === entry.id}
-                    aria-current={selected === entry.id ? 'page' : undefined}
-                    onClick={(): void => setSelected(entry.id)}
-                  >
-                    {entry.name}
-                  </ListRow>
-                ))}
-              </div>
-            ))}
+  const open = useCallback((id: string): void => {
+    const url = new URL(window.location.href);
+    if (id === LAB_OVERVIEW) url.searchParams.delete('component');
+    else url.searchParams.set('component', id);
+    if (url.toString() !== window.location.href) {
+      window.history.pushState(null, '', url);
+    }
+    setView(readView());
+    setSelection((count) => count + 1);
+  }, []);
+
+  // A link that names a sheet inside a page lands on that sheet; any other
+  // page opens at its top.
+  const entryId = view.kind === 'page' ? view.entryId : undefined;
+  const openId = viewId(view);
+  useEffect(() => {
+    const preview = document.getElementById(PREVIEW_ID);
+    const target = entryId
+      ? document
+          .getElementById(entryId)
+          ?.querySelector('[data-lab-entry-title]')
+      : null;
+    if (target) scrollToHeading(target);
+    else preview?.scrollTo({ top: 0 });
+    if (!target) window.scrollTo({ top: 0 });
+    // `selection` re-runs this when the open page is chosen again.
+  }, [openId, entryId, selection]);
+
+  if (framed) {
+    return (
+      <LabColorModeContext.Provider value={colorMode}>
+        <Surface variant="panel">
+          <div
+            id={PREVIEW_ID}
+            data-view="frame"
+            className="min-h-screen px-4 py-6 fg-primary"
+          >
+            {/* A framed link with no component, or one the catalog does not
+                have, opens the introduction, as the full lab does. */}
+            {view.kind === 'overview' ? (
+              <ComponentsLabIntro onOpen={open} />
+            ) : (
+              <Sheets view={view} />
+            )}
           </div>
         </Surface>
-        <div className="flex min-w-0 flex-1 flex-col">
-          <Surface
-            as="header"
-            variant="pane"
-            boundary="bottom"
-            className="sticky top-0 z-10"
-          >
-            <div className="flex flex-wrap items-center gap-3 px-6 py-3">
-              <SegmentedControl
-                label="Preview width"
-                value={width}
-                width="content"
-                onChange={setWidth}
-                options={[
-                  { value: 'desktop', label: 'Desktop' },
-                  { value: 'phone', label: 'Phone' },
-                ]}
-              />
-              <SegmentedControl
-                label="Color mode"
-                value={colorMode}
-                width="content"
-                onChange={setColorMode}
-                options={[
-                  { value: 'light', label: 'Light' },
-                  { value: 'dark', label: 'Dark' },
-                ]}
-              />
-              <p className="text-xs fg-tertiary">
-                Real shared components only. Each stage plays its story once;
-                the sheets under it are live, so point at a control to judge it.
-              </p>
-            </div>
-          </Surface>
-          <main
-            id="components-lab-preview"
-            className={`flex flex-col gap-12 py-6 ${width === 'phone' ? 'px-4' : 'px-6'}`}
-            data-view={overview ? 'overview' : 'sheets'}
-            style={
-              width === 'phone'
-                ? { width: PHONE_VIEWPORT_PX, maxWidth: '100%' }
-                : undefined
-            }
-          >
-            <LabColorModeContext.Provider value={colorMode}>
-              {overview ? (
-                <div
-                  data-testid="components-lab-overview"
-                  className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,22rem),35rem))] gap-x-8 gap-y-10"
+      </LabColorModeContext.Provider>
+    );
+  }
+
+  const all = view.kind === 'all';
+
+  return (
+    // The capture view grows with its sheets, so a full-page capture holds
+    // them all; every other view keeps the shell at the viewport and scrolls
+    // inside the content card. Each scroll region is an `OverlayScrollArea`:
+    // its scrollbar floats over the content, so the card keeps its 4px from
+    // the shell's edge and the column stays centred whether or not a
+    // scrollbar shows (docs/design/layout.md, Overflow and scroll).
+    <Surface variant="rail" extent={all ? 'content' : 'viewport'}>
+      <div
+        className={
+          all ? 'flex min-h-screen fg-primary' : 'flex h-full fg-primary'
+        }
+      >
+        <ComponentsLabNav
+          pages={COMPONENTS_LAB_PAGES}
+          selected={openId}
+          onSelect={open}
+          theme={theme}
+          onThemeChange={setTheme}
+        />
+        <LabColorModeContext.Provider value={colorMode}>
+          {view.kind === 'overview' ? (
+            <main data-view="overview" className="flex min-w-0 flex-1 flex-col">
+              <OverlayScrollArea
+                className="min-h-0 flex-1"
+                viewportProps={{ id: PREVIEW_ID }}
+                contentClassName="py-1 pr-1"
+              >
+                <ComponentsLabIntro onOpen={open} />
+              </OverlayScrollArea>
+            </main>
+          ) : (
+            <div className="flex min-w-0 flex-1 flex-col py-1 pr-1">
+              <Surface
+                as="main"
+                variant="card"
+                data-view="sheets"
+                className="flex min-h-0 flex-1 flex-col overflow-hidden"
+              >
+                <OverlayScrollArea
+                  className="min-h-0 flex-1"
+                  viewportProps={{ id: PREVIEW_ID }}
                 >
-                  {COMPONENTS_LAB_ENTRIES.filter(
-                    (entry) => entry.group === 'Unified' && entry.Stage,
-                  ).map((entry) => (
-                    <OverviewCard
-                      key={entry.id}
-                      entry={entry}
-                      onOpen={setSelected}
-                    />
-                  ))}
-                </div>
-              ) : null}
-              {visible.map((entry) => (
-                <ComponentsLabSheet key={entry.id} entry={entry} />
-              ))}
-            </LabColorModeContext.Provider>
-          </main>
-        </div>
+                  <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,47.5rem)_minmax(0,1fr)] gap-x-6 px-10 py-15 xl:grid-cols-[minmax(0,1fr)_minmax(0,47.5rem)_minmax(10rem,1fr)]">
+                    <div ref={column} className="col-start-2 min-w-0">
+                      <Sheets view={view} />
+                    </div>
+                    {view.kind === 'page' ? (
+                      <div className="hidden min-w-0 xl:block">
+                        <div className="sticky top-15">
+                          <OnThisPage page={view.page} container={column} />
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                </OverlayScrollArea>
+              </Surface>
+            </div>
+          )}
+        </LabColorModeContext.Provider>
       </div>
     </Surface>
   );

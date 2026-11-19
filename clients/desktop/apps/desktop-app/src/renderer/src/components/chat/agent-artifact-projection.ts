@@ -13,6 +13,8 @@ import {
   agentArtifactTurnRelation,
   latestGitHubRunObservation,
 } from '@canopy/protocol/agent-artifacts';
+import type { AgentDelegationSnapshot } from '@canopy/protocol/delegation';
+import { overlayManagedDelegationSnapshot } from '@canopy/ui-app/managed-delegation-progress';
 import type { DisplayBlock, TurnGroupOrMessage } from './types';
 import { isClaudeAgentRunning, codexAgentState } from './agent-block-state';
 import { isAsyncAgentLaunchText } from '@canopy/desktop-shared/lib/background-work';
@@ -79,11 +81,16 @@ export function projectAgentArtifactsWithCarry(
   );
 }
 
-/** Reuse the already-merged chat blocks, including their complete child activity. */
+/**
+ * Reuse the already-merged chat blocks, including their complete child
+ * activity. `liveSnapshots` (a cloud chat's, CAN-7245) overlay each
+ * delegate's card first: its card keeps its first state.
+ */
 export function selectActiveAgentBlocks(
   groups: readonly TurnGroupOrMessage[],
   processes: readonly BackgroundProcess[],
   chatId: string,
+  liveSnapshots?: ReadonlyMap<string, AgentDelegationSnapshot>,
 ): DisplayBlock[] {
   const latest = new Map<string, DisplayBlock>();
   const nativeStatuses = new Map(
@@ -95,12 +102,22 @@ export function selectActiveAgentBlocks(
     if (block.type === 'delegated_agent_call') {
       const key = `managed:${block.delegationId}`;
       const previous = latest.get(key);
+      const shown =
+        liveSnapshots === undefined
+          ? block
+          : {
+              ...block,
+              ...overlayManagedDelegationSnapshot(
+                block,
+                liveSnapshots.get(block.delegationId),
+              ),
+            };
       if (
         !previous ||
         previous.type !== 'delegated_agent_call' ||
-        (block.runGeneration ?? 1) >= (previous.runGeneration ?? 1)
+        (shown.runGeneration ?? 1) >= (previous.runGeneration ?? 1)
       ) {
-        latest.set(key, block);
+        latest.set(key, shown);
       }
     } else if (block.type === 'agent') {
       latest.set(`claude:${block.toolUseId}`, block);

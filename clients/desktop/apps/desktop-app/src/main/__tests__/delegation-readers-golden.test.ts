@@ -43,7 +43,7 @@ type ChatScope = WorktreeScope & { chatId: string };
 type FixtureName =
   | 'replay-events'
   | 'saved-parent-rows'
-  | 'live-durable-portal-payloads'
+  | 'live-durable-remote-control-payloads'
   | 'recovery-mutations'
   | 'tree'
   | 'transcript-page'
@@ -156,7 +156,7 @@ const mockReadDelegationItems = jest.fn<
     },
   ]
 >(() => Promise.resolve([]));
-const mockPortalRead = jest.fn<
+const mockRemoteControlRead = jest.fn<
   Promise<ChatTabsFile>,
   [string, string, ChatReadSelection?]
 >(() => Promise.resolve(legacyEmptyChatTabs()));
@@ -339,13 +339,13 @@ jest.mock('../services/chat-state-service', () => ({
     }) satisfies HostDouble & Record<string, unknown>,
 }));
 
-jest.mock('../services/portal-chat-tabs-cache', () => ({
-  portalChatTabsCache: {
+jest.mock('../services/remote-control-chat-tabs-cache', () => ({
+  remoteControlChatTabsCache: {
     read: (
-      ...args: Parameters<typeof mockPortalRead>
-    ): ReturnType<typeof mockPortalRead> =>
+      ...args: Parameters<typeof mockRemoteControlRead>
+    ): ReturnType<typeof mockRemoteControlRead> =>
       mockTrace.call('compatibility.portalTabs', undefined, args, () =>
-        mockPortalRead(...args),
+        mockRemoteControlRead(...args),
       ),
   },
 }));
@@ -685,7 +685,7 @@ describe.each(['absent', 'production'])('%s composition', (composition) => {
       .mockReset()
       .mockResolvedValue({ version: 1, archived: [] });
     mockReadDelegationItems.mockReset().mockResolvedValue([]);
-    mockPortalRead.mockReset().mockResolvedValue(legacyEmptyChatTabs());
+    mockRemoteControlRead.mockReset().mockResolvedValue(legacyEmptyChatTabs());
     temporaryRoot = await mkdtemp(path.join(tmpdir(), 'reader-goldens-'));
     mockDataRoot = temporaryRoot;
     currentComposition = composition;
@@ -858,7 +858,10 @@ describe.each(['absent', 'production'])('%s composition', (composition) => {
       liveFrames: frames,
       durableCards,
     };
-    const expected = compareGolden('live-durable-portal-payloads', output);
+    const expected = compareGolden(
+      'live-durable-remote-control-payloads',
+      output,
+    );
     const mutated = { ...output, liveFrames: output.liveFrames.slice(0, 2) };
     expect(() =>
       assertGoldenMatch(normalizeVolatile(mutated), expected),

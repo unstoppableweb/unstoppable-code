@@ -125,6 +125,8 @@ import {
   type SessionTurnSettings,
   restrictSessionApprovalRules,
 } from '../agents/session-manager';
+import { isNoBillingSourceRefusalCached } from '../agents/no-billing-source-refusal';
+import { isHelperNoBillingSourceError } from '../agents/helper-no-billing-source';
 import {
   isRecreateDeferrable,
   liveSessionSettingsOverlay,
@@ -521,7 +523,7 @@ async function generateWorktreeChatSummary(
   },
 ): Promise<{
   text: string;
-  fallback?: { reason: string; retryable?: boolean };
+  fallback?: { reason: string; retryable?: boolean; skipped?: true };
   usage?: {
     inputTokens?: number;
     outputTokens?: number;
@@ -618,6 +620,20 @@ export function scheduleChatSummary(options: ScheduleChatSummaryOptions): void {
         }
         const prefs = await readPreferencesFile();
         const summaryModel = prefs.summaryModel;
+        // The title model can be on another provider than the chat. When the
+        // caches already show that provider signed out with no billing source,
+        // the helper would only be skipped (CAN-7062): open no audit entry, so
+        // each turn adds nothing, and leave naming pending for after sign-in.
+        if (
+          isNoBillingSourceRefusalCached(
+            {
+              projectId: options.standaloneChatProjectId ?? options.projectId,
+              model: summaryModel,
+            },
+            requireProviderForModel(summaryModel),
+          )
+        )
+          return;
         const taskKey = `helper:chat-summary:${options.projectId}/${options.worktreeId}/${options.chatId}:${Date.now()}`;
         const summaryModelConfig = resolveCodexPreferenceModelConfig(
           summaryModel,
@@ -706,6 +722,18 @@ export function scheduleChatSummary(options: ScheduleChatSummaryOptions): void {
           ...(hasBoundWorkOwner ? { workOwner } : {}),
         })
           .then(async (result) => {
+            if (result.fallback?.skipped === true) {
+              // Not started: the provider is signed out with no billing
+              // source (CAN-7062). Naming stays pending, so a turn after
+              // sign-in names the chat; the fallback is never committed.
+              observabilityService.finalizeObservedTask(
+                taskKey,
+                'cancelled',
+                result.fallback.reason,
+                result.usage,
+              );
+              return;
+            }
             if (result.fallback?.retryable === true) {
               const failures =
                 (retryableInitialTitleFailures.get(key) ?? 0) + 1;
@@ -978,9 +1006,12 @@ export function scheduleBranchNaming(
     },
   }).catch((error: unknown) => {
     void observabilityServicePromise.then((observabilityService) => {
+      // A helper skipped because its provider is signed out with no billing
+      // source never started (CAN-7062): `cancelled` with the reason, not a
+      // provider failure. The branch prompt below is reopened either way.
       observabilityService.finalizeObservedTask(
         branchTaskKey,
-        'failure',
+        isHelperNoBillingSourceError(error) ? 'cancelled' : 'failure',
         error instanceof Error ? error.message : String(error),
         readHelperUsage(error),
       );
@@ -2206,11 +2237,23 @@ async function dispatchHeldWorktreeChatTurn<
     );
     let sessionConfiguration = preparedSession.sessionConfiguration;
 
+    // A send the session will refuse with `no_billing_source` (known from
+    // caches only) schedules no naming helpers: they would be skipped too
+    // (CAN-7062). A cold cache schedules as before.
     if (
       !options.hiddenDeferredContinuation &&
       !isCoworkChat &&
       !isPlanExplore &&
-      !isCodeReview
+      !isCodeReview &&
+      !isNoBillingSourceRefusalCached(
+        {
+          projectId: options.projectId,
+          model: sessionConfiguration.runtimeModel,
+          aiCreditsRouting: options.aiCreditsRouting,
+          subscriptionBillingOverride: options.subscriptionBillingOverride,
+        },
+        sessionConfiguration.runtimeProviderType,
+      )
     ) {
       if (!options.sdkSessionId && !options.skipBranchNaming) {
         scheduleBranchNaming({

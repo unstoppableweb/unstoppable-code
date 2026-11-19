@@ -9,7 +9,7 @@ import {
 import type {
   AntigravityAccountSnapshot,
   OpenCodeAccountSnapshot,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import {
   DropdownMenuSurface,
   Button,
@@ -22,7 +22,10 @@ import {
   OnboardingTip,
   OpenCodeAccountCard,
   PageColumn,
+  PickerMenuOptionContent,
   PickerMenuOptionLabel,
+  PickerMenuOptionTrailing,
+  PickerMenuSearchHeader,
   PickerMenuTab,
   PickerMenuTabList,
   PickList,
@@ -275,7 +278,10 @@ export function CodeBlockSpecimen(): JSX.Element {
           </OnPageFill>
         </SpecimenCell>
       </SpecimenPanel>
-      <SpecimenPanel title="Markdown: the copy button reveals on hover or focus">
+      <SpecimenPanel
+        title="Markdown"
+        hint="The copy button reveals on hover or focus"
+      >
         <SpecimenCell label="Default" wide>
           <div className="w-full">
             <CodeBlock format="markdown">
@@ -395,7 +401,7 @@ function Tip({
 export function OnboardingTipSpecimen(): JSX.Element {
   return (
     <div className="flex flex-col gap-6">
-      <SpecimenPanel title="Inline (heads a page or panel)">
+      <SpecimenPanel title="Inline" hint="Heads a page or panel">
         <SpecimenCell label="Got it and close" wide>
           <div className="w-full max-w-xl">
             <Tip />
@@ -754,13 +760,21 @@ const COMMANDS: readonly Command[] = [
 const getKey = (item: Command): string => item.id;
 const getLabel = (item: Command): string => item.label;
 
+/**
+ * The picker's own surface, drawn open in the page. A pick list's parts take
+ * their insets from it: 4px around the rows, with the search and footer rules
+ * running to its edges. Drawn in a box of the page's own, the rows touch the
+ * box's edges and the search, the rows and any note under them each start at
+ * a different inset. It sizes as a picker does (as wide as its longest row,
+ * 160px to 320px). It is a picture of a picker: nothing opens or dismisses
+ * it, so it is a labelled group, not a menu.
+ */
 function Frame({ children }: { readonly children: ReactNode }): JSX.Element {
   return (
     <DropdownMenuSurface
-      role="presentation"
       shell="picker"
-      padding="none"
-      className="w-full max-w-sm overflow-hidden"
+      role="group"
+      aria-label="Picker preview"
     >
       {children}
     </DropdownMenuSurface>
@@ -770,31 +784,38 @@ function Frame({ children }: { readonly children: ReactNode }): JSX.Element {
 function LivePickList(): JSX.Element {
   const [picked, setPicked] = useState<string | null>(null);
   return (
-    <Frame>
-      <PickList
-        items={COMMANDS}
-        getKey={getKey}
-        getLabel={getLabel}
-        onPick={(item): void => setPicked(item.label)}
-        searchLabel="Search commands"
-        listLabel="Commands"
-        emptyLabel="No commands match."
-        autoFocus={false}
-        listMaxHeight="md"
-        selectedKey="settings"
-        renderItem={(item) => (
-          <>
-            <PickerMenuOptionLabel>{item.label}</PickerMenuOptionLabel>
-            {item.hint ? (
-              <span className="text-2xs fg-tertiary">{item.hint}</span>
-            ) : null}
-          </>
-        )}
-      />
-      <p className="px-3 py-2 text-2xs fg-tertiary">
-        {picked ? `Picked: ${picked}` : 'Type, use the arrows, Enter or click.'}
-      </p>
-    </Frame>
+    <SpecimenCell
+      label={
+        picked
+          ? `Picked: ${picked}`
+          : 'Live: type, use the arrows, Enter or click. The current value starts active'
+      }
+    >
+      <Frame>
+        <PickList
+          items={COMMANDS}
+          getKey={getKey}
+          getLabel={getLabel}
+          onPick={(item): void => setPicked(item.label)}
+          searchLabel="Search commands"
+          listLabel="Commands"
+          emptyLabel="No commands match."
+          autoFocus={false}
+          listMaxHeight="md"
+          selectedKey="settings"
+          renderItem={(item) => (
+            <>
+              <PickerMenuOptionContent>
+                <PickerMenuOptionLabel>{item.label}</PickerMenuOptionLabel>
+              </PickerMenuOptionContent>
+              {item.hint ? (
+                <PickerMenuOptionTrailing>{item.hint}</PickerMenuOptionTrailing>
+              ) : null}
+            </>
+          )}
+        />
+      </Frame>
+    </SpecimenCell>
   );
 }
 
@@ -834,45 +855,52 @@ function LivePickListResults(): JSX.Element {
     onPick: setPicked,
   });
   return (
-    <Frame>
-      <div className="p-1">
-        <SearchField
-          value={query}
-          onValueChange={(next): void => {
-            setQuery(next);
-            setMoved(null);
-          }}
-          onKeyDown={handleKeys}
-          placeholder="Search"
-          aria-label="Search"
-          role="combobox"
-          aria-autocomplete="list"
-          aria-expanded={rows.length > 0}
-          aria-controls={listId}
-          aria-activedescendant={
-            activeKey === null ? undefined : pickListOptionId(listId, activeKey)
-          }
-        />
-      </div>
-      <div className="flex max-h-64 min-h-0 flex-col px-1 pb-1">
-        <PickListResults
-          items={rows}
-          getKey={getKey}
-          getLabel={getLabel}
-          getSection={getSection}
-          isItemDisabled={isArchivedRow}
-          onPick={(item): void => setPicked(item.id)}
-          listId={listId}
-          listLabel="Results"
-          activeKey={activeKey}
-          onActiveKeyChange={setMoved}
-          emptyLabel="Nothing matches."
-        />
-      </div>
-      <p className="px-3 py-2 text-2xs fg-tertiary">
-        {picked ? `Picked: ${picked}` : 'The field keeps focus.'}
-      </p>
-    </Frame>
+    <SpecimenCell
+      label={
+        picked
+          ? `Picked: ${picked}`
+          : 'Live: sections, a disabled row the keyboard skips. The field keeps focus'
+      }
+    >
+      <Frame>
+        <PickerMenuSearchHeader>
+          <SearchField
+            value={query}
+            onValueChange={(next): void => {
+              setQuery(next);
+              setMoved(null);
+            }}
+            onKeyDown={handleKeys}
+            placeholder="Search"
+            aria-label="Search"
+            role="combobox"
+            aria-autocomplete="list"
+            aria-expanded={rows.length > 0}
+            aria-controls={listId}
+            aria-activedescendant={
+              activeKey === null
+                ? undefined
+                : pickListOptionId(listId, activeKey)
+            }
+          />
+        </PickerMenuSearchHeader>
+        <div className="flex max-h-64 min-h-0 flex-col">
+          <PickListResults
+            items={rows}
+            getKey={getKey}
+            getLabel={getLabel}
+            getSection={getSection}
+            isItemDisabled={isArchivedRow}
+            onPick={(item): void => setPicked(item.id)}
+            listId={listId}
+            listLabel="Results"
+            activeKey={activeKey}
+            onActiveKeyChange={setMoved}
+            emptyLabel="Nothing matches."
+          />
+        </div>
+      </Frame>
+    </SpecimenCell>
   );
 }
 
@@ -897,14 +925,15 @@ function PickListTabs(): JSX.Element {
 export function PickListResultsSpecimen(): JSX.Element {
   return (
     <div className="flex flex-col gap-6">
-      <SpecimenPanel title="A host's own field over the shared results">
+      <SpecimenPanel
+        title="A host's own field"
+        hint="A palette or a composer keeps its own field and shows the shared results under it"
+      >
         <SpecimenGrid min={320}>
-          <SpecimenCell label="Live: sections, a disabled row the keyboard skips">
-            <LivePickListResults />
-          </SpecimenCell>
+          <LivePickListResults />
         </SpecimenGrid>
       </SpecimenPanel>
-      <SpecimenPanel title="PickList slots">
+      <SpecimenPanel title="Between and beside the rows">
         <SpecimenGrid min={320}>
           <SpecimenCell label="A header between the search and the list">
             <Frame>
@@ -1007,9 +1036,7 @@ export function PickListSpecimen(): JSX.Element {
     <div className="flex flex-col gap-6">
       <SpecimenPanel title="Search-and-pick list">
         <SpecimenGrid min={320}>
-          <SpecimenCell label="Live: filters, arrows, Enter or click pick; the current value starts active">
-            <LivePickList />
-          </SpecimenCell>
+          <LivePickList />
           <SpecimenCell label="Plain rows, no selection">
             <Frame>
               <PickList
@@ -1097,7 +1124,10 @@ const NOW = Date.parse('2026-11-04T12:00:00.000Z');
 /** PipelineDispatchedTime: row and menu variants, and the unknown start. */
 export function PipelineDispatchedTimeSpecimen(): JSX.Element {
   return (
-    <SpecimenPanel title="Dispatched time (hover for the exact local time)">
+    <SpecimenPanel
+      title="Dispatched time"
+      hint="Hover for the exact local time"
+    >
       <SpecimenGrid min={240}>
         <SpecimenCell label="Row variant, 2 hours ago">
           <PipelineDispatchedTime

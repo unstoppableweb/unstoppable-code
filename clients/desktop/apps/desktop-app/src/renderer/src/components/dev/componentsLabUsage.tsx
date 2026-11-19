@@ -38,9 +38,12 @@ const noop = (): void => undefined;
 
 const METER_VALUES: readonly number[] = [0, 0.4, 12, 45, 69, 70, 89, 90, 100];
 
-function UsageMeterSection(): JSX.Element {
+export function UsageMeterSection(): JSX.Element {
   return (
-    <SpecimenPanel title="UsageMeter (accent, then warning from 70%, destructive from 90%)">
+    <SpecimenPanel
+      title="UsageMeter"
+      hint="Accent, then warning from 70%, destructive from 90%"
+    >
       <SpecimenGrid min={200}>
         {METER_VALUES.map((value) => (
           <SpecimenCell
@@ -63,7 +66,7 @@ function UsageMeterSection(): JSX.Element {
   );
 }
 
-function UsageActionsSection(): JSX.Element {
+export function UsageActionsSection(): JSX.Element {
   const [open, setOpen] = useState(false);
   return (
     <SpecimenPanel title="Usage popover actions">
@@ -150,7 +153,7 @@ function UsageActionsSection(): JSX.Element {
   );
 }
 
-function UsageLimitSection(): JSX.Element {
+export function UsageLimitSection(): JSX.Element {
   return (
     <SpecimenPanel title="UsageLimitNotice">
       <SpecimenCell label="claude, with actions" wide>
@@ -255,7 +258,7 @@ const WAKE_BOUNDARIES: readonly {
   },
 ];
 
-function WakeSection(): JSX.Element {
+export function WakeSection(): JSX.Element {
   const [outcome, setOutcome] = useState<'ok' | 'fail'>('fail');
   const onContinue = (): Promise<void> =>
     new Promise((resolve, reject) => {
@@ -345,7 +348,7 @@ const RUNS: readonly { label: string; run: WorkflowLastRun | null }[] = [
   { label: 'succeeded, time unknown', run: { state: 'success' } },
 ];
 
-function WorkflowSection(): JSX.Element {
+export function WorkflowSection(): JSX.Element {
   return (
     <SpecimenPanel title="WorkflowLastRunText">
       <SpecimenGrid min={260}>
@@ -385,7 +388,7 @@ function WorkflowSection(): JSX.Element {
 
 type UninstallCase = 'ok' | 'message' | 'reject' | 'verb';
 
-function UninstallSection(): JSX.Element {
+export function UninstallSection(): JSX.Element {
   const [open, setOpen] = useState<UninstallCase | null>(null);
   const close = (): void => setOpen(null);
   const run = (kind: UninstallCase) => (): Promise<string | null> =>
@@ -430,9 +433,9 @@ function UninstallSection(): JSX.Element {
   );
 }
 
-function UpdateMarkerSection(): JSX.Element {
+export function UpdateMarkerSection(): JSX.Element {
   return (
-    <SpecimenPanel title="UpdateMarker (hover or focus for the version)">
+    <SpecimenPanel title="UpdateMarker" hint="Hover or focus for the version">
       <SpecimenGrid min={220}>
         <SpecimenCell label="version known">
           <span className="inline-flex items-center gap-1 text-s">
@@ -456,7 +459,7 @@ function UpdateMarkerSection(): JSX.Element {
 
 // -------------------------------------------------------------- Tooltips
 
-function TooltipHandoffSection(): JSX.Element {
+export function TooltipHandoffSection(): JSX.Element {
   const row = (
     <span className="inline-flex gap-1">
       <Tooltip label="Search">
@@ -477,7 +480,7 @@ function TooltipHandoffSection(): JSX.Element {
     </span>
   );
   return (
-    <SpecimenPanel title="TooltipProvider (hover across the buttons)">
+    <SpecimenPanel title="TooltipProvider" hint="Hover across the buttons">
       <SpecimenGrid min={260}>
         <SpecimenCell label="HostTooltipProvider: short first delay, then instant handoff">
           <HostTooltipProvider>{row}</HostTooltipProvider>
@@ -493,20 +496,5 @@ function TooltipHandoffSection(): JSX.Element {
         </SpecimenCell>
       </SpecimenGrid>
     </SpecimenPanel>
-  );
-}
-
-export function UsagePartsSpecimen(): JSX.Element {
-  return (
-    <div className="flex flex-col gap-6">
-      <UsageMeterSection />
-      <UsageActionsSection />
-      <UsageLimitSection />
-      <WakeSection />
-      <WorkflowSection />
-      <UninstallSection />
-      <UpdateMarkerSection />
-      <TooltipHandoffSection />
-    </div>
   );
 }

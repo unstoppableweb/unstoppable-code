@@ -39,7 +39,6 @@ import {
   buildAppAdvisorProjectAgentAccessOwnerOptions,
   coerceAppAdvisorProjectAgentAccess,
 } from './app-advisor-project-agent-access-preferences';
-import { useExperimentalFeaturesEnabled } from '@/stores/experimentalFeaturesStore';
 import { useWorkspaceContextStore } from '@/stores/workspaceContextStore';
 
 const PROJECT_AGENT_ACCESS_SAVE_ERROR =
@@ -79,7 +78,6 @@ export function AppAdvisorTab(): JSX.Element {
     () => buildAppAdvisorProjectAgentAccessOwnerOptions(organizations),
     [organizations],
   );
-  const segmentShape = useExperimentalFeaturesEnabled() ? 'capsule' : 'rounded';
   const projectAgentAccess = useMemo(
     () =>
       coerceAppAdvisorProjectAgentAccess(prefs?.appAdvisorProjectAgentAccess),
@@ -238,7 +236,6 @@ export function AppAdvisorTab(): JSX.Element {
             ownerOptions={ownerOptions}
             onChange={handleProjectAgentAccessChange}
             saving={savingProjectAgentAccess}
-            segmentShape={segmentShape}
           />
         </SettingsGroup>
       </SettingsSection>

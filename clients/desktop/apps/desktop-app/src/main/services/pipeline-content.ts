@@ -1,9 +1,9 @@
 import { parseAgentTranscriptLines } from '@canopy/agent-transcript';
 import type { AgentProviderType } from '@canopy/desktop-shared/types';
 import {
-  PORTAL_PIPELINE_CONTENT_PAGE_MAX_CHARS,
-  type PortalPipelineContentReadResult,
-} from '@canopy/protocol/portal';
+  REMOTE_CONTROL_PIPELINE_CONTENT_PAGE_MAX_CHARS,
+  type RemoteControlPipelineContentReadResult,
+} from '@canopy/protocol/remote-control/shell';
 
 /**
  * Documents for `portal.pipeline.content.read` (CAN-3717): the readable text
@@ -11,7 +11,7 @@ import {
  * Pure; `pipelines-service` resolves and reads the files.
  */
 export interface PipelineContentDocument {
-  format: PortalPipelineContentReadResult['format'];
+  format: RemoteControlPipelineContentReadResult['format'];
   text: string;
 }
 
@@ -88,7 +88,7 @@ export function reportDocument(parts: {
 }
 
 /**
- * One page starting at [offset], at most {@link PORTAL_PIPELINE_CONTENT_PAGE_MAX_CHARS}
+ * One page starting at [offset], at most {@link REMOTE_CONTROL_PIPELINE_CONTENT_PAGE_MAX_CHARS}
  * long and never ending inside a surrogate pair. Null for an offset outside
  * the document or inside a pair.
  */
@@ -96,7 +96,7 @@ export function pipelineContentPage(
   document: PipelineContentDocument,
   offset: number,
   revision: string,
-): PortalPipelineContentReadResult | null {
+): RemoteControlPipelineContentReadResult | null {
   const { text } = document;
   if (
     !Number.isSafeInteger(offset) ||
@@ -108,7 +108,7 @@ export function pipelineContentPage(
   }
   let end = Math.min(
     text.length,
-    offset + PORTAL_PIPELINE_CONTENT_PAGE_MAX_CHARS,
+    offset + REMOTE_CONTROL_PIPELINE_CONTENT_PAGE_MAX_CHARS,
   );
   if (end < text.length && isLowSurrogate(text.charCodeAt(end))) end -= 1;
   return {

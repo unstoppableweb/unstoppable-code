@@ -57,7 +57,7 @@ const DOT_STATES: readonly {
 export function ProviderRowLabelSpecimen(): JSX.Element {
   return (
     <div className="flex flex-col gap-6">
-      <SpecimenPanel title="ProviderRowLabel: mark, name and status dot">
+      <SpecimenPanel title="ProviderRowLabel" hint="Mark, name and status dot">
         <SpecimenGrid min={220}>
           {DOT_STATES.map(({ tone, label, caption }) => (
             <SpecimenCell key={tone} label={caption}>
@@ -198,7 +198,10 @@ function RailFrame({
 /** ResizeRailIndicator: rest, hover (live) and dragging, both directions. */
 export function ResizeRailSpecimen(): JSX.Element {
   return (
-    <SpecimenPanel title="The line inside a resize handle (hover a handle to see the accent)">
+    <SpecimenPanel
+      title="The line inside a resize handle"
+      hint="Hover a handle to see the accent"
+    >
       <SpecimenGrid min={200}>
         <SpecimenCell label="Vertical, at rest">
           <RailFrame line="vertical" active={false} />

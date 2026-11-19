@@ -40,6 +40,8 @@ const tokenReads: string[] = [];
 const onDefaultRead = new Map<number, () => void>();
 // Default-credential reads, counted from 1, that never settle.
 const stalledDefaultReads = new Set<number>();
+// Runs on each stored-PAT read, after the value is taken.
+let onPatRead: (() => void) | undefined;
 jest.mock('../lib/github-auth', () => ({
   resolveGitHubToken: (): Promise<string> => {
     tokenReads.push('default');
@@ -61,7 +63,9 @@ jest.mock('../lib/github-auth', () => ({
   },
   loadStoredPat: (): Promise<string> => {
     tokenReads.push('pat');
-    return Promise.resolve(sources.pat);
+    const value = sources.pat;
+    onPatRead?.();
+    return Promise.resolve(value);
   },
   loadGhCliToken: (): Promise<string> => {
     tokenReads.push('gh-cli');
@@ -132,6 +136,7 @@ beforeEach(async () => {
   merges.length = 0;
   onDefaultRead.clear();
   stalledDefaultReads.clear();
+  onPatRead = undefined;
   debugCalls.length = 0;
   currentFetch = refuseNetwork;
   sources.resolved = TOKENS.defaultOne;
@@ -1103,4 +1108,517 @@ describe('credential residue', () => {
       afterAbort: headerResidue(),
     }).toMatchSnapshot();
   });
+});
+
+describe('lease lifetime and attempt settle', () => {
+  const MINUTE = 60_000;
+
+  const readPath =
+    (path: string) =>
+    async (
+      octokit: Octokit,
+    ): Promise<BrokerModule.GitHubRawResponse<unknown>> => {
+      const response = await octokit.request(`GET ${path}`);
+      return { status: response.status, data: response.data };
+    };
+  const repoRead = readPath('/repos/acme/app');
+
+  async function lifetime(): Promise<number> {
+    return (await import('../lib/github-broker/credential-port'))
+      .GITHUB_BROKER_LEASE_TTL_MS;
+  }
+
+  /** The typed shape of a refusal, with no credential or scope in it. */
+  function refusal(promise: Promise<unknown>): Promise<unknown> {
+    return promise.then(
+      () => 'resolved',
+      (error: unknown) => ({
+        name: error instanceof Error ? error.name : 'other',
+        code: brokerModule.isGitHubBrokerError(error) ? error.code : 'other',
+        reason:
+          typeof error === 'object' && error !== null && 'reason' in error
+            ? error.reason
+            : undefined,
+        retriable: brokerModule.isGitHubBrokerError(error)
+          ? error.retriable
+          : undefined,
+        carriesToken: containsToken(error),
+        carriesScope: containsScope(error),
+      }),
+    );
+  }
+  const EXPIRED = {
+    name: 'GitHubBrokerLeaseExpiredError',
+    code: 'not_authenticated',
+    reason: 'lease_expired',
+    retriable: false,
+    carriesToken: false,
+    carriesScope: false,
+  };
+
+  it('gives pinned leases a 65-minute lifetime, past the longest primary rate-limit reset', async () => {
+    expect(await lifetime()).toBe(65 * MINUTE);
+  });
+
+  it('refuses a pinned lease once its lifetime ends, typed as lease_expired, before its credential is read or anything is sent, and never expires the default lease', async () => {
+    const sent: SentRequest[] = [];
+    currentFetch = transport(sent, () => ({
+      status: 200,
+      body: { full_name: 'acme/app' },
+    }));
+    const ttl = await lifetime();
+    const mintedAt = Date.now();
+    const pat = await port.lease('pat');
+    if (!pat) throw new Error('No credential to lease.');
+    rememberScope(pat.lease);
+    const credential = pat.lease;
+
+    jest.setSystemTime(mintedAt + ttl - 1);
+    const beforeEnd = await refusal(
+      broker.execute(repoRead, { ...READ, credential }),
+    );
+    const readsBeforeEnd = tokenReads.length;
+
+    jest.setSystemTime(mintedAt + ttl);
+    const atEnd = await refusal(
+      broker.execute(repoRead, { ...READ, credential }),
+    );
+    const verify = await refusal(port.verify(credential));
+    const derived = await refusal(
+      port.derivedScope(credential, { kind: 'pr-tracking' }),
+    );
+    const authorize = await refusal(port.authorize(credential));
+    const live = await refusal(
+      Promise.resolve().then(() => port.assertLive(credential)),
+    );
+    const readsAfterEnd = tokenReads.length - readsBeforeEnd;
+
+    jest.setSystemTime(mintedAt + 24 * 60 * MINUTE);
+    const defaultLater = await refusal(broker.execute(repoRead, READ));
+    const freshLater = await port.lease('pat');
+    const freshOutcome = await refusal(
+      broker.execute(repoRead, {
+        ...READ,
+        ...(freshLater ? { credential: freshLater.lease } : {}),
+      }),
+    );
+
+    expect({
+      beforeEnd,
+      atEnd,
+      verify,
+      derived,
+      authorize,
+      live,
+      readsAfterEnd,
+      defaultLater,
+      freshOutcome,
+      sent: sent.map(({ authorization }) => authorization),
+    }).toEqual({
+      beforeEnd: 'resolved',
+      atEnd: EXPIRED,
+      verify: EXPIRED,
+      derived: EXPIRED,
+      authorize: EXPIRED,
+      live: EXPIRED,
+      readsAfterEnd: 0,
+      defaultLater: 'resolved',
+      freshOutcome: 'resolved',
+      sent: ['token <pat>', 'token <defaultOne>', 'token <pat>'],
+    });
+    expect(headerResidue().carryingHeader).toBe(0);
+  });
+
+  it.each([
+    ['the check before the request function runs', 1, []],
+    ['the authorization of the HTTP request', 2, []],
+    [
+      'the final check before the result is handed over',
+      3,
+      ['/repos/acme/app'],
+    ],
+  ] as const)(
+    'refuses a lease that expires while its credential is read for %s, and never retries it',
+    async (_label, expiringRead, sentPaths) => {
+      const sent: SentRequest[] = [];
+      currentFetch = transport(sent, () => ({
+        status: 200,
+        body: { full_name: 'acme/app' },
+      }));
+      const ttl = await lifetime();
+      const mintedAt = Date.now();
+      const pat = await port.lease('pat');
+      if (!pat) throw new Error('No credential to lease.');
+      rememberScope(pat.lease);
+      // A pinned read reads the PAT three times: to check the lease before
+      // the request function runs, to authorize the HTTP request, and to
+      // check the lease again before the result is handed over. The lease
+      // expires during the chosen read.
+      let patReads = 0;
+      onPatRead = (): void => {
+        patReads += 1;
+        if (patReads === expiringRead) jest.setSystemTime(mintedAt + ttl);
+      };
+      const result = await refusal(
+        broker.execute(
+          async (octokit) => {
+            trackEndpoints(octokit);
+            return repoRead(octokit);
+          },
+          { ...READ, credential: pat.lease },
+        ),
+      );
+      await jest.advanceTimersByTimeAsync(2 * 60 * MINUTE);
+      expect({
+        result,
+        patReads,
+        sent: sent.map(({ path }) => path),
+        carryingHeader: headerResidue().carryingHeader,
+      }).toEqual({
+        result: EXPIRED,
+        patReads: expiringRead,
+        sent: sentPaths,
+        carryingHeader: 0,
+      });
+    },
+  );
+
+  it('checks the lease in the auth hook right before each request is sent, and an expiry found there sends nothing and is never retried', async () => {
+    const sent: SentRequest[] = [];
+    const order: string[] = [];
+    const record = transport(sent, () => ({
+      status: 200,
+      body: { full_name: 'acme/app' },
+    }));
+    currentFetch = (input, init): Promise<Response> => {
+      order.push('send');
+      return record(input, init);
+    };
+    const pat = await port.lease('pat');
+    if (!pat) throw new Error('No credential to lease.');
+    rememberScope(pat.lease);
+    const authorize = port.authorize.bind(port);
+    jest.spyOn(port, 'authorize').mockImplementation(async (lease) => {
+      const header = await authorize(lease);
+      order.push('authorized');
+      return header;
+    });
+    const assertLive = port.assertLive.bind(port);
+    let expiredAtHook = false;
+    jest.spyOn(port, 'assertLive').mockImplementation((lease) => {
+      order.push('assertLive');
+      if (expiredAtHook) throw new brokerModule.GitHubBrokerLeaseExpiredError();
+      assertLive(lease);
+    });
+
+    const live = await refusal(
+      broker.execute(repoRead, { ...READ, credential: pat.lease }),
+    );
+    const liveOrder = order.splice(0);
+    expiredAtHook = true;
+    const refused = await refusal(
+      broker.execute(repoRead, { ...READ, credential: pat.lease }),
+    );
+    await jest.advanceTimersByTimeAsync(2 * 60 * MINUTE);
+
+    expect({
+      live,
+      liveOrder,
+      refused,
+      refusedOrder: order,
+      sends: sent.length,
+    }).toEqual({
+      live: 'resolved',
+      liveOrder: ['authorized', 'assertLive', 'send'],
+      refused: EXPIRED,
+      refusedOrder: ['authorized', 'assertLive'],
+      sends: 1,
+    });
+  });
+
+  it.each([
+    ['under its lifetime sends exactly once', 0, 1],
+    [
+      'past its lifetime is refused with nothing sent, and never retried',
+      10,
+      0,
+    ],
+  ] as const)(
+    'a request parked behind an hour-long primary rate-limit reset %s',
+    async (_label, mintedMinutesBefore, parkedSends) => {
+      const sent: SentRequest[] = [];
+      let limited = false;
+      currentFetch = transport(sent, (path) => {
+        if (path === '/repos/acme/trigger' && !limited) {
+          limited = true;
+          return {
+            status: 403,
+            body: { message: 'API rate limit exceeded' },
+            headers: {
+              'x-ratelimit-remaining': '0',
+              'x-ratelimit-reset': String(
+                Math.floor((Date.now() + 60 * MINUTE) / 1000),
+              ),
+            },
+          };
+        }
+        return { status: 200, body: { ok: true } };
+      });
+      const pat = await port.lease('pat');
+      if (!pat) throw new Error('No credential to lease.');
+      rememberScope(pat.lease);
+      jest.setSystemTime(Date.now() + mintedMinutesBefore * MINUTE);
+
+      const trigger = refusal(
+        broker.execute(readPath('/repos/acme/trigger'), READ),
+      );
+      for (let tick = 0; tick < 20 && sent.length === 0; tick += 1) {
+        await jest.advanceTimersByTimeAsync(0);
+      }
+      await jest.advanceTimersByTimeAsync(10);
+      const patReadsBefore = tokenReads.filter((r) => r === 'pat').length;
+      const parked = refusal(
+        broker.execute(readPath('/repos/acme/parked'), {
+          ...READ,
+          credential: pat.lease,
+        }),
+      );
+      await jest.advanceTimersByTimeAsync(59 * MINUTE);
+      const sentWhilePaused = sent.map(({ path }) => path);
+      await jest.advanceTimersByTimeAsync(2 * MINUTE);
+      const triggerOutcome = await trigger;
+      const parkedOutcome = await parked;
+      const parkedSendsAtSettle = sent.filter(
+        ({ path }) => path === '/repos/acme/parked',
+      ).length;
+      await jest.advanceTimersByTimeAsync(2 * 60 * MINUTE);
+
+      expect({
+        sentWhilePaused,
+        triggerOutcome,
+        parkedOutcome,
+        parkedSendsAtSettle,
+        parkedSends: sent.filter(({ path }) => path === '/repos/acme/parked')
+          .length,
+        parkedPatReads:
+          tokenReads.filter((r) => r === 'pat').length - patReadsBefore,
+      }).toEqual({
+        sentWhilePaused: ['/repos/acme/trigger'],
+        triggerOutcome: 'resolved',
+        parkedOutcome: parkedSends === 1 ? 'resolved' : EXPIRED,
+        parkedSendsAtSettle: parkedSends,
+        parkedSends,
+        // A parked read that sends checks its lease, authorizes the request
+        // and checks the lease again before handing over the result.
+        parkedPatReads: parkedSends === 1 ? 3 : 0,
+      });
+    },
+  );
+
+  it('hands over a large streamed response in full, and aborts the attempt signal only after it settles', async () => {
+    const items = Array.from({ length: 20_000 }, (_, index) => ({
+      index,
+      pad: 'x'.repeat(100),
+    }));
+    const bytes = new TextEncoder().encode(JSON.stringify(items));
+    const CHUNK = 64 * 1024;
+    const signals: AbortSignal[] = [];
+    let abortedMidBody = false;
+    let chunks = 0;
+    currentFetch = (_input, init): Promise<Response> => {
+      const signal = init?.signal ?? undefined;
+      if (signal) signals.push(signal);
+      let offset = 0;
+      const body = new ReadableStream<Uint8Array>({
+        async pull(controller): Promise<void> {
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          if (signal?.aborted) {
+            abortedMidBody = true;
+            controller.error(
+              new DOMException('The operation was aborted.', 'AbortError'),
+            );
+            return;
+          }
+          if (offset >= bytes.length) {
+            controller.close();
+            return;
+          }
+          controller.enqueue(bytes.subarray(offset, offset + CHUNK));
+          offset += CHUNK;
+          chunks += 1;
+        },
+      });
+      return Promise.resolve(
+        new Response(body, {
+          status: 200,
+          headers: {
+            'content-type': 'application/json; charset=utf-8',
+            'x-ratelimit-limit': '5000',
+            'x-ratelimit-remaining': '4999',
+            'x-ratelimit-reset': String(
+              Math.floor(Date.parse('2026-11-16T11:00:00.000Z') / 1000),
+            ),
+            'x-ratelimit-resource': 'core',
+          },
+        }),
+      );
+    };
+    const pat = await port.lease('pat');
+    if (!pat) throw new Error('No credential to lease.');
+    const result = await broker.execute(readPath('/repos/acme/app/contents'), {
+      ...READ,
+      credential: pat.lease,
+    });
+    const data = result.kind === 'read' ? result.data : undefined;
+    expect({
+      chunks,
+      complete:
+        Array.isArray(data) &&
+        data.length === items.length &&
+        JSON.stringify(data) === JSON.stringify(items),
+      abortedMidBody,
+      signalAbortedAfterSettle: signals.map((signal) => signal.aborted),
+    }).toEqual({
+      chunks: Math.ceil(bytes.length / CHUNK),
+      complete: true,
+      abortedMidBody: false,
+      signalAbortedAfterSettle: [true],
+    });
+  });
+
+  it("revokes the permission probe lease once the probe returns, on success and on a 401, and never another holder's lease on the same credential", async () => {
+    const sent: SentRequest[] = [];
+    let rejectNext = false;
+    currentFetch = transport(sent, () =>
+      rejectNext
+        ? { status: 401, body: { message: 'Bad credentials' } }
+        : {
+            status: 200,
+            body: { login: 'octo' },
+            headers: { 'x-oauth-scopes': 'repo, read:org' },
+          },
+    );
+    const revoked: CredentialPortModule.GitHubBrokerCredentialLease[] = [];
+    const revoke = port.revoke.bind(port);
+    jest.spyOn(port, 'revoke').mockImplementation((lease) => {
+      revoked.push(lease);
+      revoke(lease);
+    });
+    const { probeGitHubPermissions } =
+      await import('../lib/github-permissions');
+    // Another holder of the same stored PAT, with a lease of its own.
+    const other = await port.lease('pat');
+    if (!other) throw new Error('No credential to lease.');
+    rememberScope(other.lease);
+
+    const ok = await probeGitHubPermissions('pat');
+    rejectNext = true;
+    const rejected = await probeGitHubPermissions('pat');
+    rejectNext = false;
+    const probeSends = sent.length;
+    const reuse = await Promise.all(
+      revoked.map((lease) =>
+        outcome(broker.execute(repoRead, { ...READ, credential: lease })),
+      ),
+    );
+    const sentAfterProbes = sent.length - probeSends;
+    const otherHolder = await outcome(
+      broker.execute(repoRead, { ...READ, credential: other.lease }),
+    );
+
+    expect({
+      probes: [ok.tokenAvailable && ok.error, rejected.error],
+      revokedLeases: revoked.length,
+      revokedOther: revoked.includes(other.lease),
+      sameScope: revoked.map(
+        (lease) => port.scopeId(lease) === port.scopeId(other.lease),
+      ),
+      probeSends,
+      reuse,
+      sentAfterProbes,
+      otherHolder,
+      otherHolderSent: sent
+        .slice(probeSends)
+        .map(({ authorization }) => authorization),
+    }).toEqual({
+      probes: [null, expect.stringContaining('(401)')],
+      revokedLeases: 2,
+      revokedOther: false,
+      sameScope: [true, true],
+      probeSends: 2,
+      reuse: [
+        {
+          error: 'not_authenticated',
+          carriesToken: false,
+          carriesScope: false,
+        },
+        {
+          error: 'not_authenticated',
+          carriesToken: false,
+          carriesScope: false,
+        },
+      ],
+      sentAfterProbes: 0,
+      otherHolder: 'resolved',
+      otherHolderSent: ['token <pat>'],
+    });
+  });
+
+  it.each(['succeeds', 'fails'] as const)(
+    'aborts the attempt signal and refuses a call it left behind once the attempt %s',
+    async (ending) => {
+      const sent: SentRequest[] = [];
+      const signals: Array<AbortSignal | null | undefined> = [];
+      const record = transport(sent, (path) =>
+        path !== '/repos/acme/app'
+          ? { status: 200, body: {} }
+          : ending === 'succeeds'
+            ? { status: 200, body: { full_name: 'acme/app' } }
+            : { status: 404, body: { message: 'Not Found' } },
+      );
+      currentFetch = (input, init): Promise<Response> => {
+        signals.push(init?.signal);
+        return record(input, init);
+      };
+      let releaseLeftover: () => void = () => undefined;
+      const gate = new Promise<void>((resolve) => {
+        releaseLeftover = resolve;
+      });
+      let leftover: Promise<unknown> = Promise.resolve();
+      const result = outcome(
+        broker.execute(async (octokit) => {
+          trackEndpoints(octokit);
+          leftover = (async (): Promise<unknown> => {
+            await gate;
+            return octokit.request('GET /user');
+          })();
+          return repoRead(octokit);
+        }, READ),
+      );
+      const settled = await result;
+      const readsAtSettle = tokenReads.length;
+      const signalAbortedAtSettle = signals.map((signal) => signal?.aborted);
+      releaseLeftover();
+      const left = await outcome(leftover);
+
+      expect({
+        settled,
+        signalAbortedAtSettle,
+        left,
+        leftoverTokenReads: tokenReads.length - readsAtSettle,
+        sent: sent.map(({ path }) => path),
+        carryingHeader: headerResidue().carryingHeader,
+      }).toEqual({
+        settled:
+          ending === 'succeeds'
+            ? 'resolved'
+            : { error: 'not_found', carriesToken: false, carriesScope: false },
+        signalAbortedAtSettle: [true],
+        left: { error: 'cancelled', carriesToken: false, carriesScope: false },
+        leftoverTokenReads: 0,
+        sent: ['/repos/acme/app'],
+        carryingHeader: 0,
+      });
+    },
+  );
 });

@@ -1,4 +1,4 @@
-import type { W5RecoveryReason } from '@canopy/protocol/portal';
+import type { W5RecoveryReason } from '@canopy/protocol/remote-control/shell';
 
 const SUPPORT =
   'Keep the data folder intact and contact support with the recovery diagnosis. Do not edit the workspace records or remove recovery files.';

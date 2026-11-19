@@ -131,13 +131,18 @@ export function isAllowlistedErrno(value: unknown): value is string {
   return typeof value === 'string' && ERRNOS.has(value);
 }
 
-/** A spawn error's own `code` when it is an allowlisted errno, else `other`. */
-export function spawnFailureDetails(error: unknown): SpawnFailureDetails {
+/** An error's own `code` when it is an allowlisted errno, else `other`. */
+export function allowlistedErrnoOrOther(error: unknown): string {
   const code: unknown =
     typeof error === 'object' && error !== null
       ? Reflect.get(error, 'code')
       : undefined;
-  return { errno: isAllowlistedErrno(code) ? code : 'other', stage: 'spawn' };
+  return isAllowlistedErrno(code) ? code : 'other';
+}
+
+/** A spawn error's own `code` when it is an allowlisted errno, else `other`. */
+export function spawnFailureDetails(error: unknown): SpawnFailureDetails {
+  return { errno: allowlistedErrnoOrOther(error), stage: 'spawn' };
 }
 
 /**

@@ -12,7 +12,7 @@ import type {
   W5RecoveryEntry,
   W5RecoveryReason,
   W5RecoveryStatus,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import { listW5HostPeers } from '@canopy/execution-engine/node/w5-host-cohort';
 import { getCanopyDataDir } from '@canopy/desktop-shared/canopy-paths';
 import {

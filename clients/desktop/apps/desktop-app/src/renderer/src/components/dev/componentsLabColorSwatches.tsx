@@ -17,7 +17,7 @@ export function ColorSwatchesSpecimen(): JSX.Element {
   const [unset, setUnset] = useState<string | undefined>(undefined);
   return (
     <div className="flex flex-col gap-6">
-      <SpecimenPanel title="Sidebar group: theme colors, named by hue">
+      <SpecimenPanel title="Sidebar group" hint="Theme colors, named by hue">
         <ColorSwatchPicker
           value={group}
           onChange={setGroup}
@@ -25,14 +25,20 @@ export function ColorSwatchesSpecimen(): JSX.Element {
           label="Group color"
         />
       </SpecimenPanel>
-      <SpecimenPanel title="Project: fixed palette, two blues told apart as light and dark">
+      <SpecimenPanel
+        title="Project"
+        hint="Fixed palette, two blues told apart as light and dark"
+      >
         <ColorSwatchPicker
           value={project}
           onChange={setProject}
           label="Project color"
         />
       </SpecimenPanel>
-      <SpecimenPanel title="Nothing chosen yet: the first swatch takes focus">
+      <SpecimenPanel
+        title="Nothing chosen yet"
+        hint="The first swatch takes focus"
+      >
         <ColorSwatchPicker value={unset} onChange={setUnset} />
       </SpecimenPanel>
       <SpecimenPanel title="Compact, in a settings row">

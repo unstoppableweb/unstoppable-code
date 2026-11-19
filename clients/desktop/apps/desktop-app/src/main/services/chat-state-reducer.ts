@@ -1,4 +1,4 @@
-import { TrackedPlanImplementationSchema } from '@canopy/protocol/portal';
+import { TrackedPlanImplementationSchema } from '@canopy/protocol/remote-control/shell';
 import type {
   ArchivedChatsFile,
   ChatCoreMutation,

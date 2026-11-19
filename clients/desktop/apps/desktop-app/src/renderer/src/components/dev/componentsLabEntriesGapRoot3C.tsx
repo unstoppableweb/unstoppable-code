@@ -15,7 +15,7 @@ const SRC = 'packages/ui-shared/src/components';
 export const GAP_ROOT_3C_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
   {
     id: 'provider-row-label',
-    name: 'ProviderRowLabel',
+    name: 'Provider row label',
     group: 'Unified',
     note: 'A provider’s mark, name and status dot as a Settings row label; the dot has six tones, from connected to a hollow ring for signed out.',
     source: `${SRC}/ProviderRowLabel.tsx`,
@@ -24,7 +24,7 @@ export const GAP_ROOT_3C_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
   },
   {
     id: 'remote-control-mobile-app-promo',
-    name: 'RemoteControlMobileAppPromo',
+    name: 'Remote Control app offer',
     group: 'Unified',
     note: 'The Remote Control download offer both hosts share: store badges as links on web, as buttons on desktop; nothing when hidden or with no links.',
     source: `${SRC}/RemoteControlMobileAppPromo.tsx`,
@@ -33,7 +33,7 @@ export const GAP_ROOT_3C_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
   },
   {
     id: 'resize-rail-indicator',
-    name: 'ResizeRailIndicator',
+    name: 'Resize handle line',
     group: 'Unified',
     note: 'The visible line inside every resize handle: a quiet hairline at rest, the accent on hover and while dragging, vertical or horizontal.',
     source: `${SRC}/ResizeRailIndicator.tsx`,
@@ -42,7 +42,7 @@ export const GAP_ROOT_3C_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
   },
   {
     id: 'server-markdown',
-    name: 'ServerMarkdown',
+    name: 'Server markdown',
     group: 'Unified',
     note: 'Markdown rendered on the server, so function-valued options need no client boundary; shown with headings, lists, code and a table.',
     source: `${SRC}/ServerMarkdown.tsx`,

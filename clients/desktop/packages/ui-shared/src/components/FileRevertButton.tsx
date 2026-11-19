@@ -26,7 +26,7 @@ export function FileRevertButton({
   return (
     <span className="-my-1.5 hidden shrink-0 group-hover:inline-flex group-focus-within:inline-flex">
       <Button
-        variant="ghost-quiet"
+        variant="ghost"
         size="sm"
         iconOnly
         aria-label={ariaLabel}

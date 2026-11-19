@@ -83,7 +83,7 @@ export function ItemMetaInfo({
       }
     >
       <Button
-        variant="ghost-quiet"
+        variant="ghost"
         size="sm"
         iconOnly
         onClick={(e): void => e.stopPropagation()}

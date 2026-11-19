@@ -3,7 +3,7 @@ import type { Stats } from 'node:fs';
 import { lstat, realpath } from 'node:fs/promises';
 import { dirname, isAbsolute, parse, resolve, sep } from 'node:path';
 import { hostPlatformOperatingSystem } from '@canopy/core-platform';
-import type { WorktreeDiscardSourceState } from '@canopy/protocol/portal';
+import type { WorktreeDiscardSourceState } from '@canopy/protocol/remote-control/shell';
 import { getResolvedGitExecutableForSpawn } from './git-executable';
 import { archiveGitEnv } from './git-tree-snapshot';
 import { isErrnoException } from './type-guards';

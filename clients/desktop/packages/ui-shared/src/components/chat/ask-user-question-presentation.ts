@@ -3,7 +3,7 @@
 // message renderer. Hosts normalize their own result and question-record
 // shapes into the inputs below; this module owns record matching and the
 // precedence between the result and the record. No stores, IPC, or React.
-import type { PortalAskUserQuestionState } from '@canopy/protocol/portal';
+import type { RemoteControlAskUserQuestionState } from '@canopy/protocol/remote-control/shell';
 import {
   answersToDisplay,
   isCodexAskUserToolUseId,
@@ -195,14 +195,14 @@ export function askUserQuestionResultEvidence(
  * Match and normalize the Portal question projection for a transcript block.
  * The projection carries no dismissed state; dismissed prompts leave it.
  */
-export function portalAskUserQuestionRecordState(
-  states: readonly PortalAskUserQuestionState[],
+export function remoteControlAskUserQuestionRecordState(
+  states: readonly RemoteControlAskUserQuestionState[],
   block: {
     toolName?: string;
     toolUseId?: string;
     questionTexts?: readonly string[];
   },
-): AskUserQuestionRecordState<PortalAskUserQuestionState> {
+): AskUserQuestionRecordState<RemoteControlAskUserQuestionState> {
   const state = matchAskUserQuestionRecord(
     states,
     (candidate) => ({

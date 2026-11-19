@@ -83,7 +83,7 @@ import { classifyCodexTransportError } from './transport-errors';
 import {
   chatInputRefusal,
   type ChatInputAdmission,
-} from '@canopy/protocol/portal/input-delivery';
+} from '@canopy/protocol/remote-control/shell/input-delivery';
 import { classifyCodexSteerError } from './steer-refusal';
 
 type JsonRpcId = number | string;

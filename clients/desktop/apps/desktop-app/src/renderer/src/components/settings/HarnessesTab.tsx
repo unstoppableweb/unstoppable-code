@@ -708,50 +708,56 @@ function ConfigurableHarnessRow({
       data-harness-row-kind="configurable"
     >
       <span className="min-w-0 flex-1 truncate">{label}</span>
-      {/* Revealed with the row, like the other row actions on this board. */}
-      <span className="flex shrink-0 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
-        <Button
-          ref={menuButtonRef}
-          size="compact"
-          variant="ghost"
-          iconOnly
-          data-harness-row-menu
-          data-testid={`harness-row-menu-${assignment.modelId}`}
-          aria-label={`Actions for ${label}`}
-          aria-haspopup="menu"
-          aria-expanded={menuOpen}
-          onPointerDown={(event): void => event.stopPropagation()}
-          onKeyDown={(event): void => event.stopPropagation()}
-          onClick={(event): void => {
-            event.stopPropagation();
-            setMenuOpen((open) => !open);
-          }}
-        >
-          <MoreHorizontalIcon size="sm" aria-hidden="true" />
-        </Button>
-      </span>
-      <FloatingMenu
-        open={menuOpen}
-        onOpenChange={setMenuOpen}
-        anchorRef={menuButtonRef}
-        placement="bottom-right"
-        gap={FLOATING_MENU_GAP}
-        aria-label={`Actions for ${label}`}
-        data-testid={`harness-row-menu-surface-${assignment.modelId}`}
-        className="w-48"
-      >
-        <ActionMenuRowStyle>
-          <ActionMenuItems
-            items={menuItems}
-            onSelect={(item): void => {
-              if (item.disabled || !item.onSelect) return;
-              setMenuOpen(false);
-              menuButtonRef.current?.focus({ preventScroll: true });
-              item.onSelect();
-            }}
-          />
-        </ActionMenuRowStyle>
-      </FloatingMenu>
+      {/* A model with nowhere to move and nothing to reset has no actions,
+          so it gets no menu button. */}
+      {menuItems.length === 0 ? null : (
+        <>
+          {/* Revealed with the row, like the other row actions on this board. */}
+          <span className="flex shrink-0 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
+            <Button
+              ref={menuButtonRef}
+              size="compact"
+              variant="ghost"
+              iconOnly
+              data-harness-row-menu
+              data-testid={`harness-row-menu-${assignment.modelId}`}
+              aria-label={`Actions for ${label}`}
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+              onPointerDown={(event): void => event.stopPropagation()}
+              onKeyDown={(event): void => event.stopPropagation()}
+              onClick={(event): void => {
+                event.stopPropagation();
+                setMenuOpen((open) => !open);
+              }}
+            >
+              <MoreHorizontalIcon size="sm" aria-hidden="true" />
+            </Button>
+          </span>
+          <FloatingMenu
+            open={menuOpen}
+            onOpenChange={setMenuOpen}
+            anchorRef={menuButtonRef}
+            placement="bottom-right"
+            gap={FLOATING_MENU_GAP}
+            aria-label={`Actions for ${label}`}
+            data-testid={`harness-row-menu-surface-${assignment.modelId}`}
+            className="w-48"
+          >
+            <ActionMenuRowStyle>
+              <ActionMenuItems
+                items={menuItems}
+                onSelect={(item): void => {
+                  if (item.disabled || !item.onSelect) return;
+                  setMenuOpen(false);
+                  menuButtonRef.current?.focus({ preventScroll: true });
+                  item.onSelect();
+                }}
+              />
+            </ActionMenuRowStyle>
+          </FloatingMenu>
+        </>
+      )}
     </HarnessBoardRow>
   );
 }

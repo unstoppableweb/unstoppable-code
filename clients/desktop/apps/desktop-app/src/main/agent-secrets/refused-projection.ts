@@ -27,7 +27,7 @@ import {
 import {
   CHAT_INPUT_DELIVERY_FAILURES,
   type ChatInputDeliveryEvent,
-} from '@canopy/protocol/portal/input-delivery';
+} from '@canopy/protocol/remote-control/shell/input-delivery';
 
 /*
  * What the storage backstop delivers of a provider event when the agent

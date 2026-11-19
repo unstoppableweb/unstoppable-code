@@ -1,6 +1,6 @@
 import type { JSX } from 'react';
 import type { CanopyCapabilities } from '@canopy/app-core';
-import type { PortalRowBackend } from '@canopy/protocol/portal';
+import type { RemoteControlRowBackend } from '@canopy/protocol/remote-control/shell';
 import type {
   SidebarBatchUnitLabel,
   SpaceNotificationMenuChoice,
@@ -60,7 +60,7 @@ export interface WorktreeMenuContext {
   /** Pinned to the top of its section; only hosts with pinning set it. */
   readonly pinned?: boolean;
   readonly done: boolean;
-  readonly backend?: PortalRowBackend;
+  readonly backend?: RemoteControlRowBackend;
   readonly launchAvailable: boolean;
   readonly launchRunning: boolean;
   /**

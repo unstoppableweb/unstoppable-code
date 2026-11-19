@@ -25,7 +25,7 @@ export function isLinkBrowserTargetAvailable(): boolean {
     useChatStore.getState().selectedWorktree !== null &&
     navigation.activePage === 'main' &&
     !navigation.settingsOpen &&
-    !navigation.canopyPortalOpen
+    !navigation.remoteControlDialogOpen
   );
 }
 
@@ -52,7 +52,7 @@ export function startLinkBrowserTargetReporter(): void {
     if (
       state.activePage !== prev.activePage ||
       state.settingsOpen !== prev.settingsOpen ||
-      state.canopyPortalOpen !== prev.canopyPortalOpen
+      state.remoteControlDialogOpen !== prev.remoteControlDialogOpen
     ) {
       publish();
     }

@@ -243,7 +243,7 @@ function CollectionItem({
           <span className="flex shrink-0 p-1.5">
             <Tooltip label="Remove collection">
               <Button
-                variant="ghost-quiet"
+                variant="ghost"
                 size="sm"
                 iconOnly
                 onClick={onRemove}
@@ -353,7 +353,7 @@ function CollectionItem({
                         {!readonly && (
                           <Tooltip label="Remove default">
                             <Button
-                              variant="ghost-quiet"
+                              variant="ghost"
                               size="compact"
                               iconOnly
                               onClick={() => removeDefault(entry.key)}

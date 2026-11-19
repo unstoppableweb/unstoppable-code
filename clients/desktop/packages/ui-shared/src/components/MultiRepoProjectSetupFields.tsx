@@ -175,7 +175,7 @@ export function MultiRepoProjectSetupFields({
                       type="button"
                       iconOnly
                       size="compact"
-                      variant="ghost-quiet"
+                      variant="ghost"
                       aria-label="Open on GitHub"
                       disabled={disabled}
                       onClick={(event) => {

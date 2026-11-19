@@ -1,8 +1,8 @@
 import {
   parseChatAgentSentInfo,
   type ChatAgentSentInfo,
-} from '@canopy/protocol/portal';
-import { chatAgentSent } from '@canopy/protocol/portal/external-agent-sender';
+} from '@canopy/protocol/remote-control/shell';
+import { chatAgentSent } from '@canopy/protocol/remote-control/shell/external-agent-sender';
 import {
   APP_ADVISOR_PROJECT_ID,
   APP_ADVISOR_WORKTREE_ID,

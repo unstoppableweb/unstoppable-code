@@ -36,6 +36,10 @@ import { BRAND } from '@canopy/brand/current';
 import type { CodeGraphBuildTimings } from '@canopy/desktop-shared/types/code-graph';
 import type { BrowserDownloadSource } from '@canopy/execution-engine/types/browser';
 import type { CodeGraphReadFailure } from '@canopy/desktop-shared/types/code-graph-tools';
+import type {
+  CodeGraphGenerationColdFallbackReason,
+  CodeGraphGenerationFailureClass,
+} from '@canopy/core-runtime/node/code-graph';
 import { sanitizeAppDiagnosticRecord } from './app-diagnostic-privacy';
 import type {
   RendererDiagnosticsSummary,
@@ -1659,6 +1663,12 @@ export interface CodeGraphBuildDiagnosticDetail {
   fingerprintPersistFailure?: CodeGraphReadFailure;
   /** Base builds: main's rename-and-manifest publication of the generation. */
   installMs?: number;
+  /** Failures only: the I/O failure's closed class and its errno code. */
+  failureClass?: CodeGraphGenerationFailureClass;
+  errno?: string;
+  /** Worktree builds: the first cold fallback's closed reason and class. */
+  coldFallbackReason?: CodeGraphGenerationColdFallbackReason;
+  coldFallbackFailureClass?: CodeGraphGenerationFailureClass;
 }
 
 export interface CodeGraphReadDiagnosticRepository {
@@ -1769,8 +1779,6 @@ export interface SessionDiagnosticRecord {
     | 'browser_upload_decided'
     | 'browser_upload_attached'
     | 'shared_run_comment_poll_failed'
-    | 'portal_snapshot_timing'
-    | 'portal_outbox_upload_latency'
     | 'worktree_stats_timing'
     | 'model_policy_refused'
     | 'resource_context_denied'
@@ -2292,53 +2300,6 @@ export interface SessionDiagnosticRecord {
    * evidence that would justify acting on it.
    */
   approvalStaleDenyRequestId?: string;
-  portalCommandId?: string;
-  portalSnapshotStage?:
-    | 'command_received'
-    | 'snapshot_build_started'
-    | 'snapshot_section_completed'
-    | 'snapshot_build_completed'
-    | 'snapshot_event_posted'
-    | 'snapshot_event_dropped'
-    | 'snapshot_queued'
-    | 'snapshot_dequeued'
-    | 'snapshot_coalesced'
-    | 'snapshot_drained';
-  portalSnapshotSection?:
-    | 'workspaces_list'
-    | 'worktrees'
-    | 'standalone_chats'
-    | 'chat_summaries'
-    | 'activity_summary'
-    | 'plans'
-    | 'scripts'
-    | 'hooks'
-    | 'mcp'
-    | 'pipelines'
-    | 'files'
-    | 'diff'
-    | 'pr'
-    | 'summary';
-  portalSnapshotScope?: string;
-  portalSnapshotEntityCount?: number;
-  /** `snapshot_event_dropped` only: budget that forced the outbox trim. */
-  portalSnapshotDropReason?: 'count' | 'bytes';
-  /** `snapshot_event_dropped` only: types of the dropped delivery group. */
-  portalSnapshotDroppedEventTypes?: string[];
-  /** `snapshot_event_dropped` only: split-snapshot chunks dropped with it. */
-  portalSnapshotDroppedChunkCount?: number;
-  portalSnapshotRequestClass?: 'foreground' | 'background';
-  portalSnapshotQueueDepth?: number;
-  portalSnapshotActiveCount?: number;
-  portalOutboxBatchSize?: number;
-  portalOutboxQueueDepthAfterSelection?: number;
-  portalOutboxOldestEventAgeMs?: number;
-  portalOutboxBatchTimestamp?: string;
-  portalOutboxMeanEnqueueToAckMs?: number;
-  portalOutboxMaxEnqueueToAckMs?: number;
-  portalOutboxEventCount?: number;
-  portalOutboxSelected?: boolean;
-  portalOutboxControlOnly?: boolean;
   diffStatsElapsedMs?: number;
   worktreeStatsSkipFetch?: boolean;
   worktreeStatsMode?: 'full' | 'diff_only';
@@ -2399,20 +2360,7 @@ function resolveChatTurnFailures(
   };
 }
 
-/**
- * Whether the daily drip was blocked, off, or already spent when a turn ran
- * out of credits (CAN-4633). Routing reads the balance at most 30 seconds
- * before dispatch, so main's latest read describes this turn's wallet.
- */
-function noCreditsGrantContext(host: DesktopObservabilityHost): {
-  daily_credit_grant_status?: string;
-} {
-  const status = host.dailyCreditGrantStatus();
-  return status === undefined ? {} : { daily_credit_grant_status: status };
-}
-
 function buildAuditOperationContext(
-  host: DesktopObservabilityHost,
   entry: AgentAuditEntry,
   status?: AgentAuditStatus,
   chatTurn?: ChatTurnOperationContext,
@@ -2424,9 +2372,6 @@ function buildAuditOperationContext(
       : {}),
     ...(chatTurn?.failure?.detail
       ? { failure_detail: chatTurn.failure.detail }
-      : {}),
-    ...(chatTurn?.failure?.category === 'no_credits'
-      ? noCreditsGrantContext(host)
       : {}),
     ...(chatTurn?.subAgentFailure
       ? { sub_agent_failure_category: chatTurn.subAgentFailure.category }
@@ -2458,7 +2403,7 @@ function startAuditOperation(
 ): void {
   host.instrumentation.startOperation(getOperationNameForAuditKey(key), {
     operationKey: createDesktopInstrumentationOperationKey(key),
-    context: buildAuditOperationContext(host, entry),
+    context: buildAuditOperationContext(entry),
   });
 }
 
@@ -2471,7 +2416,7 @@ function finishAuditOperation(
 ): void {
   const operationOptions = {
     operationKey: createDesktopInstrumentationOperationKey(key),
-    context: buildAuditOperationContext(host, entry, status, chatTurn),
+    context: buildAuditOperationContext(entry, status, chatTurn),
   };
   const operationName = getOperationNameForAuditKey(key);
 

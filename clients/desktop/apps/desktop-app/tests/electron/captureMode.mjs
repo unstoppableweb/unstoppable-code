@@ -36,7 +36,7 @@
  *
  * `brandId` is REQUIRED and must be the brand the server under test actually
  * serves. For the Remote Control harness that is
- * `startPortalWebServer(...).brandId` (`remote-control/harness/web-server.mjs`),
+ * `startRemoteControlWebServer(...).brandId` (`remote-control/harness/web-server.mjs`),
  * which the harness also pins into the server's own
  * environment. It is deliberately not defaulted: a missing propagation would
  * otherwise fall back to a plausible brand and produce a screenshot in the
@@ -58,7 +58,7 @@ function assertBrandId(brandId) {
   if (typeof brandId !== 'string' || brandId.length === 0) {
     throw new Error(
       'captureMode: brandId is required and must be the brand the server ' +
-        'under test serves (e.g. startPortalWebServer(...).brandId). Seeding ' +
+        'under test serves (e.g. startRemoteControlWebServer(...).brandId). Seeding ' +
         'a guessed brand writes a storage key the app never reads.',
     );
   }

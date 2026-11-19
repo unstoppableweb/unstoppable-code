@@ -375,7 +375,7 @@ function renderNode(
             variant={
               node.variant === 'plain'
                 ? node.dim
-                  ? 'ghost-quiet'
+                  ? 'ghost'
                   : 'ghost'
                 : node.variant
             }

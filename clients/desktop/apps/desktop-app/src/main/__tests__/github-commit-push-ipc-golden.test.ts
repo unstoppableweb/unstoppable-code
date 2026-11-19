@@ -1,5 +1,4 @@
-// CAN-5882 baseline: real Git through unchanged desktop IPC and Portal
-// orchestration. Only registration and external services are replaced; no Git
+// CAN-5882 baseline: real Git through unchanged desktop IPC orchestration. Only registration and external services are replaced; no Git
 // runner or mutation is mocked (auth cases use a local remote helper).
 // Capture before commit/push dispatcher cutover.
 import { execFileSync } from 'node:child_process';
@@ -85,7 +84,6 @@ import {
 import { registerWorkspaceTypes } from '../lib/workspace-registry';
 import { readPreferencesFile } from '../ipc/preferences';
 
-import { runPrAction } from '../services/pr-service';
 import {
   acquireSplitLock,
   releaseSplitLock,
@@ -1085,16 +1083,6 @@ it('cancel never kills an active commit, excludes concurrent actions, and preven
       await expect(ship('cancel-commit')).rejects.toMatchObject({
         message: 'A Git action is already active for this worktree',
       });
-      await expect(
-        runPrAction({
-          workspaceLocalId: WORKSPACE,
-          worktreeLocalId: 'cancel-commit',
-          action: 'push',
-        }),
-      ).rejects.toMatchObject({
-        code: 'execution_failed',
-        message: 'A Git action is already active for this worktree',
-      });
       exact(await cancel('cancel-commit', 'cancel-op'), {
         accepted: true,
         reason: 'cancel_requested',
@@ -1138,32 +1126,6 @@ it('cancel never kills an active commit, excludes concurrent actions, and preven
     repos: [success],
     skippedRepos: [],
     failedRepos: [],
-  });
-});
-
-describe('Portal commit_and_push / push baseline', () => {
-  it('rejects blank messages and read-only mutations', async () => {
-    await expect(
-      runPrAction({
-        workspaceLocalId: WORKSPACE,
-        worktreeLocalId: 'wt',
-        action: 'commit_and_push',
-        commitMessage: '  ',
-      }),
-    ).rejects.toMatchObject({
-      code: 'invalid_payload',
-      message: 'commitMessage is required.',
-    });
-    await expect(
-      runPrAction({
-        workspaceLocalId: 'shared-container-viewer',
-        worktreeLocalId: 'wt',
-        action: 'push',
-      }),
-    ).rejects.toMatchObject({
-      code: 'execution_failed',
-      message: 'Shared-container recipient workspaces are read-only',
-    });
   });
 });
 
@@ -1507,44 +1469,6 @@ it('an HTTPS fetch auth failure is not reported as a prepared commit', async () 
   }
 });
 
-it.each(['commit_and_push', 'push'] as const)(
-  'Portal %s preserves auth-failure classification and the local commit',
-  async (action) => {
-    const name = `portal-auth-${action === 'push' ? 'push' : 'commit'}`;
-    const path = checkout(name);
-    const before = remoteHead(name);
-    if (action === 'push') commit(path, 'pending.txt');
-    else writeFileSync(join(path, 'pending.txt'), 'pending\n');
-    git(repo, [
-      'config',
-      'remote.origin.pushurl',
-      'https://github.com/golden/repo.git',
-    ]);
-    try {
-      await expect(
-        withRejectedHttps(() =>
-          runPrAction({
-            workspaceLocalId: WORKSPACE,
-            worktreeLocalId: name,
-            ...(action === 'push'
-              ? { action }
-              : { action, commitMessage: 'Portal auth commit' }),
-          }),
-        ),
-      ).rejects.toMatchObject({
-        code: 'github_not_connected',
-        message: 'Connect GitHub on the desktop, then retry.',
-      });
-      expect(git(path, ['rev-parse', 'HEAD'])).not.toBe(before);
-      expect(remoteHead(name)).toBe(before);
-      expect(git(path, ['status', '--porcelain'])).toBe('');
-      exact(progress(), []);
-    } finally {
-      git(repo, ['config', '--unset', 'remote.origin.pushurl']);
-    }
-  },
-);
-
 function multiMember(name: string, id: string): string {
   const path = join(
     dataDir,
@@ -1702,121 +1626,6 @@ for (const shipping of [true, false]) {
     expect(requestRefresh).toHaveBeenCalledWith(MULTI, name, true);
   });
 }
-
-it.each(['commit_and_push', 'push'] as const)(
-  'Portal %s reports partial multi-repository mutation results and still refreshes',
-  async (action) => {
-    const name =
-      action === 'push' ? 'multi-portal-push' : 'multi-portal-commit';
-    multiConfig(['a-failed', 'd-success']);
-    const failed = multiMember(name, 'a-failed');
-    const successful = multiMember(name, 'd-success');
-    for (const path of [failed, successful]) {
-      if (action === 'push') commit(path, 'pending.txt');
-      else writeFileSync(join(path, 'pending.txt'), 'pending\n');
-    }
-    vetoPush(failed);
-    const result = await runPrAction({
-      workspaceLocalId: MULTI,
-      worktreeLocalId: name,
-      ...(action === 'push'
-        ? { action }
-        : { action, commitMessage: 'Mixed Portal commit' }),
-    });
-    if (!('mutationResult' in result) || !result.mutationResult)
-      throw new Error('Expected partial Portal result');
-    const error = result.mutationResult.failedRepos[0]?.error;
-    expect(error).toContain('multi push veto');
-    exact(result, {
-      workspaceLocalId: MULTI,
-      worktreeLocalId: name,
-      number: null,
-      url: null,
-      mutationResult: {
-        repos: [{ repoId: 'd-success', repoName: 'Repo d-success' }],
-        failedRepos: [
-          {
-            repoId: 'a-failed',
-            repoName: 'Repo a-failed',
-            status: 'failed',
-            error,
-          },
-        ],
-      },
-    });
-    expect(remoteHead(`${name}-d-success`)).toBe(
-      git(successful, ['rev-parse', 'HEAD']),
-    );
-    expect(() => remoteHead(`${name}-a-failed`)).toThrow();
-    expect(git(failed, ['status', '--porcelain'])).toBe('');
-    exact(progress(), []);
-  },
-);
-
-it.each(['commit_and_push', 'push'] as const)(
-  'Portal %s shares the Split exclusion guard',
-  async (action) => {
-    const name = `portal-split-${action === 'push' ? 'push' : 'commit'}`;
-    const path = checkout(name);
-    const before = remoteHead(name);
-    writeFileSync(join(path, 'pending.txt'), 'pending\n');
-    acquireSplitLock(WORKSPACE, name);
-    try {
-      await expect(
-        runPrAction({
-          workspaceLocalId: WORKSPACE,
-          worktreeLocalId: name,
-          ...(action === 'push'
-            ? { action }
-            : { action, commitMessage: 'Blocked' }),
-        }),
-      ).rejects.toMatchObject({
-        code: 'execution_failed',
-        message:
-          'This worktree is locked while a Split PR is in progress; running a Git action is unavailable until it finishes.',
-      });
-    } finally {
-      releaseSplitLock(WORKSPACE, name);
-    }
-    expect(git(path, ['rev-parse', 'HEAD'])).toBe(before);
-    expect(remoteHead(name)).toBe(before);
-    expect(git(path, ['status', '--porcelain'])).toBe('?? pending.txt');
-    exact(progress(), []);
-  },
-);
-
-it('an active Portal push excludes desktop mutations until the real Git child exits', async () => {
-  const name = 'portal-lock';
-  const path = checkout(name);
-  const tip = commit(path, 'pending.txt');
-  const result = await duringHook(
-    'pre-push',
-    () =>
-      runPrAction({
-        workspaceLocalId: WORKSPACE,
-        worktreeLocalId: name,
-        action: 'push',
-      }),
-    async () => {
-      for (const run of [ship, push]) {
-        await expect(run(name)).rejects.toMatchObject({
-          message: 'A Git action is already active for this worktree',
-        });
-      }
-    },
-  );
-  exact(result, {
-    workspaceLocalId: WORKSPACE,
-    worktreeLocalId: name,
-    number: null,
-    url: null,
-  });
-  expect(remoteHead(name)).toBe(tip);
-  exact(await cancel(name, 'not-a-desktop-operation'), {
-    accepted: false,
-    reason: 'not_active',
-  });
-});
 
 it('cancellation is refused during refresh and after completion, without undoing the push', async () => {
   const name = 'refresh-cancel';

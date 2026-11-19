@@ -24,6 +24,12 @@ export interface CloudCopyConsent {
    * before the audience gate, which therefore ask again before a republish.
    */
   audience?: CloudCopyAudience;
+  /**
+   * For a skill installed from GitHub, a URL or a local folder (CAN-6943):
+   * the fingerprint of its whole folder when the copy was made. Any other
+   * folder, or none recorded, shows the copy as out of date.
+   */
+  sourceFingerprint?: string;
 }
 
 const AUDIENCES: readonly CloudCopyAudience[] = [
@@ -81,6 +87,7 @@ function parseConsent(value: unknown): CloudCopyConsent | null {
     files,
     withheld,
     audience,
+    sourceFingerprint,
   } = record;
   if (
     typeof accountId !== 'string' ||
@@ -101,6 +108,7 @@ function parseConsent(value: unknown): CloudCopyConsent | null {
     files,
     withheld,
     ...(isAudience(audience) ? { audience } : {}),
+    ...(typeof sourceFingerprint === 'string' ? { sourceFingerprint } : {}),
   };
 }
 

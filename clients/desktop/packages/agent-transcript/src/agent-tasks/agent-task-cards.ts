@@ -7,7 +7,7 @@ import {
   isAgentTaskTerminalStatus,
   type AgentTaskRow,
 } from '@canopy/protocol/cloud-session';
-import type { PortalChatAgentBlockData } from '@canopy/protocol/portal';
+import type { RemoteControlChatAgentBlockData } from '@canopy/protocol/remote-control/shell';
 
 /** The task fields a card reads. */
 export type AgentTaskCardTask = Pick<
@@ -42,7 +42,7 @@ export function isAgentTaskCardTerminal(
 /** The fields a card takes from its task. */
 export function agentTaskCardFields(
   task: AgentTaskCardTask,
-): Partial<PortalChatAgentBlockData> {
+): Partial<RemoteControlChatAgentBlockData> {
   const modelLabel = task.model?.label ?? task.model?.id;
   return {
     taskId: task.taskId,
@@ -101,7 +101,7 @@ export function agentTaskCardState(input: {
 export function agentTaskCardUsage(
   task: AgentTaskCardTask | undefined,
   toolUses: number,
-): PortalChatAgentBlockData['usage'] {
+): RemoteControlChatAgentBlockData['usage'] {
   if (!task) return undefined;
   const u = task.usage;
   const durationMs =
@@ -110,7 +110,7 @@ export function agentTaskCardUsage(
       : undefined;
   const cost = task.costUsd === null ? undefined : Number(task.costUsd);
   const model = task.model?.label ?? task.model?.id;
-  const usage: PortalChatAgentBlockData['usage'] = {
+  const usage: RemoteControlChatAgentBlockData['usage'] = {
     ...(u?.inputTokens === undefined ? {} : { inputTokens: u.inputTokens }),
     ...(u?.outputTokens === undefined ? {} : { outputTokens: u.outputTokens }),
     ...(u?.cacheReadTokens === undefined

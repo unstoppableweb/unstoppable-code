@@ -102,9 +102,10 @@ function failureReason(error: unknown): string {
  * The model a memory run is about to use, or the outcome to record instead
  * of running. This is the one place scheduled runs, manual runs, rebuild
  * runs, and the chat history profile decide it, so they cannot disagree: a
- * chosen model that cannot run right now, or that the stored organization
- * policy blocks for the scope, skips with the message that says why, and
- * any other error fails. Memory is never sent to another model instead.
+ * chosen model that cannot run right now, that the stored organization
+ * policy blocks for the scope, or whose provider is signed out with no
+ * billing source, skips with the message that says why, and any other error
+ * fails. Memory is never sent to another model instead.
  */
 export async function resolveLocalMemoryRunModel(
   preferences: Parameters<typeof resolveLocalMemoryHelperModel>[0],
@@ -145,6 +146,36 @@ export async function resolveLocalMemoryRunModel(
     }
   } catch (error) {
     return { refusal: { result: 'failed', reason: failureReason(error) } };
+  }
+  // A provider known (from caches) to be signed out with nothing to pay for
+  // the run would refuse the helper before any spawn (CAN-7062). Skip before
+  // the caller opens an audit entry; the pending input is left for the next
+  // run after sign-in. A cold cache runs, and the helper refuses itself.
+  const provider = getProviderForModel(helperModel.model);
+  if (provider === 'claude' || provider === 'codex') {
+    const [
+      { isNoBillingSourceRefusalCached },
+      { helperNoBillingSourceMessage },
+    ] = await Promise.all([
+      import('../../agents/no-billing-source-refusal'),
+      import('../../agents/helper-no-billing-source'),
+    ]);
+    if (
+      isNoBillingSourceRefusalCached(
+        {
+          model: helperModel.model,
+          ...(workspaceId === undefined ? {} : { projectId: workspaceId }),
+        },
+        provider,
+      )
+    ) {
+      return {
+        refusal: {
+          result: 'skipped',
+          reason: helperNoBillingSourceMessage(provider),
+        },
+      };
+    }
   }
   return { helperModel };
 }

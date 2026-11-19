@@ -2,10 +2,10 @@ import type { ReactNode } from 'react';
 import { RECENT_STEP_COUNT } from '@canopy/protocol/chat-detail';
 import {
   classifyTurnStepOutcome,
-  type PortalChatMessage,
-  type PortalChatPart,
+  type RemoteControlChatMessage,
+  type RemoteControlChatPart,
   type TurnOutcomeEvidence,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import {
   describeCleanRun,
   getToolDisplayFamily,
@@ -37,7 +37,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function readText(part: PortalChatPart): string {
+function readText(part: RemoteControlChatPart): string {
   const data = isRecord(part.data) ? part.data : {};
   return typeof data.text === 'string' ? data.text : '';
 }
@@ -62,7 +62,7 @@ function readInput(data: Record<string, unknown>): string {
 }
 
 /** What one (normalized) part is to the clean look's grouping. */
-function partRole(part: PortalChatPart): CleanUnitRole {
+function partRole(part: RemoteControlChatPart): CleanUnitRole {
   const data = isRecord(part.data) ? part.data : {};
   switch (part.kind) {
     case 'thinking':
@@ -91,14 +91,14 @@ function partRole(part: PortalChatPart): CleanUnitRole {
 }
 
 interface CleanUnit {
-  readonly message: PortalChatMessage;
+  readonly message: RemoteControlChatMessage;
   readonly key: string;
   readonly role: CleanUnitRole;
 }
 
-const unitCache = new WeakMap<PortalChatMessage, readonly CleanUnit[]>();
+const unitCache = new WeakMap<RemoteControlChatMessage, readonly CleanUnit[]>();
 
-function unitsOf(message: PortalChatMessage): readonly CleanUnit[] {
+function unitsOf(message: RemoteControlChatMessage): readonly CleanUnit[] {
   const cached = unitCache.get(message);
   if (cached) return cached;
   let units: CleanUnit[];
@@ -149,16 +149,19 @@ export type CleanTurnSegment =
   | {
       readonly kind: 'message';
       readonly key: string;
-      readonly message: PortalChatMessage;
+      readonly message: RemoteControlChatMessage;
     }
   | {
       readonly kind: 'steps';
       readonly key: string;
-      readonly messages: readonly { key: string; message: PortalChatMessage }[];
+      readonly messages: readonly {
+        key: string;
+        message: RemoteControlChatMessage;
+      }[];
     };
 
 export function segmentCleanTurn(
-  messages: readonly PortalChatMessage[],
+  messages: readonly RemoteControlChatMessage[],
 ): CleanTurnSegment[] {
   return groupCleanSteps(
     messages.flatMap(unitsOf),
@@ -184,7 +187,7 @@ export function segmentCleanTurn(
 
 export function stepParts(
   segment: Extract<CleanTurnSegment, { kind: 'steps' }>,
-): PortalChatPart[] {
+): RemoteControlChatPart[] {
   return segment.messages.flatMap(({ message }) =>
     normalizeChatMessageParts(message.parts ?? []).filter(
       (part) => partRole(part) === 'step',

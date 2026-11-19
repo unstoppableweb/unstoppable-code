@@ -1,9 +1,9 @@
-import { W5RecoveryReasonSchema } from '@canopy/protocol/portal';
+import { W5RecoveryReasonSchema } from '@canopy/protocol/remote-control/shell';
 import type {
   W5RecoveryEntry,
   W5RecoveryReason,
   W5RecoveryStatus,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 
 /** Eligibility is assessed from typed record evidence, never display entries. */
 export interface W5RecoverySnapshot {

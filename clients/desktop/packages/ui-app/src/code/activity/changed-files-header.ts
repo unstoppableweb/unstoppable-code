@@ -1,4 +1,4 @@
-import type { PortalChangedFilesNotice } from '@canopy/protocol/portal';
+import type { RemoteControlChangedFilesNotice } from '@canopy/protocol/remote-control/shell';
 
 /**
  * The Changed files section header, defined once for every host (REG-3024).
@@ -11,7 +11,7 @@ export interface ChangedFilesHeaderInput {
   /** Rows still shown after a host-side filter; defaults to `totalCount`. */
   readonly visibleCount?: number;
   /** Why the producer's answer is incomplete. */
-  readonly notices?: readonly Pick<PortalChangedFilesNotice, 'kind'>[];
+  readonly notices?: readonly Pick<RemoteControlChangedFilesNotice, 'kind'>[];
 }
 
 /**

@@ -13,7 +13,7 @@ import {
   useCapabilities,
   type OverviewState,
 } from '@canopy/app-state';
-import type { PortalPipelineRunProjection } from '@canopy/protocol/portal';
+import type { RemoteControlPipelineRunProjection } from '@canopy/protocol/remote-control/shell';
 import {
   LoadingSpinner,
   PageHeader,
@@ -61,7 +61,7 @@ export interface OverviewProps {
   ) => void;
   /** Open a specific pipeline run; falls back to worktree navigation. */
   readonly onSelectPipelineRun?: (
-    run: PortalPipelineRunProjection,
+    run: RemoteControlPipelineRunProjection,
     unread: boolean,
   ) => void;
   /** Dismiss a host-projected unread chat card. */
@@ -70,10 +70,12 @@ export interface OverviewProps {
     worktreeLocalId: string,
   ) => void;
   /** Dismiss a host-projected unread pipeline card. */
-  readonly onDismissPipelineRun?: (run: PortalPipelineRunProjection) => void;
+  readonly onDismissPipelineRun?: (
+    run: RemoteControlPipelineRunProjection,
+  ) => void;
   /** Host-neutral slot for progress, job navigation, or other run details. */
   readonly renderPipelineRunDetails?: (
-    run: PortalPipelineRunProjection,
+    run: RemoteControlPipelineRunProjection,
     unread: boolean,
   ) => ReactNode;
   /** Host-owned notification content, rendered only when capability allows. */

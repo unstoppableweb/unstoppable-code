@@ -48,6 +48,7 @@ import {
 import { runLocalMemoryStructuredHelper } from './structured-helper';
 import { broadcastLocalMemoryChanged } from './change-events';
 import { requestLocalMemoryConsolidation } from './consolidation-scheduler';
+import { isHelperNoBillingSourceError } from '../../agents/helper-no-billing-source';
 
 const active = new Set<string>();
 
@@ -401,6 +402,12 @@ export async function learnFromChats(
         generation.usage,
       );
     } catch (error) {
+      if (isHelperNoBillingSourceError(error)) {
+        // Refused before any spawn: the provider is signed out with no
+        // billing source (CAN-7062). The turns stay pending for a later run.
+        finalizeObservedHelperTask(taskKey, 'cancelled', error.message);
+        return skipped;
+      }
       finalizeObservedHelperTask(
         taskKey,
         'failure',

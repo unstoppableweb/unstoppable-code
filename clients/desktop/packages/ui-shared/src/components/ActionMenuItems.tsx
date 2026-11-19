@@ -250,11 +250,13 @@ export function ActionMenuItems<K extends string>({
                 <DropdownMenuItemIcon>
                   {actionMenuRowIcon(items, index)}
                 </DropdownMenuItemIcon>
-                {item.replayBlockLabel === true ? (
-                  <span className={REPLAY_BLOCK_CLASS}>{item.label}</span>
-                ) : (
-                  item.label
-                )}
+                {/* A row is one line: a label too long for the menu ends in
+                    an ellipsis instead of wrapping out of its 32px row. */}
+                <span
+                  className={`min-w-0 truncate ${item.replayBlockLabel === true ? REPLAY_BLOCK_CLASS : ''}`}
+                >
+                  {item.label}
+                </span>
                 <ActionMenuShortcut shortcut={item.shortcut} />
               </DropdownMenuItem>
             </ActionMenuRichTooltip>

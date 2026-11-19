@@ -10,7 +10,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./types": "./src/types.ts",
-    "./portal": "./src/portal/persisted-chat-projection.ts",
+    "./remote-control": "./src/remote-control/persisted-chat-projection.ts",
     "./turn": "./src/turn/index.ts",
     "./agent-tasks": "./src/agent-tasks/index.ts",
     "./*": "./src/*",

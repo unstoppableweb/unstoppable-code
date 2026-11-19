@@ -7,6 +7,10 @@ import {
 } from '@canopy/ui-shared/components/chat';
 import { isCreditHeldQueuedMessage } from '@canopy/ui-shared/lib/queued-message-force';
 import { isWebCoreScope } from '@/lib/chat-authority';
+import {
+  chatsOwnDelegationIds,
+  useCloudDelegationLiveState,
+} from '@/cloud-chats/cloud-delegation-stop';
 import type { TranscriptSearchSelection } from '@/hooks/useTranscriptSearch';
 import { omitRecoveredCreditHoldArtifacts } from '@canopy/ui-shared/lib';
 import {
@@ -193,6 +197,7 @@ import {
 } from './incremental-turn-groups';
 import {
   ManagedDelegationStopContext,
+  selectManagedDelegationIds,
   selectManagedDelegationStopState,
   type ManagedDelegationStopControls,
 } from './managed-delegation-stop';
@@ -1251,30 +1256,86 @@ export function ChatMessageList({
   // this; the drawer and, under the Subagents view, the Subagents panel get
   // Stop all. Read-only views offer neither, and nor does a scope that
   // doesn't stop its delegates itself (a cloud chat's).
-  const delegationStopState = useMemo(
-    () => selectManagedDelegationStopState(turnGroups),
-    [turnGroups],
-  );
-  const { delegationStop } = useScopeCapabilities({
+  const { delegationStop, delegationWorktreeDetails } = useScopeCapabilities({
     projectId: worktreeTarget?.projectId ?? '',
   });
   const canStopDelegations =
     !readOnlyScope && worktreeTarget !== null && delegationStop === true;
+  // A cloud chat's cards keep their first state; the web core reads their
+  // delegates' current one while Stop is offered (CAN-7245).
+  const cloudStopTarget = useMemo(
+    () =>
+      canStopDelegations &&
+      worktreeTarget !== null &&
+      isWebCoreScope(worktreeTarget.projectId)
+        ? {
+            projectId: worktreeTarget.projectId,
+            worktreeId: worktreeTarget.worktreeId,
+            chatId,
+          }
+        : null,
+    [canStopDelegations, chatId, worktreeTarget],
+  );
+  const delegationIds = useMemo(
+    () => selectManagedDelegationIds(turnGroups),
+    [turnGroups],
+  );
+  const cloudDelegations = useCloudDelegationLiveState(
+    cloudStopTarget,
+    delegationIds,
+    {
+      parentActive: localTurn === 'streaming' || localTurn === 'dispatching',
+      changeKey: `${messages.length}:${activeTurn?.kind === 'turn-group' ? activeTurn.userMessage.id : ''}`,
+    },
+  );
+  const cloudDelegationSnapshots = cloudDelegations?.snapshots ?? null;
+  const ownCloudDelegationIds = useMemo(
+    () => (cloudStopTarget === null ? null : chatsOwnDelegationIds(messages)),
+    [cloudStopTarget, messages],
+  );
+  const delegationStopState = useMemo(
+    () =>
+      selectManagedDelegationStopState(
+        turnGroups,
+        cloudDelegationSnapshots ?? undefined,
+      ),
+    [cloudDelegationSnapshots, turnGroups],
+  );
   useEffect(() => {
     if (backgroundWorkChatKey === null) return;
     publishChatBackgroundRuns(backgroundWorkChatKey, placement.live);
   }, [backgroundWorkChatKey, placement.live]);
   const liveDescendantKey = delegationStopState.withLiveDescendants.join('\n');
+  // A cloud chat's drawer lists its delegates by the web core's live state,
+  // as their cards show them: its cards keep their first state (CAN-7245).
+  const trayAgents = useMemo(
+    () =>
+      cloudDelegationSnapshots === null
+        ? activeAgents
+        : selectActiveAgentBlocks(
+            turnGroups,
+            backgroundProcesses ?? [],
+            chatId,
+            cloudDelegationSnapshots,
+          ),
+    [
+      activeAgents,
+      backgroundProcesses,
+      chatId,
+      cloudDelegationSnapshots,
+      turnGroups,
+    ],
+  );
   const backgroundTrayAgentRows = useMemo(
     () =>
-      backgroundTrayAgents(activeAgents, backgroundProcesses ?? [], chatId, {
+      backgroundTrayAgents(trayAgents, backgroundProcesses ?? [], chatId, {
         withLiveDescendants: new Set(
           liveDescendantKey ? liveDescendantKey.split('\n') : [],
         ),
         canStopDelegates: delegationStop === true,
       }),
     [
-      activeAgents,
+      trayAgents,
       backgroundProcesses,
       chatId,
       delegationStop,
@@ -1305,10 +1366,23 @@ export function ChatMessageList({
         withLiveDescendants: new Set(
           liveDescendantKey ? liveDescendantKey.split('\n') : [],
         ),
+        worktreeDetails: delegationWorktreeDetails === true,
+        ...(cloudDelegations === null
+          ? {}
+          : {
+              liveSnapshots: cloudDelegations.snapshots,
+              liveEpochs: cloudDelegations.epochs,
+            }),
+        ...(ownCloudDelegationIds === null
+          ? {}
+          : { ownDelegationIds: ownCloudDelegationIds }),
       };
     }, [
       canStopDelegations,
       chatId,
+      cloudDelegations,
+      delegationWorktreeDetails,
+      ownCloudDelegationIds,
       liveDescendantKey,
       stopTargetProjectId,
       stopTargetWorktreeId,
@@ -1871,7 +1945,7 @@ export function ChatMessageList({
         if (!straddling && winner === null) {
           straddling = Array.from(
             section.querySelectorAll<HTMLElement>(
-              '[data-chat-turn-group] [data-testid="portal-chat-message-content"]',
+              '[data-chat-turn-group] [data-testid="remote-control-chat-message-content"]',
             ),
           ).some(straddles);
         }
@@ -3667,7 +3741,7 @@ export function ChatMessageList({
         />
       ) : null}
       {backgroundWorkChatKey !== null &&
-        activeAgents.map((block) =>
+        trayAgents.map((block) =>
           block.type === 'delegated_agent_call' ? (
             <BackgroundTrayDelegateSteps
               key={block.delegationId}

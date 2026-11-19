@@ -839,12 +839,12 @@ export class CanopyAppDriver {
     await expect(this.window.getByTestId('settings-overlay')).toBeVisible();
   }
 
-  async openCanopyPortal() {
+  async openRemoteControlDialog() {
     // CAN-3659: Remote Control opens from the account menu; the desktop
     // sidebar nav no longer lists it.
     const menu = await this.#openAccountMenu();
     await menu.getByTestId('sidebar-account-menu-item-remote-control').click();
-    await this.expectCanopyPortalModal();
+    await this.expectRemoteControlModal();
   }
 
   async closeSettings() {
@@ -967,7 +967,7 @@ export class CanopyAppDriver {
     ).toHaveAttribute('aria-selected', 'true');
   }
 
-  async expectCanopyPortalModal() {
+  async expectRemoteControlModal() {
     await expect(this.window.getByTestId('remote-control-modal')).toBeVisible();
     await expect(
       this.window.getByRole('heading', {

@@ -35,7 +35,7 @@ export function RemoteAccessHost(): JSX.Element {
     );
   // The Remote Control dialog answers requests itself while it is open.
   const remoteControlDialogOpen = useNavigationStore(
-    (store) => store.canopyPortalOpen,
+    (store) => store.remoteControlDialogOpen,
   );
   const api = getRemoteControlApi();
   return (

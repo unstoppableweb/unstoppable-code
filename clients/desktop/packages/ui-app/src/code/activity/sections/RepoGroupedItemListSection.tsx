@@ -90,8 +90,8 @@ export function RepoGroupedItemListSection({
                 return next;
               })
             }
-            dataTestId={`portal-${kind}-repo`}
-            toggleTestId={`portal-${kind}-repo-header`}
+            dataTestId={`remote-control-${kind}-repo`}
+            toggleTestId={`remote-control-${kind}-repo-header`}
           >
             <ItemListSection
               emptyLabel={`No ${kind}.`}

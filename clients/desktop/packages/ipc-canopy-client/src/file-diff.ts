@@ -9,9 +9,9 @@
  * channel and is refused explicitly.
  */
 import type {
-  PortalDiffPayload,
-  PortalDiffReadPayload,
-} from '@canopy/protocol/portal';
+  RemoteControlDiffPayload,
+  RemoteControlDiffReadPayload,
+} from '@canopy/protocol/remote-control/shell';
 import { REMOTE_IPC_CHANNELS as C } from '@canopy/protocol/remote-control/channels';
 import {
   UnsupportedOperationError,
@@ -197,8 +197,8 @@ export function unifiedPatch(
 
 export async function readFileDiff(
   channels: ChannelClient,
-  args: PortalDiffReadPayload,
-): Promise<PortalDiffPayload> {
+  args: RemoteControlDiffReadPayload,
+): Promise<RemoteControlDiffPayload> {
   if (!args.path) {
     throw new UnsupportedOperationError(
       'diff.read',

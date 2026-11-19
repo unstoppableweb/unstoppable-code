@@ -44,7 +44,7 @@ export function SidebarSelectionHeaderActions({
         onClick={onToggleAll}
       />
       <Button
-        variant="ghost-quiet"
+        variant="ghost"
         size="compact"
         iconShape="nested"
         touchArea="contained"

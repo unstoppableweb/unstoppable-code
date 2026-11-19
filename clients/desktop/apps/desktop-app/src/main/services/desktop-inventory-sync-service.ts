@@ -80,10 +80,10 @@ import {
 } from './desktop-inventory-pipeline-documents';
 import { subscribeDesktopInventoryChanges } from './desktop-inventory-sync-signals';
 import {
-  listPortalMarketplaces,
-  listPortalMcpServers,
-  listPersonalPortalCollections,
-  listPersonalPortalSkills,
+  listRemoteControlMarketplaces,
+  listRemoteControlMcpServers,
+  listPersonalRemoteControlCollections,
+  listPersonalRemoteControlSkills,
 } from './plugin-catalog-service';
 
 /** Trailing debounce so a burst of mutations produces one push. */
@@ -162,10 +162,10 @@ interface Readers extends DeviceKindReaders {
 }
 
 const DEFAULT_READERS: Readers = {
-  marketplaces: listPortalMarketplaces,
-  skills: listPersonalPortalSkills,
-  mcp_servers: listPortalMcpServers,
-  collections: listPersonalPortalCollections,
+  marketplaces: listRemoteControlMarketplaces,
+  skills: listPersonalRemoteControlSkills,
+  mcp_servers: listRemoteControlMcpServers,
+  collections: listPersonalRemoteControlCollections,
   // The status snapshot the live installed-items command and the settings
   // sections read; it starts no MCP probes.
   installed_items: () => installedItemService.listStatus(),

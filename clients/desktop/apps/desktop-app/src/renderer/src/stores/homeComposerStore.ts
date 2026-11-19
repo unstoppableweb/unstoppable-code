@@ -4,7 +4,7 @@ import { type InlineFailure } from '@/lib/inline-app-error';
 import { formatWorktreePrepareFailure } from '@canopy/ui-shared';
 import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import { isOpenCodeModel } from '@canopy/execution-engine/lib/opencode-models';
-import { encodeWorktreeBaseBranch } from '@canopy/protocol/portal';
+import { encodeWorktreeBaseBranch } from '@canopy/protocol/remote-control/shell';
 import { isCopilotModel } from '@canopy/execution-engine/lib/copilot-models';
 import { isCursorModel } from '@canopy/execution-engine/lib/cursor-models';
 import { create } from 'zustand';

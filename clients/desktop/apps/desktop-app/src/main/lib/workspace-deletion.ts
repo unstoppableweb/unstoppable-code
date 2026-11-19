@@ -1,5 +1,5 @@
 /// <reference lib="es2021.promise" />
-import type { ProjectDeletionPendingRecovery } from '@canopy/protocol/portal/project-deletion-discard';
+import type { ProjectDeletionPendingRecovery } from '@canopy/protocol/remote-control/shell/project-deletion-discard';
 import { isDeepStrictEqual } from 'node:util';
 import {
   confirmedPendingArchiveRecoveries,

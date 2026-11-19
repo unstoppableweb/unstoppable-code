@@ -10,7 +10,7 @@ import {
   Heading,
   TextLink,
 } from '@canopy/ui-shared/components';
-import type { PortalMcpServerDetail } from '@canopy/protocol/portal';
+import type { RemoteControlMcpServerDetail } from '@canopy/protocol/remote-control/shell';
 import {
   Button,
   ComponentSection,
@@ -24,7 +24,7 @@ export interface McpServerReadDetailProps {
   /** The management card, beneath Status. */
   managementSection?: ReactNode;
   /** Credential-free portal projection. Raw MCP definitions are forbidden. */
-  server: PortalMcpServerDetail;
+  server: RemoteControlMcpServerDetail;
   /** Host-owned label for app-managed HTTP auth. */
   appAuthHandlerLabel?: string;
   onConfigure?: () => void;
@@ -43,8 +43,8 @@ export interface McpServerReadDetailProps {
  * cloud); with no presence reported, it makes no claim at all.
  */
 function extraHeadersSummary(
-  server: PortalMcpServerDetail,
-  config: PortalMcpServerDetail['configs'][number],
+  server: RemoteControlMcpServerDetail,
+  config: RemoteControlMcpServerDetail['configs'][number],
 ): string {
   if (config.hasExtraHeaders === true) return ' · Extra headers configured';
   if (server.scope === 'account' && config.hasExtraHeaders === undefined)
@@ -168,7 +168,7 @@ export function McpServerReadDetail({
 
 /** The fields of a server's definition the page may show: names, never values. */
 export type McpServerConfigurationSummary = Pick<
-  PortalMcpServerDetail,
+  RemoteControlMcpServerDetail,
   | 'type'
   | 'command'
   | 'argCount'
@@ -286,7 +286,7 @@ export function McpServerConfigList({
 }: {
   /** Session replay keeps a placeholder for each configuration's values. */
   replayValues?: boolean;
-  server: PortalMcpServerDetail;
+  server: RemoteControlMcpServerDetail;
   /** The page shows a Status row, which owns enabling; no toggles then. */
   statusShown: boolean;
   onToggleConfig?: McpServerReadDetailProps['onToggleConfig'];

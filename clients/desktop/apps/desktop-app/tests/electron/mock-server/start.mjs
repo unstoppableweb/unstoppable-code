@@ -3,9 +3,8 @@
 // Runs ONCE for the whole Playwright suite (started via the `webServer` block in
 // playwright.config.mjs — Doc 4 §0), serving the deterministic stand-ins the app
 // is redirected to under an E2E build. Phase 1 implements only the Canopy Cloud
-// surface (replacing the per-test mock previously in canopy-portal.spec.mjs) plus
-// a health endpoint and the `/__mock/` control plane (per-test scenario keying —
-// see ./control-plane.mjs and ./README.md). Later phases fill the
+// surface plus a health endpoint and the `/__mock/` control plane (per-test
+// scenario keying — see ./control-plane.mjs and ./README.md). Later phases fill the
 // LLM / auth-usage / GitHub / Linear surfaces (Docs 5/6/8/9).
 
 import { createServer } from 'node:http';

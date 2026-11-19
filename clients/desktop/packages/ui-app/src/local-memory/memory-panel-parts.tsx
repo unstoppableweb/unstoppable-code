@@ -241,7 +241,7 @@ export function MemoryMoreMenu({
         <Button
           ref={anchorRef}
           type="button"
-          variant="ghost-quiet"
+          variant="ghost"
           size="compact"
           iconOnly
           aria-label={label}

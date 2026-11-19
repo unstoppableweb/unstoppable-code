@@ -1,7 +1,7 @@
-import { worktreeRemovalIntent } from '@canopy/protocol/portal/worktree-recovery';
+import { worktreeRemovalIntent } from '@canopy/protocol/remote-control/shell/worktree-recovery';
 import { sourceChangeGit } from '../canopy-runtime/worker-git-worktree-adapter';
 import type { ScriptActionsAddMetadata } from '@canopy/protocol/script-actions';
-import { normalizeRepositoryCloneUrl } from '@canopy/protocol/portal';
+import { normalizeRepositoryCloneUrl } from '@canopy/protocol/remote-control/shell';
 import { bindCombinationAfterJoin } from '../lib/adhoc-combination-binding';
 import { requestOrgProjectAutoConversion } from '../services/org-project-auto-conversion-host';
 import { mkdir, rm } from 'node:fs/promises';

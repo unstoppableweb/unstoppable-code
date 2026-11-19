@@ -153,7 +153,6 @@ function TimeoutSegmentedControl({
     <SegmentedControl<ScriptTimeoutMode>
       label="Timeout"
       semantics="radio"
-      shape="capsule"
       width="content"
       value={mode}
       options={TIMEOUT_OPTIONS}
@@ -852,7 +851,6 @@ function DevServerPatternsSection({
                         label="Open target"
                         value={row.openTarget ?? null}
                         width="content"
-                        shape="capsule"
                         options={[
                           {
                             value: 'in-app',

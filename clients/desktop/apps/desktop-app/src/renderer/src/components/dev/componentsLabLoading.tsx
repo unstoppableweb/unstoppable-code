@@ -61,7 +61,7 @@ export function LoadingSpecimen(): JSX.Element {
   const [replay, setReplay] = useState(0);
   return (
     <div className="flex flex-col gap-6">
-      <SpecimenPanel title="Inline text: a bar on the text's own line">
+      <SpecimenPanel title="Inline text" hint="A bar on the text's own line">
         <SpecimenCell label="Measured text inside a sentence" wide>
           <p className="text-s fg-secondary">
             Last synced{' '}
@@ -80,7 +80,10 @@ export function LoadingSpecimen(): JSX.Element {
           </div>
         </SpecimenCell>
       </SpecimenPanel>
-      <SpecimenPanel title="Skeleton: measured by skullet from the content's own layout">
+      <SpecimenPanel
+        title="Skeleton"
+        hint="Measured by skullet from the content's own layout"
+      >
         <SpecimenGrid min={300}>
           <SpecimenCell label="Loading (sample data, the heading kept)">
             <Skeleton loading className="w-full">
@@ -111,7 +114,10 @@ export function LoadingSpecimen(): JSX.Element {
           <SettingsChartLoading />
         </SpecimenCell>
       </SpecimenPanel>
-      <SpecimenPanel title="Busy controls: the spinner lives in the control whose work runs">
+      <SpecimenPanel
+        title="Busy controls"
+        hint="The spinner lives in the control whose work runs"
+      >
         <SpecimenGrid min={200}>
           <SpecimenCell label="LoadingButton, busy keeps its width">
             <LoadingButton
@@ -147,7 +153,10 @@ export function LoadingSpecimen(): JSX.Element {
           ))}
         </SpecimenGrid>
       </SpecimenPanel>
-      <SpecimenPanel title="Where no skeleton fits: nothing for 200ms, a spinner, then a slow note">
+      <SpecimenPanel
+        title="Where no skeleton fits"
+        hint="Nothing for 200ms, a spinner, then a slow note"
+      >
         <SpecimenCell
           label="DelayedLoadingPlaceholder (slow note after 2s here; 8s in the app)"
           wide

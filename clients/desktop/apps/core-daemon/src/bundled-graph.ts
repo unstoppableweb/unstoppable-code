@@ -65,6 +65,7 @@ import {
   WORKER_GIT_BRANCH_WRITE_INSTRUCTION_DEFINITIONS,
   WORKER_GIT_DIFF_QUERY_DEFINITIONS,
   WORKER_GIT_EXECUTABLE_QUERY_DEFINITIONS,
+  WORKER_GIT_GRANTS,
   WORKER_GIT_QUERY_DEFINITIONS,
   WORKER_GIT_REMOTE_QUERY_DEFINITIONS,
   WORKER_GIT_SYNC_WRITE_INSTRUCTION_DEFINITIONS,
@@ -336,10 +337,10 @@ export const DAEMON_GIT_INSTRUCTION_DEFINITIONS = {
 /**
  * The `worker.git.*` partition over the Files module's Git read and write
  * hosts. It owns no service: those hosts' lifecycles and phase-5 stops stay
- * with the Files module. Production callers hold neither `worker.git.read`
- * nor `worker.git.write`, so nothing routes here before CAN-4729 and
- * CAN-4731 (D7, W7); `worker.git.diff.get` serves changed files only
- * (CAN-4103). The worktree add/remove/prune instructions need
+ * with the Files module. Production callers hold `worker.git.read` (CAN-4729)
+ * but not `worker.git.write`, so no instruction routes here before CAN-4731
+ * (W7); `worker.git.diff.get` serves changed files only (CAN-4103).
+ * The worktree add/remove/prune instructions need
  * `worker.git.worktree.write` instead, which no daemon caller holds (CAN-7197).
  */
 export function createDaemonGitModule(
@@ -407,6 +408,8 @@ export function daemonWorkerCaller(
     interfaceKind: 'daemon',
     grants: [
       'worker.filesystem.read',
+      // CAN-4729: and the Git reads its interface callers hold.
+      WORKER_GIT_GRANTS.read,
       // CAN-5088: the owning core forwards interface terminal calls.
       ...(options.terminals ? WORKER_TERMINAL_CALLER_GRANTS : []),
       // CAN-5089: and its code-graph builds and reads.

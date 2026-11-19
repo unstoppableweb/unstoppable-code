@@ -78,7 +78,7 @@ export function ChatInterfaceModeToggle({
       <ChatModeControlThumb index={selectedIndex} />
       <Tooltip label={canopyTitle}>
         <Button
-          variant="ghost-overlay"
+          variant="ghost"
           size="sm"
           iconOnly
           touchArea="contained"
@@ -99,7 +99,7 @@ export function ChatInterfaceModeToggle({
       </Tooltip>
       <Tooltip label={autoTitle}>
         <Button
-          variant="ghost-overlay"
+          variant="ghost"
           size="sm"
           iconOnly
           touchArea="contained"
@@ -120,7 +120,7 @@ export function ChatInterfaceModeToggle({
       </Tooltip>
       <Tooltip label={claudeCodeTitle}>
         <Button
-          variant="ghost-overlay"
+          variant="ghost"
           size="sm"
           iconOnly
           touchArea="contained"

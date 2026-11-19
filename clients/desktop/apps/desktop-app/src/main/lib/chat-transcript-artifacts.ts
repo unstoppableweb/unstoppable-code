@@ -25,7 +25,7 @@ import type {
   PersistedToolOutputReference,
   PersistedVisualReference,
 } from '@canopy/agent-transcript/types';
-import { PORTAL_CHAT_PART_TEXT_MAX_CHARS } from '@canopy/agent-transcript/portal/persisted-chat-projection';
+import { REMOTE_CONTROL_CHAT_PART_TEXT_MAX_CHARS } from '@canopy/agent-transcript/remote-control/persisted-chat-projection';
 import {
   clampVisualHeight,
   findVisualTokens,
@@ -142,7 +142,7 @@ export function toolResultNeedsRead(
 ): boolean {
   return (
     block.fullOutputRef !== undefined ||
-    block.output.length > PORTAL_CHAT_PART_TEXT_MAX_CHARS
+    block.output.length > REMOTE_CONTROL_CHAT_PART_TEXT_MAX_CHARS
   );
 }
 

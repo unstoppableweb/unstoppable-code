@@ -16,7 +16,7 @@ import type {
  * - `retry`: no read, a failed read, or nothing usable yet.
  *
  * `response` is the raw answer when one arrived, so a caller can apply a
- * stricter policy (a zero baseline, daily-drip attribution) of its own.
+ * stricter policy (such as a zero baseline) of its own.
  */
 export type AiCreditsConfirmationBalanceOutcome =
   | 'usable'
@@ -101,6 +101,5 @@ export function personalBalanceReading(
     credits: balance.credits,
     source: balance.source,
     email: balance.email,
-    reportedGrant: balance.dailyDripOutcome === 'granted',
   };
 }

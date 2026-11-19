@@ -7,7 +7,7 @@ import type {
   PersistedAgentOverlaySummary,
   PersistedAgentRouteSnapshot,
 } from '@canopy/protocol/delegation';
-import type { ChatInputAdmission } from '@canopy/protocol/portal/input-delivery';
+import type { ChatInputAdmission } from '@canopy/protocol/remote-control/shell/input-delivery';
 import type { DelegationCapabilityGrant } from './capability-grant';
 import type { DelegationTranscriptTarget } from './transcript-port';
 

@@ -1,6 +1,6 @@
 import { create } from 'zustand';
-import { lifecycleJournalRefusalKind } from '@canopy/protocol/portal/lifecycle-journal-refusal';
-import { WorktreeRecoveryDescriptionSchema } from '@canopy/protocol/portal/worktree-discard-schemas';
+import { lifecycleJournalRefusalKind } from '@canopy/protocol/remote-control/shell/lifecycle-journal-refusal';
+import { WorktreeRecoveryDescriptionSchema } from '@canopy/protocol/remote-control/shell/worktree-discard-schemas';
 
 /**
  * Requests made by refusal surfaces. One per page, not per client: a surface

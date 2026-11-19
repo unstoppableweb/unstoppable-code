@@ -101,7 +101,7 @@ function OverviewCardImpl({
             {onDismiss && (
               <Tooltip label={dismissLabel} className="pointer-events-auto">
                 <Button
-                  variant="ghost-overlay"
+                  variant="ghost"
                   size="sm"
                   iconOnly
                   onClick={handleDismiss}

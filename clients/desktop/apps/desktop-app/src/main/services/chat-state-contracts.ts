@@ -215,7 +215,7 @@ export interface ChatStateStorageDiagnostic {
 }
 
 export interface ChatStateTransactionContext {
-  getPortalSendReceipt(
+  getRemoteControlSendReceipt(
     userMessageId: string,
   ): PersistedCommandReceipt | undefined;
   hasRemovedTab(tabId: string): boolean;

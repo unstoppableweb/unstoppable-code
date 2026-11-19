@@ -341,7 +341,7 @@ export function BrowserProfilePicker({
                 Replace this tab
               </Button>
               <Button
-                variant="outline"
+                variant="secondary"
                 size="md"
                 data-testid="browser-profile-new-tab"
                 disabled={busy}

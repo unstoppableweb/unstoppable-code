@@ -5,7 +5,7 @@ import type {
   OnboardingTipId,
   OnboardingTipsState,
 } from '@canopy/protocol/onboarding-tips';
-import type { PortalChatSummaryEntity } from '@canopy/protocol/portal';
+import type { RemoteControlChatSummaryEntity } from '@canopy/protocol/remote-control/shell';
 import { createClientStore } from '../create-client-store';
 import {
   CLIENT_STORE_DISPOSE,
@@ -184,7 +184,7 @@ interface SlotArrival {
  * else the newest message's role or time. Neither: unknown, not empty.
  */
 function summaryHistory(
-  summary: PortalChatSummaryEntity,
+  summary: RemoteControlChatSummaryEntity,
 ): 'used' | 'empty' | 'unknown' {
   if (typeof summary.messageCount === 'number') {
     return summary.messageCount > 0

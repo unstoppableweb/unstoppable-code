@@ -3014,7 +3014,7 @@ function WorktreeRowImpl(
             : 'filter';
     const focusedGlyph =
       focusedRowStatus === 'working' || focusedRowStatus === 'background' ? (
-        // Follows Labs → Comet spinners; the comet keeps its 12px slot.
+        // The ring keeps the status slot's 12px.
         <ThinkingSpinner
           tone={focusedRowStatus === 'working' ? 'accent' : 'tertiary'}
           sizePx={12}

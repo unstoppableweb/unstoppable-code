@@ -91,7 +91,7 @@ const plainContracts: readonly { channel: RegExp; text: RegExp }[] = [
     channel: /^local-memory:(?:update|delete)-(?:item|file)$/,
     text: /^(?:LocalMemory[A-Za-z]*Error: .*(?:too large to sync|conflict|changed|revision)|Error: Memory changed since you opened it\.)/i,
   },
-  // protocol/portal/repository-clone.ts: fixed saved-decision recovery copy.
+  // protocol/remote-control/shell/repository-clone.ts: fixed saved-decision recovery copy.
   {
     channel: /^workspace:add-from-remote$/,
     text: /^Error: (?:This (?:change|request) was saved but did not finish and needs recovery\.|An earlier attempt of this request was interrupted and needs recovery\.)$/,

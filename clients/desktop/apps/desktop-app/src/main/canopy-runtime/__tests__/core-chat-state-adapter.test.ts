@@ -2,8 +2,8 @@ import {
   initialChatTurnState,
   serializeChatTurnState,
 } from '@canopy/agent-transcript/turn';
-import { queryPortalChatState } from '../../remote-projection/chat-state-query';
-import type { PortalAdapterContext } from '../../remote-projection/adapter-context';
+import { queryRemoteControlChatState } from '../../remote-projection/chat-state-query';
+import type { RemoteControlAdapterContext } from '../../remote-projection/adapter-context';
 import type {
   ChatStateCommandPort,
   ChatStateSnapshot,
@@ -112,7 +112,7 @@ describe('core chat state read adapter', () => {
       const port = createPort();
       port.getState = jest.fn().mockResolvedValue(source);
       const runtime = createDesktopRuntime({ getChatStatePort: () => port });
-      const context: PortalAdapterContext = {
+      const context: RemoteControlAdapterContext = {
         sessionId: 'turn-query-session',
         getWindow: () => null,
         enqueueEvent: jest.fn(),
@@ -134,7 +134,7 @@ describe('core chat state read adapter', () => {
         const legacy = await runtime.queryChatStateForLegacyIpc(params, {
           caller,
         });
-        const portal = await queryPortalChatState(context, {
+        const portal = await queryRemoteControlChatState(context, {
           projectId: source.projectId,
           worktreeId: source.worktreeId,
         });

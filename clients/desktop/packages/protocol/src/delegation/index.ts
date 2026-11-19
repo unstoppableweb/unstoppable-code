@@ -22,7 +22,7 @@ import {
   type DelegationApplyIssueReason,
 } from './limits';
 import { isThinkingLevel, type ThinkingLevel } from '../thinking';
-import type { ChatInputAdmission } from '../portal/input-delivery';
+import type { ChatInputAdmission } from '../remote-control/shell/input-delivery';
 import {
   DELEGATION_IF_BUSY_VALUES,
   type AgentDelegationPhase,

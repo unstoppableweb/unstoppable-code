@@ -37,9 +37,9 @@ import { cloudChatCanopyClient } from '@/cloud-chats/cloud-chat-client';
 import { chatTabStripLabel } from '@/lib/chatTabLabel';
 import { projectAgentTaskTranscript } from '@canopy/agent-transcript/agent-tasks';
 import {
-  persistedMessageToPortalMessage,
+  persistedMessageToRemoteControlMessage,
   projectPersistedChatTranscript,
-} from '@canopy/desktop-shared/portal/persisted-chat-projection';
+} from '@canopy/desktop-shared/remote-control/persisted-chat-projection';
 import {
   applyCanonicalChanges,
   applyRuntimeStatusesToTabs,
@@ -1194,7 +1194,7 @@ function desktopPath(
           text: persistedText(message),
           provisional: message.id.startsWith('live:'),
           // As the shared transcript labels the row.
-          ...(persistedMessageToPortalMessage({
+          ...(persistedMessageToRemoteControlMessage({
             scope: 'worktree',
             chatId: CHAT_KEY,
             message,

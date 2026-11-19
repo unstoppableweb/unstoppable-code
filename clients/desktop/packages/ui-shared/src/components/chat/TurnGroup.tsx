@@ -5,7 +5,7 @@ import { ChevronDownIcon, ChevronRightIcon } from '../../icons';
 import type {
   TurnOutcomeCounts,
   TurnOutcomeStepDetail,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import { CollapsedTurnSummary, type TurnSummary } from './CollapsedTurnSummary';
 import {
   resolveTurnCompletionStatus,

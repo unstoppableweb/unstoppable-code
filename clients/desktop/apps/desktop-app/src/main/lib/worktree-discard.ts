@@ -7,11 +7,11 @@ import {
   captureAutoDeleteAttention,
   resolveAutoDeleteAttention,
 } from './auto-delete-attention';
-import type { WorktreeRecoveryRequest } from '@canopy/protocol/portal/worktree-recovery';
+import type { WorktreeRecoveryRequest } from '@canopy/protocol/remote-control/shell/worktree-recovery';
 import {
   LIFECYCLE_JOURNAL_DIRECTORY_UNREADABLE_REFUSAL,
   LIFECYCLE_JOURNAL_UNREADABLE_REFUSAL,
-} from '@canopy/protocol/portal/lifecycle-journal-refusal';
+} from '@canopy/protocol/remote-control/shell/lifecycle-journal-refusal';
 import {
   describeWorktreeRecovery,
   recoveryFromRefusal,
@@ -43,7 +43,7 @@ import type {
   WorktreeDiscardSource,
   WorktreeDiscardTarget,
   WorktreeDiscardTargetKind,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import { W5CommitRefusedError } from '@canopy/desktop-shared/node/w5-commit-log/errors';
 import { runArchiveIoRequest } from '../archive/archive-io-runner';
 import { assertWorktreeCanBeRemoved } from '../agents/background-work';

@@ -257,7 +257,7 @@ export function ShareSessionControl({
       >
         <Button
           ref={buttonRef}
-          variant={isShared ? 'ghost-accent' : 'ghost-quiet'}
+          variant="ghost"
           size="sm"
           iconOnly
           disabled={!isShared && shareDisabled}

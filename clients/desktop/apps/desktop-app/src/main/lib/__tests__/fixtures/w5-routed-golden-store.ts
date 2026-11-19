@@ -9,6 +9,7 @@ jest.mock('node:worker_threads', () =>
 );
 
 import type { W5RecordPortTransport } from '@canopy/core-runtime/node/w5/record-port';
+import type { W5CommitLogFileStore } from '@canopy/core-runtime/node/w5/commit-log-file-store';
 import { mkdir, realpath } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { W5CommitLogHost } from '@canopy/core-runtime/node/w5/commit-log-host';
@@ -28,6 +29,7 @@ import { shutdownW5BoundaryHost } from './w5-boundary-host';
 export async function installRoutedW5GoldenStore(
   options: {
     wrapTransport?: (transport: W5RecordPortTransport) => W5RecordPortTransport;
+    onStore?: (store: W5CommitLogFileStore) => void;
   } = {},
 ): Promise<() => Promise<void>> {
   await mkdir(getDataDir(), { recursive: true, mode: 0o700 });
@@ -56,13 +58,13 @@ export async function installRoutedW5GoldenStore(
   let restore = (): void => undefined;
   try {
     const transport = w5RecordPortTransport(await harness.connect());
-    restore = installW5DaemonRecordStoreForTests(
-      createW5DaemonRecordStore({
-        // The interface projects its selected path; the authority anchors realpath.
-        root: getWorkspacesRootDir(),
-        transport: options.wrapTransport?.(transport) ?? transport,
-      }),
-    );
+    const store = createW5DaemonRecordStore({
+      // The interface projects its selected path; the authority anchors realpath.
+      root: getWorkspacesRootDir(),
+      transport: options.wrapTransport?.(transport) ?? transport,
+    });
+    restore = installW5DaemonRecordStoreForTests(store);
+    options.onStore?.(store);
   } catch (error) {
     await harness.close();
     await shutdownW5BoundaryHost(host, dbPath);

@@ -205,7 +205,7 @@ function HookLiveOutput({
         onEnlarge && !interactive ? (
           <Button
             type="button"
-            variant="ghost-accent"
+            variant="ghost"
             size="compact"
             iconOnly
             onClick={onEnlarge}

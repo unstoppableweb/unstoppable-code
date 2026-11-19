@@ -6,7 +6,7 @@ import {
   type PipelineDefinitionListResult,
   type PipelineDefinitionSummary,
 } from '@canopy/protocol/canopy-core';
-import type { PortalPipelineInputDefinition } from '@canopy/protocol/portal';
+import type { RemoteControlPipelineInputDefinition } from '@canopy/protocol/remote-control/shell';
 import type { CoreCoworkInvoker } from '../core-cowork/invoker';
 import { requestCloud } from './request';
 
@@ -82,7 +82,7 @@ const TriggerInputsSchema = z.looseObject({
     .optional(),
 });
 
-type FieldType = NonNullable<PortalPipelineInputDefinition['type']>;
+type FieldType = NonNullable<RemoteControlPipelineInputDefinition['type']>;
 const FIELD_TYPES: readonly FieldType[] = [
   'string',
   'boolean',
@@ -103,7 +103,7 @@ function fieldType(type: string | undefined): FieldType {
 function fieldDefault(
   type: string | undefined,
   value: unknown,
-): PortalPipelineInputDefinition['default'] {
+): RemoteControlPipelineInputDefinition['default'] {
   if (value === undefined) return undefined;
   if (type === 'json') return JSON.stringify(value);
   if (
@@ -122,7 +122,7 @@ function fieldDefault(
  */
 export function cloudRunInputDefinitions(
   definition: Pick<PipelineDefinition, 'normalized' | 'triggerTypes'>,
-): Record<string, PortalPipelineInputDefinition> {
+): Record<string, RemoteControlPipelineInputDefinition> {
   const eventName = cloudRunEventName(definition);
   const parsed = TriggerInputsSchema.safeParse(definition.normalized);
   if (eventName === null || !parsed.success) return {};
@@ -134,7 +134,7 @@ export function cloudRunInputDefinitions(
       if (!read.success) return [];
       const input = read.data;
       const fallback = fieldDefault(input.type, input.default);
-      const field: PortalPipelineInputDefinition = {
+      const field: RemoteControlPipelineInputDefinition = {
         type: fieldType(input.type),
         ...(input.description === undefined
           ? {}

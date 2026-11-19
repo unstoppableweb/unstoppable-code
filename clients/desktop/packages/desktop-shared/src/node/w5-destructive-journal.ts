@@ -3,13 +3,13 @@ export {
   journalSchema,
   type ArchiveTrigger,
   type DestructiveRecoveryRecord,
-} from '@canopy/protocol/portal/lifecycle-journal';
+} from '@canopy/protocol/remote-control/shell/lifecycle-journal';
 import {
   inspectDestructiveJournals as inspectCoreDestructiveJournals,
   readDestructiveJournal as readCoreDestructiveJournal,
   type DestructiveJournalInspection,
 } from '@canopy/core-runtime/node/w5/destructive-journal';
-import type { DestructiveRecoveryRecord } from '@canopy/protocol/portal/lifecycle-journal';
+import type { DestructiveRecoveryRecord } from '@canopy/protocol/remote-control/shell/lifecycle-journal';
 export type { DestructiveJournalInspection } from '@canopy/core-runtime/node/w5/destructive-journal';
 
 export function readDestructiveJournal(

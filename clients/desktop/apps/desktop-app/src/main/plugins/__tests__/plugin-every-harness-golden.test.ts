@@ -173,6 +173,7 @@ import {
 } from '../harness-install-runtime';
 import { runSerializedPluginMutation } from '../plugin-mutation-queue';
 import { registerPluginHandlers } from '../plugin-handlers';
+import { resetPluginManifestPreviewCache } from '../plugin-manifest-preview';
 
 const HARNESSES = ['claude', 'codex', 'cursor', 'copilot', 'opencode'];
 
@@ -1044,4 +1045,239 @@ test("one Add brings the native copy for a harness the item can't serve, and rem
   expect(adopted.companions).toEqual([
     { item: companion, harnesses: ['claude'] },
   ]);
+});
+
+// Before Add (CAN-6817): the plugin handlers
+// preview a catalog plugin from its repository, over a stubbed network.
+function catalogPlugin(name: string, url: string, sha?: string): PluginInfo {
+  return {
+    name,
+    marketplaceId: 'acme',
+    description: '',
+    version: '1.0.0',
+    author: 'Acme',
+    category: '',
+    homepage: '',
+    installLocation: '',
+    sourcePath: '',
+    marketplacePath: '',
+    externalSource: { source: 'url', url, ...(sha ? { sha } : {}) },
+    providerSupport: { claude: 'native', codex: 'none' },
+    facets: {},
+  } as PluginInfo;
+}
+
+/** The network as GitHub would answer, by URL; anything else is a 404. */
+let routes: Record<string, () => Response> = {};
+const fetchMock = jest.fn((url: string): Promise<Response> => {
+  const route = routes[url];
+  return Promise.resolve(
+    route ? route() : new Response('not found', { status: 404 }),
+  );
+});
+
+function tree(paths: readonly string[]): () => Response {
+  return () =>
+    new Response(
+      JSON.stringify({
+        tree: paths.map((path) => ({ type: 'blob', path })),
+        truncated: false,
+      }),
+      { status: 200 },
+    );
+}
+
+function json(value: unknown): () => Response {
+  return () => new Response(JSON.stringify(value), { status: 200 });
+}
+
+const SHA = 'a'.repeat(40);
+
+describe('plugin manifest preview (spec 3b)', () => {
+  let catalogBefore: typeof cache;
+  const fetchBefore = global.fetch;
+  beforeAll(() => {
+    catalogBefore = cache;
+  });
+  afterAll(() => {
+    cache = catalogBefore;
+    global.fetch = fetchBefore;
+  });
+  beforeEach(() => {
+    resetPluginManifestPreviewCache();
+    fetchMock.mockClear();
+    global.fetch = fetchMock as unknown as typeof fetch;
+    routes = {};
+    cache = {
+      version: 2,
+      lastRefreshed: '2026-11-17T00:00:00.000Z',
+      marketplaces: [
+        {
+          id: 'acme',
+          name: 'Acme',
+          source: 'acme/marketplace',
+          plugins: [
+            catalogPlugin('review', 'https://github.com/acme/review.git', SHA),
+            catalogPlugin('hooked', 'https://github.com/acme/hooked'),
+            catalogPlugin('elsewhere', 'https://gitlab.com/acme/elsewhere.git'),
+            catalogPlugin('gone', 'https://github.com/acme/gone'),
+          ],
+        } as unknown as MarketplaceInfo,
+      ],
+    };
+  });
+  it('reads a Claude plugin natively and derives the other harnesses', async () => {
+    routes[
+      `https://api.github.com/repos/acme/review/git/trees/${SHA}?recursive=1`
+    ] = tree([
+      '.claude-plugin/plugin.json',
+      'skills/review/SKILL.md',
+      'skills/summarize/SKILL.md',
+      'commands/check.md',
+      'README.md',
+    ]);
+    // Empty declarations name nothing.
+    routes[
+      `https://raw.githubusercontent.com/acme/review/${SHA}/.claude-plugin/plugin.json`
+    ] = json({ name: 'review', hooks: [], mcpServers: {} });
+    const result = await handler(PLUGINS_CHANNELS.PREVIEW_MANIFEST)(
+      'acme',
+      'review',
+    );
+    expect(result).toMatchObject({
+      success: true,
+      data: {
+        ok: true,
+        preview: {
+          skills: ['review', 'summarize'],
+          commands: ['check'],
+          agents: [],
+          hooks: false,
+          mcpServers: false,
+          mcpServerNames: [],
+          compatibility: {
+            harnesses: {
+              claude: { level: 'native' },
+              codex: { level: 'full' },
+            },
+          },
+        },
+      },
+    });
+    // A second read is served from memory: no new request.
+    const calls = fetchMock.mock.calls.length;
+    await handler(PLUGINS_CHANNELS.PREVIEW_MANIFEST)('acme', 'review');
+    expect(fetchMock.mock.calls.length).toBe(calls);
+  });
+
+  it('keeps derived harnesses unknown when hooks and MCP servers are listed', async () => {
+    routes[
+      'https://api.github.com/repos/acme/hooked/git/trees/HEAD?recursive=1'
+    ] = tree([
+      '.claude-plugin/plugin.json',
+      '.mcp.json',
+      'config/hooks.json',
+      'skills/a/SKILL.md',
+    ]);
+    // Hooks the manifest declares outside the usual folder still count.
+    routes[
+      'https://raw.githubusercontent.com/acme/hooked/HEAD/.claude-plugin/plugin.json'
+    ] = json({ name: 'hooked', hooks: './config/hooks.json' });
+    routes['https://raw.githubusercontent.com/acme/hooked/HEAD/.mcp.json'] =
+      json({ mcpServers: { github: { command: 'gh-mcp' }, broken: 'x' } });
+    const result = await handler(PLUGINS_CHANNELS.PREVIEW_MANIFEST)(
+      'acme',
+      'hooked',
+    );
+    expect(result).toMatchObject({
+      success: true,
+      data: {
+        ok: true,
+        preview: { hooks: true, mcpServers: true, mcpServerNames: ['github'] },
+      },
+    });
+    const harnesses = (
+      result as {
+        data: {
+          preview: { compatibility: { harnesses: Record<string, unknown> } };
+        };
+      }
+    ).data.preview.compatibility.harnesses;
+    expect(harnesses.claude).toEqual({ level: 'native' });
+    expect(harnesses.codex).toBeUndefined();
+  });
+
+  it('says why when there is nothing to read', async () => {
+    const preview = handler(PLUGINS_CHANNELS.PREVIEW_MANIFEST);
+    await expect(preview('acme', 'elsewhere')).resolves.toEqual({
+      success: true,
+      data: { ok: false, reason: 'unsupported_source' },
+    });
+    await expect(preview('acme', 'gone')).resolves.toEqual({
+      success: true,
+      data: { ok: false, reason: 'not_found' },
+    });
+    await expect(preview('acme', 'missing')).resolves.toEqual({
+      success: true,
+      data: { ok: false, reason: 'not_found' },
+    });
+    await expect(preview('', 'review')).resolves.toMatchObject({
+      success: false,
+    });
+  });
+
+  it('honors a rate limit until its reset', async () => {
+    routes[
+      'https://api.github.com/repos/acme/hooked/git/trees/HEAD?recursive=1'
+    ] = (): Response =>
+      new Response('limited', {
+        status: 403,
+        headers: {
+          'x-ratelimit-remaining': '0',
+          'x-ratelimit-reset': String(Math.ceil(Date.now() / 1000) + 3600),
+        },
+      });
+    const preview = handler(PLUGINS_CHANNELS.PREVIEW_MANIFEST);
+    await expect(preview('acme', 'hooked')).resolves.toEqual({
+      success: true,
+      data: { ok: false, reason: 'rate_limited' },
+    });
+    const calls = fetchMock.mock.calls.length;
+    await expect(preview('acme', 'review')).resolves.toEqual({
+      success: true,
+      data: { ok: false, reason: 'rate_limited' },
+    });
+    expect(fetchMock.mock.calls.length).toBe(calls);
+  });
+
+  it('retries a transient failure once, then forgets the failure after its lifetime', async () => {
+    const timers = jest.spyOn(global, 'setTimeout');
+    let attempts = 0;
+    routes[
+      'https://api.github.com/repos/acme/gone/git/trees/HEAD?recursive=1'
+    ] = (): Response => {
+      attempts += 1;
+      return new Response('busy', { status: 503 });
+    };
+    const preview = handler(PLUGINS_CHANNELS.PREVIEW_MANIFEST);
+    await expect(preview('acme', 'gone')).resolves.toEqual({
+      success: true,
+      data: { ok: false, reason: 'unavailable' },
+    });
+    // One polite retry, after a short wait.
+    expect(attempts).toBe(2);
+    expect(timers).toHaveBeenCalledWith(expect.any(Function), 750);
+    // The failure is kept briefly: a second read sends nothing.
+    await preview('acme', 'gone');
+    expect(attempts).toBe(2);
+    // Its 10-minute lifetime ends, and the next read asks again.
+    const expire = timers.mock.calls.find(
+      ([, ms]) => ms === 10 * 60 * 1000,
+    )?.[0];
+    expect(typeof expire).toBe('function');
+    if (typeof expire === 'function') expire();
+    await preview('acme', 'gone');
+    expect(attempts).toBe(4);
+    timers.mockRestore();
+  });
 });

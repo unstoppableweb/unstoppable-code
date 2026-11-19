@@ -14,7 +14,7 @@ const SRC = 'packages/ui-shared/src/components';
 export const GAP_ROOT_3B_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
   {
     id: 'plan-open-implementation-action',
-    name: 'PlanOpenImplementationAction',
+    name: 'Open implementation action',
     group: 'Unified',
     note: 'Open, which replaces Execute while a plan’s selected attempt runs and after it succeeds: a chat or a run, regular or icon-only.',
     source: `${SRC}/PlanOpenImplementationAction.tsx`,
@@ -32,7 +32,7 @@ export const GAP_ROOT_3B_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
   },
   {
     id: 'provider-account-usage',
-    name: 'ProviderAccountUsage',
+    name: 'Provider account usage',
     group: 'Unified',
     note: 'One multi-account proxy account with its usage: a row per limit window, the account, freshness and any failed read; plus the Settings-row form.',
     source: `${SRC}/ProviderAccountUsage.tsx`,

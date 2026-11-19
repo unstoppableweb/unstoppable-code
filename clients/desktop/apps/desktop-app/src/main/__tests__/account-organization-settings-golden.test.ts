@@ -230,9 +230,9 @@ beforeEach(() => {
       world.accountListeners.add(listener);
       return (): boolean => world.accountListeners.delete(listener);
     },
-    openStrictPortalPage: (path, credentials) => {
+    openStrictCloudPage: (path, credentials) => {
       log.push(
-        `openStrictPortalPage ${path} key=${credentials.apiKey ? 'present' : 'absent'}`,
+        `openStrictCloudPage ${path} key=${credentials.apiKey ? 'present' : 'absent'}`,
       );
       return Promise.resolve({ ok: true });
     },

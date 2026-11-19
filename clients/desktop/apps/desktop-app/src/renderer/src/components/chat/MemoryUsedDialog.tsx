@@ -175,7 +175,7 @@ function FactFeedbackControls({
       <div className="flex items-center gap-1.5 text-2xs">
         <Tooltip label="This memory was helpful">
           <Button
-            variant={pendingRating === 'like' ? 'secondary' : 'ghost-quiet'}
+            variant={pendingRating === 'like' ? 'secondary' : 'ghost'}
             size="compact"
             iconOnly
             aria-label="This memory was helpful"
@@ -189,7 +189,7 @@ function FactFeedbackControls({
         </Tooltip>
         <Tooltip label="This memory was wrong or unhelpful">
           <Button
-            variant={pendingRating === 'dislike' ? 'secondary' : 'ghost-quiet'}
+            variant={pendingRating === 'dislike' ? 'secondary' : 'ghost'}
             size="compact"
             iconOnly
             aria-label="This memory was wrong or unhelpful"
@@ -203,7 +203,7 @@ function FactFeedbackControls({
         </Tooltip>
         <Tooltip label="Comment on this memory">
           <Button
-            variant="ghost-quiet"
+            variant="ghost"
             size="compact"
             aria-expanded={commentOpen}
             aria-label="Comment on this memory"

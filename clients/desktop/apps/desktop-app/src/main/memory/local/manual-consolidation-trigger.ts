@@ -41,6 +41,7 @@ import {
   resolveLocalMemoryRunModel,
   type LocalMemoryHelperModel,
 } from './helper-model';
+import { isHelperNoBillingSourceError } from '../../agents/helper-no-billing-source';
 import {
   clearConsolidatedMemory,
   consolidatedMemoryClearedState,
@@ -130,6 +131,17 @@ type RebuildExecution =
 
 function failureReason(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * The outcome of a run whose helper was refused before any spawn because its
+ * provider is signed out with no billing source (CAN-7062): a skip with the
+ * reason, like a model that can't run right now. Nothing was consumed.
+ */
+function runErrorOutcome(error: unknown): ConsolidationRunOutcome {
+  return isHelperNoBillingSourceError(error)
+    ? { result: 'skipped', reason: error.message }
+    : { result: 'failed', reason: failureReason(error) };
 }
 
 function scopeWorkspaceId(
@@ -581,7 +593,7 @@ export async function runManualLocalMemoryConsolidation(
       },
     });
   } catch (error) {
-    outcome = { result: 'failed', reason: failureReason(error) };
+    outcome = runErrorOutcome(error);
   }
   const finishedAt = new Date().toISOString();
   try {
@@ -711,9 +723,20 @@ export async function runManualLocalMemoryRebuild(
               // reason.
               return { status: 'failed', reason: queued.refusal.reason };
             }
-            return runConsolidationTask(request, scopeDir, queued.helperModel, {
-              snapshotBeforeWrite: false,
-            });
+            try {
+              return await runConsolidationTask(
+                request,
+                scopeDir,
+                queued.helperModel,
+                { snapshotBeforeWrite: false },
+              );
+            } catch (error) {
+              // Signed out with no billing source (CAN-7062): stop the
+              // drain with a skip, like a refused model above.
+              if (!isHelperNoBillingSourceError(error)) throw error;
+              refusal = runErrorOutcome(error);
+              return { status: 'failed', reason: error.message };
+            }
           },
         }),
       onRun: async (result) => {

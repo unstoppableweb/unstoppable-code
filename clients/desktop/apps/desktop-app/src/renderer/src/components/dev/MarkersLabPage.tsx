@@ -103,7 +103,7 @@ function Panel({
       data-testid={`markers-lab-${id}`}
       className="flex flex-col gap-3"
     >
-      <Heading level={2} variant="section">
+      <Heading level={3} variant="title" data-lab-toc="">
         {title}
       </Heading>
       <Surface variant="group" padding="default" gap="item">
@@ -136,7 +136,9 @@ export function BadgeSection(): JSX.Element {
           <span className="text-xs font-medium fg-secondary">
             {size === 'regular' ? 'Regular, 18px capsule' : 'Compact, 16px tag'}
           </span>
-          <div className="grid grid-cols-3 gap-3 md:grid-cols-6">
+          {/* Three columns at every width: six would leave about 110px a
+              cell in the lab's 760px sheet, less than a badge with an icon. */}
+          <div className="grid grid-cols-3 gap-3">
             {BADGE_TONES.map((tone) => (
               <Cell key={tone} label={tone}>
                 <Badge tone={tone} size={size}>
@@ -506,7 +508,7 @@ export function MarkersLabPage({
               ))}
               <Button
                 size="sm"
-                variant="outline"
+                variant="secondary"
                 onClick={(): void =>
                   setColorMode(colorMode === 'light' ? 'dark' : 'light')
                 }

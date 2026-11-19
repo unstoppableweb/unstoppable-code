@@ -184,7 +184,7 @@ export interface AppSidebarProps {
   onSettingsClick: () => void;
   settingsOpen: boolean;
   /** Opens the Remote Control dialog from the account menu. */
-  onCanopyPortalClick: () => void;
+  onRemoteControlClick: () => void;
   /** Gates the Feed entry point behind `canopy-ledger-enabled`. */
   ledgerEnabled?: boolean;
   /**
@@ -2339,7 +2339,7 @@ export function AppSidebar({
   onReturnToSectionRoot,
   onSettingsClick,
   settingsOpen,
-  onCanopyPortalClick,
+  onRemoteControlClick,
   ledgerEnabled = false,
   claudeTuiWorkersEnabled,
   onAppAdvisorClick,
@@ -3725,7 +3725,7 @@ export function AppSidebar({
                     onNavigate={onNavigate}
                     onSettingsClick={onSettingsClick}
                     settingsOpen={settingsOpen}
-                    onCanopyPortalClick={onCanopyPortalClick}
+                    onRemoteControlClick={onRemoteControlClick}
                     footerBanner={
                       <>
                         {window.devInfo.isDev && (

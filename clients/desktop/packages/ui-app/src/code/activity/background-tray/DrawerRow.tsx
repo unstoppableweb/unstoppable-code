@@ -20,7 +20,6 @@ import {
   Tooltip,
   useShimmerPhase,
   ShimmerCopies,
-  SpinnerStyleProvider,
 } from '@canopy/ui-shared/components';
 import {
   ArrowUpRightIcon,
@@ -205,7 +204,7 @@ export function DrawerRow({
   const headerAction = navigationInHeader ? (
     <Tooltip label={navigation.label}>
       <Button
-        variant="ghost-overlay"
+        variant="ghost"
         size="compact"
         iconOnly
         aria-label={navigation.label}
@@ -227,7 +226,7 @@ export function DrawerRow({
             never text in the row. */}
         <Tooltip label={navigation.label}>
           <Button
-            variant="ghost-overlay"
+            variant="ghost"
             size="compact"
             iconOnly
             aria-label={navigation.label}
@@ -381,149 +380,147 @@ export function DrawerRow({
   // A row waiting on the user rests like any other (its glyph carries the
   // attention ink); hover and an open row take the fill.
   return (
-    <SpinnerStyleProvider value="comet">
-      <TrayRowSurface
-        ref={ref}
-        modal={modal}
-        open={open}
-        actionable={Boolean(inspector || navigation || action)}
-        data-tray-row={rowKey}
-        data-testid={testId}
+    <TrayRowSurface
+      ref={ref}
+      modal={modal}
+      open={open}
+      actionable={Boolean(inspector || navigation || action)}
+      data-tray-row={rowKey}
+      data-testid={testId}
+    >
+      {/* The action ends 4px from the row's end, as from its top and bottom. */}
+      <TrayRowHeader
+        modalClosed={modal && !open}
+        layout={
+          modal && !navigationInHeader
+            ? 'modal'
+            : presentation === 'legacy'
+              ? 'legacy'
+              : 'compact'
+        }
       >
-        {/* The action ends 4px from the row's end, as from its top and bottom. */}
-        <TrayRowHeader
-          modalClosed={modal && !open}
-          layout={
-            modal && !navigationInHeader
-              ? 'modal'
-              : presentation === 'legacy'
-                ? 'legacy'
-                : 'compact'
-          }
-        >
-          {inspector || linkRow ? (
-            <>
-              {/* With nothing to unfold, the whole row is its way out (a pull
+        {inspector || linkRow ? (
+          <>
+            {/* With nothing to unfold, the whole row is its way out (a pull
                 request opens on GitHub): the button lies under the row's
                 content, and controls in the row sit above it. */}
-              <ControlButton
-                presentation={
-                  inspector && !redesigned
-                    ? modal
-                      ? 'work-row-modal-header'
-                      : 'work-row-drawer-header'
-                    : 'work-row-open-overlay'
+            <ControlButton
+              presentation={
+                inspector && !redesigned
+                  ? modal
+                    ? 'work-row-modal-header'
+                    : 'work-row-drawer-header'
+                  : 'work-row-open-overlay'
+              }
+              aria-labelledby={redesigned ? nameId : undefined}
+              aria-expanded={inspector ? open : undefined}
+              aria-controls={inspector && open ? inspectorId : undefined}
+              onClick={(event): void => {
+                if (!inspector) {
+                  navigation?.onClick();
+                  return;
                 }
-                aria-labelledby={redesigned ? nameId : undefined}
-                aria-expanded={inspector ? open : undefined}
-                aria-controls={inspector && open ? inspectorId : undefined}
-                onClick={(event): void => {
-                  if (!inspector) {
-                    navigation?.onClick();
-                    return;
-                  }
-                  setAnimateDetails(modal && event.detail > 0);
-                  inspector.onToggle();
-                }}
-                data-testid={
-                  inspector
-                    ? 'background-tray-row-toggle'
-                    : 'background-tray-row-open'
-                }
-              >
-                {inspector && !redesigned ? (
-                  content
-                ) : !redesigned ? (
-                  <span className="sr-only">
-                    {name}, {navigation?.label}
-                  </span>
-                ) : null}
-              </ControlButton>
-              {(!inspector || redesigned) && (
-                <div className="pointer-events-none flex h-9 min-w-0 flex-1 items-center gap-2.5 pl-2.75">
-                  {content}
-                </div>
-              )}
-            </>
-          ) : (
-            <div className="flex h-9 min-w-0 flex-1 items-center gap-2.5 pl-2.75">
-              {content}
-            </div>
-          )}
-          {!redesigned && headerAccessory && (
-            <>
-              <span className="relative shrink-0">{headerAccessory}</span>
-              {trailing !== undefined && (
-                <span className="shrink-0 text-s tabular-nums fg-tertiary">
-                  {trailing}
+                setAnimateDetails(modal && event.detail > 0);
+                inspector.onToggle();
+              }}
+              data-testid={
+                inspector
+                  ? 'background-tray-row-toggle'
+                  : 'background-tray-row-open'
+              }
+            >
+              {inspector && !redesigned ? (
+                content
+              ) : !redesigned ? (
+                <span className="sr-only">
+                  {name}, {navigation?.label}
                 </span>
-              )}
-            </>
-          )}
-          {/* One action column, so the times line up whichever icon action a
-            row has, or none; a labeled action (Resume) widens its own row. */}
-          {/* A row's own controls (Manage watching, a watcher) sit at its
-            end with its actions, flush like the actions themselves: a ghost
-            button's padding is its space. A filled action keeps its own. */}
-          <span className="flex shrink-0 items-center">
-            {redesigned && headerAccessory && (
-              <span
-                className={`relative z-10 flex shrink-0 items-center ${revealClass}`}
-              >
-                {headerAccessory}
-              </span>
-            )}
-            {linkRow ? (
-              <span
-                aria-hidden="true"
-                className={`pointer-events-none flex w-7 shrink-0 justify-center fg-tertiary ${revealClass}`}
-              >
-                {/* The whole row is the link, as View completed's is: the
-                  diagonal arrow when it leaves the app, the chevron when it
-                  opens in place. It shows with the row's other controls. */}
-                {navigation?.external === true ? (
-                  <ArrowUpRightIcon />
-                ) : (
-                  <ChevronRightIcon />
-                )}
-              </span>
-            ) : (
-              (!modal || navigationInHeader) && (
-                <span
-                  className={`relative z-10 flex shrink-0 items-center justify-end ${presentation === 'legacy' ? 'w-14' : 'min-w-7'} ${revealClass}`}
-                >
-                  {actionGroup}
-                </span>
-              )
-            )}
-          </span>
-        </TrayRowHeader>
-        {open && inspector && (
-          <div
-            id={inspectorId}
-            // Indented to the name: 11px inset, 14px glyph, 10px gap.
-            className={`flex flex-col gap-2 text-s fg-tertiary ${modal ? 'px-3 pb-2' : `pl-8.75 pr-1 ${presentation === 'legacy' ? 'pb-1' : 'pb-2'}`}`}
-            data-testid="background-tray-inspector"
-          >
-            {presentation === 'legacy' && (
-              <div className="pb-1 pr-9.5 empty:hidden">
-                <Divider aria-hidden />
+              ) : null}
+            </ControlButton>
+            {(!inspector || redesigned) && (
+              <div className="pointer-events-none flex h-9 min-w-0 flex-1 items-center gap-2.5 pl-2.75">
+                {content}
               </div>
             )}
-            <InspectorReveal animate={animateDetails}>
-              {inspector.render()}
-              {hasFooter && (
-                <InspectorFooter
-                  action={navigationInHeader ? undefined : navigation}
-                >
-                  {inspector.footer}
-                </InspectorFooter>
-              )}
-            </InspectorReveal>
+          </>
+        ) : (
+          <div className="flex h-9 min-w-0 flex-1 items-center gap-2.5 pl-2.75">
+            {content}
           </div>
         )}
-      </TrayRowSurface>
-    </SpinnerStyleProvider>
+        {!redesigned && headerAccessory && (
+          <>
+            <span className="relative shrink-0">{headerAccessory}</span>
+            {trailing !== undefined && (
+              <span className="shrink-0 text-s tabular-nums fg-tertiary">
+                {trailing}
+              </span>
+            )}
+          </>
+        )}
+        {/* One action column, so the times line up whichever icon action a
+            row has, or none; a labeled action (Resume) widens its own row. */}
+        {/* A row's own controls (Manage watching, a watcher) sit at its
+            end with its actions, flush like the actions themselves: a ghost
+            button's padding is its space. A filled action keeps its own. */}
+        <span className="flex shrink-0 items-center">
+          {redesigned && headerAccessory && (
+            <span
+              className={`relative z-10 flex shrink-0 items-center ${revealClass}`}
+            >
+              {headerAccessory}
+            </span>
+          )}
+          {linkRow ? (
+            <span
+              aria-hidden="true"
+              className={`pointer-events-none flex w-7 shrink-0 justify-center fg-tertiary ${revealClass}`}
+            >
+              {/* The whole row is the link, as View completed's is: the
+                  diagonal arrow when it leaves the app, the chevron when it
+                  opens in place. It shows with the row's other controls. */}
+              {navigation?.external === true ? (
+                <ArrowUpRightIcon />
+              ) : (
+                <ChevronRightIcon />
+              )}
+            </span>
+          ) : (
+            (!modal || navigationInHeader) && (
+              <span
+                className={`relative z-10 flex shrink-0 items-center justify-end ${presentation === 'legacy' ? 'w-14' : 'min-w-7'} ${revealClass}`}
+              >
+                {actionGroup}
+              </span>
+            )
+          )}
+        </span>
+      </TrayRowHeader>
+      {open && inspector && (
+        <div
+          id={inspectorId}
+          // Indented to the name: 11px inset, 14px glyph, 10px gap.
+          className={`flex flex-col gap-2 text-s fg-tertiary ${modal ? 'px-3 pb-2' : `pl-8.75 pr-1 ${presentation === 'legacy' ? 'pb-1' : 'pb-2'}`}`}
+          data-testid="background-tray-inspector"
+        >
+          {presentation === 'legacy' && (
+            <div className="pb-1 pr-9.5 empty:hidden">
+              <Divider aria-hidden />
+            </div>
+          )}
+          <InspectorReveal animate={animateDetails}>
+            {inspector.render()}
+            {hasFooter && (
+              <InspectorFooter
+                action={navigationInHeader ? undefined : navigation}
+              >
+                {inspector.footer}
+              </InspectorFooter>
+            )}
+          </InspectorReveal>
+        </div>
+      )}
+    </TrayRowSurface>
   );
 }
 

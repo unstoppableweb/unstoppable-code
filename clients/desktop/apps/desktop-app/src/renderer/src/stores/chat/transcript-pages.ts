@@ -1,4 +1,4 @@
-import { readTurnOutcomeCounts } from '@canopy/protocol/portal';
+import { readTurnOutcomeCounts } from '@canopy/protocol/remote-control/shell';
 import {
   isTranscriptPageForCurrentWindow,
   type TranscriptWindowIdentity,

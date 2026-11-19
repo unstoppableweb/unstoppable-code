@@ -19,7 +19,7 @@ import {
   type LifecycleJournalInspection,
   type LifecycleJournalQuarantineResult,
   type LifecycleJournalUnreadableEntry,
-} from '@canopy/protocol/portal/lifecycle-journal';
+} from '@canopy/protocol/remote-control/shell/lifecycle-journal';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { syncDirectory } from '@canopy/execution-engine/node/lib/atomic-file';
 import {

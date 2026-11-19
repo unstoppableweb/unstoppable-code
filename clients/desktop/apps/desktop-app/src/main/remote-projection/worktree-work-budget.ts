@@ -1,5 +1,5 @@
 /** Process-wide limits, shared by requested and unsolicited snapshots. */
-export function createPortalSnapshotWorkBudget(): {
+export function createRemoteControlSnapshotWorkBudget(): {
   section: <T>(work: () => Promise<T>) => Promise<T>;
   expensive: <T>(work: () => Promise<T>) => Promise<T>;
   warm: <T>(work: () => Promise<T>) => Promise<T>;
@@ -59,4 +59,5 @@ export function createPortalSnapshotWorkBudget(): {
   };
 }
 
-export const portalSnapshotWorkBudget = createPortalSnapshotWorkBudget();
+export const remoteControlSnapshotWorkBudget =
+  createRemoteControlSnapshotWorkBudget();

@@ -2,6 +2,7 @@ import type { JSX, ReactNode } from 'react';
 import type { AppIcon } from '../icons/AppIcons';
 import {
   BADGE_ICON_BY_SIZE,
+  BADGE_ICON_TONE_CLASS,
   badgeClassName,
   dotClassName,
   formatBadgeCount,
@@ -48,7 +49,8 @@ export interface BadgeProps {
 }
 
 /**
- * A state or label word: one 18px capsule with six tones. Use it for states
+ * A state or label word: one 18px neutral capsule, with the tone as a dot
+ * before the word (six tones). Use it for states
  * (Connected, Failed, Merged), roles and plans; leave routine values such as
  * a trigger, a source or a pull request number as plain text.
  */
@@ -64,8 +66,19 @@ export function Badge({
   'aria-label': ariaLabel,
   'data-testid': testId,
 }: BadgeProps): JSX.Element {
-  const base = badgeClassName(tone, { muted, size, variant });
+  const base = badgeClassName(tone, {
+    muted,
+    size,
+    variant,
+    withIcon: Icon !== undefined,
+  });
   const icon = BADGE_ICON_BY_SIZE[size];
+  // On the capsule the icon carries the tone; the compact tag and the solid
+  // label already ink the whole badge.
+  const iconTone =
+    size === 'regular' && variant === 'tint'
+      ? `${BADGE_ICON_TONE_CLASS[tone]}${muted ? ' opacity-60' : ''}`
+      : '';
   return (
     <span
       data-testid={testId}
@@ -78,7 +91,9 @@ export function Badge({
     >
       {Icon ? (
         <Icon
-          className={icon.className}
+          className={
+            iconTone ? `${icon.className} ${iconTone}` : icon.className
+          }
           size={icon.px}
           exactSize
           drawnStrokeWidth={1.5}

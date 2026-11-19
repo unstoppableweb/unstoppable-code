@@ -5749,7 +5749,7 @@ async function installPluginUnlocked(
      * Skip the trailing detached `refreshMarketplaces()`. The portal path sets
      * this and drives the refresh itself INSIDE its serialization slot so the
      * next queued mutation cannot overlap the refresh (see
-     * `installPortalExternalPlugin`). Default fires the refresh as before.
+     * `installRemoteControlExternalPlugin`). Default fires the refresh as before.
      */
     skipRefresh?: boolean;
   },

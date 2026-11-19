@@ -35,7 +35,6 @@ export interface PersonalOrganizationUpgradeDeps {
   onPromotion?(this: void, result: UpgradePersonalOrganizationResult): void;
   onInvite?(this: void, result: OrganizationInviteResult): void;
   identity(this: void): Promise<UpgradeIdentity>;
-  sessionCurrent(this: void, sessionId: string): boolean;
   destination(
     this: void,
     organizationId: string,
@@ -154,7 +153,9 @@ export function createPersonalOrganizationUpgradeService(
     if (
       current.accountId !== identity.accountId ||
       current.epoch !== identity.epoch ||
-      (sessionId !== undefined && !deps.sessionCurrent(sessionId))
+      // Portal is retired (CAN-5986): no desktop session can be current, so
+      // work bound to one is refused.
+      sessionId !== undefined
     )
       throw new Error('account-changed');
   }
@@ -621,8 +622,9 @@ export function createPersonalOrganizationUpgradeService(
         if (
           entry.accountId !== identity.accountId ||
           entry.terminalReason !== undefined ||
-          (entry.desktopSessionId &&
-            !deps.sessionCurrent(entry.desktopSessionId)) ||
+          // Work bound to a desktop session never resumes: none can be
+          // current since Portal retired (CAN-5986).
+          Boolean(entry.desktopSessionId) ||
           !entry.projects.some(
             (p) => p.outcome === 'pending' || p.outcome === 'converted-private',
           )

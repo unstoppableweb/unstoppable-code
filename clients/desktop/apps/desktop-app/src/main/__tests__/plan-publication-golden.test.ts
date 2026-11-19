@@ -27,7 +27,7 @@ import {
 import { getRemoteChannelDisposition } from '@canopy/desktop-shared/remote-control/channel-dispositions';
 import { APP_ADVISOR_ACTION_DISPOSITIONS } from '@canopy/desktop-shared/lib/app-advisor-action-dispositions';
 import type { DeviceKind } from '@canopy/protocol/device-relay';
-import { PORTAL_COMMAND_TYPES } from '@canopy/protocol/portal';
+import { REMOTE_CONTROL_COMMAND_TYPES } from '@canopy/protocol/remote-control/shell';
 import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
 import type * as CloudConfig from '../canopy-cloud/config';
 import type * as MainProcessLogging from '../lib/main-process-logging';
@@ -1040,7 +1040,9 @@ describe('principal per caller for plan sharing (CAN-4166 PR 3a)', () => {
 
   it('gives the Portal no command that shares or unshares a plan', () => {
     expect(
-      PORTAL_COMMAND_TYPES.filter((type) => type.startsWith('portal.plan.')),
+      REMOTE_CONTROL_COMMAND_TYPES.filter((type) =>
+        type.startsWith('portal.plan.'),
+      ),
     ).toEqual([
       'portal.plan.list',
       'portal.plan.get',
@@ -1050,7 +1052,7 @@ describe('principal per caller for plan sharing (CAN-4166 PR 3a)', () => {
       'portal.plan.open',
     ]);
     expect(
-      PORTAL_COMMAND_TYPES.filter(
+      REMOTE_CONTROL_COMMAND_TYPES.filter(
         (type) => /share/i.test(type) && /plan/i.test(type),
       ),
     ).toEqual([]);

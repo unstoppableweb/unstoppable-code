@@ -29,6 +29,7 @@ export type AutomaticCallId =
   | 'skills.audit'
   | 'skills.update-check'
   | 'marketplace.default-refresh'
+  | 'marketplace.manifest-preview'
   | 'runtime.npm-download'
   | 'runtime.cursor-download'
   | 'helpers.unconnected-codex'
@@ -54,6 +55,8 @@ export const AUTOMATIC_CALLS = {
   'skills.update-check': 'off',
   // Refresh of the default marketplace sources at startup.
   'marketplace.default-refresh': 'off',
+  // Background metadata read when a catalog plugin detail opens.
+  'marketplace.manifest-preview': 'off',
   // Managed npm runtime downloads; only an already installed runtime is used.
   'runtime.npm-download': 'off',
   // Cursor CLI runtime download; only an already installed runtime is used.

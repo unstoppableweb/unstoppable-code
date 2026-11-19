@@ -96,7 +96,7 @@ static broker_handle descend_wide(HANDLE root, wchar_t *path, bool directory, bo
 static broker_handle open_relative(HANDLE root, const char *path, bool directory) {
   wchar_t wide[PATH_BOUND];
   if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wide, PATH_BOUND)) return BAD_HANDLE;
-  return descend_wide(root, wide, directory, !asset_readonly);
+  return descend_wide(root, wide, directory, true);
 }
 
 static broker_handle open_root(const wchar_t *path) {

@@ -1,13 +1,13 @@
 /**
  * Pure tool-family icon/label dispatch used by the shared chat tool-call
- * rendering primitives. Mirrors the closed `PortalChatToolFamily` union from
+ * rendering primitives. Mirrors the closed `RemoteControlChatToolFamily` union from
  * `@canopy/protocol` element-for-element so the renderer can resolve an icon
  * and a default label from a single family discriminator without parsing
  * free-form provider tool names.
  *
  * The hosts (desktop renderer + web portal) populate `toolFamily` on each
  * `tool_use` chat part deterministically (the desktop chat-transcript
- * projector + the web's `PortalChatPart` projection) so this helper can stay
+ * projector + the web's `RemoteControlChatPart` projection) so this helper can stay
  * a small lookup table here in `@canopy/ui-shared`.
  */
 import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
@@ -37,11 +37,11 @@ import { DocumentPencilIcon, PickIcon } from '../../icons/AppIcons';
 
 /**
  * Closed enumeration of tool families surfaced on `tool_use` chat parts.
- * Mirrors the wire `PortalChatToolFamily` union element-for-element. Kept
+ * Mirrors the wire `RemoteControlChatToolFamily` union element-for-element. Kept
  * local to `@canopy/ui-shared` so this package does not have to depend on
  * `@canopy/protocol`.
  */
-export type PortalChatToolFamily =
+export type RemoteControlChatToolFamily =
   | 'read'
   | 'edit'
   | 'write'
@@ -72,7 +72,10 @@ interface ToolFamilyEntry {
   label: string;
 }
 
-const TOOL_FAMILY_REGISTRY: Record<PortalChatToolFamily, ToolFamilyEntry> = {
+const TOOL_FAMILY_REGISTRY: Record<
+  RemoteControlChatToolFamily,
+  ToolFamilyEntry
+> = {
   read: { Icon: DocumentIcon, label: 'Read' },
   edit: { Icon: DocumentPencilIcon, label: 'Edit' },
   write: { Icon: DocumentPencilIcon, label: 'Write' },
@@ -104,7 +107,7 @@ const TOOL_FAMILY_REGISTRY: Record<PortalChatToolFamily, ToolFamilyEntry> = {
  * the closed-union mapping.
  */
 export function getToolFamilyIcon(
-  family: PortalChatToolFamily | undefined,
+  family: RemoteControlChatToolFamily | undefined,
 ): IconComponent {
   if (!family) return WrenchIcon;
   const entry = TOOL_FAMILY_REGISTRY[family];
@@ -117,7 +120,7 @@ export function getToolFamilyIcon(
  * own `toolName` or richer label content through the consuming component.
  */
 export function getToolFamilyLabel(
-  family: PortalChatToolFamily | undefined,
+  family: RemoteControlChatToolFamily | undefined,
 ): string {
   if (!family) return 'Tool';
   const entry = TOOL_FAMILY_REGISTRY[family];
@@ -130,7 +133,7 @@ export function getToolFamilyLabel(
  * without each call site importing the icon set itself.
  */
 export function renderToolFamilyIcon(
-  family: PortalChatToolFamily | undefined,
+  family: RemoteControlChatToolFamily | undefined,
 ): JSX.Element {
   const Icon = getToolFamilyIcon(family);
   return <Icon />;

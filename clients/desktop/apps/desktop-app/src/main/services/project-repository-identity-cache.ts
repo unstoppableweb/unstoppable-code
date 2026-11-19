@@ -8,9 +8,9 @@
  * and retries sooner.
  */
 import {
-  parsePortalRepositoryIdentity,
-  type PortalRepositoryIdentity,
-} from '@canopy/protocol/portal';
+  parseRemoteControlRepositoryIdentity,
+  type RemoteControlRepositoryIdentity,
+} from '@canopy/protocol/remote-control/shell';
 import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
 import { parseGitHubRemote } from '../lib/github-pr';
 import { recordedRepositoryPath } from '../lib/workspace-recorded-repo';
@@ -26,14 +26,14 @@ export const PROJECT_REPOSITORY_IDENTITY_REFRESH_MS = 10 * 60_000;
 export const PROJECT_REPOSITORY_IDENTITY_RETRY_MS = 30_000;
 
 interface ProjectRepositoryIdentityEntry {
-  readonly repositoryIdentity: PortalRepositoryIdentity | null;
+  readonly repositoryIdentity: RemoteControlRepositoryIdentity | null;
   readonly refreshAt: number;
 }
 
 type ProjectRepositoryIdentityLookup =
   | {
       readonly status: 'resolved';
-      readonly repositoryIdentity: PortalRepositoryIdentity | null;
+      readonly repositoryIdentity: RemoteControlRepositoryIdentity | null;
     }
   | { readonly status: 'failed' };
 
@@ -53,8 +53,8 @@ const discardedRepoPaths = new Set<string>();
 let lookupQueue: Promise<void> = Promise.resolve();
 
 function sameRepositoryIdentity(
-  left: PortalRepositoryIdentity | null,
-  right: PortalRepositoryIdentity | null,
+  left: RemoteControlRepositoryIdentity | null,
+  right: RemoteControlRepositoryIdentity | null,
 ): boolean {
   return (
     left === right ||
@@ -95,7 +95,7 @@ async function lookUpRepositoryIdentity(
       repositoryIdentity:
         githubRemote === null
           ? null
-          : (parsePortalRepositoryIdentity(githubRemote) ?? null),
+          : (parseRemoteControlRepositoryIdentity(githubRemote) ?? null),
     };
   } catch {
     return { status: 'failed' };
@@ -146,7 +146,7 @@ function scheduleLookup(workspaceId: string, repoPath: string): void {
 export function readProjectRepositoryIdentity(
   workspaceId: string,
   repoPath: string,
-): PortalRepositoryIdentity | undefined {
+): RemoteControlRepositoryIdentity | undefined {
   if (!repoPath) return undefined;
   const entry = entries.get(repoPath);
   if (!entry || Date.now() >= entry.refreshAt) {

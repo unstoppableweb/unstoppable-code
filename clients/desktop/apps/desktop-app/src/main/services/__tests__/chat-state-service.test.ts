@@ -71,7 +71,7 @@ import type {
   PersistedChatTab,
   PersistedHostQueuedMessage,
 } from '@canopy/desktop-shared/types';
-import type { AgentSentInfo } from '@canopy/protocol/portal/external-agent-sender';
+import type { AgentSentInfo } from '@canopy/protocol/remote-control/shell/external-agent-sender';
 import { readErrorClassification } from '@canopy/protocol/app-errors';
 import type { PersistedVisualReference } from '@canopy/agent-transcript/types';
 import {
@@ -201,7 +201,7 @@ import { setChatStateCommandPort } from '../../ipc/chat-state';
 import * as chatStateServiceModule from '../chat-state-service';
 import { persistOrgMemoryUsedForChat } from '../../lib/chat-tab-dispatch-utils';
 import { TURN_END_LIMIT } from '../../lib/chat-turn-ends';
-import { projectPortalLastTurnEnd } from '../../lib/portal-turn-end';
+import { projectRemoteControlLastTurnEnd } from '../../lib/remote-control-turn-end';
 import { normalizeTabForInheritedPluginDefaults } from '../../lib/inherited-plugin-defaults-normalization';
 import type { ChatStateServiceOptions } from '../chat-state-service';
 import * as e2eGate from '../../lib/e2e-gate';
@@ -219,7 +219,7 @@ import type {
   ChatInputAdmission,
   ChatInputDeliveryAction,
   ChatInputWithdrawal,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import type { SessionDiagnosticRecord } from '../../observability/service';
 import { setDelegationActivity } from '../../agents/delegation/activity';
 import { installDelegationLifecycle } from '../../agents/delegation/lifecycle';
@@ -4151,7 +4151,7 @@ describe('chat state service', () => {
       target.getCommandReceipt({ ...SCOPE, commandId: 'continue-request' }),
     ).resolves.toBeNull();
     await expect(
-      target.getPortalSendReceipt({
+      target.getRemoteControlSendReceipt({
         ...SCOPE,
         commandId: 'continue-request',
         identity: {
@@ -10434,7 +10434,7 @@ describe('chat state service', () => {
       );
     }
     /** A queued Portal message: Portal ingress strips every approval field. */
-    const steerFromPortal = (
+    const steerFromRemoteControl = (
       f: Awaited<ReturnType<typeof deliveryFixture>>,
     ): Promise<boolean> =>
       f.target.inputDelivery.steerQueued(
@@ -10487,7 +10487,7 @@ describe('chat state service', () => {
     ): Promise<void> {
       await expect(steerAsWatcher(f)).resolves.toEqual({ status: 'fallback' });
       const ordinary = ordinaryQueue(f);
-      await expect(steerFromPortal(f)).resolves.toBe(false);
+      await expect(steerFromRemoteControl(f)).resolves.toBe(false);
       await ordinary.delivered;
       expect(ordinary.dispatch.mock.calls[0].slice(0, 3)).toEqual([
         f.request,
@@ -10551,7 +10551,7 @@ describe('chat state service', () => {
               return commit;
             });
         }
-        await expect(steerFromPortal(f)).resolves.toBe(false);
+        await expect(steerFromRemoteControl(f)).resolves.toBe(false);
         expect((await f.getRow()).state).toBe('queued');
         await ordinary.delivered;
         expect(ordinary.dispatch).toHaveBeenCalledTimes(1);
@@ -10677,7 +10677,7 @@ describe('chat state service', () => {
           const f = await deliveryFixture({}, {}, paths, applied(sessionMode));
           if (savedMode) await saveTabMode(f, savedMode);
 
-          await expect(steerFromPortal(f)).resolves.toBe(true);
+          await expect(steerFromRemoteControl(f)).resolves.toBe(true);
           expect(f.submission).toHaveBeenCalledTimes(1);
         });
       },
@@ -10729,7 +10729,7 @@ describe('chat state service', () => {
               },
             });
 
-            await expect(steerFromPortal(f)).resolves.toBe(false);
+            await expect(steerFromRemoteControl(f)).resolves.toBe(false);
             expect(f.submission).not.toHaveBeenCalled();
             const row = await f.getRow();
             expect(row.state).toBe('cancelled');
@@ -16120,7 +16120,7 @@ describe('chat state service', () => {
         outcome: 'completed',
         endedAt: 1_000,
       });
-      expect(tab && projectPortalLastTurnEnd(tab)).toMatchObject({
+      expect(tab && projectRemoteControlLastTurnEnd(tab)).toMatchObject({
         userMessageId: 'user-held',
         outcome: 'cancelled',
       });
@@ -21404,7 +21404,7 @@ describe('chat state service', () => {
     await createChat(target);
     const queueService = mockedGetChatQueueService();
     const submit = jest.spyOn(queueService, 'submit').mockResolvedValue();
-    const portalEnvelope = {
+    const remoteControlEnvelope = {
       ...envelope('portal-stable-id-send', {
         type: 'chat.send_message' as const,
         chatId: 'chat-1',
@@ -21414,7 +21414,7 @@ describe('chat state service', () => {
       origin: 'portal' as const,
     };
 
-    await expect(target.command(portalEnvelope)).resolves.toMatchObject({
+    await expect(target.command(remoteControlEnvelope)).resolves.toMatchObject({
       outcome: 'applied',
     });
     expect(submit).toHaveBeenCalledWith(

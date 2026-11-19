@@ -39,7 +39,6 @@ export function SegmentedPicker<T extends string>({
       label={label}
       value={value}
       width="content"
-      shape="capsule"
       options={options.map((option) => ({
         value: option.key,
         label: option.label,

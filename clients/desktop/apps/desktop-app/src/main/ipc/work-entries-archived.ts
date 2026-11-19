@@ -12,9 +12,9 @@
  * Nothing is written: manifests and the legacy chat registry are read only.
  */
 import type {
-  PortalArchivedWorkEntriesListResult,
-  PortalArchivedWorkEntry,
-} from '@canopy/protocol/portal';
+  RemoteControlArchivedWorkEntriesListResult,
+  RemoteControlArchivedWorkEntry,
+} from '@canopy/protocol/remote-control/shell';
 import { CHAT_UNIT_LABEL } from '@canopy/protocol';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import { isArchivedContainerExpired } from '@canopy/desktop-shared/lib/archive-retention';
@@ -22,7 +22,7 @@ import { chatDisplayLabel } from '@canopy/desktop-shared/lib/chat-display-label'
 import { resolveCoworkWorkspaceId } from '../lib/cowork-migration-map';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import { IdentifierValidationError, validateId } from '../lib/validation';
-import { PortalServiceError } from '../services/portal-service-error';
+import { RemoteControlServiceError } from '../services/remote-control-service-error';
 import { registerIpcHandler } from './register';
 
 /** The tunnel frame budget an archive overview stays inside. */
@@ -58,7 +58,7 @@ export function readArchivedWorkEntriesRequest(
     typeof request.projectLocalId !== 'string' ||
     (request.offset !== undefined && request.offset !== 0)
   ) {
-    throw new PortalServiceError(
+    throw new RemoteControlServiceError(
       'invalid_payload',
       'A matching project is required.',
     );
@@ -67,7 +67,7 @@ export function readArchivedWorkEntriesRequest(
     validateId(request.projectLocalId, 'projectLocalId');
   } catch (error) {
     if (error instanceof IdentifierValidationError)
-      throw new PortalServiceError('invalid_payload', error.message);
+      throw new RemoteControlServiceError('invalid_payload', error.message);
     throw error;
   }
   return { projectLocalId: request.projectLocalId };
@@ -87,11 +87,11 @@ export function readArchivedWorkEntriesRequest(
 export async function readArchivedWorkEntries(
   projectLocalId: string,
   stillAuthorized: () => boolean = () => true,
-): Promise<PortalArchivedWorkEntriesListResult> {
+): Promise<RemoteControlArchivedWorkEntriesListResult> {
   // Throws IdentifierValidationError; the IPC handler has already refused an
   // invalid ID as invalid_payload, and Portal's adapter maps it as before.
   validateId(projectLocalId, 'projectLocalId');
-  let result: PortalArchivedWorkEntriesListResult;
+  let result: RemoteControlArchivedWorkEntriesListResult;
   try {
     const { listCoworkWorkspacesAsChatProjects } =
       await import('../lib/cowork-workspace-crud');
@@ -105,7 +105,7 @@ export async function readArchivedWorkEntries(
       provisionDefaults: false,
     });
     if (!projects.some((project) => project.id === projectId)) {
-      throw new PortalServiceError(
+      throw new RemoteControlServiceError(
         'not_found',
         'The cowork project is unavailable.',
       );
@@ -119,7 +119,7 @@ export async function readArchivedWorkEntries(
     ]);
     if (!stillAuthorized()) throw new ArchivedWorkEntriesForbiddenError();
     const now = Date.now();
-    const items: PortalArchivedWorkEntry[] = [];
+    const items: RemoteControlArchivedWorkEntry[] = [];
     for (const manifest of manifests) {
       if (
         manifest.kind !== 'work-entry' ||
@@ -158,18 +158,18 @@ export async function readArchivedWorkEntries(
     }
   } catch (error) {
     if (
-      error instanceof PortalServiceError ||
+      error instanceof RemoteControlServiceError ||
       error instanceof ArchivedWorkEntriesForbiddenError
     )
       throw error;
     logMainProcessWarn('Archived Work Entry list failed', { error });
-    throw new PortalServiceError('execution_failed', LOAD_FAILED);
+    throw new RemoteControlServiceError('execution_failed', LOAD_FAILED);
   }
   return result;
 }
 
 export function registerArchivedWorkEntryHandlers(): void {
-  registerIpcHandler<[unknown], PortalArchivedWorkEntriesListResult>(
+  registerIpcHandler<[unknown], RemoteControlArchivedWorkEntriesListResult>(
     IPC_CHANNELS.workEntriesListArchived,
     async (_event, request) =>
       readArchivedWorkEntries(

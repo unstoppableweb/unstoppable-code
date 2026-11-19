@@ -29,11 +29,12 @@ import { InitiatedWorkEngine } from '@canopy/core-runtime/node/initiated-work';
 import { OperationService } from '@canopy/core-runtime/node/operations';
 import { OperationLedger } from '@canopy/core-runtime/node/operations/ledger';
 import { INITIATED_WORK_PIPELINE_TRANSIENT_RETRY_SOURCE } from '@canopy/protocol/canopy-core';
+import type { DesktopCanopyDispatcher } from '../../canopy-runtime/desktop-runtime';
+import { setDesktopCanopyRuntime } from '../../canopy-runtime/desktop-runtime-access';
 import {
   cancelPendingTransientRetryTimer,
-  initTransientErrorRetryScheduler,
   notePipelineExecutionEvent,
-  resetTransientErrorRetrySchedulerForTests,
+  PipelineTransientRetries,
 } from '../transient-error-retry-scheduler';
 
 const EXECUTION = 'execution-transient';
@@ -69,6 +70,7 @@ let reasonCounter = 0;
 let ledgerDir: string;
 let operations: OperationService;
 let engine: InitiatedWorkEngine;
+let scheduler: PipelineTransientRetries | null = null;
 
 function reasonId(): string {
   reasonCounter += 1;
@@ -158,7 +160,6 @@ function lastShown(): PipelineTransientRetryState | undefined {
 beforeEach(async () => {
   jest.useFakeTimers({ now: START, doNotFake: ['nextTick', 'setImmediate'] });
   reasonCounter = 0;
-  resetTransientErrorRetrySchedulerForTests();
   ledgerDir = mkdtempSync(join(tmpdir(), 'canopy-transient-retry-'));
   operations = new OperationService({
     openLedger: (): OperationLedger =>
@@ -180,8 +181,11 @@ beforeEach(async () => {
     preferences: { autoRetryTransientErrorsPipelines: true },
     resumeAnswer: 'started',
   };
-  initTransientErrorRetryScheduler({
-    engine,
+  scheduler = new PipelineTransientRetries(engine);
+  setDesktopCanopyRuntime({
+    pipelineTransientRetries: scheduler,
+  } as unknown as DesktopCanopyDispatcher);
+  scheduler.start({
     listRetryRuns: (executionId) =>
       operations
         .list({
@@ -215,7 +219,9 @@ beforeEach(async () => {
 
 afterEach(() => {
   engine.stopStarting();
-  resetTransientErrorRetrySchedulerForTests();
+  scheduler?.resetForTests();
+  scheduler = null;
+  setDesktopCanopyRuntime(null);
   operations.close();
   rmSync(ledgerDir, { recursive: true, force: true });
   jest.useRealTimers();

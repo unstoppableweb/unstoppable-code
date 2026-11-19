@@ -19,18 +19,18 @@ import {
   type ReactNode,
 } from 'react';
 import {
-  foldedPortalToolOccurrenceIds,
-  isFoldedPortalToolResult,
+  foldedRemoteControlToolOccurrenceIds,
+  isFoldedRemoteControlToolResult,
   pairToolResultOccurrences,
-  portalToolPartOccurrence,
-  readPortalChatPartVisual,
-  readPortalToolOutputLocator,
-  type PortalChatMessage,
-  type PortalChatPart,
+  remoteControlToolPartOccurrence,
+  readRemoteControlChatPartVisual,
+  readRemoteControlToolOutputLocator,
+  type RemoteControlChatMessage,
+  type RemoteControlChatPart,
   readChatPromptSource,
   readChatWatcherFired,
-  type PortalChatMessageAttachment,
-} from '@canopy/protocol/portal';
+  type RemoteControlChatMessageAttachment,
+} from '@canopy/protocol/remote-control/shell';
 import {
   AutoResumeMarker,
   CanopyProxyErrorSummary,
@@ -92,7 +92,7 @@ function readString(
   return typeof value === 'string' ? value : undefined;
 }
 
-function readToolUseId(part: PortalChatPart): string | null {
+function readToolUseId(part: RemoteControlChatPart): string | null {
   const data = isRecord(part.data) ? part.data : {};
   return (
     readString(data, 'toolUseId') ?? readString(data, 'tool_use_id') ?? null
@@ -100,7 +100,7 @@ function readToolUseId(part: PortalChatPart): string | null {
 }
 
 function readToolResultData(
-  part: PortalChatPart,
+  part: RemoteControlChatPart,
 ): { output: string; isError: boolean } | null {
   const data = isRecord(part.data) ? part.data : {};
   const output =
@@ -117,10 +117,10 @@ function readToolResultData(
 }
 
 export function normalizeChatMessageParts(
-  inputParts: readonly PortalChatPart[],
-): PortalChatPart[] {
+  inputParts: readonly RemoteControlChatPart[],
+): RemoteControlChatPart[] {
   // A merge can keep a result part beside the call it was already folded into.
-  const folded = foldedPortalToolOccurrenceIds(inputParts);
+  const folded = foldedRemoteControlToolOccurrenceIds(inputParts);
   const parts = inputParts.filter((part) => {
     if (part.kind !== 'text' || !isRecord(part.data)) return true;
     return !(
@@ -130,7 +130,7 @@ export function normalizeChatMessageParts(
   const pairs = pairToolResultOccurrences(parts, (part) => {
     if (
       (part.kind !== 'tool_use' && part.kind !== 'tool_result') ||
-      isFoldedPortalToolResult(part, folded)
+      isFoldedRemoteControlToolResult(part, folded)
     ) {
       return undefined;
     }
@@ -145,7 +145,7 @@ export function normalizeChatMessageParts(
     if (!toolUseId) {
       return undefined;
     }
-    const occurrence = portalToolPartOccurrence(part);
+    const occurrence = remoteControlToolPartOccurrence(part);
     return {
       kind: part.kind,
       toolUseId,
@@ -157,11 +157,11 @@ export function normalizeChatMessageParts(
   return parts.flatMap((part, index) => {
     if (
       consumedResultIndexes.has(index) ||
-      isFoldedPortalToolResult(part, folded)
+      isFoldedRemoteControlToolResult(part, folded)
     ) {
       // Folding consumes output, not the visual owned by the result row.
       // Drop the locator here too: the call now owns its full-output opener.
-      const visual = readPortalChatPartVisual(part);
+      const visual = readRemoteControlChatPartVisual(part);
       if (!visual) return [];
       const toolUseId = readToolUseId(part);
       const data = isRecord(part.data) ? part.data : {};
@@ -190,8 +190,10 @@ export function normalizeChatMessageParts(
       return [part];
     }
     const data = isRecord(part.data) ? part.data : {};
-    const resultOccurrence = portalToolPartOccurrence(resultPart);
-    const outputLocator = readPortalToolOutputLocator(resultPart.outputLocator);
+    const resultOccurrence = remoteControlToolPartOccurrence(resultPart);
+    const outputLocator = readRemoteControlToolOutputLocator(
+      resultPart.outputLocator,
+    );
     return [
       {
         ...part,
@@ -209,7 +211,7 @@ export function normalizeChatMessageParts(
 }
 
 /**
- * Renders one neutral {@link PortalChatMessage}: user messages as a
+ * Renders one neutral {@link RemoteControlChatMessage}: user messages as a
  * {@link UserBubble}, assistant/system messages as left-aligned markdown prose
  * with their {@link ChatPartView} tool/thinking/agent blocks above the text —
  * mirroring the web portal `ChatMessageRenderer` (which the shared store's
@@ -217,7 +219,7 @@ export function normalizeChatMessageParts(
  */
 export interface ChatMessageViewProps {
   readonly receivingContext?: AgentSentReceivingContext;
-  readonly message: PortalChatMessage;
+  readonly message: RemoteControlChatMessage;
   /** Optional branded app icon threaded to tool/agent parts. */
   readonly appIcon?: ReactNode;
   /** Always-visible control beside this message's completion stamp. */
@@ -447,10 +449,10 @@ const SmoothStreamingProse = memo(function SmoothStreamingProse({
   );
 });
 
-const EMPTY_PARTS: readonly PortalChatPart[] = [];
+const EMPTY_PARTS: readonly RemoteControlChatPart[] = [];
 
 /** A stable empty list, so a message without attachments resolves nothing. */
-const NO_ATTACHMENTS: readonly PortalChatMessageAttachment[] = [];
+const NO_ATTACHMENTS: readonly RemoteControlChatMessageAttachment[] = [];
 
 function ChatMessageViewImpl({
   message,
@@ -684,7 +686,7 @@ function ChatMessageViewImpl({
               {normalizedParts.map((part, i) => (
                 // Stable occurrence keys survive same-message result folding.
                 <Fragment
-                  key={`${part.kind}-${portalToolPartOccurrence(part)?.id ?? i}`}
+                  key={`${part.kind}-${remoteControlToolPartOccurrence(part)?.id ?? i}`}
                 >
                   {i > 0 &&
                     (part.kind === 'text') !==
@@ -721,7 +723,7 @@ function ChatMessageViewImpl({
           {message.text &&
             // A structured AI Credits proxy failure must never render as raw
             // JSON — the marker is a wire signal, not user-visible copy. This is
-            // the LIVE Remote Control worktree chat (`PortalSharedChatPanel` ->
+            // the LIVE Remote Control worktree chat (`RemoteControlSharedChatPanel` ->
             // `ChatPanel` -> `ChatTranscript` -> here), which is exactly where
             // Codex AI Credits turns land, so it needs the same guard the
             // shared-run renderer has.
@@ -758,7 +760,7 @@ function ChatMessageViewImpl({
                   <CanopyProxyErrorSummary
                     error={proxyError}
                     messageId={message.messageId}
-                    dataTestId="portal-chat-canopy-proxy-error"
+                    dataTestId="remote-control-chat-canopy-proxy-error"
                   />
                 );
               }

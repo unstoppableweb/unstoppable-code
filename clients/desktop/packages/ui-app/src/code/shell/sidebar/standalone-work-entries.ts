@@ -1,4 +1,4 @@
-import type { PortalStandaloneWorkEntryFields } from '@canopy/protocol';
+import type { RemoteControlStandaloneWorkEntryFields } from '@canopy/protocol';
 import {
   orderSidebarRows,
   toRecencyMs,
@@ -11,7 +11,7 @@ import {
  * The fields of one flat portal standalone chat that grouping reads. Typed
  * structurally so the shell state's `standaloneChats` rows fit as they are.
  */
-export interface GroupableStandaloneChat extends PortalStandaloneWorkEntryFields {
+export interface GroupableStandaloneChat extends RemoteControlStandaloneWorkEntryFields {
   /** The chat's id on the paired desktop. */
   localId: string;
   /** The owning Cowork project on the paired desktop. */

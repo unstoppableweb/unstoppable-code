@@ -3,7 +3,6 @@ import { AvatarsSpecimen } from './componentsLabAvatars';
 import { ChartsSpecimen } from './componentsLabCharts';
 import { ButtonsSpecimen, ListRowSpecimen } from './componentsLabButtons';
 import { ChipSection, ContextSection } from './MarkersLabPage';
-import { FieldsSpecimen } from './FieldsLabPage';
 import {
   FailureSpecimen,
   NoticeSpecimen,
@@ -21,6 +20,7 @@ import { GAP_ROOT_3C_LAB_ENTRIES } from './componentsLabEntriesGapRoot3C';
 import { GAP_ROOT_3A_LAB_ENTRIES } from './componentsLabEntriesGapRoot3A';
 import { GAP_ROOT_3D_LAB_ENTRIES } from './componentsLabEntriesGapRoot3D';
 import { GAP_ROOT_3B_LAB_ENTRIES } from './componentsLabEntriesGapRoot3B';
+import { AGENT_ACTIVITY_LAB_ENTRIES } from './componentsLabAgentActivity';
 import { CHAT_MARKERS_LAB_ENTRIES } from './componentsLabChatMarkers';
 import { CHAT_QUEUE_LAB_ENTRIES } from './componentsLabChatQueue';
 import { CHAT_SUBAGENTS_LAB_ENTRIES } from './componentsLabChatSubagents';
@@ -32,16 +32,15 @@ import { ModelSelectionSpecimen } from './componentsLabModelSelection';
 import { DisclosuresSpecimen } from './componentsLabDisclosures';
 import { HeadingsSpecimen } from './componentsLabHeadings';
 import { LoadingSpecimen } from './componentsLabLoading';
+import { KeyCapsSpecimen } from './componentsLabKeyCaps';
+import { FOUNDATION_LAB_ENTRIES } from './componentsLabFoundations';
+import { FORMS_LAB_ENTRIES } from './componentsLabForms';
+import { REGROUPED_LAB_ENTRIES } from './componentsLabRegrouped';
 import { ColorSwatchesSpecimen } from './componentsLabColorSwatches';
 import { SurfacesSpecimen } from './componentsLabSurfaces';
 import { OverlayOptionsSpecimen } from './componentsLabOverlayOptions';
 import { SidebarPartsSpecimen } from './componentsLabSidebar';
-import { StatusPartsSpecimen } from './componentsLabStatus';
-import { UsagePartsSpecimen } from './componentsLabUsage';
 import { ChatLookSpecimen, PlanChipSpecimen } from './componentsLabChatLook';
-import { SharedASpecimen } from './componentsLabSharedA';
-import { SharedBSpecimen } from './componentsLabSharedB';
-import { SharedCSpecimen } from './componentsLabSharedC';
 import {
   CustomizePartsSpecimen,
   CustomizeTileBenchmarkSpecimen,
@@ -65,6 +64,7 @@ import {
 } from './componentsLabArchiveRecovery';
 import {
   CloudCopyGitUncheckedSpecimen,
+  CloudCopyInstalledSkillSpecimen,
   CloudCopyPluginSpecimen,
 } from './componentsLabCloudCopy';
 import {
@@ -89,7 +89,6 @@ import { InlineCodeSpecimen } from './componentsLabInlineCode';
 import {
   ButtonStage,
   ChipStage,
-  FieldsStage,
   ListRowStage,
   MarkersStage,
   SegmentedControlStage,
@@ -117,6 +116,12 @@ export interface ComponentsLabEntry {
   readonly note: string;
   /** Where the shared component lives. */
   readonly source: string;
+  /**
+   * The exported components the sheet documents, when a source file's name
+   * is not one of them (`Field.tsx` exports `TextInput`). They lead the
+   * sheet's import line and are searched as names.
+   */
+  readonly components?: readonly string[];
   /** The pull requests that unified it. */
   readonly prs: readonly number[];
   /**
@@ -128,11 +133,12 @@ export interface ComponentsLabEntry {
 }
 
 export const COMPONENTS_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
+  ...FOUNDATION_LAB_ENTRIES,
   {
     id: 'button',
     name: 'Button',
     group: 'Unified',
-    note: 'Every action is a capsule Button; links inside a sentence use variant="link". The stage shows hover, press, busy and done.',
+    note: 'Every action is a capsule Button in one of five looks: primary, secondary, ghost, ghost-destructive and destructive. Links inside a sentence use variant="link". The stage shows hover, press, busy and done.',
     source: 'packages/ui-shared/src/components/Button.tsx',
     prs: [7044, 7062, 7066, 7067, 7068, 7070, 7071, 7076, 7198],
     Stage: ButtonStage,
@@ -140,7 +146,7 @@ export const COMPONENTS_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
   },
   {
     id: 'list-row',
-    name: 'ListRow',
+    name: 'List rows',
     group: 'Unified',
     note: 'One full-width row for every list, in three forms (press, link, static) and three sizes (28, 32, 40), with quiet trailing text and actions beside the press.',
     source: 'packages/ui-shared/src/components/ListRow.tsx',
@@ -150,11 +156,10 @@ export const COMPONENTS_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
   },
   {
     id: 'markers',
-    name: 'Markers',
+    name: 'Badge, count, dot and status glyph',
     group: 'Unified',
     note: 'Badge (regular and compact), Count, Dot (including connection dots) and StatusGlyph: every status and count uses these.',
-    source:
-      'packages/ui-shared/src/components/{Badge,Count,Dot,StatusGlyph}.tsx',
+    source: 'packages/ui-shared/src/components/{Badge,StatusGlyph}.tsx',
     prs: [7209],
     Stage: MarkersStage,
     View: MarkersSpecimen,
@@ -181,7 +186,7 @@ export const COMPONENTS_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
   },
   {
     id: 'tab-bar',
-    name: 'TabBar',
+    name: 'Tabs',
     group: 'Unified',
     note: 'One tab list for page, dialog and panel tabs: default or compact density, an optional count, a destructive tone and a vertical rail.',
     source: 'packages/ui-shared/src/components/TabBar.tsx',
@@ -191,9 +196,9 @@ export const COMPONENTS_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
   },
   {
     id: 'segmented-control',
-    name: 'SegmentedControl',
+    name: 'Segmented control',
     group: 'Unified',
-    note: 'The one segmented picker for Settings and popovers: a bg-depth track with a sliding secondary surface, rounded or capsule.',
+    note: 'The one segmented picker for Settings and popovers: a capsule bg-depth track with a sliding capsule surface.',
     source: 'packages/ui-shared/src/components/SegmentedControl.tsx',
     prs: [],
     Stage: SegmentedControlStage,
@@ -217,17 +222,7 @@ export const COMPONENTS_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
     prs: [],
     View: InlineCodeSpecimen,
   },
-  {
-    id: 'fields',
-    name: 'Form fields',
-    group: 'Unified',
-    note: 'TextInput, TextArea, Select, SettingsSelect, SearchField, InlineTextInput, form fields, Checkbox, Radio, ChoiceList and ToggleSwitch, with every state.',
-    source:
-      'packages/ui-shared/src/components/{Field,FormField,InlineTextInput,Choice}.tsx',
-    prs: [7214, 7219, 7220, 7221, 7222, 7223, 7224, 7255, 7257],
-    Stage: FieldsStage,
-    View: FieldsSpecimen,
-  },
+  ...FORMS_LAB_ENTRIES,
   {
     id: 'agent-alias-model',
     name: 'Agent alias model fields',
@@ -248,7 +243,7 @@ export const COMPONENTS_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
   },
   {
     id: 'icon-scale',
-    name: 'Icon scale',
+    name: 'Icons',
     group: 'Unified',
     note: 'Six named steps on every AppIcons icon; an icon with no size is sm. Never a number, width/height or a size class.',
     source: 'packages/ui-shared/src/icons/icon-size.ts',
@@ -297,7 +292,7 @@ export const COMPONENTS_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
   },
   {
     id: 'loading',
-    name: 'Loading',
+    name: 'Skeletons and spinners',
     group: 'Unified',
     note: 'Nothing for 200ms, then a skeleton in the content’s own layout, then one slow note after 8s; spinners only inside the busy control.',
     source:
@@ -349,7 +344,7 @@ export const COMPONENTS_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
     id: 'dialogs',
     name: 'Dialogs',
     group: 'Unified',
-    note: 'DialogModal with the 24px inset, the confirm variant and dialog tabs; ConfirmDialog for a question before an action (Cancel is secondary).',
+    note: 'A small card over the app: a 16px title, content 24px from every side, actions at the bottom right. A confirmation asks one question before an action.',
     source: 'packages/ui-shared/src/components/{DialogModal,ConfirmDialog}.tsx',
     prs: [7215],
     Stage: DialogStage,
@@ -533,6 +528,15 @@ export const COMPONENTS_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
     View: CloudCopyGitUncheckedSpecimen,
   },
   {
+    id: 'cloud-copy-installed-skill',
+    name: 'Add an installed skill to the cloud account',
+    group: 'Unified',
+    note: "The same consent dialog for a skill installed from GitHub, a URL or a local folder (CAN-6943): its cloud copy is never kept up to date, so there's no choice to; any later change asks again.",
+    source: 'packages/ui-app/src/capability/CloudCopyConsentDialog.tsx',
+    prs: [],
+    View: CloudCopyInstalledSkillSpecimen,
+  },
+  {
     id: 'headings',
     name: 'Headings',
     group: 'Unified',
@@ -552,7 +556,7 @@ export const COMPONENTS_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
   },
   {
     id: 'surfaces',
-    name: 'Surface and Divider',
+    name: 'Surfaces and dividers',
     group: 'Unified',
     note: 'Every box is a Surface named by what it is (outline, group, card, raised, inset), with padding roles and a selected state; a light boundary is a Divider. Raw elements stay plain layout.',
     source: 'packages/ui-shared/src/components/Surface.tsx',
@@ -600,7 +604,7 @@ export const COMPONENTS_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
   },
   {
     id: 'tooltip-copy',
-    name: 'Tooltip and CopyButton',
+    name: 'Tooltip and copy button',
     group: 'Unified',
     note: 'One tooltip (with an optional shortcut) and one copy control that confirms in place.',
     source: 'packages/ui-shared/src/components/{Tooltip,CopyButton}.tsx',
@@ -639,6 +643,15 @@ export const COMPONENTS_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
     View: HomeAndResumeSpecimen,
   },
   {
+    id: 'key-caps',
+    name: 'Key caps',
+    group: 'Unified',
+    note: 'A keyboard hint is one filled cap per key. On its own line a cap is a capsule; at the end of a field, a tooltip or an option row it nests, with the same inset on three sides and the control’s corner less that inset.',
+    source: 'packages/ui-shared/src/components/{Kbd,KbdChip}.tsx',
+    prs: [],
+    View: KeyCapsSpecimen,
+  },
+  {
     id: 'keys-and-markdown',
     name: 'Shortcut chip and transcript markdown',
     group: 'Unified',
@@ -659,7 +672,7 @@ export const COMPONENTS_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
   },
   {
     id: 'data-table',
-    name: 'DataTable',
+    name: 'Tables',
     group: 'Unified',
     note: 'Every data table is the framed card: a 32px header band, 36px rows split by a hairline, numbers right-aligned; rows fill on hover only when they open something.',
     source: 'packages/ui-shared/src/components/DataTable.tsx',
@@ -679,9 +692,11 @@ export const COMPONENTS_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
   ...GAP_ROOT_3A_LAB_ENTRIES,
   ...GAP_ROOT_3D_LAB_ENTRIES,
   ...GAP_ROOT_3B_LAB_ENTRIES,
+  ...REGROUPED_LAB_ENTRIES,
   ...CHAT_MARKERS_LAB_ENTRIES,
   ...CHAT_QUEUE_LAB_ENTRIES,
   ...CHAT_TURN_LAB_ENTRIES,
+  ...AGENT_ACTIVITY_LAB_ENTRIES,
   ...CHAT_SUBAGENTS_LAB_ENTRIES,
   {
     id: 'google-subscription',
@@ -715,7 +730,7 @@ export const COMPONENTS_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
   },
   {
     id: 'sidebar-parts',
-    name: 'Sidebar and settings parts',
+    name: 'Sidebar parts',
     group: 'Unified',
     note: 'The sidebar nav marker, style picker, batch-removal notice, cleanup-failure notice and dialog, and the settings save line, each in every state.',
     source:
@@ -724,55 +739,8 @@ export const COMPONENTS_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
     View: SidebarPartsSpecimen,
   },
   {
-    id: 'status-parts',
-    name: 'Notices, status and presentation parts',
-    group: 'Unified',
-    note: 'The skill update and stuck-agent notices, starting-point chip, chat summary, status label, store badges, slash-command primitives and the spinner and streaming presentation providers, each in every state.',
-    source:
-      'packages/ui-shared/src/components/{SkillUpdateNotice,StuckAgentNotice,StartingPointChip,StartChatSummary,StatusLabel,StoreBadgeLink,SlashCommandPrimitives,spinner-style,streaming-text,StandardPresentationProvider}.tsx',
-    prs: [],
-    View: StatusPartsSpecimen,
-  },
-  {
-    id: 'usage-parts',
-    name: 'Usage, wake and workflow parts',
-    group: 'Unified',
-    note: 'The usage meter and popover actions, usage-limit and wake notices, wake turn boundary, workflow last-run text, uninstall confirmation, update marker and the tooltip provider, each in every state.',
-    source:
-      'packages/ui-shared/src/components/{usage-indicator-meter,UsageIndicatorActions,UsageLimitNotice,UsageResetIcon,WakeParkedNotice,WakeTurnBoundary,WorkflowLastRunText,UninstallConfirmDialog,UpdateMarker,tooltip-handoff}.tsx',
-    prs: [],
-    View: UsagePartsSpecimen,
-  },
-  {
-    id: 'feature-parts-a',
-    name: 'Feature parts, set 1',
-    group: 'Unified',
-    note: 'Shared feature components from ui-shared (set 1) in each state: default, busy, disabled, empty, error and long text.',
-    source: 'packages/ui-shared/src/components/',
-    prs: [],
-    View: SharedASpecimen,
-  },
-  {
-    id: 'feature-parts-b',
-    name: 'Feature parts, set 2',
-    group: 'Unified',
-    note: 'Shared feature components from ui-shared (set 2) in each state: default, busy, disabled, empty, error and long text.',
-    source: 'packages/ui-shared/src/components/',
-    prs: [],
-    View: SharedBSpecimen,
-  },
-  {
-    id: 'feature-parts-c',
-    name: 'Feature parts, set 3',
-    group: 'Unified',
-    note: 'Shared feature components from ui-shared (set 3) in each state: default, busy, disabled, empty, error and long text.',
-    source: 'packages/ui-shared/src/components/',
-    prs: [],
-    View: SharedCSpecimen,
-  },
-  {
     id: 'chat-look',
-    name: 'Chat look',
+    name: 'Look, detail and tense providers',
     group: 'Unified',
     note: 'The chat detail, app name and step tense providers with the transcript parts that read them, and a live readout of each hook.',
     source: 'packages/ui-shared/src/components/chat-look.tsx',

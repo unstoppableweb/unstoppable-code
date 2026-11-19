@@ -16,9 +16,9 @@ import {
 } from '@canopy/ui-shared/components';
 import { settingsActionErrorCopy } from '../settings/errors';
 import {
-  countPortalPluginSelections,
-  PortalPluginsPicker,
-} from '../code/composer/PortalPluginsPicker';
+  countRemoteControlPluginSelections,
+  RemoteControlPluginsPicker,
+} from '../code/composer/RemoteControlPluginsPicker';
 import {
   ORCHESTRATOR_PLUGINS_LABEL,
   ORCHESTRATOR_PLUGINS_SELECTION_COPY,
@@ -52,7 +52,7 @@ export function OrchestratorRemoteSettingsModal({
   return (
     <OrchestratorSettingsModal
       onClose={onClose}
-      testIdPrefix="portal-app-advisor"
+      testIdPrefix="remote-control-app-advisor"
       formLayout="flow"
       contentReady={settings !== null}
       loading={
@@ -90,7 +90,7 @@ export function OrchestratorRemoteSettingsModal({
                     }))}
                   value={settings.model}
                   onValueChange={(value): void => handleModelChange(value)}
-                  data-testid="portal-app-advisor-settings-model"
+                  data-testid="remote-control-app-advisor-settings-model"
                 />
                 {supportedThinkingLevels.length > 0 ? (
                   <ThinkingLevelProviderHint
@@ -107,7 +107,7 @@ export function OrchestratorRemoteSettingsModal({
                         }
                       }}
                       variant="select"
-                      testId="portal-app-advisor-settings-thinking"
+                      testId="remote-control-app-advisor-settings-thinking"
                     />
                   </ThinkingLevelProviderHint>
                 ) : null}
@@ -126,10 +126,12 @@ export function OrchestratorRemoteSettingsModal({
               <div className="flex items-center gap-2">
                 <span className="text-xs fg-secondary">
                   {orchestratorPluginsCountText(
-                    countPortalPluginSelections(settings.pluginSelections),
+                    countRemoteControlPluginSelections(
+                      settings.pluginSelections,
+                    ),
                   )}
                 </span>
-                <PortalPluginsPicker
+                <RemoteControlPluginsPicker
                   catalog={settings.pluginCatalog}
                   selections={settings.pluginSelections}
                   providerType={selectedModel?.provider}

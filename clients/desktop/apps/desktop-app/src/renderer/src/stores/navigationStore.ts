@@ -534,7 +534,7 @@ interface NavigationState {
   fileSearchPaletteInitialQuery: string;
   prPickerOpen: boolean;
   prPickerOptions: PrPickerOption[];
-  canopyPortalOpen: boolean;
+  remoteControlDialogOpen: boolean;
   /**
    * Whether the App Advisor floating dialog is visible. The App Advisor is
    * a top-most overlay that intentionally does not displace other surfaces
@@ -770,8 +770,8 @@ interface NavigationState {
   closeFileSearchPalette: () => void;
   openPrPicker: (options: PrPickerOption[]) => void;
   closePrPicker: () => void;
-  openCanopyPortal: () => void;
-  closeCanopyPortal: () => void;
+  openRemoteControlDialog: () => void;
+  closeRemoteControlDialog: () => void;
   /**
    * Reveal the App Advisor surface. When a `chatId` target is supplied the
    * dedicated App Advisor window is opened focused on that chat's tab (the
@@ -1162,7 +1162,7 @@ export const useNavigationStore = create<NavigationState>(
     fileSearchPaletteInitialQuery: '',
     prPickerOpen: false,
     prPickerOptions: [],
-    canopyPortalOpen: false,
+    remoteControlDialogOpen: false,
     appAdvisorOpen: false,
     appAdvisorFocused: false,
     appAdvisorMainWindowOpen: true,
@@ -1333,7 +1333,7 @@ export const useNavigationStore = create<NavigationState>(
         fileSearchPaletteInitialQuery: '',
         prPickerOpen: false,
         prPickerOptions: [],
-        canopyPortalOpen: false,
+        remoteControlDialogOpen: false,
         // App Advisor floats above Settings and must not be closed by other
         // surfaces opening.
       });
@@ -1397,7 +1397,7 @@ export const useNavigationStore = create<NavigationState>(
         fileSearchPaletteInitialQuery: '',
         prPickerOpen: false,
         prPickerOptions: [],
-        canopyPortalOpen: false,
+        remoteControlDialogOpen: false,
       });
     },
     backAccountOrganizationSettings: (): void => {
@@ -1436,7 +1436,7 @@ export const useNavigationStore = create<NavigationState>(
         fileSearchPaletteInitialQuery: '',
         prPickerOpen: false,
         prPickerOptions: [],
-        canopyPortalOpen: false,
+        remoteControlDialogOpen: false,
         addWorkspaceModalOpen: false,
       });
     },
@@ -1459,7 +1459,7 @@ export const useNavigationStore = create<NavigationState>(
         fileSearchPaletteInitialQuery: '',
         prPickerOpen: false,
         prPickerOptions: [],
-        canopyPortalOpen: false,
+        remoteControlDialogOpen: false,
       });
     },
     closeAppAdvisorQuickPrompt: (): void => {
@@ -1478,7 +1478,7 @@ export const useNavigationStore = create<NavigationState>(
         fileSearchPaletteInitialQuery: initialQuery,
         prPickerOpen: false,
         prPickerOptions: [],
-        canopyPortalOpen: false,
+        remoteControlDialogOpen: false,
       });
     },
     closeFileSearchPalette: (): void => {
@@ -1500,7 +1500,7 @@ export const useNavigationStore = create<NavigationState>(
         fileSearchPaletteInitialQuery: '',
         prPickerOpen: true,
         prPickerOptions: options,
-        canopyPortalOpen: false,
+        remoteControlDialogOpen: false,
       });
     },
     closePrPicker: (): void => {
@@ -1509,7 +1509,7 @@ export const useNavigationStore = create<NavigationState>(
         prPickerOptions: [],
       });
     },
-    openCanopyPortal: (): void => {
+    openRemoteControlDialog: (): void => {
       set({
         settingsOpen: false,
         settingsInitialSection: undefined,
@@ -1522,11 +1522,11 @@ export const useNavigationStore = create<NavigationState>(
         fileSearchPaletteInitialQuery: '',
         prPickerOpen: false,
         prPickerOptions: [],
-        canopyPortalOpen: true,
+        remoteControlDialogOpen: true,
       });
     },
-    closeCanopyPortal: (): void => {
-      set({ canopyPortalOpen: false });
+    closeRemoteControlDialog: (): void => {
+      set({ remoteControlDialogOpen: false });
     },
     // App Advisor open/close/toggle deliberately do not touch any other
     // overlay flags. Settings, Portal, palettes, and the active page remain

@@ -1,9 +1,9 @@
 import { useContext, useEffect, useMemo, useState } from 'react';
 import {
-  readPortalToolOccurrence,
-  type PortalChatMessage,
-  type PortalChatPart,
-} from '@canopy/protocol/portal';
+  readRemoteControlToolOccurrence,
+  type RemoteControlChatMessage,
+  type RemoteControlChatPart,
+} from '@canopy/protocol/remote-control/shell';
 import {
   planCopyStateFromResolution,
   readToolCallResult,
@@ -44,19 +44,21 @@ function outcomeOf(value: unknown): PlanTurnToolCall['outcome'] {
 }
 
 interface CollectedCall {
-  readonly call: PortalPlanToolCall;
+  readonly call: RemoteControlPlanToolCall;
   readonly toolUseId?: string;
   readonly occurrenceId?: string;
 }
 
-interface PortalPlanToolCall extends PlanTurnToolCall {
+interface RemoteControlPlanToolCall extends PlanTurnToolCall {
   readonly inputIdentity?: ToolOutputIdentity;
   readonly inputRevision?: number;
 }
 
 /** Only a canonical occurrence can authorize reading a historical input. */
-function inputIdentity(part: PortalChatPart): ToolOutputIdentity | undefined {
-  const occurrence = readPortalToolOccurrence(part.occurrence);
+function inputIdentity(
+  part: RemoteControlChatPart,
+): ToolOutputIdentity | undefined {
+  const occurrence = readRemoteControlToolOccurrence(part.occurrence);
   if (!occurrence) return undefined;
   const separator = occurrence.id.lastIndexOf('#');
   const messageId = occurrence.id.slice(0, separator);
@@ -70,7 +72,7 @@ function inputIdentity(part: PortalChatPart): ToolOutputIdentity | undefined {
 /** A plan-relevant `tool_use` part, or `null` for any other part. */
 function readPlanToolUse(
   data: Record<string, unknown>,
-  part: PortalChatPart,
+  part: RemoteControlChatPart,
 ): CollectedCall | null {
   const toolName =
     readString(data, 'toolName') ?? readString(data, 'name') ?? '';
@@ -78,7 +80,7 @@ function readPlanToolUse(
   const toolUseId = readToolUseId(data);
   const outcome = outcomeOf(data['result']);
   const identity = inputIdentity(part);
-  const occurrence = readPortalToolOccurrence(part.occurrence);
+  const occurrence = readRemoteControlToolOccurrence(part.occurrence);
   return {
     call: {
       toolName,
@@ -96,7 +98,7 @@ function readPlanToolUse(
 function withLaterResult(
   { call, toolUseId, occurrenceId }: CollectedCall,
   laterResults: ReadonlyMap<string, PlanTurnToolCall['outcome']>,
-): PortalPlanToolCall {
+): RemoteControlPlanToolCall {
   if (call.outcome !== undefined || toolUseId === undefined) return call;
   const outcome = laterResults.get(occurrenceId ?? toolUseId);
   return outcome === undefined ? call : { ...call, outcome };
@@ -104,12 +106,12 @@ function withLaterResult(
 
 function recordLaterResult(
   data: Record<string, unknown>,
-  part: PortalChatPart,
+  part: RemoteControlChatPart,
   laterResults: Map<string, PlanTurnToolCall['outcome']>,
 ): void {
   const toolUseId = readToolUseId(data);
   if (toolUseId !== undefined) {
-    const occurrence = readPortalToolOccurrence(part.occurrence);
+    const occurrence = readRemoteControlToolOccurrence(part.occurrence);
     laterResults.set(
       occurrence?.id ?? toolUseId,
       outcomeOf(data['result'] ?? data),
@@ -131,9 +133,9 @@ function isRepeat(collected: CollectedCall, seen: Set<string>): boolean {
  * once (CAN-5354). A call's result may be folded into it or arrive as a
  * `tool_result` part of a later message in the turn.
  */
-function collectPortalPlanToolCalls(
-  messages: readonly PortalChatMessage[],
-): PortalPlanToolCall[] {
+function collectRemoteControlPlanToolCalls(
+  messages: readonly RemoteControlChatMessage[],
+): RemoteControlPlanToolCall[] {
   const calls: CollectedCall[] = [];
   const seen = new Set<string>();
   const laterResults = new Map<string, PlanTurnToolCall['outcome']>();
@@ -201,12 +203,15 @@ async function readFullInput(
  * That immutable occurrence is the proposal's own content, independent of a
  * tracked plan's current revision. Hosts without that read stay unavailable.
  */
-export function usePortalTurnPlanCopy(
-  messages: readonly PortalChatMessage[],
+export function useRemoteControlTurnPlanCopy(
+  messages: readonly RemoteControlChatMessage[],
   complete: boolean,
 ): PlanCopyState | undefined {
   const read = useContext(ToolOutputReaderContext);
-  const calls = useMemo(() => collectPortalPlanToolCalls(messages), [messages]);
+  const calls = useMemo(
+    () => collectRemoteControlPlanToolCalls(messages),
+    [messages],
+  );
   const resolution = useMemo(() => resolvePlanTurn(calls), [calls]);
   const key = JSON.stringify(calls);
   const [loaded, setLoaded] = useState<{

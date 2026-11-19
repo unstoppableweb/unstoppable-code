@@ -2,7 +2,7 @@ import type { JSX } from 'react';
 
 /**
  * One Claude Mod of a plugin: a module its hooks file loads. Both
- * `PluginModInfo` (plugin details) and `PortalPluginCatalogModMember` (the
+ * `PluginModInfo` (plugin details) and `RemoteControlPluginCatalogModMember` (the
  * Portal member inventory) have this shape.
  */
 export interface PluginModMember {

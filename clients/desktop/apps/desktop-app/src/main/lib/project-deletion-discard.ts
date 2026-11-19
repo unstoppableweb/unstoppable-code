@@ -4,11 +4,11 @@ import type {
   ProjectDeletionDiscardDescription,
   ProjectDeletionDiscardItem,
   ProjectDeletionInterruptedDeletion,
-} from '@canopy/protocol/portal/project-deletion-discard';
+} from '@canopy/protocol/remote-control/shell/project-deletion-discard';
 import type {
   WorktreeDiscardDescription,
   WorktreeDiscardRefusal,
-} from '@canopy/protocol/portal/worktree-discard';
+} from '@canopy/protocol/remote-control/shell/worktree-discard';
 import { basename, dirname, resolve } from 'node:path';
 import { readArchivedContainerManifestIncludingExpired } from './archived-containers';
 import { getArchivedContainersRootDir } from './paths';

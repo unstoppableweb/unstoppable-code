@@ -1,14 +1,14 @@
 import type {
-  PortalAskUserQuestion,
-  PortalAskUserQuestionAnswer,
-} from '@canopy/protocol/portal';
+  RemoteControlAskUserQuestion,
+  RemoteControlAskUserQuestionAnswer,
+} from '@canopy/protocol/remote-control/shell';
 
 export const QUESTION_PRESETS: {
   id: string;
   title: string;
   description: string;
   prompt: string;
-  questions: PortalAskUserQuestion[];
+  questions: RemoteControlAskUserQuestion[];
 }[] = [
   {
     id: 'reply',
@@ -166,13 +166,13 @@ export interface PlaygroundMachine {
   presetId: string;
   generation: number;
   phase: PlaygroundPhase;
-  answers: PortalAskUserQuestionAnswer[];
+  answers: RemoteControlAskUserQuestionAnswer[];
   failedAction: 'submit' | 'dismiss' | null;
   events: string[];
 }
 export type PlaygroundEvent =
   | { type: 'preset'; id: string }
-  | { type: 'submit'; answers: PortalAskUserQuestionAnswer[] }
+  | { type: 'submit'; answers: RemoteControlAskUserQuestionAnswer[] }
   | {
       type:
         | 'dismiss'

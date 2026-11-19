@@ -118,7 +118,7 @@ export function CuratedWorkflowsSpecimen(): JSX.Element {
         </SpecimenCell>
       </SpecimenPanel>
 
-      <SpecimenPanel title="CuratedPipelinePreviewDialog (opens a modal)">
+      <SpecimenPanel title="CuratedPipelinePreviewDialog" hint="Opens a modal">
         <div className="flex flex-wrap gap-2">
           {PREVIEW_STATES.map(({ state, label }) => (
             <Button

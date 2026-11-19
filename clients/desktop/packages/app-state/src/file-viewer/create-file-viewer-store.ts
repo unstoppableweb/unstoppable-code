@@ -1,11 +1,11 @@
 import { create, type StateCreator } from 'zustand';
 import type { CanopyClient } from '@canopy/app-core';
 import type {
-  PortalDiffPayload,
-  PortalDiffReadPayload,
-  PortalFilePreview,
-  PortalFileReadPayload,
-} from '@canopy/protocol/portal';
+  RemoteControlDiffPayload,
+  RemoteControlDiffReadPayload,
+  RemoteControlFilePreview,
+  RemoteControlFileReadPayload,
+} from '@canopy/protocol/remote-control/shell';
 import { isFileSaveConflictError } from '@canopy/app-core';
 import { useCanopyClientStore } from '../CanopyClientProvider';
 import {
@@ -40,9 +40,9 @@ export interface FileViewerSession {
   /** Session incarnation. Absent on an initial/legacy snapshot means zero. */
   readonly generation?: number;
   /** The read request that identifies this file (routing + relative path). */
-  readonly request: PortalFileReadPayload;
+  readonly request: RemoteControlFileReadPayload;
   /** Last server-confirmed content/version; `null` until the first read lands. */
-  readonly preview: PortalFilePreview | null;
+  readonly preview: RemoteControlFilePreview | null;
   /** Current (possibly edited) buffer contents. */
   readonly content: string;
   /** True when `content` differs from the last confirmed `preview.content`. */
@@ -114,11 +114,11 @@ export interface FileOverlapComparison {
   /** Identifies this analysis; a choice presenting another token is ignored. */
   readonly token: string;
   /** The save baseline the buffer was edited from (the session's preview). */
-  readonly base: PortalFilePreview;
+  readonly base: RemoteControlFilePreview;
   /** The buffer analyzed. */
   readonly ours: string;
   /** The exact complete newer version compared. */
-  readonly latest: PortalFilePreview;
+  readonly latest: RemoteControlFilePreview;
   readonly regions: readonly OverlapRegion[];
   /** One entry per region; `null` until that passage is chosen. */
   readonly choices: readonly (OverlapChoice | null)[];
@@ -166,7 +166,7 @@ export interface FileSaveConflict {
    * The complete newer version this notice represents. Save my version
    * replaces exactly this version; `null` until one has been read.
    */
-  readonly latest: PortalFilePreview | null;
+  readonly latest: RemoteControlFilePreview | null;
   /** The recovery action in flight, if any. */
   readonly resolving: 'overwrite' | 'reload' | null;
   /** Recoverable failure from the last recovery action. */
@@ -202,8 +202,8 @@ export interface FileSaveOptions {
 /** One open diff, keyed by {@link diffViewerKey}. */
 export interface DiffViewerSession {
   readonly key: string;
-  readonly request: PortalDiffReadPayload;
-  readonly diff: PortalDiffPayload | null;
+  readonly request: RemoteControlDiffReadPayload;
+  readonly diff: RemoteControlDiffPayload | null;
   readonly status: FileViewerStatus;
   readonly error: string | null;
 }
@@ -228,7 +228,7 @@ export interface FileViewerState {
    * without tripping `@typescript-eslint/unbound-method` — none of them use
    * `this`.
    */
-  openFile: (request: PortalFileReadPayload) => Promise<string>;
+  openFile: (request: RemoteControlFileReadPayload) => Promise<string>;
   /** Update the editor buffer for a file (recomputes `dirty`). */
   updateContent: (key: string, content: string) => void;
   /**
@@ -257,7 +257,7 @@ export interface FileViewerState {
    * old keys of the sessions it moved.
    */
   renamePath: (
-    from: PortalFileReadPayload,
+    from: RemoteControlFileReadPayload,
     toRelativePath: string,
   ) => ReadonlySet<string>;
   /**
@@ -307,7 +307,7 @@ export interface FileViewerState {
   /** Invalidate every open session an agent edit resolves to. */
   notifyFileChanged: (edit: AgentFileEdit) => void;
   /** Read a diff into a session and mark it active; resolves to its key. */
-  openDiff: (request: PortalDiffReadPayload) => Promise<string>;
+  openDiff: (request: RemoteControlDiffReadPayload) => Promise<string>;
   /** Drop a diff session. */
   closeDiff: (key: string) => void;
 }
@@ -316,17 +316,17 @@ export interface FileViewerState {
  * Stable session key for a file read request (multi-repo safe).
  *
  * `fileRootLocalId` takes precedence over `repoId` to mirror the protocol's own
- * resolution rule (`PortalFileReadPayload`: "setting both is permitted but
+ * resolution rule (`RemoteControlFileReadPayload`: "setting both is permitted but
  * `fileRootLocalId` wins"). Keying on the field the server actually resolves
  * against prevents two distinct files from collapsing onto one session.
  */
-export function fileViewerKey(request: PortalFileReadPayload): string {
+export function fileViewerKey(request: RemoteControlFileReadPayload): string {
   const root = request.fileRootLocalId ?? request.repoId ?? '';
   return `${request.projectId}:${request.worktreeId}:${root}:${request.relativePath}`;
 }
 
 /** Stable session key for a diff read request. */
-export function diffViewerKey(request: PortalDiffReadPayload): string {
+export function diffViewerKey(request: RemoteControlDiffReadPayload): string {
   return `${request.workspaceId}:${request.worktreeId}:${request.repoId ?? ''}:${request.path ?? ''}:${request.source ?? 'combined'}`;
 }
 
@@ -342,7 +342,9 @@ function errorMessage(error: unknown, fallback: string): string {
 }
 
 /** Confirmed mtime of a preview in ms, or NaN when it is unavailable. */
-function previewMtimeMs(preview: PortalFilePreview | null | undefined): number {
+function previewMtimeMs(
+  preview: RemoteControlFilePreview | null | undefined,
+): number {
   return preview?.modifiedAt ? Date.parse(preview.modifiedAt) : Number.NaN;
 }
 
@@ -350,7 +352,7 @@ function previewMtimeMs(preview: PortalFilePreview | null | undefined): number {
  * Whether a read can serve as a merge input or an overwrite baseline: the
  * complete text of the file with a usable version.
  */
-function isCompleteTextVersion(preview: PortalFilePreview): boolean {
+function isCompleteTextVersion(preview: RemoteControlFilePreview): boolean {
   return (
     !preview.truncated &&
     !Number.isNaN(previewMtimeMs(preview)) &&
@@ -363,9 +365,9 @@ function isCompleteTextVersion(preview: PortalFilePreview): boolean {
  * `latest` automatically: the same check the stale-save recovery applies.
  */
 function savesCombine(
-  base: PortalFilePreview,
+  base: RemoteControlFilePreview,
   content: string,
-  latest: PortalFilePreview,
+  latest: RemoteControlFilePreview,
 ): boolean {
   return (
     isCompleteTextVersion(base) &&
@@ -483,7 +485,7 @@ export function createFileViewerStore(
     // read finds disk has moved past it. A combinable change needs no recovery
     // choice, so undo and discard use this to load the newer version. Identity with
     // the session's current preview means the baseline is still stale.
-    const staleBaselines = new Map<string, PortalFilePreview>();
+    const staleBaselines = new Map<string, RemoteControlFilePreview>();
     const baselineKnownStale = (session: FileViewerSession): boolean =>
       session.preview !== null &&
       staleBaselines.get(session.key) === session.preview;
@@ -494,8 +496,8 @@ export function createFileViewerStore(
     const latestVersions = new Map<
       string,
       {
-        base: PortalFilePreview;
-        latest: PortalFilePreview;
+        base: RemoteControlFilePreview;
+        latest: RemoteControlFilePreview;
         source: FileChangeSource | null;
       }
     >();
@@ -603,7 +605,7 @@ export function createFileViewerStore(
       pendingSources.delete(key);
       const saveEpoch = currentSaveEpoch(key);
       const bufferRevision = bufferRevisions.get(key) ?? 0;
-      let preview: PortalFilePreview | null = null;
+      let preview: RemoteControlFilePreview | null = null;
       let failure: string | null = null;
       try {
         preview = await client.query('file.read', session.request);
@@ -684,9 +686,9 @@ export function createFileViewerStore(
      */
     const analyzeOverlap = (
       key: string,
-      base: PortalFilePreview | null,
+      base: RemoteControlFilePreview | null,
       ours: string,
-      latest: PortalFilePreview,
+      latest: RemoteControlFilePreview,
       previous: FileOverlapComparison | null | undefined,
     ): OverlapOutcome => {
       if (
@@ -757,7 +759,7 @@ export function createFileViewerStore(
     const adoptLatestWith = (
       key: string,
       content: string,
-      latest: PortalFilePreview,
+      latest: RemoteControlFilePreview,
     ): void => {
       const current = get().files[key];
       if (!current) return;
@@ -803,7 +805,7 @@ export function createFileViewerStore(
       key: string,
       mode: 'open' | 'refresh' | 'reload',
       result: {
-        preview: PortalFilePreview | null;
+        preview: RemoteControlFilePreview | null;
         failure: string | null;
         saveEpoch: number;
         bufferRevision: number;
@@ -1098,7 +1100,7 @@ export function createFileViewerStore(
      */
     const settleOverlapRead = (
       key: string,
-      preview: PortalFilePreview,
+      preview: RemoteControlFilePreview,
       source: FileChangeSource | null,
     ): void => {
       const current = get().files[key];
@@ -1173,8 +1175,8 @@ export function createFileViewerStore(
 
     /** Read the latest version for recovery without settling the session. */
     const readLatest = async (
-      request: PortalFileReadPayload,
-    ): Promise<PortalFilePreview | null> => {
+      request: RemoteControlFileReadPayload,
+    ): Promise<RemoteControlFilePreview | null> => {
       try {
         return await client.query('file.read', request);
       } catch {
@@ -1190,7 +1192,7 @@ export function createFileViewerStore(
       key: string,
       conflict: {
         reason: FileSaveConflictReason;
-        latest: PortalFilePreview | null;
+        latest: RemoteControlFilePreview | null;
         origin: FileSaveOrigin;
         focus: boolean;
         source?: FileChangeSource | null;
@@ -1246,7 +1248,7 @@ export function createFileViewerStore(
      */
     const applySavedSnapshot = (
       key: string,
-      preview: PortalFilePreview,
+      preview: RemoteControlFilePreview,
       snapshotContent: string,
     ): void => {
       const current = get().files[key];
@@ -1288,7 +1290,7 @@ export function createFileViewerStore(
     /** Adopt a version that holds both the user's edits and newer changes. */
     const applyMergedVersion = (
       key: string,
-      preview: PortalFilePreview,
+      preview: RemoteControlFilePreview,
       source: FileChangeSource | null,
     ): void => {
       const current = get().files[key];
@@ -1319,8 +1321,8 @@ export function createFileViewerStore(
 
     interface SaveSnapshot {
       readonly key: string;
-      readonly request: PortalFileReadPayload;
-      readonly base: PortalFilePreview;
+      readonly request: RemoteControlFileReadPayload;
+      readonly base: RemoteControlFilePreview;
       readonly content: string;
       readonly generation: number;
       readonly bufferRevision: number;
@@ -1339,7 +1341,7 @@ export function createFileViewerStore(
      */
     const settleChangedAgain = (
       key: string,
-      newer: PortalFilePreview | null,
+      newer: RemoteControlFilePreview | null,
       origin: FileSaveOrigin,
       focus: boolean,
     ): void => {
@@ -1451,7 +1453,7 @@ export function createFileViewerStore(
         return true;
       }
       saveEpochs.set(key, currentSaveEpoch(key) + 1);
-      let saved: PortalFilePreview;
+      let saved: RemoteControlFilePreview;
       try {
         saved = await client.command('file.save', {
           ...request,
@@ -1518,7 +1520,7 @@ export function createFileViewerStore(
     /** One save of `snapshot.content`, recovering from a stale version. */
     const runSave = async (snapshot: SaveSnapshot): Promise<boolean> => {
       const { key } = snapshot;
-      let saved: PortalFilePreview;
+      let saved: RemoteControlFilePreview;
       try {
         saved = await client.command('file.save', {
           ...snapshot.request,
@@ -2107,7 +2109,9 @@ export function createFileViewerStore(
           // Baselines match by identity, so every record holding the old
           // preview must hold the new one, or the moved draft's stale,
           // overlap and combinable checks would stop matching.
-          const rebase = <V extends { readonly base: PortalFilePreview }>(
+          const rebase = <
+            V extends { readonly base: RemoteControlFilePreview },
+          >(
             value: V,
           ): V =>
             preview !== null && value.base === old
@@ -2252,7 +2256,7 @@ export function createFileViewerStore(
           key,
           generation,
           async (): Promise<boolean> => {
-            let saved: PortalFilePreview;
+            let saved: RemoteControlFilePreview;
             try {
               // Conditional on the version the notice represents: consent
               // covers that version only, never a newer one.

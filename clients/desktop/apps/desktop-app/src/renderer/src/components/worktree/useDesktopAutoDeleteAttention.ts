@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { AutoDeleteAttention } from '@canopy/protocol/portal/auto-delete-attention';
+import type { AutoDeleteAttention } from '@canopy/protocol/remote-control/shell/auto-delete-attention';
 import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 
 export function useDesktopAutoDeleteAttention(): readonly AutoDeleteAttention[] {

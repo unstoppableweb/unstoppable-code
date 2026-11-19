@@ -16,9 +16,9 @@ import {
   normalizeAppAdvisorProjectAgentAccess,
 } from '@canopy/desktop-shared/lib/app-advisor-project-agent-access';
 import type {
-  PortalAppAdvisorProjectAgentAccess,
-  PortalAppAdvisorSettings,
-} from '@canopy/protocol/portal';
+  RemoteControlAppAdvisorProjectAgentAccess,
+  RemoteControlAppAdvisorSettings,
+} from '@canopy/protocol/remote-control/shell';
 import { trackDetachedWork } from '@canopy/desktop-shared/node/lib/detached-work';
 import {
   refreshCatalogAgentDefaults,
@@ -43,7 +43,7 @@ import {
 } from '../lib/preferences-store';
 import { getWorkspaceContextService } from '../lib/workspace-context-service';
 import { buildProjectedModelCatalog } from '../remote-projection/model-catalog-projection';
-import { peekPortalProviderAvailability } from '../auth/provider-auth-state';
+import { peekRemoteControlProviderAvailability } from '../auth/provider-auth-state';
 import { isRecord } from '../remote-projection/validation';
 import type { AppAdvisorToolRuntimeSurfaces } from './runtime';
 
@@ -55,9 +55,9 @@ function isAppAdvisorThinkingLevel(
   return typeof value === 'string' && APP_ADVISOR_THINKING_LEVELS.has(value);
 }
 
-function isPortalAppAdvisorProjectAgentAccess(
+function isRemoteControlAppAdvisorProjectAgentAccess(
   value: unknown,
-): value is PortalAppAdvisorProjectAgentAccess {
+): value is RemoteControlAppAdvisorProjectAgentAccess {
   if (
     !isRecord(value) ||
     (value.mode !== 'enabled' &&
@@ -79,7 +79,7 @@ function isPortalAppAdvisorProjectAgentAccess(
 }
 
 /** The settings the desktop modal shows, read from its backing stores. */
-export async function readAppAdvisorSettingsView(): Promise<PortalAppAdvisorSettings> {
+export async function readAppAdvisorSettingsView(): Promise<RemoteControlAppAdvisorSettings> {
   const [{ buildPluginCatalog }, preferences, instructions, settings] =
     await Promise.all([
       import('../services/plugin-catalog-service'),
@@ -111,7 +111,7 @@ export async function readAppAdvisorSettingsView(): Promise<PortalAppAdvisorSett
         APP_ADVISOR_PROJECT_ID,
       ),
     }),
-    providerAvailability: peekPortalProviderAvailability(),
+    providerAvailability: peekRemoteControlProviderAvailability(),
     pluginCatalog,
     approvalsUpgradeNoticeDismissed:
       preferences.approvalsUpgradeNoticeDismissed,
@@ -147,7 +147,7 @@ export async function applyAppAdvisorSettingsPatch(
   const projectAgentAccess =
     payload.projectAgentAccess === undefined
       ? undefined
-      : isPortalAppAdvisorProjectAgentAccess(payload.projectAgentAccess)
+      : isRemoteControlAppAdvisorProjectAgentAccess(payload.projectAgentAccess)
         ? normalizeAppAdvisorProjectAgentAccess(payload.projectAgentAccess)
         : null;
 

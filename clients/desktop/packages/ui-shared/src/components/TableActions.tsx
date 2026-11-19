@@ -58,7 +58,7 @@ export function TableActionButton({
   return (
     <Tooltip label={label}>
       <Button
-        variant={tone === 'destructive' ? 'destructive' : 'ghost-quiet'}
+        variant={tone === 'destructive' ? 'destructive' : 'ghost'}
         size="sm"
         iconOnly
         onClick={(event): void => {

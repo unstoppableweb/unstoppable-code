@@ -12,7 +12,7 @@ import {
   type RefObject,
   type UIEventHandler,
 } from 'react';
-import type { PortalFileReadPayload } from '@canopy/protocol/portal';
+import type { RemoteControlFileReadPayload } from '@canopy/protocol/remote-control/shell';
 import {
   fileViewerKey,
   useFileViewerStore,
@@ -124,7 +124,7 @@ export type FileDocumentRenderFailure =
 
 export interface FileRichDocumentSlot {
   readonly bytes: ArrayBuffer;
-  readonly request: PortalFileReadPayload;
+  readonly request: RemoteControlFileReadPayload;
   readonly displayName: string;
   /** Selects the host renderer without re-sniffing the file. */
   readonly renderKind: RichDocumentRenderKind | 'image';
@@ -150,7 +150,7 @@ export interface FileViewerProps {
   readonly active?: boolean;
   /** Read-only host presentation that shares the file chrome and preserves the editable session. */
   readonly alternateContent?: ReactNode;
-  readonly request: PortalFileReadPayload;
+  readonly request: RemoteControlFileReadPayload;
   /** Overrides extension dispatch before a binary read (for MIME-known files). */
   readonly requestRenderKind?: FileRenderKind;
   /** Host editor slot (desktop Monaco); omit for a read-only host. */
@@ -171,11 +171,11 @@ export interface FileViewerProps {
   readonly resolveHtmlAsset?: FileHtmlPreviewProps['resolveHtmlAsset'];
   /** Resolves an image file request to a host-renderable URL/data URL. */
   readonly resolveImageSrc?: (
-    request: PortalFileReadPayload,
+    request: RemoteControlFileReadPayload,
   ) => Promise<string | null>;
   /** Fetches bounded bytes for a host-owned rich-document renderer. */
   readonly resolveDocumentBytes?: (
-    request: PortalFileReadPayload,
+    request: RemoteControlFileReadPayload,
     signal: AbortSignal,
   ) => Promise<FileDocumentBytesResult>;
   /** Host-owned rich-document renderer; ui-app remains vendor-neutral. */
@@ -1117,7 +1117,7 @@ function FileImagePreview({
   retryGeneration,
   scrollBinding,
 }: {
-  request: PortalFileReadPayload;
+  request: RemoteControlFileReadPayload;
   resolveImageSrc: NonNullable<FileViewerProps['resolveImageSrc']>;
   retryGeneration: number;
   scrollBinding?: FileContentScrollBinding;
@@ -1272,7 +1272,7 @@ function FilePreviewMessage({
 }
 
 interface FileDocumentPreviewProps {
-  readonly request: PortalFileReadPayload;
+  readonly request: RemoteControlFileReadPayload;
   readonly renderKind: RichDocumentRenderKind | 'image';
   readonly resolveDocumentBytes: NonNullable<
     FileViewerProps['resolveDocumentBytes']

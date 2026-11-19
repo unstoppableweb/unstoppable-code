@@ -27,3 +27,12 @@ export {
   type PipelineLocalMetadataFileStat,
   type PipelineLocalMetadataStore,
 } from './local-metadata';
+export {
+  createPipelineAssetStore,
+  type PipelineAssetChanges,
+  type PipelineAssetEnvironment,
+  type PipelineAssetFileWrite,
+  type PipelineAssetInstallPlan,
+  type PipelineAssetsManifestV1,
+  type PipelineAssetStore,
+} from './assets';

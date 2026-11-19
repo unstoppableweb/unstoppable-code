@@ -121,7 +121,7 @@ export function TurnTimer({
           description="Create a new worktree from this one and continue the chat there."
         >
           <Button
-            variant="ghost-quiet"
+            variant="ghost"
             size="sm"
             iconOnly
             onClick={onBranch}

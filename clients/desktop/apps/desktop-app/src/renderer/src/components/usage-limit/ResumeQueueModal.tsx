@@ -366,7 +366,7 @@ export function ResumeQueueModal(): JSX.Element | null {
                         </span>
                       )}
                       <Button
-                        variant="ghost-quiet"
+                        variant="ghost"
                         size="compact"
                         data-testid={`resume-queue-entry-open-${entry.id}`}
                         aria-describedby={`resume-queue-entry-title-${entry.id}`}

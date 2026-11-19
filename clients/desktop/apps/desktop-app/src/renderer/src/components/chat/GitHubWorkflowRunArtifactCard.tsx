@@ -4,7 +4,7 @@ import type {
   AppAdvisorWatcherSummary,
   GitHubWorkflowRunArtifactReceiptV1,
 } from '@canopy/desktop-shared/types';
-import { GitHubWorkflowRunRow } from '@canopy/ui-app';
+import { GitHubWorkflowRunActivityRow } from '@canopy/ui-app';
 import { useAppAdvisorWatchersStore } from '@/stores/appAdvisorWatchersStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useGitHubStore } from '@/stores/githubStore';
@@ -38,8 +38,8 @@ function watchesRun(
  * comes from the watcher summaries the main process already broadcasts on
  * every poll (active or recently completed), never from a request of its own;
  * whatever it learns is written back into the turn's carry so the card keeps
- * its final state once the watcher has retired. Clicking the card or a job
- * dot opens GitHub's own page in the user's browser.
+ * its final state once the watcher has retired. Clicking the row or a job in
+ * its list opens GitHub's own page in the user's browser.
  */
 export const GitHubWorkflowRunArtifactCard = memo(
   function GitHubWorkflowRunArtifactCard({
@@ -94,7 +94,7 @@ export const GitHubWorkflowRunArtifactCard = memo(
     };
 
     return (
-      <GitHubWorkflowRunRow
+      <GitHubWorkflowRunActivityRow
         run={live}
         onOpen={(): void =>
           void openAgentArtifactNavigation(live.navigationTarget)

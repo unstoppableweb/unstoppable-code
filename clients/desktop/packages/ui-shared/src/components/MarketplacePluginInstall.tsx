@@ -94,7 +94,7 @@ export function PluginInstallStatusCell({
   if (needsInstall) {
     const button = (
       <Button
-        variant={error ? 'ghost-destructive' : 'ghost-warning'}
+        variant={error ? 'ghost-destructive' : 'ghost'}
         size="sm"
         iconOnly
         data-testid={`plugin-install-${pluginName}`}
@@ -159,7 +159,7 @@ export function BulkInstallButton({
           suppressed={!installing}
         >
           <Button
-            variant="warning"
+            variant="secondary"
             size="compact"
             data-testid="bulk-install-plugins"
             disabled={disabled}

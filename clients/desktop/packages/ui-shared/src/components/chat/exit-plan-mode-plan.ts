@@ -22,7 +22,7 @@ export { isPlanFileWrite } from '@canopy/agent-transcript/lib/plan-tool-input';
  * portal wire caps every tool input at 4,000 characters before a renderer sees
  * it. Render what arrived; the marker is the honest signal.
  */
-const PORTAL_TRUNCATION_SUFFIX = /\n\n\[truncated \d+ chars\]$/;
+const REMOTE_CONTROL_TRUNCATION_SUFFIX = /\n\n\[truncated \d+ chars\]$/;
 const TRUNCATED_PLAN_PREFIX = /^\s*\{\s*"plan"\s*:\s*"/;
 
 function decodeTruncatedJsonStringPrefix(value: string): string | null {
@@ -69,7 +69,7 @@ function decodeTruncatedJsonStringPrefix(value: string): string | null {
 }
 
 function extractWireTruncatedPlan(input: string): string | null {
-  const suffix = PORTAL_TRUNCATION_SUFFIX.exec(input)?.[0];
+  const suffix = REMOTE_CONTROL_TRUNCATION_SUFFIX.exec(input)?.[0];
   if (!suffix) return null;
   const serializedPrefix = input.slice(0, -suffix.length);
   const planPrefix = TRUNCATED_PLAN_PREFIX.exec(serializedPrefix)?.[0];

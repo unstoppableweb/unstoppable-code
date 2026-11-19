@@ -58,7 +58,7 @@ export function ChatWatcherButton({
     <Tooltip label="Watch this chat">
       {hasWatchers ? (
         <Button
-          variant="ghost-accent"
+          variant="ghost"
           size="sm"
           onClick={(): void => openModal({ projectId, worktreeId, chatId })}
           aria-label="Watch this chat"

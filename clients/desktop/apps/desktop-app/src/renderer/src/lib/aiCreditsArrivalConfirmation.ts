@@ -12,10 +12,7 @@ import {
   type CreditsArrivalHandoff,
   type CreditsArrivalState,
 } from '@canopy/app-state/billing/credits';
-import type {
-  AiCreditsScopeRequest,
-  CanopyCloudAiCreditsState,
-} from '@canopy/desktop-shared/types';
+import type { AiCreditsScopeRequest } from '@canopy/desktop-shared/types';
 import { desktopCreditsAccountIdentityReader } from '@/lib/aiCreditsAccountIdentity';
 import {
   aiCreditsConfirmationBalanceLoader,
@@ -58,28 +55,12 @@ export const AI_CREDITS_ARRIVAL_READ_OFFSETS_MS =
 export const AI_CREDITS_ARRIVAL_READ_TIMEOUT_MS =
   CREDITS_ARRIVAL_READ_TIMEOUT_MS;
 
-/**
- * The daily drip this read minted: a finite, nonnegative amount, `0` when
- * none was granted, or `null` when a grant is reported without one.
- */
-function dripGranted(response: CanopyCloudAiCreditsState): number | null {
-  const balance = response.balance;
-  if (balance?.dailyDripOutcome !== 'granted') return 0;
-  const granted = balance.dailyDripGrantedCredits;
-  return typeof granted === 'number' && Number.isFinite(granted) && granted >= 0
-    ? granted
-    : null;
-}
-
 function arrivalBalanceRead(
   read: AiCreditsConfirmationBalanceRead,
 ): CreditsArrivalBalanceRead {
-  const { response } = read;
   return {
     outcome: read.outcome,
-    reading: personalBalanceReading(response),
-    dripReported: response?.balance?.dailyDripOutcome === 'granted',
-    dripGrantedCredits: response === null ? 0 : dripGranted(response),
+    reading: personalBalanceReading(read.response),
   };
 }
 

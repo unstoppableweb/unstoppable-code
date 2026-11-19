@@ -5,18 +5,42 @@ import {
   getElectronDaemonCallerLifetime,
   getElectronDaemonConnections,
   getElectronDaemonFilesContext,
+  isElectronW5HandoffPending,
 } from './electron-daemon-access';
+import { createReachableDaemonGitRoute } from './daemon-git-reachability';
+import { getElectronDaemonHealth } from './electron-daemon-health';
+import { recordDaemonRoute } from './daemon-route-telemetry';
+import { resolveRepository } from './worker-git-adapter';
 
 let route: DaemonGitRoute | undefined;
 
-/** No production selection or grant yet; constructing the route makes no contact. */
+/**
+ * Selects branch list on macOS and Linux (CAN-4729) under the shared
+ * background-service rule (CAN-5541); constructing the route makes no contact.
+ */
 export function getDesktopDaemonGitRoute(): DaemonGitRoute {
-  route ??= createDaemonGitRoute({
-    lifetime: getElectronDaemonCallerLifetime(),
-    connections: getElectronDaemonConnections,
-    hostContext: getElectronDaemonFilesContext,
-    workspaceType: getWorkspaceType,
-    resolveWorktreeTargetIds,
+  if (route) return route;
+  const health = getElectronDaemonHealth();
+  health.setConsumerEnabled('git_reads', true);
+  route = createReachableDaemonGitRoute({
+    inputs: {
+      repositoryPath: resolveRepository,
+      hostContext: getElectronDaemonFilesContext,
+      connections: getElectronDaemonConnections,
+    },
+    reachability: {
+      // The W5 flip handoff is a restart window: read in-process, show nothing.
+      isLatched: () => health.isLatched() || isElectronW5HandoffPending(),
+      noteFallback: (reason) => health.noteFallback('git_reads', reason),
+    },
+    createRoute: (inputs) =>
+      createDaemonGitRoute({
+        lifetime: getElectronDaemonCallerLifetime(),
+        workspaceType: getWorkspaceType,
+        resolveWorktreeTargetIds,
+        ...inputs,
+      }),
+    record: (reason) => recordDaemonRoute('git_reads', reason),
   });
   return route;
 }

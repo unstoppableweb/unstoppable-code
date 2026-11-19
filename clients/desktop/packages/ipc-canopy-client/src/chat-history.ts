@@ -4,7 +4,7 @@
  * The host pages a chat's persisted transcript newest-first by message
  * ordinal: each page carries `before` (the exclusive upper ordinal of the next
  * older page, absent at the start) and the `transcriptRevision` it was read
- * at. The opaque {@link PortalTranscriptCursor} this module returns encodes
+ * at. The opaque {@link RemoteControlTranscriptCursor} this module returns encodes
  * both, so the next request reads the same transcript revision; a host whose
  * transcript has since been rewritten rejects it, and the caller restarts
  * from `before: null` (the newest page). Messages are projected exactly as
@@ -18,11 +18,11 @@
  * not split by this module), and turn timers keep their persisted ids.
  */
 import type {
-  PortalChatHistoryChunk,
-  PortalChatHistoryRequest,
-  PortalChatMessage,
-  PortalTranscriptCursor,
-} from '@canopy/protocol/portal';
+  RemoteControlChatHistoryChunk,
+  RemoteControlChatHistoryRequest,
+  RemoteControlChatMessage,
+  RemoteControlTranscriptCursor,
+} from '@canopy/protocol/remote-control/shell';
 import { STANDALONE_CHAT_PROJECT_ID } from '@canopy/protocol/chat-targets';
 import { REMOTE_IPC_CHANNELS as C } from '@canopy/protocol/remote-control/channels';
 import {
@@ -30,8 +30,8 @@ import {
   isVisiblePersistedChatMessage,
 } from '@canopy/agent-transcript';
 import type { PersistedChatMessage } from '@canopy/agent-transcript/types';
-import type { ToolFamilyResolver } from '@canopy/agent-transcript/portal/persisted-chat-projection';
-import { persistedMessageToPortalWireMessage } from '@canopy/agent-transcript/portal/portal-wire-message';
+import type { ToolFamilyResolver } from '@canopy/agent-transcript/remote-control/persisted-chat-projection';
+import { persistedMessageToRemoteControlWireMessage } from '@canopy/agent-transcript/remote-control/remote-control-wire-message';
 import type { ChannelClient } from './channel-client';
 import { isRecord, reply } from './decoders';
 
@@ -55,7 +55,7 @@ interface HistoryPosition {
 
 export function encodeChatHistoryCursor(
   position: HistoryPosition,
-): PortalTranscriptCursor {
+): RemoteControlTranscriptCursor {
   return `${CURSOR_PREFIX}${String(position.before)}:${String(position.transcriptRevision)}`;
 }
 
@@ -64,7 +64,7 @@ function isOrdinal(value: number): boolean {
 }
 
 export function decodeChatHistoryCursor(
-  cursor: PortalTranscriptCursor,
+  cursor: RemoteControlTranscriptCursor,
 ): HistoryPosition {
   if (!cursor.startsWith(CURSOR_PREFIX)) throw new ChatHistoryCursorError();
   const parts = cursor.slice(CURSOR_PREFIX.length).split(':');
@@ -95,7 +95,7 @@ const isTranscriptPage = reply<WireTranscriptPage>(
 );
 
 /** The `(projectId, worktreeId)` a chat's transcript is keyed by. */
-function transcriptTarget(args: PortalChatHistoryRequest): {
+function transcriptTarget(args: RemoteControlChatHistoryRequest): {
   projectId: string;
   worktreeId: string;
 } {
@@ -121,9 +121,9 @@ function transcriptTarget(args: PortalChatHistoryRequest): {
 
 export async function readChatHistory(
   channels: ChannelClient,
-  args: PortalChatHistoryRequest,
+  args: RemoteControlChatHistoryRequest,
   toolFamilyFor: ToolFamilyResolver | undefined,
-): Promise<PortalChatHistoryChunk> {
+): Promise<RemoteControlChatHistoryChunk> {
   const target = transcriptTarget(args);
   const position =
     args.before === null ? undefined : decodeChatHistoryCursor(args.before);
@@ -151,13 +151,14 @@ export async function readChatHistory(
     worktreeLocalId: target.worktreeId,
     chatId: args.chatId,
   };
-  const messages: PortalChatMessage[] = delegationRootMessages(visible).map(
-    (message) =>
-      persistedMessageToPortalWireMessage(
-        { ...routing, message, relatedMessages: visible },
-        toolFamilyFor,
-        { includeAssetReferences: args.scope !== 'app_advisor' },
-      ),
+  const messages: RemoteControlChatMessage[] = delegationRootMessages(
+    visible,
+  ).map((message) =>
+    persistedMessageToRemoteControlWireMessage(
+      { ...routing, message, relatedMessages: visible },
+      toolFamilyFor,
+      { includeAssetReferences: args.scope !== 'app_advisor' },
+    ),
   );
   const nextBefore = page.before;
   return {

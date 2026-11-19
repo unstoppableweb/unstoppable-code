@@ -1,7 +1,7 @@
 import {
   parseReportedTurnUsage,
   type ReportedTurnUsage,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 
 /** Read a normalized ACP result as a complete snapshot, including unknowns. */
 export function parseAntigravityTurnUsage(

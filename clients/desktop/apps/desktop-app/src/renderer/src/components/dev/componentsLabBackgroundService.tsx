@@ -3,7 +3,7 @@ import {
   projectRemoteW5Recovery,
   type BackgroundServiceStatus,
   type W5RecoveryStatus,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import {
   BackgroundServiceNotice,
   W5RecoveryNotice,
@@ -203,7 +203,7 @@ const desktopCases: readonly Case[] = [
 
 const remote = { repairCommand: REPAIR_COMMAND };
 
-const portalCases: readonly Case[] = [
+const remoteControlCases: readonly Case[] = [
   {
     label: 'Outage: Copy diagnostics only, Try again on the paired computer',
     props: {
@@ -312,7 +312,7 @@ export function BackgroundServiceSpecimen(): JSX.Element {
         <Cases cases={desktopCases} />
       </SpecimenPanel>
       <SpecimenPanel title="Portal: Copy diagnostics and owning-computer guidance, no action">
-        <Cases cases={portalCases} />
+        <Cases cases={remoteControlCases} />
       </SpecimenPanel>
       <SpecimenPanel title="Long text">
         <Cases cases={longTextCases} />

@@ -119,7 +119,7 @@ function DisabledStatusTrigger({
   return (
     <Tooltip label={reason} clamp={false}>
       <Button
-        variant="ghost-overlay"
+        variant="ghost"
         size="compact"
         touchArea="contained"
         readOnlyAppearance
@@ -196,7 +196,7 @@ export function InstalledItemStatusPicker({
   if (!interactive) {
     return (
       <Button
-        variant="ghost-overlay"
+        variant="ghost"
         size="compact"
         touchArea="contained"
         data-testid={testId}
@@ -213,7 +213,7 @@ export function InstalledItemStatusPicker({
   return (
     <>
       <Button
-        variant="ghost-overlay"
+        variant="ghost"
         size="compact"
         touchArea="contained"
         ref={triggerRef}

@@ -1,7 +1,7 @@
 import type {
-  PortalChatMessage,
-  PortalConnectionStatus,
-} from '@canopy/protocol/portal';
+  RemoteControlChatMessage,
+  RemoteControlConnectionStatus,
+} from '@canopy/protocol/remote-control/shell';
 import type { OrgProjectSetupProgress } from '@canopy/protocol/org-projects';
 import type {
   WorkspaceContext,
@@ -50,7 +50,7 @@ export interface DomainEventBase {
 
 /** Host ↔ client connection health changed (desktop link / portal session). */
 export interface ConnectionStatusEvent extends DomainEventBase {
-  readonly status: PortalConnectionStatus;
+  readonly status: RemoteControlConnectionStatus;
 }
 
 /** The host's neutral session snapshot is stale and should be queried again. */
@@ -58,8 +58,8 @@ export type SessionSnapshotStaleEvent = DomainEventBase;
 
 /**
  * A chat message was created or updated. Mirrors the portal wire envelope
- * {@link import('@canopy/protocol/portal').PortalChatEventPayload}: each event
- * carries exactly one {@link PortalChatMessage} representing the message's
+ * {@link import('@canopy/protocol/remote-control/shell').RemoteControlChatEventPayload}: each event
+ * carries exactly one {@link RemoteControlChatMessage} representing the message's
  * *current* state, not a raw delta. The transport (desktop IPC projector / web
  * portal projection) owns delta-merging and re-emits the whole message after
  * each merge, so consumers upsert by `message.messageId` rather than
@@ -71,7 +71,7 @@ export interface ChatMessageEvent extends DomainEventBase {
   readonly workspaceLocalId?: string;
   readonly worktreeLocalId?: string;
   readonly chatId: string;
-  readonly message: PortalChatMessage;
+  readonly message: RemoteControlChatMessage;
 }
 
 /**

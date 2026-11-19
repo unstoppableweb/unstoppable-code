@@ -115,7 +115,10 @@ const CALLS: readonly {
 export function StepWordsSpecimen(): JSX.Element {
   return (
     <div className="flex flex-col gap-6">
-      <SpecimenPanel title={`${MODULE_TAG}: the icon each kind leads with`}>
+      <SpecimenPanel
+        title="Icon per step kind"
+        hint={`${MODULE_TAG}: the icon each kind leads with`}
+      >
         <SpecimenGrid min={140}>
           {KINDS.map((kind) => (
             <SpecimenCell key={kind} label={kind}>
@@ -124,7 +127,10 @@ export function StepWordsSpecimen(): JSX.Element {
           ))}
         </SpecimenGrid>
       </SpecimenPanel>
-      <SpecimenPanel title={`${MODULE_TAG}: counted and plain summaries`}>
+      <SpecimenPanel
+        title="Summaries"
+        hint={`${MODULE_TAG}: counted and plain summaries`}
+      >
         {RUNS.map(({ label, counts }) => (
           <SpecimenCell key={label} label={label} wide>
             <div className="flex w-full flex-col gap-1 text-s">
@@ -140,7 +146,10 @@ export function StepWordsSpecimen(): JSX.Element {
           </SpecimenCell>
         ))}
       </SpecimenPanel>
-      <SpecimenPanel title={`${MODULE_TAG}: the kind a tool call counts as`}>
+      <SpecimenPanel
+        title="Tool call kinds"
+        hint={`${MODULE_TAG}: the kind a tool call counts as`}
+      >
         {CALLS.map(({ label, toolName, family, input }) => {
           const kind = stepKindOfToolCall({ toolName, family, input });
           return (

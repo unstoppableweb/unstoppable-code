@@ -760,7 +760,7 @@ function ContextInvitationItems({
             <div role="presentation" className="flex items-center gap-1 pl-5">
               {needsReview ? (
                 <Button
-                  variant="ghost-accent"
+                  variant="ghost"
                   size="compact"
                   role="menuitem"
                   aria-label={`Review invitation to ${label}`}
@@ -775,7 +775,7 @@ function ContextInvitationItems({
                 </Button>
               ) : (
                 <Button
-                  variant="ghost-accent"
+                  variant="ghost"
                   size="compact"
                   role="menuitem"
                   aria-label={`Accept invitation to ${label}`}
@@ -798,7 +798,7 @@ function ContextInvitationItems({
               )}
               {onRequestDecline ? (
                 <Button
-                  variant="ghost-overlay"
+                  variant="ghost"
                   size="compact"
                   role="menuitem"
                   aria-label={`Decline invitation to ${label}`}

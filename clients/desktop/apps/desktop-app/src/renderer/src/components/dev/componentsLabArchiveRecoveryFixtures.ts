@@ -1,4 +1,4 @@
-import type { WorktreeRecoveryDescription } from '@canopy/protocol/portal/worktree-recovery';
+import type { WorktreeRecoveryDescription } from '@canopy/protocol/remote-control/shell/worktree-recovery';
 import type {
   RecoveryProject,
   RecoveryHold,

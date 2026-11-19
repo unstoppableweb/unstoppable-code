@@ -1,4 +1,4 @@
-import type { TurnOutcomeCounts } from '@canopy/protocol/portal';
+import type { TurnOutcomeCounts } from '@canopy/protocol/remote-control/shell';
 
 /**
  * One outcome count in words: "2 blocked", "1 error", "3 errors",

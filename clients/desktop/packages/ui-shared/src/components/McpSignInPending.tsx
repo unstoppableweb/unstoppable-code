@@ -112,7 +112,7 @@ export function McpSignInPendingActions({
         {onCancel !== undefined && (
           <Tooltip label={MCP_SIGN_IN_CANCEL_LABEL}>
             <Button
-              variant="ghost-quiet"
+              variant="ghost"
               size="sm"
               iconOnly
               aria-label={
@@ -207,7 +207,7 @@ export function McpSignInPendingLine({
       {onCancel !== undefined && (
         <Tooltip label={MCP_SIGN_IN_CANCEL_LABEL}>
           <Button
-            variant="ghost-quiet"
+            variant="ghost"
             size="sm"
             iconOnly
             aria-label={

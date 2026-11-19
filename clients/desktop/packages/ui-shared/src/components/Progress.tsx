@@ -1,7 +1,6 @@
 import type { JSX, Ref } from 'react';
 import { STATUS_GLYPHS, type StatusGlyphState } from '../lib/status-glyph';
 import { CometSpinner } from './CometSpinner';
-import { SpinnerStyleProvider } from './spinner-style';
 import { StatusGlyph } from './StatusGlyph';
 
 /**
@@ -411,57 +410,53 @@ export function ProgressSteps({
   const dots = appearance === 'dots';
   const named = label !== undefined;
   return (
-    <SpinnerStyleProvider value="comet">
-      <span
-        className={`inline-flex shrink-0 items-center gap-1${className ? ` ${className}` : ''}`}
-        data-testid={dataTestId}
-        data-progress-appearance={appearance}
-        role={named ? 'progressbar' : undefined}
-        aria-label={label}
-        aria-valuemin={named ? 0 : undefined}
-        aria-valuemax={named ? steps.length : undefined}
-        aria-valuenow={named ? finished : undefined}
-        aria-valuetext={
-          named ? `${finished} of ${steps.length} done` : undefined
-        }
-        aria-hidden={named ? undefined : true}
-      >
-        {stages.map((stage, stageIndex) =>
-          stage.length === 0 ? null : (
-            <span
-              key={stage[0].id}
-              className={`inline-flex items-center ${dots ? 'gap-1.5' : 'gap-1'}`}
-            >
-              {stageIndex > 0 && (
-                <span
-                  className="h-px w-1.5 bg-fg-primary/20"
-                  data-progress-stage-separator=""
-                />
-              )}
+    <span
+      className={`inline-flex shrink-0 items-center gap-1${className ? ` ${className}` : ''}`}
+      data-testid={dataTestId}
+      data-progress-appearance={appearance}
+      role={named ? 'progressbar' : undefined}
+      aria-label={label}
+      aria-valuemin={named ? 0 : undefined}
+      aria-valuemax={named ? steps.length : undefined}
+      aria-valuenow={named ? finished : undefined}
+      aria-valuetext={named ? `${finished} of ${steps.length} done` : undefined}
+      aria-hidden={named ? undefined : true}
+    >
+      {stages.map((stage, stageIndex) =>
+        stage.length === 0 ? null : (
+          <span
+            key={stage[0].id}
+            className={`inline-flex items-center ${dots ? 'gap-1.5' : 'gap-1'}`}
+          >
+            {stageIndex > 0 && (
               <span
-                className={`inline-flex items-center ${dots ? 'gap-1.5' : 'gap-0.75'}`}
-              >
-                {stage.map((step) => (
-                  <span
-                    key={step.id}
-                    className="inline-flex"
-                    data-progress-step={step.id}
-                    data-status-glyph-state={step.state}
-                  >
-                    {!dots ? (
-                      <StatusGlyph state={step.state} size={12} />
-                    ) : step.state === 'running' ? (
-                      <RunningStepDot />
-                    ) : (
-                      <StepDot state={step.state} />
-                    )}
-                  </span>
-                ))}
-              </span>
+                className="h-px w-1.5 bg-fg-primary/20"
+                data-progress-stage-separator=""
+              />
+            )}
+            <span
+              className={`inline-flex items-center ${dots ? 'gap-1.5' : 'gap-0.75'}`}
+            >
+              {stage.map((step) => (
+                <span
+                  key={step.id}
+                  className="inline-flex"
+                  data-progress-step={step.id}
+                  data-status-glyph-state={step.state}
+                >
+                  {!dots ? (
+                    <StatusGlyph state={step.state} size={12} />
+                  ) : step.state === 'running' ? (
+                    <RunningStepDot />
+                  ) : (
+                    <StepDot state={step.state} />
+                  )}
+                </span>
+              ))}
             </span>
-          ),
-        )}
-      </span>
-    </SpinnerStyleProvider>
+          </span>
+        ),
+      )}
+    </span>
   );
 }

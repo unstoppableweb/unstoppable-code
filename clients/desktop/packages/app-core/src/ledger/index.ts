@@ -23,7 +23,7 @@ import type {
   LedgerViewUpdateRequest,
 } from '@canopy/protocol/ledger-view';
 import type { LedgerEntriesSearchResult } from '@canopy/protocol/canopy-core';
-import type { PortalQuestionControl } from '@canopy/protocol/portal';
+import type { RemoteControlQuestionControl } from '@canopy/protocol/remote-control/shell';
 import type { Unsubscribe } from '../events/domain-events';
 
 /**
@@ -144,7 +144,7 @@ export interface LedgerLiveQuestion {
   /** The answer is a secret: typed masked, never shown back. */
   readonly secret: boolean;
   /** The agent's explicit control: options, or a typed field of this kind. */
-  readonly control?: PortalQuestionControl['control'];
+  readonly control?: RemoteControlQuestionControl['control'];
   /** The question must be answered before the answers are sent. */
   readonly required?: boolean;
   /** Hint text for a typed answer. */

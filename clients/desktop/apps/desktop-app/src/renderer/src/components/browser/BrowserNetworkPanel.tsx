@@ -104,7 +104,6 @@ export function BrowserNetworkPanel({
             onChange={setFilter}
             label="Filter"
             width="content"
-            shape="capsule"
             options={[
               { value: 'all', label: 'All' },
               { value: 'failed', label: 'Failed' },
@@ -176,7 +175,7 @@ export function BrowserNetworkPanel({
                         ))}
                     </div>
                     <Button
-                      variant="ghost-quiet"
+                      variant="ghost"
                       size="compact"
                       onClick={(): void => {
                         void stageBrowserNetworkEntry(entry);

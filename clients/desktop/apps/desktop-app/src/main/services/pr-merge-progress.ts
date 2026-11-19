@@ -1,13 +1,13 @@
-import type { PortalSessionShellState } from '@canopy/protocol/portal';
+import type { RemoteControlSessionShellState } from '@canopy/protocol/remote-control/shell';
 import type {
-  PortalMergePrProgress,
-  PortalMergePrStep,
-} from '@canopy/protocol/portal';
+  RemoteControlMergePrProgress,
+  RemoteControlMergePrStep,
+} from '@canopy/protocol/remote-control/shell';
 import type { MergePrProgressEvent } from '@canopy/desktop-shared/types/github';
 import { scheduleDesktopStructureChanged } from './desktop-structure-signal';
 
 type MergeProjection = Pick<
-  PortalSessionShellState['worktrees'][number],
+  RemoteControlSessionShellState['worktrees'][number],
   'mergingPr' | 'mergePrPhase'
 >;
 
@@ -18,7 +18,7 @@ const progress = new Map<string, MergeProjection>();
 // separate from `progress` because the worktree projection is a boolean plus
 // current phase, while the portal feed is an accumulating checklist whose
 // errored state outlives the operation.
-const feed = new Map<string, PortalMergePrProgress>();
+const feed = new Map<string, RemoteControlMergePrProgress>();
 let lastMergeGeneration = 0;
 const key = (workspaceId: string, worktreeId: string): string =>
   JSON.stringify([workspaceId, worktreeId]);
@@ -55,7 +55,7 @@ export function recordPrMergeProgress(event: MergePrProgressEvent): void {
 
   const existing = feed.get(id);
   if (existing !== undefined) {
-    const step: PortalMergePrStep = { phase: event.phase };
+    const step: RemoteControlMergePrStep = { phase: event.phase };
     if (event.repoId !== undefined) step.repoId = event.repoId;
     if (event.repoName !== undefined) step.repoName = event.repoName;
     if (event.queuePosition !== undefined)
@@ -78,7 +78,7 @@ export function recordPrMergeProgress(event: MergePrProgressEvent): void {
     const hasPerRepoError = steps.some(
       (recorded) => recorded.phase === 'error' && recorded.repoName != null,
     );
-    const next: PortalMergePrProgress = {
+    const next: RemoteControlMergePrProgress = {
       generation: existing.generation,
       steps,
       currentPhase: isPerRepoTerminal
@@ -111,7 +111,7 @@ export function finishPrMergeProgress(
     settled.currentPhase !== 'error' &&
     settled.steps.some((step) => step.phase === 'error')
   ) {
-    const errored: PortalMergePrProgress = {
+    const errored: RemoteControlMergePrProgress = {
       generation: settled.generation,
       steps: settled.steps,
       currentPhase: 'error',
@@ -145,7 +145,7 @@ export function getPrMergeProgress(
 export function getPrMergeProgressFeed(
   workspaceId: string,
   worktreeId: string,
-): PortalMergePrProgress | undefined {
+): RemoteControlMergePrProgress | undefined {
   return feed.get(key(workspaceId, worktreeId));
 }
 

@@ -34,7 +34,10 @@ import type {
   SharedPluginUpdateRequest,
 } from '@canopy/protocol/plugins';
 import type { IPCResult, IPCResultWithAppError } from './pipeline';
-import type { ShareablePluginRef } from '@canopy/protocol/plugins';
+import type {
+  PluginManifestPreviewResult,
+  ShareablePluginRef,
+} from '@canopy/protocol/plugins';
 import type { ChatTabPluginSelections } from '../execution-types';
 import type { InvocableInventoryEnableRef } from './invocable-inventory';
 import type { PipelinePackageAnalysisSummary } from './pipeline';
@@ -407,6 +410,11 @@ export interface PluginsAPI {
     pluginSourcePath: string,
     componentFile: string,
   ): Promise<IPCResult<PluginComponentContent>>;
+  /** Customize's light preview of a catalog plugin not added yet. */
+  previewManifest(
+    marketplaceId: string,
+    pluginName: string,
+  ): Promise<IPCResult<PluginManifestPreviewResult>>;
   installPlugin(
     marketplaceId: string,
     pluginName: string,

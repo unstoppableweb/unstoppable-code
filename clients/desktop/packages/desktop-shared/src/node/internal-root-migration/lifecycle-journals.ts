@@ -10,7 +10,7 @@ import {
   type RelocationTransition,
 } from '@canopy/core-runtime/node/relocation';
 import type { InternalRootLifecycleJournalEvidence } from '@canopy/core-runtime/node/internal-root-repairs';
-import { LIFECYCLE_JOURNAL_ENTRY_NAME_PATTERN } from '@canopy/protocol/portal/lifecycle-journal';
+import { LIFECYCLE_JOURNAL_ENTRY_NAME_PATTERN } from '@canopy/protocol/remote-control/shell/lifecycle-journal';
 import {
   journalSchema,
   inspectDestructiveJournals,

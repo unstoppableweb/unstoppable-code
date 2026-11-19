@@ -125,10 +125,10 @@ export const AGENT_VISUAL_PING_METHOD = 'canopy/visual/ping';
 export const AGENT_VISUAL_PONG_METHOD = 'canopy/visual/pong';
 export const AGENT_VISUAL_STATUS_METHOD = 'canopy/visual/status';
 /**
- * The host hands the agent document to a relay that was served as a shell
- * (`buildAgentVisualShellDocument`) and asked for it with the
- * `awaiting-document` status. A relay built around its document inline never
- * takes one.
+ * The host's message handing the agent document to a relay that reported the
+ * `awaiting-document` status. No host serves a document-less relay shell any
+ * more (CAN-7216): every relay is built around its document inline, so none
+ * asks and no host sends this.
  */
 export const AGENT_VISUAL_LOAD_METHOD = 'canopy/visual/load';
 /**
@@ -794,61 +794,6 @@ export function buildAgentVisualWrapperSrcDoc(
   const srcdoc = escapeSrcDocAttribute(agentSrcDoc);
   const style = `<style>html,body{margin:0;height:100%;overflow:hidden}html{color-scheme:${options.appearance}}iframe{display:block;width:100%;height:100%;border:0}</style>`;
   return `<!doctype html>\n${cspMeta(options)}\n<meta charset="utf-8">\n${style}\n<iframe sandbox="${AGENT_VISUAL_FRAME_SANDBOX}" referrerpolicy="no-referrer" allow="${AGENT_VISUAL_FRAME_ALLOW}" title="${title}" srcdoc="${srcdoc}"></iframe>\n<script>${AGENT_VISUAL_RELAY_SCRIPT}</script>`;
-}
-
-const WRAPPER_FRAME_STYLE =
-  'html,body{margin:0;height:100%;overflow:hidden}iframe{display:block;width:100%;height:100%;border:0}';
-
-/**
- * The relay with no agent frame yet, for a host whose own page policy would
- * otherwise apply to an inline frame. A `srcdoc` frame inherits the policy of
- * the page that holds it; a document the host serves does not. The host
- * serves this one with `buildAgentVisualShellHeaders`, frames it by URL, and
- * hands it the agent document when it asks (`AGENT_VISUAL_LOAD_METHOD`). It is
- * the same for every visual and holds nothing about any of them.
- */
-export function buildAgentVisualShellDocument(): string {
-  return `<!doctype html>\n${cspMeta(undefined)}\n<meta charset="utf-8">\n<style>${WRAPPER_FRAME_STYLE}</style>\n<body><script>${AGENT_VISUAL_RELAY_SCRIPT}</script>`;
-}
-
-/**
- * Response headers for the shell document. The policy is the visual's own,
- * as in the document's meta tag, with the two directives a meta tag cannot
- * carry: `sandbox`, so the document has an opaque origin even when it is
- * opened outside the sandboxed frame, and `frame-ancestors`, so only its own
- * origin can frame it.
- */
-export function buildAgentVisualShellHeaders(): Record<string, string> {
-  return {
-    'Content-Type': 'text/html; charset=utf-8',
-    'Content-Security-Policy': `${AGENT_VISUAL_CSP}; sandbox ${AGENT_VISUAL_FRAME_SANDBOX}; frame-ancestors 'self'`,
-    'X-Content-Type-Options': 'nosniff',
-    'Referrer-Policy': 'no-referrer',
-    'Cross-Origin-Resource-Policy': 'same-origin',
-    // The shell and the host that frames it speak one protocol version.
-    'Cache-Control': 'no-store',
-  };
-}
-
-/** Hand the agent document to a shell that asked for it. */
-export function buildAgentVisualLoadMessage(input: {
-  srcdoc: string;
-  title: string;
-  appearance: 'light' | 'dark';
-}): {
-  jsonrpc: '2.0';
-  method: typeof AGENT_VISUAL_LOAD_METHOD;
-  params: { srcdoc: string; title: string; appearance: 'light' | 'dark' };
-} {
-  return {
-    jsonrpc: '2.0',
-    method: AGENT_VISUAL_LOAD_METHOD,
-    params: {
-      srcdoc: input.srcdoc,
-      title: input.title,
-      appearance: input.appearance,
-    },
-  };
 }
 
 /** A downloadable document keeps agent markup in an opaque, sandboxed child. */

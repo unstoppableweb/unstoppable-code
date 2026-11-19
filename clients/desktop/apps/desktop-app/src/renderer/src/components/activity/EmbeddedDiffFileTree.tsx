@@ -7,7 +7,7 @@ import { useActivityStore } from '@/stores/activityStore';
 import { useOpenFileDiffTarget } from '../chat/useOpenFileDiffTarget';
 import {
   useChangedFilesSectionHostModel,
-  toPortalFile,
+  toRemoteControlFile,
 } from './ChangedFilesSection';
 import { DiffFileTree } from './DiffFileTree';
 import { EmbeddedFileTreeToolbar } from './EmbeddedFileTreeToolbar';
@@ -90,7 +90,7 @@ export function EmbeddedDiffFileTree({
           (file.path.toLowerCase().includes(query.toLowerCase()) &&
             model.changedFiles?.[source].some(
               (row) =>
-                row.filePath === toPortalFile(file).filePath &&
+                row.filePath === toRemoteControlFile(file).filePath &&
                 row.repoId === file.repoId,
             )),
       );
@@ -103,7 +103,7 @@ export function EmbeddedDiffFileTree({
     file: ChangedFileInfo,
     source: FileDiffSource,
   ): ChangedFileRow => ({
-    ...toPortalFile(file),
+    ...toRemoteControlFile(file),
     source: source === 'committed' ? 'committed' : 'uncommitted',
   });
   const refresh = async (): Promise<void> => {

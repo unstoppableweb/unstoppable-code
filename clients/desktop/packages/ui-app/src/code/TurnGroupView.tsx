@@ -2,14 +2,14 @@
 
 import { memo, useEffect, useMemo, type JSX, type ReactNode } from 'react';
 import {
-  computePortalTurnOutcomes,
-  getPortalTurnOutcomeSteps,
+  computeRemoteControlTurnOutcomes,
+  getRemoteControlTurnOutcomeSteps,
 } from '@canopy/app-state';
 import type { AgentArtifactReceiptV1 } from '@canopy/protocol/agent-artifacts';
 import type {
-  PortalChatMessage,
-  PortalChatTurnGroup,
-} from '@canopy/protocol/portal';
+  RemoteControlChatMessage,
+  RemoteControlChatTurnGroup,
+} from '@canopy/protocol/remote-control/shell';
 import {
   ChatCopyAction,
   ChatToolStepGroup,
@@ -19,7 +19,7 @@ import {
   getToolDisplayFamily,
   isAskUserQuestionToolName,
   isToolDenial,
-  portalAskUserQuestionRecordState,
+  remoteControlAskUserQuestionRecordState,
   parseAskUserQuestionTexts,
   TurnFooterReveal,
   TurnFooterRow,
@@ -53,12 +53,12 @@ import { readChatToolResultVisual } from './ChatToolResultPart';
 import { useChatVisualHost } from './chat-visual-host';
 import { TurnAgentArtifacts } from './agent-activity/TurnAgentArtifacts';
 import { TurnFiles } from './TurnFiles';
-import { portalTurnApprovalWait } from './turn-approval-wait';
-import { usePortalTurnPlanCopy } from './plan-turn-tool-calls';
+import { remoteControlTurnApprovalWait } from './turn-approval-wait';
+import { useRemoteControlTurnPlanCopy } from './plan-turn-tool-calls';
 
 export function isTurnAwaitingFirstOutput(
-  turnGroup: PortalChatTurnGroup,
-  messagesById: Readonly<Record<string, PortalChatMessage>>,
+  turnGroup: RemoteControlChatTurnGroup,
+  messagesById: Readonly<Record<string, RemoteControlChatMessage>>,
   awaitingTimer = false,
 ): boolean {
   return (
@@ -98,8 +98,8 @@ export function isTurnAwaitingFirstOutput(
  * starting.
  */
 export function isFirstTurnHeldForSetup(
-  turnGroups: readonly PortalChatTurnGroup[],
-  messagesById: Readonly<Record<string, PortalChatMessage>>,
+  turnGroups: readonly RemoteControlChatTurnGroup[],
+  messagesById: Readonly<Record<string, RemoteControlChatMessage>>,
   worktreeSetupPhase: string | undefined,
 ): boolean {
   return (
@@ -110,7 +110,7 @@ export function isFirstTurnHeldForSetup(
 }
 
 /**
- * Renders one {@link PortalChatTurnGroup}: the user prompt, the collapsed
+ * Renders one {@link RemoteControlChatTurnGroup}: the user prompt, the collapsed
  * "intermediate" tool/thinking steps behind a {@link CollapsedTurnSummary} chip
  * (expandable), then the inline "final" assistant messages. Mirrors the desktop
  * `TurnGroupRenderer` / web collapsed-turn UX over the neutral store types.
@@ -125,8 +125,8 @@ export interface TurnGroupViewProps {
   readonly startingStatusSlot?: ReactNode;
   /** The host confirms no results were omitted from this transcript snapshot. */
   readonly resultsComplete?: boolean;
-  readonly turnGroup: PortalChatTurnGroup;
-  readonly messagesById: Readonly<Record<string, PortalChatMessage>>;
+  readonly turnGroup: RemoteControlChatTurnGroup;
+  readonly messagesById: Readonly<Record<string, RemoteControlChatMessage>>;
   readonly appIcon?: ReactNode;
   /**
    * Turn-level thumbs up/down control (CAN-1521), rendered at the foot of the
@@ -174,8 +174,8 @@ export interface TurnGroupViewProps {
  * grows dedicated count fields.
  */
 function toTurnSummary(
-  summary: NonNullable<PortalChatTurnGroup['summary']>,
-  intermediates: readonly PortalChatMessage[],
+  summary: NonNullable<RemoteControlChatTurnGroup['summary']>,
+  intermediates: readonly RemoteControlChatMessage[],
 ): TurnSummary {
   const displaySummary: TurnSummary = {
     thinking: summary.thinkingCount,
@@ -221,18 +221,20 @@ function toTurnSummary(
 
 function lookup(
   ids: readonly string[],
-  messagesById: Readonly<Record<string, PortalChatMessage>>,
-): PortalChatMessage[] {
+  messagesById: Readonly<Record<string, RemoteControlChatMessage>>,
+): RemoteControlChatMessage[] {
   return ids
     .map((id) => messagesById[id])
-    .filter((message): message is PortalChatMessage => message !== undefined);
+    .filter(
+      (message): message is RemoteControlChatMessage => message !== undefined,
+    );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function readAskUserMatch(message: PortalChatMessage): {
+function readAskUserMatch(message: RemoteControlChatMessage): {
   toolName: string;
   toolUseId?: string;
   questionTexts?: string[];
@@ -271,7 +273,7 @@ function readAskUserMatch(message: PortalChatMessage): {
 }
 
 /** A message that only carries the turn's completion stamp. */
-function isTimerOnly(message: PortalChatMessage): boolean {
+function isTimerOnly(message: RemoteControlChatMessage): boolean {
   const parts = message.parts ?? [];
   return (
     message.text.trim().length === 0 &&
@@ -285,7 +287,7 @@ function isTimerOnly(message: PortalChatMessage): boolean {
  * timer never completed is an interrupted turn, and ChatPartView renders
  * nothing for it.
  */
-function rendersTimerRow(message: PortalChatMessage): boolean {
+function rendersTimerRow(message: RemoteControlChatMessage): boolean {
   return (
     message.status === 'streaming' ||
     (message.parts ?? []).some(
@@ -297,7 +299,7 @@ function rendersTimerRow(message: PortalChatMessage): boolean {
   );
 }
 
-function hasFoldableContent(message: PortalChatMessage): boolean {
+function hasFoldableContent(message: RemoteControlChatMessage): boolean {
   return (
     message.text.trim().length > 0 ||
     (message.parts ?? []).some((part) => part.kind !== 'turn_timer')
@@ -392,7 +394,7 @@ function TurnGroupViewImpl({
   );
   const approvalWait = useMemo(
     () =>
-      portalTurnApprovalWait({
+      remoteControlTurnApprovalWait({
         complete: complete || turnSettled,
         timer: timerData,
         messages: assistantMessages,
@@ -404,7 +406,7 @@ function TurnGroupViewImpl({
   // its text, as the step line does.
   const outcomes = useMemo(
     () =>
-      computePortalTurnOutcomes(
+      computeRemoteControlTurnOutcomes(
         lookup(turnGroup.intermediateMessageIds, messagesById),
         assistantMessages,
         outcomeEvidence,
@@ -426,7 +428,7 @@ function TurnGroupViewImpl({
       outcomes.interrupted === 0
         ? []
         : orderTurnOutcomeSteps(
-            getPortalTurnOutcomeSteps(
+            getRemoteControlTurnOutcomeSteps(
               lookup(turnGroup.intermediateMessageIds, messagesById),
               assistantMessages,
               outcomeEvidence,
@@ -498,8 +500,10 @@ function TurnGroupViewImpl({
       const match = readAskUserMatch(message);
       return (
         match !== null &&
-        portalAskUserQuestionRecordState(askUserInteraction.states, match)
-          .kind === 'unanswered'
+        remoteControlAskUserQuestionRecordState(
+          askUserInteraction.states,
+          match,
+        ).kind === 'unanswered'
       );
     });
   const isExpanded = !collapsed || hasProjectedAskUser;
@@ -522,7 +526,7 @@ function TurnGroupViewImpl({
   const timer = readTurnHeaderTimer(timerData);
   // The reply's Copy button copies the answer, or every reply text when the
   // turn has no final message, under either chat look (CAN-4704).
-  const textOf = (messages: readonly PortalChatMessage[]): string =>
+  const textOf = (messages: readonly RemoteControlChatMessage[]): string =>
     messages
       .map(replyTextOf)
       .filter((text) => text.trim() !== '')
@@ -530,7 +534,7 @@ function TurnGroupViewImpl({
   const replyCopyText = textOf(finals) || textOf(intermediates);
   // A finished plan turn copies its plan instead of its prose, and keeps the
   // action while the plan's Markdown is unavailable (CAN-5354).
-  const planCopy = usePortalTurnPlanCopy(assistantMessages, complete);
+  const planCopy = useRemoteControlTurnPlanCopy(assistantMessages, complete);
   const collapsedVisuals = intermediates.flatMap((message) =>
     (message.parts ?? []).flatMap((part, index) => {
       const owner =
@@ -858,7 +862,7 @@ function TurnGroupViewImpl({
 }
 
 /** A reply's text: its whole-message text, or else its text parts. */
-function replyTextOf(message: PortalChatMessage): string {
+function replyTextOf(message: RemoteControlChatMessage): string {
   if (message.text.trim() !== '') return message.text;
   return (message.parts ?? [])
     .flatMap((part) => {

@@ -4,7 +4,7 @@ import { LoadingSpinner } from './LoadingSpinner';
 import { LoadingIndicator } from './LoadingIndicatorStyle';
 import { DropdownMenuItem, DropdownMenuItemIcon } from './DropdownMenu';
 import { NestedMenuFlyout } from './NestedMenuFlyout';
-import { ErrorBanner } from './StatusBlocks';
+import { Notice } from './Notice';
 
 /** Mirrors the wire levels without importing a contract package. */
 export type SpaceNotificationMenuLevel = 'all' | 'attention' | 'mute';
@@ -266,15 +266,20 @@ export function SpaceNotificationMenuStatusLine({
   readonly testId?: string;
 }): JSX.Element {
   if (status.tone === 'failure' && !status.loading) {
+    // A failure in the menu's own terms: the warning glyph in the rows' icon
+    // column and the copy where their labels start, wrapping as needed. No
+    // tray: a banner's corners are larger than the menu's and cannot nest in
+    // it, and the menu is already the surface.
     return (
-      <div className="p-1 empty:hidden">
-        <ErrorBanner
-          errorSource="space-notification-menu-status-line"
-          className=""
-          error={status.text}
-          testId={testId}
-        />
-      </div>
+      <Notice
+        intent="destructive"
+        shape="menu"
+        surface="none"
+        errorSource="space-notification-menu-status-line"
+        data-testid={testId}
+      >
+        {status.text}
+      </Notice>
     );
   }
   // A plain row, not `DropdownMenuLabel`: the label truncates to one line and
@@ -283,7 +288,7 @@ export function SpaceNotificationMenuStatusLine({
     <div
       role="status"
       data-testid={testId}
-      className="px-2 py-1 text-xs font-normal fg-secondary"
+      className="px-2 py-1 text-xs font-normal text-pretty fg-secondary"
     >
       {status.loading ? <LoadingIndicator /> : status.text}
     </div>

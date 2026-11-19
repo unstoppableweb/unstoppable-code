@@ -116,7 +116,7 @@ export function CloudSyncModal({
         </span>
       }
       subtitle={subtitle ?? undefined}
-      // `md` matches CanopyPortalModal, the surface this most often launches
+      // `md` matches RemoteControlModal, the surface this most often launches
       // from, so Remote Control → sign-in does not resize the dialog under the
       // user. The old `2xl` was a two-column settings width on a one-decision
       // surface.

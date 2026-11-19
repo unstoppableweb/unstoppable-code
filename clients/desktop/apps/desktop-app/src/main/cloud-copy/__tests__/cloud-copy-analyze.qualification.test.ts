@@ -54,6 +54,9 @@ function fakes(
         localId === 'custom:app/helper'
           ? Promise.resolve('---\nname: helper\n---\nHelp.\n')
           : Promise.reject(new Error('missing')),
+      // CAN-6943's flag, off: installed-source skills are its own golden.
+      installedSkillsEnabled: () => Promise.resolve(false),
+      readInstalledSkill: () => Promise.reject(new Error('flag off')),
       analyzeSkill: (request) => {
         calls.skills.push(request);
         return Promise.resolve(SUMMARY);

@@ -1,5 +1,5 @@
 import { useCallback, type JSX } from 'react';
-import type { AutoDeleteAttention } from '@canopy/protocol/portal/auto-delete-attention';
+import type { AutoDeleteAttention } from '@canopy/protocol/remote-control/shell/auto-delete-attention';
 import {
   AutoDeleteAttentionPanel,
   type AutoDeleteAttentionNotification,

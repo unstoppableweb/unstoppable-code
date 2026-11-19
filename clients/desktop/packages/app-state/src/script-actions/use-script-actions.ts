@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CanopyClient } from '@canopy/app-core';
+import { toAppError, type AppError } from '@canopy/protocol/app-errors';
 import type {
   ScriptActionsContext,
   ScriptActionsReviewRequest,
@@ -25,6 +26,12 @@ export interface UseScriptActionsResult {
   readonly status: ScriptActionsLoadStatus;
   /** Last failed load; prior data is retained. */
   readonly error: string | null;
+  /**
+   * The structured form of {@link error}, for error recording only: never
+   * rendered. Null without an error, for a cancellation, or when it cannot be
+   * built.
+   */
+  readonly appError: AppError | null;
   readonly refresh: () => Promise<ScriptActionsSnapshot | null>;
   readonly rescan: () => Promise<ScriptActionsSnapshot | null>;
   readonly review: (
@@ -46,6 +53,15 @@ function errorMessage(error: unknown): string {
   return error instanceof Error && error.message
     ? error.message
     : "Couldn't load scripts";
+}
+
+/** Recording is best effort: a host without Web Crypto must not hide the failure. */
+function caughtAppError(error: unknown): AppError | null {
+  try {
+    return toAppError(error) ?? null;
+  } catch {
+    return null;
+  }
 }
 
 function contextKey(context: ScriptActionsContext | null): string | null {
@@ -105,7 +121,14 @@ export function useScriptActionsWithClient(
     snapshot: ScriptActionsSnapshot | null;
     status: ScriptActionsLoadStatus;
     error: string | null;
-  }>({ key: null, snapshot: null, status: 'idle', error: null });
+    appError: AppError | null;
+  }>({
+    key: null,
+    snapshot: null,
+    status: 'idle',
+    error: null,
+    appError: null,
+  });
   // Each target/mount gets a generation; late responses for an older one are dropped.
   const generationRef = useRef(0);
   // Rendering order is independent from submission authority: focus/list events
@@ -125,6 +148,7 @@ export function useScriptActionsWithClient(
         snapshot: visible(snapshot, includeDismissedRef.current),
         status: 'ready',
         error: null,
+        appError: null,
       });
     },
     [],
@@ -137,6 +161,7 @@ export function useScriptActionsWithClient(
       snapshot: previous.key === keyRef.current ? previous.snapshot : null,
       status: 'error',
       error: errorMessage(error),
+      appError: caughtAppError(error),
     }));
   }, []);
 
@@ -156,6 +181,7 @@ export function useScriptActionsWithClient(
               snapshot: null,
               status: 'loading',
               error: null,
+              appError: null,
             },
       );
       try {
@@ -194,7 +220,13 @@ export function useScriptActionsWithClient(
     authorityRef.current += 1;
     keyRef.current = key;
     if (key === null) {
-      setState({ key: null, snapshot: null, status: 'idle', error: null });
+      setState({
+        key: null,
+        snapshot: null,
+        status: 'idle',
+        error: null,
+        appError: null,
+      });
       return undefined;
     }
     void load('list');
@@ -289,6 +321,7 @@ export function useScriptActionsWithClient(
     snapshot: current?.snapshot ?? null,
     status: current?.status ?? (supported ? 'loading' : 'idle'),
     error: current?.error ?? null,
+    appError: current?.appError ?? null,
     refresh,
     rescan,
     review,

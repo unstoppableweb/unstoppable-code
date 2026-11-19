@@ -20,12 +20,12 @@ import {
   type Range,
 } from '@tanstack/react-virtual';
 import type {
-  PortalChangedFile,
-  PortalChangedFilesGroup,
-  PortalChangedFiles,
-  PortalChangedFilesNotice,
-  PortalCodeViewerSelection,
-} from '@canopy/protocol/portal';
+  RemoteControlChangedFile,
+  RemoteControlChangedFilesGroup,
+  RemoteControlChangedFiles,
+  RemoteControlChangedFilesNotice,
+  RemoteControlCodeViewerSelection,
+} from '@canopy/protocol/remote-control/shell';
 import {
   Stack,
   OverlayScrollArea,
@@ -38,7 +38,7 @@ import {
 } from '@canopy/ui-shared/components';
 import { toDiffFileStatus } from '../../file/diff-status';
 
-export interface ChangedFileRow extends PortalChangedFile {
+export interface ChangedFileRow extends RemoteControlChangedFile {
   readonly source: 'uncommitted' | 'committed';
 }
 
@@ -81,7 +81,7 @@ function filePathForDisplay(
     : file.filePath;
 }
 
-const NOTICE_COPY: Record<PortalChangedFilesNotice['kind'], string> = {
+const NOTICE_COPY: Record<RemoteControlChangedFilesNotice['kind'], string> = {
   truncated: 'Not every changed file is listed.',
   base_unavailable:
     "The base branch isn't available, so committed changes can't be compared.",
@@ -97,7 +97,7 @@ function ChangedFilesNotices({
   notices,
   showRepoName,
 }: {
-  readonly notices: readonly PortalChangedFilesNotice[];
+  readonly notices: readonly RemoteControlChangedFilesNotice[];
   readonly showRepoName: boolean;
 }): JSX.Element | null {
   if (notices.length === 0) return null;
@@ -132,14 +132,14 @@ function ChangedFilesNotices({
  * (`fileSystemAccess === 'read-write'`) and a handler is injected.
  */
 export interface ChangedFilesSectionProps {
-  readonly changedFiles: PortalChangedFiles | undefined;
+  readonly changedFiles: RemoteControlChangedFiles | undefined;
   /** True when the host can revert (desktop); hides Revert otherwise. */
   readonly canRevert?: boolean;
   readonly workspaceLocalId?: string;
   readonly worktreeLocalId?: string;
   /** Prefix paths with repo names when the selected workspace has >1 repo. */
   readonly showRepoName?: boolean;
-  readonly onSelectFile?: (selection: PortalCodeViewerSelection) => void;
+  readonly onSelectFile?: (selection: RemoteControlCodeViewerSelection) => void;
   readonly onFileClick?: (file: ChangedFileRow) => void;
   readonly onFileContextMenu?: (
     file: ChangedFileRow,
@@ -147,9 +147,11 @@ export interface ChangedFilesSectionProps {
   ) => void;
   readonly onRevertFile?: (file: ChangedFileRow) => void;
   /** Request the next bounded page after locally revealed rows are exhausted. */
-  readonly onLoadMore?: (group: PortalChangedFilesGroup) => void;
-  readonly hasMore?: Partial<Record<PortalChangedFilesGroup, boolean>>;
-  readonly loadingMore?: Partial<Record<PortalChangedFilesGroup, boolean>>;
+  readonly onLoadMore?: (group: RemoteControlChangedFilesGroup) => void;
+  readonly hasMore?: Partial<Record<RemoteControlChangedFilesGroup, boolean>>;
+  readonly loadingMore?: Partial<
+    Record<RemoteControlChangedFilesGroup, boolean>
+  >;
   /** Defaults to the portal's existing empty-state copy; pass null for blank. */
   readonly emptyState?: ReactNode;
   /** Applies the native rail's inner scroll cap. */
@@ -176,7 +178,7 @@ function FileRow({
   workspaceLocalId?: string;
   worktreeLocalId?: string;
   showRepoName: boolean;
-  onSelectFile?: (selection: PortalCodeViewerSelection) => void;
+  onSelectFile?: (selection: RemoteControlCodeViewerSelection) => void;
   focusOnMount?: boolean;
   onFocus?: (event: FocusEvent<HTMLDivElement>) => void;
   onFileClick?: (file: ChangedFileRow) => void;
@@ -189,7 +191,7 @@ function FileRow({
   const tooltip = displayPath(file, showRepoName);
   // Only wire selection when the complete diff-selection identity is present:
   // a handler plus both workspace and worktree ids.
-  const selectFromPortal =
+  const selectFromRemoteControl =
     onSelectFile && workspaceLocalId && worktreeLocalId
       ? (): void =>
           onSelectFile({
@@ -204,7 +206,9 @@ function FileRow({
             },
           })
       : undefined;
-  const select = onFileClick ? (): void => onFileClick(file) : selectFromPortal;
+  const select = onFileClick
+    ? (): void => onFileClick(file)
+    : selectFromRemoteControl;
   const isSelectable = select !== undefined;
   const rowRef = useCallback(
     (element: HTMLDivElement | null): void => {
@@ -346,10 +350,10 @@ const VIRTUALIZE_THRESHOLD = 100;
 const REVEAL_PAGE_SIZE = 200;
 const ESTIMATED_FILE_ITEM_HEIGHT = 24;
 const AUTO_REVEAL_ROOT_MARGIN = '0px 0px 96px 0px';
-const EMPTY_FILES: readonly PortalChangedFile[] = [];
-const EMPTY_NOTICES: readonly PortalChangedFilesNotice[] = [];
+const EMPTY_FILES: readonly RemoteControlChangedFile[] = [];
+const EMPTY_NOTICES: readonly RemoteControlChangedFilesNotice[] = [];
 
-type ChangedFilesGroup = PortalChangedFilesGroup;
+type ChangedFilesGroup = RemoteControlChangedFilesGroup;
 
 interface RevealBudgets {
   readonly scopeKey: string;
@@ -370,7 +374,7 @@ interface ChangedFilesListHandlers {
   readonly workspaceLocalId?: string;
   readonly worktreeLocalId?: string;
   readonly showRepoName: boolean;
-  readonly onSelectFile?: (selection: PortalCodeViewerSelection) => void;
+  readonly onSelectFile?: (selection: RemoteControlCodeViewerSelection) => void;
   readonly onFileClick?: (file: ChangedFileRow) => void;
   readonly onFileContextMenu?: ChangedFilesSectionProps['onFileContextMenu'];
   readonly onRevertFile?: (file: ChangedFileRow) => void;
@@ -427,7 +431,7 @@ type ChangedFilesListItem =
 interface ChangedFilesListProps extends ChangedFilesListHandlers {
   readonly uncommitted: readonly ChangedFileRow[];
   readonly committed: readonly ChangedFileRow[];
-  readonly notices: readonly PortalChangedFilesNotice[];
+  readonly notices: readonly RemoteControlChangedFilesNotice[];
   readonly hasMore?: Partial<Record<ChangedFilesGroup, boolean>>;
   readonly loadingMore?: Partial<Record<ChangedFilesGroup, boolean>>;
   readonly totals: Partial<Record<ChangedFilesGroup, number>>;
@@ -457,8 +461,8 @@ function compareCodePoint(left: string, right: string): number {
 }
 
 function compareChangedFileIdentity(
-  left: PortalChangedFile,
-  right: PortalChangedFile,
+  left: RemoteControlChangedFile,
+  right: RemoteControlChangedFile,
 ): number {
   return (
     compareCodePoint(left.repoId ?? '', right.repoId ?? '') ||
@@ -729,7 +733,7 @@ interface ScrollProgress {
 
 function renderChangedFilesItem(
   item: ChangedFilesListItem,
-  notices: readonly PortalChangedFilesNotice[],
+  notices: readonly RemoteControlChangedFilesNotice[],
   handlers: ChangedFilesListHandlers,
   onRevealMore: (group: ChangedFilesGroup, focusAfterReveal?: boolean) => void,
   lastGroup: ChangedFilesGroup,
@@ -799,7 +803,7 @@ function VirtualizedChangedFilesItems({
   ) => void;
   readonly onFocusCapture: (event: FocusEvent<HTMLDivElement>) => void;
   readonly focusedRow: FocusedRowIdentity | null;
-  readonly notices: readonly PortalChangedFilesNotice[];
+  readonly notices: readonly RemoteControlChangedFilesNotice[];
 }): JSX.Element {
   const windowRef = useRef<HTMLDivElement>(null);
   const [sentinel, setSentinel] = useState<HTMLButtonElement | null>(null);

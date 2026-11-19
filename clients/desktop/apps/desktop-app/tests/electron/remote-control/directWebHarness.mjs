@@ -9,11 +9,11 @@ import { closeCanopy, launchCanopy } from '../launchCanopy.mjs';
 import { CanopyAppDriver } from '../canopyApp.mjs';
 import { seedDemoWorkspaces } from '../demoWorkspaces.mjs';
 import {
-  PORTAL_WEB_ORIGIN,
-  PORTAL_WEB_ORIGIN_LOOPBACK,
+  REMOTE_CONTROL_WEB_ORIGIN,
+  REMOTE_CONTROL_WEB_ORIGIN_LOOPBACK,
 } from './harness/config.mjs';
-import { withPortalDbClient } from './harness/db.mjs';
-import { resolvePortalWebBrandId } from './harness/web-server.mjs';
+import { withRemoteControlDbClient } from './harness/db.mjs';
+import { resolveRemoteControlWebBrandId } from './harness/web-server.mjs';
 
 /**
  * Web server options for direct Remote Control: the relay it mints tokens
@@ -33,7 +33,7 @@ export function directWebServerOptions({ relay, env = {}, ...options }) {
       // The OAuth issuer, MCP resources and the hosted routes' exact-origin
       // check all use this origin; without it the default brand falls back
       // to the local development port.
-      CANOPY_WEB_MCP_CANONICAL_ORIGINS: `${resolvePortalWebBrandId({ env })}=${PORTAL_WEB_ORIGIN}`,
+      CANOPY_WEB_MCP_CANONICAL_ORIGINS: `${resolveRemoteControlWebBrandId({ env })}=${REMOTE_CONTROL_WEB_ORIGIN}`,
       ...env,
     },
   };
@@ -49,7 +49,7 @@ export function sameOriginJsonHeaders(seeded) {
   return {
     Cookie: sessionCookieHeader(seeded),
     'Content-Type': 'application/json',
-    Origin: PORTAL_WEB_ORIGIN,
+    Origin: REMOTE_CONTROL_WEB_ORIGIN,
     'Sec-Fetch-Site': 'same-origin',
   };
 }
@@ -181,7 +181,7 @@ async function startSignedInDesktop({ relay, seeded, env, userDataDir }) {
   const launch = await launchCanopy({
     userDataDir,
     env: {
-      CANOPY_E2E_CLOUD_BASE_URL: PORTAL_WEB_ORIGIN_LOOPBACK,
+      CANOPY_E2E_CLOUD_BASE_URL: REMOTE_CONTROL_WEB_ORIGIN_LOOPBACK,
       ...env,
     },
   });
@@ -268,7 +268,7 @@ async function* readServerSentEvents(body) {
 export async function startHostedPairing(seeded, deviceId) {
   const abort = new AbortController();
   const response = await fetch(
-    `${PORTAL_WEB_ORIGIN_LOOPBACK}/api/v1/mcp/remotes/pair`,
+    `${REMOTE_CONTROL_WEB_ORIGIN_LOOPBACK}/api/v1/mcp/remotes/pair`,
     {
       method: 'POST',
       headers: sameOriginJsonHeaders(seeded),
@@ -360,7 +360,7 @@ export async function pairHostedAgents({ seeded, desktop, approve = true }) {
 /** `GET /api/v1/external-agents/computers` as the signed-in account. */
 export async function listHostedComputers(seeded) {
   const response = await fetch(
-    `${PORTAL_WEB_ORIGIN_LOOPBACK}/api/v1/external-agents/computers`,
+    `${REMOTE_CONTROL_WEB_ORIGIN_LOOPBACK}/api/v1/external-agents/computers`,
     { headers: { Cookie: sessionCookieHeader(seeded) } },
   );
   return { status: response.status, body: await response.json() };
@@ -368,7 +368,7 @@ export async function listHostedComputers(seeded) {
 
 /** Hosted session/device slot leases held for an account, live or not. */
 export async function readHostedLeases(userId) {
-  return withPortalDbClient(async (client) => {
+  return withRemoteControlDbClient(async (client) => {
     const result = await client.query(
       `SELECT slot, purpose, relay_device_id, expires_at,
               expires_at > clock_timestamp() AS live
@@ -381,7 +381,7 @@ export async function readHostedLeases(userId) {
 
 /** The account's hosted pairing links (`agent_remote_identities`). */
 export async function readHostedLinks(userId) {
-  return withPortalDbClient(async (client) => {
+  return withRemoteControlDbClient(async (client) => {
     const result = await client.query(
       `SELECT external_id, stable_device_identity, relay_device_id,
               hosted_paired_at, hosted_removal_requested_at, host_code,

@@ -52,9 +52,7 @@ export function TaskStopButton({
   if (appearance === 'row' || appearance === 'drawer') {
     const button = (
       <Button
-        variant={
-          appearance === 'drawer' ? 'ghost-overlay' : 'ghost-destructive'
-        }
+        variant={appearance === 'drawer' ? 'ghost' : 'ghost-destructive'}
         size={appearance === 'drawer' ? 'compact' : 'sm'}
         iconOnly={appearance === 'drawer'}
         className={appearance === 'row' ? 'min-w-full' : undefined}

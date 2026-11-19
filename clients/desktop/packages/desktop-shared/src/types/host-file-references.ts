@@ -1,25 +1,25 @@
 import type {
-  PortalChatFileReference,
-  PortalChatSendPayload,
-  PortalEditorFileMentionOption,
-} from '@canopy/protocol/portal';
+  RemoteControlChatFileReference,
+  RemoteControlChatSendPayload,
+  RemoteControlEditorFileMentionOption,
+} from '@canopy/protocol/remote-control/shell';
 
-export type HostPortalChatFileReference = Omit<
-  PortalChatFileReference,
+export type HostRemoteControlChatFileReference = Omit<
+  RemoteControlChatFileReference,
   'referenceId'
 > & {
   absolutePath: string;
 };
 
-export type HostPortalChatSendPayload = Omit<
-  PortalChatSendPayload,
+export type HostRemoteControlChatSendPayload = Omit<
+  RemoteControlChatSendPayload,
   'fileReferences'
 > & {
-  fileReferences?: HostPortalChatFileReference[];
+  fileReferences?: HostRemoteControlChatFileReference[];
 };
 
-export type HostPortalEditorFileMentionOption = Omit<
-  PortalEditorFileMentionOption,
+export type HostRemoteControlEditorFileMentionOption = Omit<
+  RemoteControlEditorFileMentionOption,
   'referenceId'
 > & {
   absolutePath: string;

@@ -1,10 +1,8 @@
 'use client';
 
 import {
-  createContext,
   forwardRef,
   useCallback,
-  useContext,
   useEffect,
   useRef,
   type ButtonHTMLAttributes,
@@ -20,6 +18,12 @@ import {
 } from '../lib/dialog-initial-focus';
 import { Button, ControlButton } from './Button';
 import { FIELD_EDGE_CLASS, FIELD_FOCUS_WITHIN_CLASS } from './Field';
+import {
+  FieldButtonNestProvider,
+  useFieldButtonNest,
+  type FieldButtonNest,
+} from './field-button-nest';
+import { Kbd, type KbdNest } from './Kbd';
 import { EmptyState } from './StatusBlocks';
 import { Tooltip } from './Tooltip';
 
@@ -37,7 +41,7 @@ export type SearchFieldSize = 'sm' | 'md' | 'lg';
  * a rounded rectangle, not a capsule (design decisions, 2026-10-30): 10px
  * `rounded-row` corners at 28px and at 32px (12px scaled to 32px is about
  * 10.7px; the nearest token is 10px).
- * The trailing inset is the gap between the field and a nested round button
+ * The trailing inset is the gap between the field and a nested button
  * above and below it (2px at 28px, 4px at 32px, 8px at 44px). Coarse
  * pointers get a taller field with the inset grown to match.
  */
@@ -70,9 +74,37 @@ const CLEAR_ICON_SIZE: Record<SearchFieldSize, number> = {
   lg: 14,
 };
 
-/** Nested buttons: 24px in the 28px and 32px fields, 28px in the header. */
+/**
+ * The field its buttons nest in: 24px buttons with the field's corner less
+ * their inset in the 28px and 32px fields. The 44px header has no edge of its
+ * own to nest in, so its 28px buttons stay round.
+ */
+const BUTTON_NEST: Record<SearchFieldSize, FieldButtonNest> = {
+  sm: 'field',
+  md: 'field-md',
+  lg: 'header',
+};
 
-const SearchFieldSizeContext = createContext<SearchFieldSize>('sm');
+/**
+ * The shortcut caps' corner: nested in the 28px and 32px fields. The 44px
+ * header has no edge of its own to nest in, so its caps stay capsules.
+ */
+const SHORTCUT_NEST: Record<SearchFieldSize, KbdNest | undefined> = {
+  sm: 'field',
+  md: 'field-md',
+  lg: undefined,
+};
+
+/**
+ * The caps' inset from the field's end, added to the field's own trailing
+ * inset (sized for a 24px nested button) so the 18px caps sit as far from
+ * the end as from the top and bottom: 5px at 28px, 7px at 32px, 13px at 44px.
+ */
+const SHORTCUT_INSET_CLASS: Record<SearchFieldSize, string> = {
+  sm: 'pr-0.75',
+  md: 'pr-0.75',
+  lg: 'pr-1.25',
+};
 
 export interface SearchFieldProps extends Omit<
   InputHTMLAttributes<HTMLInputElement>,
@@ -100,6 +132,13 @@ export interface SearchFieldProps extends Omit<
    * a mode hint such as the palette's `Type > for commands`.
    */
   readonly trailing?: ReactNode;
+  /**
+   * The keys that focus this field (`⌘K`, see `formatShortcut`), drawn as
+   * caps at its end while it is empty. The caps nest in the field: the same
+   * inset from its end as from its top and bottom, and the field's corner
+   * less that inset. Not for a field that also has `actions`.
+   */
+  readonly shortcut?: string | readonly string[];
   /**
    * Nested controls at the field's end, after Clear: `SearchFieldButton`s
    * that open filters or a sort.
@@ -130,8 +169,8 @@ export interface SearchFieldProps extends Omit<
 }
 
 /**
- * The one search field: the search glyph at its start and round buttons
- * nested in its end cap. While the field holds a query the end shows the
+ * The one search field: the search glyph at its start and buttons nested
+ * in its end, each with the field's corner less its inset. While the field holds a query the end shows the
  * result count and a Clear button; filter and sort buttons follow a
  * hairline. `sm` and `md` rest on the shared field edge and focus to the
  * neutral field focus, like `TextInput`.
@@ -147,6 +186,7 @@ export const SearchField = forwardRef<HTMLInputElement, SearchFieldProps>(
       size = 'sm',
       count,
       trailing,
+      shortcut,
       actions,
       clearLabel = 'Clear search',
       clearTestId,
@@ -224,7 +264,7 @@ export const SearchField = forwardRef<HTMLInputElement, SearchFieldProps>(
     };
 
     return (
-      <SearchFieldSizeContext.Provider value={size}>
+      <FieldButtonNestProvider value={BUTTON_NEST[size]}>
         <div
           data-search-field={size}
           data-testid={fieldTestId}
@@ -267,6 +307,13 @@ export const SearchField = forwardRef<HTMLInputElement, SearchFieldProps>(
           {hasTrailing ? (
             <span className="flex shrink-0 items-center">{trailing}</span>
           ) : null}
+          {shortcut !== undefined && !hasValue ? (
+            <span
+              className={`flex shrink-0 items-center ${SHORTCUT_INSET_CLASS[size]}`}
+            >
+              <Kbd shortcut={shortcut} nest={SHORTCUT_NEST[size]} aria-hidden />
+            </span>
+          ) : null}
           {hasValue ? (
             <SearchFieldButton
               tone="ghost"
@@ -303,20 +350,20 @@ export const SearchField = forwardRef<HTMLInputElement, SearchFieldProps>(
             </>
           ) : null}
         </div>
-      </SearchFieldSizeContext.Provider>
+      </FieldButtonNestProvider>
     );
   },
 );
 
 SearchField.displayName = 'SearchField';
 
-export interface SearchFieldButtonProps extends Omit<
+export interface FieldButtonProps extends Omit<
   ButtonHTMLAttributes<HTMLButtonElement>,
   'className'
 > {
-  /** Action-oriented name, also the tooltip: `Filter`, `Sort: Name`. */
+  /** Action-oriented name, also the tooltip: `Filter`, `Show API key`. */
   readonly 'aria-label': string;
-  /** The 14px app glyph. */
+  /** The app glyph: 14px in a 24px button, up to 16px in a 28px one. */
   readonly icon: ReactNode;
   /**
    * Filled with the primary ink while the control applies something (a
@@ -324,44 +371,61 @@ export interface SearchFieldButtonProps extends Omit<
    */
   readonly active?: boolean;
   /**
-   * `muted` is a quiet disc at rest, for the controls that open a menu;
-   * `ghost` has no fill until hovered, for Clear.
+   * `muted` is a quiet fill at rest, for the controls that open a menu;
+   * `ghost` has no fill until hovered, for Clear and Show or Hide.
    */
   readonly tone?: 'muted' | 'ghost';
+  /** The tooltip, when it should say more than the name. */
+  readonly tooltip?: string;
 }
 
 /**
- * A round button nested in a `SearchField`'s end cap: Clear, Filter, Sort.
- * A button, so it stays round inside the field's end, and its name shows as a
- * tooltip (held back while its menu is open).
+ * An icon button nested in the end of a field: Clear, Filter and Sort in a
+ * `SearchField`, Show or Hide in a `TextInput`. It takes its size and corner
+ * from the field ({@link FieldButtonNest}), so it is never a circle inside a
+ * rounded rectangle. Its name shows as a tooltip (held back while its menu
+ * is open).
  */
-export const SearchFieldButton = forwardRef<
-  HTMLButtonElement,
-  SearchFieldButtonProps
->(function SearchFieldButton(
-  { icon, active = false, tone = 'muted', type = 'button', ...props },
-  ref,
-): JSX.Element {
-  const size = useContext(SearchFieldSizeContext);
-  const expanded =
-    props['aria-expanded'] === true || props['aria-expanded'] === 'true';
-  return (
-    <Tooltip label={props['aria-label']} suppressed={expanded}>
-      <ControlButton
-        {...props}
-        ref={ref}
-        type={type}
-        data-active={active ? 'true' : undefined}
-        presentation="search-field-endcap"
-        appearance={{ size, tone: active ? 'active' : tone }}
-      >
-        {icon}
-      </ControlButton>
-    </Tooltip>
-  );
-});
+export const FieldButton = forwardRef<HTMLButtonElement, FieldButtonProps>(
+  function FieldButton(
+    {
+      icon,
+      active = false,
+      tone = 'muted',
+      tooltip,
+      type = 'button',
+      ...props
+    },
+    ref,
+  ): JSX.Element {
+    const nest = useFieldButtonNest();
+    const expanded =
+      props['aria-expanded'] === true || props['aria-expanded'] === 'true';
+    return (
+      <Tooltip label={tooltip ?? props['aria-label']} suppressed={expanded}>
+        <ControlButton
+          {...props}
+          ref={ref}
+          type={type}
+          data-field-button={nest}
+          data-active={active ? 'true' : undefined}
+          presentation="search-field-endcap"
+          appearance={{ nest, tone: active ? 'active' : tone }}
+        >
+          {icon}
+        </ControlButton>
+      </Tooltip>
+    );
+  },
+);
 
-SearchFieldButton.displayName = 'SearchFieldButton';
+FieldButton.displayName = 'FieldButton';
+
+/** A `SearchField`'s nested button: Clear, Filter, Sort. */
+export type SearchFieldButtonProps = FieldButtonProps;
+
+/** The same {@link FieldButton}, under its name in a `SearchField`. */
+export const SearchFieldButton = FieldButton;
 
 export interface SearchEmptyStateProps {
   /**

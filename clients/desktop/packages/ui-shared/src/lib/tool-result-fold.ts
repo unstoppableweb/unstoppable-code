@@ -1,11 +1,11 @@
 import {
-  foldedPortalToolOccurrenceIds,
-  isFoldedPortalToolResult,
+  foldedRemoteControlToolOccurrenceIds,
+  isFoldedRemoteControlToolResult,
   pairToolResultOccurrences,
-  portalToolPartOccurrence,
-  readPortalChatPartVisual,
+  remoteControlToolPartOccurrence,
+  readRemoteControlChatPartVisual,
   readToolInterruption,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import { hideDelegationTransportParts } from './delegation-display';
 
 function isRecordPart(value: unknown): value is Record<string, unknown> {
@@ -69,7 +69,7 @@ function resultOutput(result: Record<string, unknown>): string {
 function visualResultPart(part: unknown): Record<string, unknown> | undefined {
   if (!isRecordPart(part) || (part.kind ?? part.type) !== 'tool_result')
     return undefined;
-  const visual = readPortalChatPartVisual({
+  const visual = readRemoteControlChatPartVisual({
     kind: 'tool_result',
     data: part.data,
   });
@@ -107,7 +107,7 @@ export function foldToolResultsIntoToolUses<
 >(inputMessages: readonly T[]): T[] {
   const visible = hideDelegationTransportParts(inputMessages);
   // A merge can keep a result part beside the call it was already folded into.
-  const alreadyFolded = foldedPortalToolOccurrenceIds(
+  const alreadyFolded = foldedRemoteControlToolOccurrenceIds(
     visible.flatMap((message) => partsOf(message)),
   );
   const messages =
@@ -118,7 +118,7 @@ export function foldToolResultsIntoToolUses<
           const kept = parts.filter(
             (part) =>
               visualResultPart(part) !== undefined ||
-              !isFoldedPortalToolResult(part, alreadyFolded),
+              !isFoldedRemoteControlToolResult(part, alreadyFolded),
           );
           if (kept.length === parts.length) return [message];
           return kept.length === 0 ? [] : [{ ...message, parts: kept }];
@@ -146,7 +146,7 @@ export function foldToolResultsIntoToolUses<
         : typeof data.tool_use_id === 'string'
           ? data.tool_use_id
           : undefined;
-    const occurrence = portalToolPartOccurrence(part);
+    const occurrence = remoteControlToolPartOccurrence(part);
     return toolUseId
       ? {
           kind,
@@ -191,7 +191,7 @@ export function foldToolResultsIntoToolUses<
       const output = resultOutput(result);
       const interruption = readToolInterruption(result.interruption);
       changed = true;
-      const occurrence = portalToolPartOccurrence(resultPart);
+      const occurrence = remoteControlToolPartOccurrence(resultPart);
       return [
         {
           ...part,

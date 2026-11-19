@@ -126,7 +126,6 @@ export function ChatVisualDialog({
                 theme={theme}
                 onOpenLink={onOpenLink}
                 variant="expanded"
-                frameUrl={host.frameUrl}
                 remoteAssets={remoteAssets}
                 testIds={CHAT_VISUAL_TEST_IDS}
               />

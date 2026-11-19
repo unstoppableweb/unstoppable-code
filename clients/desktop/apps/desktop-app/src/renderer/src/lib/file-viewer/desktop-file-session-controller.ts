@@ -5,7 +5,7 @@ import {
   type FileViewerSession,
   type FileViewerState,
 } from '@canopy/app-state';
-import type { PortalFileReadPayload } from '@canopy/protocol/portal';
+import type { RemoteControlFileReadPayload } from '@canopy/protocol/remote-control/shell';
 
 /** Autosave debounce; a content change to a dirty session resets this timer. */
 export const AUTO_SAVE_DEBOUNCE_MS = 1200;
@@ -18,7 +18,7 @@ export interface DesktopFileSessionControllerAttachOptions {
    * of the controller core (which would otherwise reintroduce a chat/projects
    * module cycle).
    */
-  onSaveCommitted: (request: PortalFileReadPayload) => void;
+  onSaveCommitted: (request: RemoteControlFileReadPayload) => void;
 }
 
 /**
@@ -39,7 +39,7 @@ export interface DesktopFileSessionController {
    * A tab whose session has unsaved changes stays bound to it, so the answer
    * is then its current key.
    */
-  registerTab(tabId: string, request: PortalFileReadPayload): string;
+  registerTab(tabId: string, request: RemoteControlFileReadPayload): string;
   getFileKey(tabId: string): string | null;
   getSession(tabId: string): FileViewerSession | undefined;
   hasSession(tabId: string): boolean;
@@ -67,7 +67,7 @@ export interface DesktopFileSessionController {
 
 interface TabRegistration {
   key: string;
-  request: PortalFileReadPayload;
+  request: RemoteControlFileReadPayload;
 }
 
 /**
@@ -76,7 +76,9 @@ interface TabRegistration {
  */
 export function createDesktopFileSessionController(): DesktopFileSessionController {
   let store: StoreApi<FileViewerState> | null = null;
-  let onSaveCommitted: ((request: PortalFileReadPayload) => void) | null = null;
+  let onSaveCommitted:
+    | ((request: RemoteControlFileReadPayload) => void)
+    | null = null;
   let unsubscribeStore: (() => void) | null = null;
   let autoSaveEnabled = false;
 

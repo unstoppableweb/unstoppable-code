@@ -4,7 +4,7 @@ import {
   type ChatInputDeliveryFailure,
   type ChatInputRefusal,
   type ChatInputRefusalCode,
-} from '@canopy/protocol/portal/input-delivery';
+} from '@canopy/protocol/remote-control/shell/input-delivery';
 import { isCodexRecoverableProcessExitError } from './connection';
 
 /** How a failed `turn/steer` request ended. */

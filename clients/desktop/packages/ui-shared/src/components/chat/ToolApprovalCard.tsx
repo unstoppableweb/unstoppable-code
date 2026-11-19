@@ -942,11 +942,13 @@ export const ToolApprovalCard = memo(function ToolApprovalCard({
                   onClick={allowOnce}
                   data-testid="tool-approval-allow"
                   presentation="approval-allow"
-                  appearance={{ ruleScopes: !!ruleScopes }}
+                  appearance={{ ruleScopes: hasTarget }}
                 >
                   Allow once
                 </ControlButton>
-                {ruleScopes && (
+                {/* The scoped rows need a target to allow, so without one
+                    there is no menu to open. */}
+                {hasTarget && (
                   <>
                     <ControlButton
                       ref={allowTriggerRef}
@@ -972,32 +974,24 @@ export const ToolApprovalCard = memo(function ToolApprovalCard({
                       data-testid="tool-approval-allow-menu"
                       className="min-w-55 max-w-80"
                     >
-                      {target && targetLabel !== undefined ? (
-                        <>
-                          <ApprovalMenuTargetHeader
-                            targetLabel={targetLabel}
-                            testIdPrefix="tool-approval-allow-menu"
-                            onViewFull={viewFullTarget}
-                          />
-                          <ActionMenuRowStyle>
-                            <ActionMenuItems
-                              items={allowMenuItems}
-                              onSelect={(item): void => {
-                                if (item.disabled || !item.onSelect) return;
-                                item.onSelect();
-                                setAllowMenuOpen(false);
-                                allowTriggerRef.current?.focus({
-                                  preventScroll: true,
-                                });
-                              }}
-                            />
-                          </ActionMenuRowStyle>
-                        </>
-                      ) : (
-                        <DropdownMenuLabel>
-                          No additional options
-                        </DropdownMenuLabel>
-                      )}
+                      <ApprovalMenuTargetHeader
+                        targetLabel={targetLabel}
+                        testIdPrefix="tool-approval-allow-menu"
+                        onViewFull={viewFullTarget}
+                      />
+                      <ActionMenuRowStyle>
+                        <ActionMenuItems
+                          items={allowMenuItems}
+                          onSelect={(item): void => {
+                            if (item.disabled || !item.onSelect) return;
+                            item.onSelect();
+                            setAllowMenuOpen(false);
+                            allowTriggerRef.current?.focus({
+                              preventScroll: true,
+                            });
+                          }}
+                        />
+                      </ActionMenuRowStyle>
                     </FloatingMenu>
                   </>
                 )}
@@ -1066,7 +1060,7 @@ export const ToolApprovalCard = memo(function ToolApprovalCard({
 
             {denyReason && (
               <Button
-                variant="ghost-quiet"
+                variant="ghost"
                 size="compact"
                 ref={reasonToggleRef}
                 data-testid="tool-approval-reason-toggle"

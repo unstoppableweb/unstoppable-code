@@ -1488,7 +1488,7 @@ export function CustomizeTabSections(
           <Button
             iconOnly
             size="sm"
-            variant="ghost-quiet"
+            variant="ghost"
             data-testid={`customize-update-${entry.id}`}
             aria-label={`Update ${entry.name}`}
             disabled={updating || batchRunning || !!reason}

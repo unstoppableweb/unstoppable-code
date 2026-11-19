@@ -198,7 +198,7 @@ function RowButton({
   // The accessible name is the visible label; the file name describes it.
   return (
     <Button
-      variant="ghost-quiet"
+      variant="ghost"
       size="compact"
       data-testid={testId}
       aria-describedby={describedBy}

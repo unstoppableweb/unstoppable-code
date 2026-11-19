@@ -44,6 +44,8 @@ import {
   PluginCatalogAddAction,
   PluginCatalogDetail,
   CustomizeRelatedSection,
+  CustomizeManifestPreview,
+  customizeCatalogContents,
   customizeWorkflowAvailability,
   customizeWorkflowSource,
   type CustomizeWorkflowActions,
@@ -1665,54 +1667,82 @@ function PluginEntryDetailContent({
             )
           }
         >
-          <PluginCatalogDetail
-            entry={{
-              name: entry.name,
-              // The entry already carries the product-over-publisher
-              // attribution the card shows; reading the raw plugin here made
-              // the detail contradict the tile the user just clicked.
-              author:
-                entry.authorName ?? (pluginOverride ?? resolved.plugin).author,
-              description: entry.description,
-              homepage: (pluginOverride ?? resolved.plugin).homepage,
-              logoUrl: shownLogo.logoUrl,
-              bundledLogo: shownLogo.bundledLogo,
-              brandMark: shownLogo.brandMark,
-              categories: entry.categories,
-              components: entry.components,
-              ...(customizeLogoPlate
-                ? {
-                    publisher: <CustomizePublisher entry={shownLogo} />,
-                    marketplace: {
-                      name: marketplaceDisplayName(resolved.marketplace.name),
-                      onOpen: openSource(resolved.marketplace.id),
-                    },
-                  }
-                : {}),
+          <CustomizeManifestPreview
+            // New Customize: a light read of the plugin's repository fills
+            // Works with and Contents before Add (spec 3b).
+            entry={shownLogo}
+            enabled={customizeLogoPlate}
+            load={async () => {
+              const read = await window.plugins.previewManifest(
+                resolved.marketplace.id,
+                resolved.plugin.name,
+              );
+              return read.success ? (read.data ?? null) : null;
             }}
-            {...(customizeLogoPlate
-              ? {
-                  layout: true,
-                  logo: (
-                    <CustomizeEntryLogo
-                      entry={shownLogo}
-                      McpServerLogoComponent={McpServerLogo}
-                    />
-                  ),
-                  // A partial removal's notice, as on the Portal.
-                  status: (
-                    <InstalledEntryStatusSection
-                      entry={entry}
-                      onUninstalled={onClose}
-                      onManageSource={openSource(resolved.marketplace.id)}
-                    />
-                  ),
-                }
-              : {})}
-            alternatives={entry.alsoAvailableFrom}
-            onOpenEntryId={onOpenEntry}
-            McpServerLogoComponent={McpServerLogo}
-          />
+          >
+            {(shown, checking, preview) => (
+              <PluginCatalogDetail
+                entry={{
+                  name: entry.name,
+                  // The entry already carries the product-over-publisher
+                  // attribution the card shows; reading the raw plugin here made
+                  // the detail contradict the tile the user just clicked.
+                  author:
+                    entry.authorName ??
+                    (pluginOverride ?? resolved.plugin).author,
+                  description: entry.description,
+                  homepage: (pluginOverride ?? resolved.plugin).homepage,
+                  logoUrl: shownLogo.logoUrl,
+                  bundledLogo: shownLogo.bundledLogo,
+                  brandMark: shownLogo.brandMark,
+                  categories: entry.categories,
+                  components: entry.components,
+                  ...(customizeLogoPlate
+                    ? {
+                        publisher: <CustomizePublisher entry={shownLogo} />,
+                        marketplace: {
+                          name: marketplaceDisplayName(
+                            resolved.marketplace.name,
+                          ),
+                          onOpen: openSource(resolved.marketplace.id),
+                        },
+                        // Names from this listing or an installed copy.
+                        items: customizeCatalogContents(shown, preview),
+                      }
+                    : {}),
+                }}
+                {...(customizeLogoPlate
+                  ? {
+                      layout: true,
+                      logo: (
+                        <CustomizeEntryLogo
+                          entry={shownLogo}
+                          McpServerLogoComponent={McpServerLogo}
+                        />
+                      ),
+                      // Before Add, as the tile's chips read it.
+                      worksWith: (
+                        <CustomizeEntryWorksWith
+                          entry={shown}
+                          checking={checking}
+                        />
+                      ),
+                      // A partial removal's notice, as on the Portal.
+                      status: (
+                        <InstalledEntryStatusSection
+                          entry={entry}
+                          onUninstalled={onClose}
+                          onManageSource={openSource(resolved.marketplace.id)}
+                        />
+                      ),
+                    }
+                  : {})}
+                alternatives={entry.alsoAvailableFrom}
+                onOpenEntryId={onOpenEntry}
+                McpServerLogoComponent={McpServerLogo}
+              />
+            )}
+          </CustomizeManifestPreview>
         </DetailShell>
       );
     }

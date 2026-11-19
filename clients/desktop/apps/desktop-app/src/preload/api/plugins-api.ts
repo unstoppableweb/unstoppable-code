@@ -41,6 +41,12 @@ export function createPluginsAPI(): PluginsAPI {
         pluginSourcePath,
         componentFile,
       ),
+    previewManifest: (marketplaceId: string, pluginName: string) =>
+      ipcRenderer.invoke(
+        PLUGINS_CHANNELS.PREVIEW_MANIFEST,
+        marketplaceId,
+        pluginName,
+      ),
     installPlugin: (
       marketplaceId: string,
       pluginName: string,

@@ -96,7 +96,7 @@ export function JobCard({
 
         {/* Collapse toggle */}
         <Button
-          variant="ghost-quiet"
+          variant="ghost"
           size="compact"
           iconOnly
           onClick={(e) => {
@@ -132,7 +132,7 @@ export function JobCard({
         {/* Add step button */}
         {!readonly && (
           <Button
-            variant="ghost-quiet"
+            variant="ghost"
             size="compact"
             iconOnly
             onClick={(e) => {

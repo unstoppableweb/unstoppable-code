@@ -40,7 +40,7 @@ export function RunCommentsButton({
     >
       <span className="relative inline-flex">
         <Button
-          variant={unreadCount > 0 ? 'ghost-accent' : CLEAN_ICON_BUTTON_VARIANT}
+          variant={unreadCount > 0 ? 'ghost' : CLEAN_ICON_BUTTON_VARIANT}
           size="sm"
           iconOnly
           onClick={(): void => {

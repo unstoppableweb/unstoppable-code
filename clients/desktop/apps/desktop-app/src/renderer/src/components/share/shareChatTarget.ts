@@ -50,7 +50,7 @@ export function activeChatTarget(
   if (
     !pages.has(navigation.activePage) ||
     navigation.settingsOpen ||
-    navigation.canopyPortalOpen
+    navigation.remoteControlDialogOpen
   ) {
     return null;
   }

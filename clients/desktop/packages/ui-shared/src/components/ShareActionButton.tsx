@@ -50,7 +50,7 @@ const PLACEMENT_VARIANT: Record<
   ButtonVariant
 > = {
   // The row placement sits on a list row's hover surface.
-  row: 'ghost-overlay',
+  row: 'ghost',
   header: 'secondary',
   detail: 'secondary',
 };

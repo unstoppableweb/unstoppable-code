@@ -5,6 +5,7 @@ import type { OrganizationRole } from '@canopy/protocol/settings/organization';
 import { canEditOrg } from '@canopy/protocol/settings/organization-permissions';
 import { SettingsLink } from '../host';
 import { DigestPreferencesCard } from '../digests/digest-preferences-card';
+import { digestPreferencesDescription } from '../digests/digest-format';
 
 interface TeamDigestSettingsSectionProps {
   orgId: string;
@@ -33,7 +34,7 @@ export function TeamDigestSettingsSection({
       title="Work digests"
       // Role-neutral wording, matching the personal card. An organization
       // digest covers whoever is working in it, not just its engineers.
-      description="A periodic summary of the organization's recent work, emailed to every owner and admin."
+      description={digestPreferencesDescription({ kind: 'organization' })}
       testIdPrefix="team"
       footer={
         <SettingsLink

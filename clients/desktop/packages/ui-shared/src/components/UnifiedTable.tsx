@@ -564,11 +564,7 @@ const UnifiedTableRowView = memo(function UnifiedTableRowView({
               </span>
             )
           ) : (
-            <Button
-              variant="ghost-quiet"
-              size="compact"
-              onClick={() => onView(row)}
-            >
+            <Button variant="ghost" size="compact" onClick={() => onView(row)}>
               View
             </Button>
           )}

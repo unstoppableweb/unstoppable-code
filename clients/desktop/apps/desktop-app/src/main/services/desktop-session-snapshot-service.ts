@@ -1,7 +1,7 @@
 import { buildProjectedModelCatalog } from '../remote-projection/model-catalog-projection';
 import { resolveCatalogAgentDefaultModel } from '../agents/agent-default-model';
 import { resolveAiCreditsScopeOwner } from '../agents/work-owner';
-import { peekPortalProviderAvailability } from '../auth/provider-auth-state';
+import { peekRemoteControlProviderAvailability } from '../auth/provider-auth-state';
 import { projectSidebarItemGroups } from './sidebar-item-groups-service';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import { getFeatureFlagService } from '../feature-flags';
@@ -16,17 +16,15 @@ import { listWorktreeChatSummaryBatch } from './worktree-chat-summary-batch';
 import {
   projectRemoteBackgroundService,
   projectRemoteW5Recovery,
-  type PortalSessionShellState,
-  type PortalTarget,
-} from '@canopy/protocol/portal';
+  type RemoteControlSessionShellState,
+  type RemoteControlTarget,
+} from '@canopy/protocol/remote-control/shell';
 import { peekDesktopW5RecoveryForRemote } from '../canopy-runtime/desktop-w5-recovery';
 import { getElectronDaemonHealth } from '../canopy-runtime/electron-daemon-health';
-import { listWorkspacePortalEntities } from './workspace-portal-service';
+import { listWorkspaceRemoteControlEntities } from './workspace-remote-control-service';
 import { readAllSidebarItemsSnapshot } from '../lib/sidebar-items';
 import { runW5ReadView } from '../lib/w5-commit-log-file-store';
 import { workspaceStorageUnavailable } from '../lib/workspace-storage-availability';
-import { readWorkspaceConfigDetailed } from '../lib/workspace-persistence';
-import type { WorkspaceOwnerManifestRead } from './workspace-owner-projection';
 import {
   listStandaloneChats,
   projectStandaloneChatSnapshot,
@@ -34,7 +32,7 @@ import {
 } from './standalone-chat-service';
 
 /** Placeholders belong to the unscoped overview only; a scoped snapshot names real rows. */
-function isOverviewTarget(target: PortalTarget | undefined): boolean {
+function isOverviewTarget(target: RemoteControlTarget | undefined): boolean {
   return (
     target === undefined ||
     Object.values(target).every((value) => value === undefined)
@@ -53,7 +51,7 @@ function isActivityId(value: string): boolean {
 /** One session snapshot build, counted with its wall time (CAN-6970). */
 export async function buildDesktopSessionSnapshot(
   args?: DesktopSessionSnapshotArgs,
-): Promise<PortalSessionShellState> {
+): Promise<RemoteControlSessionShellState> {
   const startedAt = performance.now();
   try {
     return await composeDesktopSessionSnapshot(args);
@@ -68,7 +66,7 @@ export async function buildDesktopSessionSnapshot(
 
 /** Remote Control shows the same notices as this computer (CAN-7061). */
 function desktopNotices(): Pick<
-  PortalSessionShellState,
+  RemoteControlSessionShellState,
   'w5Recovery' | 'backgroundService'
 > {
   const backgroundService = projectRemoteBackgroundService(
@@ -84,7 +82,7 @@ function desktopNotices(): Pick<
  * The notices alone: no workspace read, so they still arrive while the
  * overview's discovery fails closed with the background service down.
  */
-function desktopNoticesSnapshot(): PortalSessionShellState {
+function desktopNoticesSnapshot(): RemoteControlSessionShellState {
   return {
     ...desktopNotices(),
     workspaces: [],
@@ -115,7 +113,7 @@ function desktopNoticesSnapshot(): PortalSessionShellState {
 
 async function composeDesktopSessionSnapshot(
   args?: DesktopSessionSnapshotArgs,
-): Promise<PortalSessionShellState> {
+): Promise<RemoteControlSessionShellState> {
   const { includeChatSummaries, standaloneChatLocalId, noticesOnly, ...scope } =
     args ?? {};
   if (noticesOnly === true) return desktopNoticesSnapshot();
@@ -124,31 +122,21 @@ async function composeDesktopSessionSnapshot(
     standaloneChatLocalId !== undefined ||
     (!target?.workspaceLocalId &&
       !(includeChatSummaries === true && !isOverviewTarget(target)));
-  const workspaces: PortalSessionShellState['workspaces'] = [];
-  const worktrees: PortalSessionShellState['worktrees'] = [];
+  const workspaces: RemoteControlSessionShellState['workspaces'] = [];
+  const worktrees: RemoteControlSessionShellState['worktrees'] = [];
   // Share discovery, not composition: default-project provisioning and runtime
   // decoration must run after the write-refusing view has closed.
-  const { sidebarSnapshot, ownerEvidence } = await runW5ReadView(
+  const sidebarSnapshot = await runW5ReadView(
     { files: [], discoverWorkspaces: true },
     async (view) => {
       if (view.status === 'uncaptured' && view.error) throw view.error;
       const sidebarSnapshot = await readAllSidebarItemsSnapshot();
       if (sidebarSnapshot.indexAuthority === 'unreadable')
         throw workspaceStorageUnavailable(sidebarSnapshot.indexUnserved);
-      const ownerEvidence = new Map<string, WorkspaceOwnerManifestRead>();
-      if (includeStandalone) {
-        for (const item of sidebarSnapshot.file.items) {
-          if (item.type === 'cowork')
-            ownerEvidence.set(
-              item.id,
-              await readWorkspaceConfigDetailed(item.id),
-            );
-        }
-      }
-      return { sidebarSnapshot, ownerEvidence };
+      return sidebarSnapshot;
     },
   );
-  await listWorkspacePortalEntities(target, {
+  await listWorkspaceRemoteControlEntities(target, {
     sidebarSnapshot,
     statsSource: 'desktop-session-snapshot',
     onWorkspace: (workspace): void => {
@@ -191,7 +179,6 @@ async function composeDesktopSessionSnapshot(
         includeChatSummaries === true
           ? {
               sidebarSnapshot,
-              ownerEvidence,
               strict: true,
               projectIds: workspaces
                 .filter(
@@ -202,7 +189,7 @@ async function composeDesktopSessionSnapshot(
                 )
                 .map((workspace) => workspace.localId),
             }
-          : { sidebarSnapshot, ownerEvidence },
+          : { sidebarSnapshot },
       );
   // Compact listings carry no turn end, so a chat whose session is gone would
   // read as never having ended. One chat's read takes them from its tabs
@@ -217,7 +204,7 @@ async function composeDesktopSessionSnapshot(
         )
   ).map(projectStandaloneChatSnapshot);
 
-  let chatSummaries: PortalSessionShellState['chatSummaries'] = [];
+  let chatSummaries: RemoteControlSessionShellState['chatSummaries'] = [];
   if (includeChatSummaries === true) {
     const visibleWorkspaces = new Map(
       workspaces
@@ -281,7 +268,9 @@ async function composeDesktopSessionSnapshot(
     projectId: string,
     worktreeId?: string,
     chatId?: string,
-  ): Promise<NonNullable<PortalSessionShellState['availableModels']>> => {
+  ): Promise<
+    NonNullable<RemoteControlSessionShellState['availableModels']>
+  > => {
     const owner = await resolveAiCreditsScopeOwner({
       kind: 'work',
       projectId,
@@ -323,7 +312,7 @@ async function composeDesktopSessionSnapshot(
       ? {}
       : {
           availableModels,
-          providerAvailability: peekPortalProviderAvailability(),
+          providerAvailability: peekRemoteControlProviderAvailability(),
         }),
     workspaces: snapshotWorkspaces,
     worktrees,

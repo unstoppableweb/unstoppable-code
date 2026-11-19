@@ -1,6 +1,9 @@
 import { isDeviceId } from '../device-relay';
 import { decodeCanonicalBase64url } from './security';
 
+/** Web page a scanned pairing QR code opens. */
+export const REMOTE_CONTROL_PAIRING_PATH = '/portal/pair';
+
 export interface PairingFragment {
   deviceId: string;
   secret: string;
@@ -44,5 +47,5 @@ export function buildPairingLink(
     !['localhost', '127.0.0.1', '[::1]'].includes(origin.hostname)
   )
     throw new Error('Pairing links require HTTPS.');
-  return `${origin.origin}/portal/pair#device=${deviceId}&secret=${secret}`;
+  return `${origin.origin}${REMOTE_CONTROL_PAIRING_PATH}#device=${deviceId}&secret=${secret}`;
 }

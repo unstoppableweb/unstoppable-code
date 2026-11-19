@@ -71,7 +71,7 @@ export interface ResolveMobileAppPromoInput {
  * Exported so the activation probe can be skipped for accounts that can never
  * render one, without restating the predicate at the call site. Keeping the one
  * definition here is the point: the docblock on {@link resolveMobileAppPromo}
- * promises this gate cannot drift from `CanopyPortalModal`'s, and a second
+ * promises this gate cannot drift from `RemoteControlModal`'s, and a second
  * hand-written copy in a hook is exactly how that promise would quietly break.
  */
 export function isMobileAppPromoEligibleAccount(
@@ -96,7 +96,7 @@ function isSnoozed(snoozedUntil: string | undefined, now: number): boolean {
  * Pure resolver for every desktop mobile-app promotion surface.
  *
  * `signedIn` is `isCanopyCloudConnected(account) && !isGuestAccount(account)` —
- * the exact pair `CanopyPortalModal` uses, so the modal's gate and this one
+ * the exact pair `RemoteControlModal` uses, so the modal's gate and this one
  * cannot drift. `GuestUpgradeNudge` gates on *guest* and these surfaces gate on
  * *signed-in non-guest*, so the two are mutually exclusive by construction.
  */

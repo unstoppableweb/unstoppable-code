@@ -109,7 +109,7 @@ export function PipelineExecutionActionBar({
       )}
       {canRetry && (
         <Button
-          variant="warning"
+          variant="secondary"
           size="compact"
           data-testid={`pipeline-detail-retry-${executionId}`}
           onClick={() => void actions.retry(executionId)}

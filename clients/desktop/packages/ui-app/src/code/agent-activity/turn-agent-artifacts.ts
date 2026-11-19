@@ -4,7 +4,7 @@ import {
   serializeAgentArtifactReceipts,
   type AgentArtifactReceiptV1,
 } from '@canopy/protocol/agent-artifacts';
-import type { PortalChatMessage } from '@canopy/protocol/portal';
+import type { RemoteControlChatMessage } from '@canopy/protocol/remote-control/shell';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -39,7 +39,7 @@ function readResultReceipts(result: unknown): AgentArtifactReceiptV1[] {
  * GitHub workflow runs stay with their desktop row.
  */
 export function collectTurnAgentArtifacts(
-  messages: readonly PortalChatMessage[],
+  messages: readonly RemoteControlChatMessage[],
 ): readonly AgentArtifactReceiptV1[] {
   const seenToolUseIds = new Set<string>();
   let receipts: AgentArtifactReceiptV1[] = [];

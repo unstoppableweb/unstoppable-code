@@ -184,7 +184,7 @@ function CompactRecommendationsStrip({
           {notSelected > 0 ? ` · ${String(notSelected)} not selected` : ''}
         </span>
         <Button
-          variant="ghost-accent"
+          variant="ghost"
           size="compact"
           aria-expanded={expanded}
           aria-controls={expanded ? rowListId : undefined}

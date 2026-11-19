@@ -710,7 +710,7 @@ const WORKTREE_GIT_ACTIONS = new Set<WorktreeGitAction>([
 ]);
 
 const CLOUD_NAME = `${brandText.appName} Cloud`;
-export const CANOPY_PORTAL_DISABLED_TOAST = `${REMOTE_CONTROL_LABEL} is not available.`;
+export const REMOTE_CONTROL_DISABLED_TOAST = `${REMOTE_CONTROL_LABEL} is not available.`;
 
 const SHARED_CONTAINERS_DISABLED_MESSAGE =
   'Shared containers are not available.';
@@ -759,7 +759,7 @@ function pageUnavailableError(
   };
 }
 
-function canopyPortalDisabledResponse(): {
+function remoteControlDisabledResponse(): {
   ok: true;
   result: { skipped: true; reason: string };
 } {
@@ -14627,16 +14627,16 @@ async function routeAction(
       if (!useRemoteControlStore.getState().state.available) {
         useGitHubStore
           .getState()
-          .addToast(CANOPY_PORTAL_DISABLED_TOAST, 'info');
-        return canopyPortalDisabledResponse();
+          .addToast(REMOTE_CONTROL_DISABLED_TOAST, 'info');
+        return remoteControlDisabledResponse();
       }
-      useNavigationStore.getState().openCanopyPortal();
+      useNavigationStore.getState().openRemoteControlDialog();
       return { ok: true };
     case 'canopy_portal.close':
-      useNavigationStore.getState().closeCanopyPortal();
+      useNavigationStore.getState().closeRemoteControlDialog();
       return { ok: true };
     case 'canopy_portal.open_account_settings': {
-      useNavigationStore.getState().closeCanopyPortal();
+      useNavigationStore.getState().closeRemoteControlDialog();
       openCloudAccountSettings();
       return { ok: true };
     }

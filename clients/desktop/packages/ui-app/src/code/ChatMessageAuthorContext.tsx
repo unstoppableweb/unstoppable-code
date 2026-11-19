@@ -1,6 +1,6 @@
 'use client';
 
-import type { PortalChatMessage } from '@canopy/protocol/portal';
+import type { RemoteControlChatMessage } from '@canopy/protocol/remote-control/shell';
 import {
   createContext,
   type JSX,
@@ -9,13 +9,13 @@ import {
   useEffect,
 } from 'react';
 
-export type ChatMessageAuthor = NonNullable<PortalChatMessage['author']>;
+export type ChatMessageAuthor = NonNullable<RemoteControlChatMessage['author']>;
 
 export interface ChatMessageAuthorResolver {
   readonly resolve: (
-    message: PortalChatMessage,
+    message: RemoteControlChatMessage,
   ) => ChatMessageAuthor | undefined;
-  readonly request: (message: PortalChatMessage) => void;
+  readonly request: (message: RemoteControlChatMessage) => void;
 }
 
 const ChatMessageAuthorContext =
@@ -38,7 +38,7 @@ export function ChatMessageAuthorProvider({
 }
 
 export function useChatMessageAuthor(
-  message: PortalChatMessage,
+  message: RemoteControlChatMessage,
 ): ChatMessageAuthor | undefined {
   const resolver = useContext(ChatMessageAuthorContext);
   const author = resolver ? resolver.resolve(message) : message.author;

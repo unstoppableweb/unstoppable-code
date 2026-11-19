@@ -59,6 +59,7 @@ import type { CodexConfig } from '@canopy/execution-engine/lib/codex-model-confi
 import { isGuestAccount } from '@canopy/desktop-shared/lib/guest-account';
 import { aiCreditsOutrankAccountProxy } from '@canopy/desktop-shared/lib/account-proxy';
 import { hasUserSuppliedProviderCredential } from './user-supplied-credential';
+import { HelperNoBillingSourceError } from './helper-no-billing-source';
 import { getCanopyCloudBaseUrl } from '../canopy-cloud/config';
 import {
   isCanopyCloudAccountReadDegraded,
@@ -664,8 +665,8 @@ export async function getAiCreditsRoutingContextWithStatus(
     // and caching it would hold the credits lane at UNKNOWN for the full TTL
     // after the keychain recovers. Re-reading on the next call makes recovery
     // immediate.
-    // A confirmed unfunded account can receive purchased or daily credits
-    // without changing account identity. Do not retain a negative answer:
+    // A confirmed unfunded account can receive purchased credits without
+    // changing account identity. Do not retain a negative answer:
     // the next normal Send must re-read eligibility rather than refuse the
     // restored draft until the 30-second routing TTL expires (CAN-5348).
     if (degraded || context?.creditsEligible === false) {
@@ -1015,9 +1016,10 @@ export interface AiCreditsRoutingAttempt {
  *   `off`, and the user made no explicit credits choice for this chat. Missing
  *   native auth is not consent to spend credits (CAN-7062): interactive
  *   sessions refuse the turn with the typed `no_billing_source` error, and
- *   background callers go native and fail with the usual sign-in error. A
- *   gateway-only model or an enforced organization gateway still routes,
- *   because no native path exists for it.
+ *   helper callers that pass `refuseNoBillingSource` get a
+ *   `HelperNoBillingSourceError` before any spawn, which background work
+ *   treats as a skip. A gateway-only model or an enforced organization
+ *   gateway still routes, because no native path exists for it.
  *
  * The tagged shape keeps a non-null value from being mistaken for a route.
  * Read sites that only need "routed or not" use {@link routingAttemptOf}.
@@ -1196,8 +1198,8 @@ export interface ResolveAiCreditsRoutingOverrideOptions {
    *
    * This only matters outside `off` mode: in `off` mode a confirmed sign-out
    * is a `no-billing-source` decision, which never routes here regardless of
-   * this option (CAN-7062), so the call goes native and fails with the usual
-   * sign-in error.
+   * this option (CAN-7062); see `refuseNoBillingSource` for what the
+   * call does instead.
    *
    * Defaults to `true`, matching the interactive session path: an `on-quota`
    * user's helper turn should work rather than fail with a raw
@@ -1213,6 +1215,20 @@ export interface ResolveAiCreditsRoutingOverrideOptions {
    * invisible and harmless; one that quietly spends the last credit is not.
    */
   allowNoNativeAuthFallback?: boolean;
+  /**
+   * Throw `HelperNoBillingSourceError` instead of returning `null` for a
+   * `no-billing-source` decision (CAN-7062): the provider is confirmed signed
+   * out, routing mode is `off`, and nothing chose credits for this work. A
+   * native spawn would only fail on sign-in and leave a failed audit entry, so
+   * helpers skip it. An Environment credential, which the auth probe can't
+   * see, still goes native because that spawn works.
+   *
+   * Defaults to off, so sessions, pipelines and the pipeline admission
+   * `inspect` path keep their behavior; `resolveHelperInvocation` turns it on.
+   * Gateway-only models, enforced organization routes and the account proxy
+   * never reach the refusal. It is computed on every call, never cached.
+   */
+  refuseNoBillingSource?: boolean;
   /**
    * Workspace whose Canopy Environments assignments apply, for the
    * user-supplied-credential guard. Optional — the environment has a global
@@ -1496,16 +1512,16 @@ async function resolveRoutingOverride(
       'ai-credits-routing',
     ));
   // A `no-billing-source` decision does not route: background work has no
-  // banner to ask for consent, so it goes native and fails with the usual
-  // sign-in error instead of spending credits (CAN-7062).
-  const resolvedAttempt = routingAttemptOf(
-    await resolveAiCreditsRoutingDecision(
-      routingState,
-      provider,
-      checkNativeAuth,
-      options.subscriptionBillingOverride,
-    ),
+  // banner to ask for consent, so it must not spend credits (CAN-7062).
+  // Helpers that opted in to `refuseNoBillingSource` skip it below, once the
+  // gateway checks have run; other callers go native.
+  const decision = await resolveAiCreditsRoutingDecision(
+    routingState,
+    provider,
+    checkNativeAuth,
+    options.subscriptionBillingOverride,
   );
+  const resolvedAttempt = routingAttemptOf(decision);
   // Two independent reasons to drop a `no-native-auth` attempt here. Only that
   // reason is ever dropped — an explicit `on` / `on-quota` mode or a session
   // override is a user decision and still routes, and `gatewayOnly` below still
@@ -1575,6 +1591,21 @@ async function resolveRoutingOverride(
     return null;
   }
   if (!attempt && !gatewayOnly && !enforcedOrgRoute) {
+    // Gateway-only models, enforced organization routes, the account proxy
+    // and the `inspect` path have all returned or routed by now. A native
+    // spawn here would only fail on sign-in, unless an Environment credential
+    // the auth probe can't see supplies the login (CAN-7062).
+    if (
+      options.refuseNoBillingSource === true &&
+      decision.kind === 'no-billing-source' &&
+      !hasUserSuppliedProviderCredential(
+        provider,
+        options.workspaceId,
+        options.environmentRuntime,
+      )
+    ) {
+      throw new HelperNoBillingSourceError(provider);
+    }
     return null;
   }
   if (!entry) {

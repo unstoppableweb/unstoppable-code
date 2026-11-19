@@ -1,10 +1,10 @@
-import type { BackgroundServiceStatus } from '@canopy/protocol/portal/background-service';
+import type { BackgroundServiceStatus } from '@canopy/protocol/remote-control/shell/background-service';
 
 /**
  * Health of this computer's connection to its local background service (the
  * core daemon), owned by Electron main and pushed on
  * `background-service:status-changed` (CAN-5541). The status contract lives
- * in `@canopy/protocol/portal`, which Portal also reads (CAN-7061).
+ * in `@canopy/protocol/remote-control/shell`, which Portal also reads (CAN-7061).
  */
 export {
   BACKGROUND_SERVICE_UNREACHABLE_REASONS,
@@ -13,7 +13,7 @@ export {
   type BackgroundServiceHandoffFailure,
   type BackgroundServiceStatus,
   type BackgroundServiceUnreachableReason,
-} from '@canopy/protocol/portal/background-service';
+} from '@canopy/protocol/remote-control/shell/background-service';
 
 /** Features that read through the background service. Additive. */
 export const BACKGROUND_SERVICE_CONSUMERS = [
@@ -24,6 +24,8 @@ export const BACKGROUND_SERVICE_CONSUMERS = [
   'terminals',
   // Eligible local renderer code-graph builds and summary reads (CAN-5719).
   'code_graph',
+  // Eligible local window branch lists (CAN-4729).
+  'git_reads',
   // Eligible local renderer script runs placed in the daemon (CAN-5087).
   'scripts',
   // Eligible local window workflows without model steps (CAN-5086).

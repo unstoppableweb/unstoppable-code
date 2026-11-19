@@ -1,7 +1,6 @@
 import { useState, type JSX } from 'react';
 import {
   SegmentedControl,
-  type SegmentedControlShape,
   Surface,
   TabBar,
   type TabBarItem,
@@ -60,22 +59,22 @@ function LiveTabBar({
 export function TabBarSpecimen(): JSX.Element {
   return (
     <div className="flex flex-col gap-6">
-      <SpecimenPanel title="Page header (default density)">
+      <SpecimenPanel title="Page header" hint="Default density">
         <LiveTabBar items={PAGE_TABS} />
       </SpecimenPanel>
-      <SpecimenPanel title="Dialog header (compact, 24px dialog inset)">
+      <SpecimenPanel title="Dialog header" hint="Compact, 24px dialog inset">
         <Surface variant="group">
           <LiveTabBar items={PAGE_TABS} density="compact" inset="dialog" />
         </Surface>
       </SpecimenPanel>
-      <SpecimenGrid min={240}>
-        <SpecimenCell label="With icons and a count">
+      <SpecimenPanel title="With icons and a count">
+        <SpecimenCell label="Horizontal" wide>
           <LiveTabBar items={ICON_TABS} />
         </SpecimenCell>
-        <SpecimenCell label="Vertical, for a panel rail">
+        <SpecimenCell label="Vertical, for a panel rail" wide>
           <LiveTabBar items={ICON_TABS} orientation="vertical" />
         </SpecimenCell>
-      </SpecimenGrid>
+      </SpecimenPanel>
     </div>
   );
 }
@@ -89,7 +88,6 @@ const MODE_OPTIONS = [
 ] as const;
 
 function LiveSegmented({
-  shape,
   width,
   disabled,
   unavailable,
@@ -97,7 +95,6 @@ function LiveSegmented({
   loading,
   semantics,
 }: {
-  readonly shape?: SegmentedControlShape;
   readonly width?: 'control' | 'fill' | 'content';
   readonly disabled?: boolean;
   readonly unavailable?: boolean;
@@ -112,7 +109,6 @@ function LiveSegmented({
       value={loading ? null : value}
       onChange={setValue}
       semantics={semantics}
-      shape={shape}
       width={width}
       disabled={disabled}
       options={MODE_OPTIONS.map((option) => {
@@ -135,11 +131,8 @@ export function SegmentedControlSpecimen(): JSX.Element {
   return (
     <SpecimenPanel>
       <SpecimenGrid min={240}>
-        <SpecimenCell label="rounded, control width (default)">
+        <SpecimenCell label="control width (default)">
           <LiveSegmented />
-        </SpecimenCell>
-        <SpecimenCell label="capsule">
-          <LiveSegmented shape="capsule" />
         </SpecimenCell>
         <SpecimenCell label="content width">
           <LiveSegmented width="content" />
@@ -157,15 +150,10 @@ export function SegmentedControlSpecimen(): JSX.Element {
           <LiveSegmented disabled />
         </SpecimenCell>
         <SpecimenCell label="Radio semantics, arrow keys">
-          <LiveSegmented semantics="radio" shape="capsule" width="content" />
+          <LiveSegmented semantics="radio" width="content" />
         </SpecimenCell>
         <SpecimenCell label="Radio, one option unavailable">
-          <LiveSegmented
-            semantics="radio"
-            shape="capsule"
-            width="content"
-            unavailable
-          />
+          <LiveSegmented semantics="radio" width="content" unavailable />
         </SpecimenCell>
         <SpecimenCell label="Loading (value null)">
           <LiveSegmented loading />

@@ -9,7 +9,7 @@ import type {
   PlanExitRequestEvent,
   TrackedPlanData,
 } from '@canopy/desktop-shared/types';
-import type { TrackedPlanImplementationInput } from '@canopy/protocol/portal';
+import type { TrackedPlanImplementationInput } from '@canopy/protocol/remote-control/shell';
 import { extractCandidatePaths } from '@canopy/desktop-shared/plan-detection-paths';
 import { isPlanProposal } from '@canopy/desktop-shared/plan-review';
 import { useActivityStore } from '../activityStore';

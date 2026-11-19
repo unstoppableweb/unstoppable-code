@@ -57,9 +57,9 @@ import { isRecord } from '../lib/type-guards';
 import type { DesktopMutationInstructionDefinitions } from './desktop-instruction-definitions';
 import { validateId, validateOptionalRepoId } from '../lib/validation';
 import {
-  PortalServiceError,
-  type PortalServiceErrorCode,
-} from '../services/portal-service-error';
+  RemoteControlServiceError,
+  type RemoteControlServiceErrorCode,
+} from '../services/remote-control-service-error';
 import {
   SplitLockError,
   assertNotSplitLocked,
@@ -172,7 +172,7 @@ export function createDesktopEntryMutationHost(
         }
         const target = resolveWorktreeTargetIds(projectId, worktreeId);
         if (!target) {
-          throw new PortalServiceError(
+          throw new RemoteControlServiceError(
             'invalid_target',
             'Managed file-tree target could not be resolved.',
           );
@@ -291,7 +291,7 @@ type FileTreeMutationErrorCode =
 
 function legacyErrorCode(
   code: FileTreeMutationErrorCode,
-): PortalServiceErrorCode {
+): RemoteControlServiceErrorCode {
   switch (code) {
     // Unreachable here: the projection sends `recursive: true`, the host
     // compares no entry version, a create never replaces, and a split lock
@@ -340,14 +340,14 @@ function isEntryErrorCode(
 
 /**
  * What `mutateFileTree` threw: a host refusal or Node error as itself, an
- * engine refusal as the `PortalServiceError` the explorer displays.
+ * engine refusal as the `RemoteControlServiceError` the explorer displays.
  */
 export function toLegacyFileTreeMutationError(error: unknown): unknown {
   if (!(error instanceof CanopyOperationError)) return error;
   if (error.runtimeCause !== undefined) return error.runtimeCause;
   const { code, message } = error.payload;
   return isEntryErrorCode(code)
-    ? new PortalServiceError(legacyErrorCode(code), message)
+    ? new RemoteControlServiceError(legacyErrorCode(code), message)
     : new Error(message);
 }
 
@@ -387,7 +387,7 @@ export async function deleteFileTreeEntryForLegacyIpc(
     // IPC payloads are unchecked: the target may be absent, null or a non-object.
     if (!isRecord(request.target)) {
       await host.assertMutable(scope);
-      throw new PortalServiceError(
+      throw new RemoteControlServiceError(
         'invalid_payload',
         'Mutation target is missing.',
       );
@@ -399,7 +399,7 @@ export async function deleteFileTreeEntryForLegacyIpc(
       const roots = await host.roots(scope);
       const [only] = roots;
       if (roots.length !== 1 || !only) {
-        throw new PortalServiceError(
+        throw new RemoteControlServiceError(
           'invalid_target',
           'File root is ambiguous; provide fileRootLocalId or repoId.',
         );
@@ -470,7 +470,7 @@ async function resolveTransferRootIds(
     const [only] = roots;
     if (hint === undefined) {
       if (roots.length !== 1 || !only) {
-        throw new PortalServiceError(
+        throw new RemoteControlServiceError(
           'invalid_target',
           'File root is ambiguous; provide fileRootLocalId or repoId.',
         );
@@ -478,7 +478,10 @@ async function resolveTransferRootIds(
       return only.fileRootId;
     }
     if (!roots.some((root) => root.fileRootId === hint)) {
-      throw new PortalServiceError('not_found', `Unknown file root: ${hint}`);
+      throw new RemoteControlServiceError(
+        'not_found',
+        `Unknown file root: ${hint}`,
+      );
     }
     return hint;
   };
@@ -521,7 +524,7 @@ async function refuseEmptyCopyPath(
     endpoints.destinationFileRootId,
   ])
     if (!roots.some((root) => root.fileRootId === fileRootId))
-      throw new PortalServiceError(
+      throw new RemoteControlServiceError(
         'not_found',
         `Unknown file root: ${fileRootId}`,
       );
@@ -552,7 +555,7 @@ export async function transferFileTreeEntryForLegacyIpc(
     const missing = missingTransferEndpoint(request);
     if (missing) {
       await host.assertMutable(scope);
-      throw new PortalServiceError(
+      throw new RemoteControlServiceError(
         'invalid_payload',
         `Mutation ${missing} is missing.`,
       );
@@ -706,7 +709,7 @@ async function refuseEmptyCreatePath(
 ): Promise<void> {
   if (relativePath !== '') return;
   if (!(await host.roots(scope)).some((root) => root.fileRootId === fileRootId))
-    throw new PortalServiceError(
+    throw new RemoteControlServiceError(
       'not_found',
       `Unknown file root: ${fileRootId}`,
     );
@@ -745,7 +748,7 @@ export async function createFileTreeEntryForLegacyIpc(
     await host.assertMutable(scope);
     // IPC payloads are unchecked: the target may be absent, null or a non-object.
     if (!isRecord(request.target)) {
-      throw new PortalServiceError(
+      throw new RemoteControlServiceError(
         'invalid_payload',
         'Mutation target is missing.',
       );
@@ -756,7 +759,7 @@ export async function createFileTreeEntryForLegacyIpc(
       const roots = await host.roots(scope);
       const [only] = roots;
       if (roots.length !== 1 || !only) {
-        throw new PortalServiceError(
+        throw new RemoteControlServiceError(
           'invalid_target',
           'File root is ambiguous; provide fileRootLocalId or repoId.',
         );

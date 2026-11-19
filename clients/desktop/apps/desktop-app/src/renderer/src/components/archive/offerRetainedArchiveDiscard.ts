@@ -1,5 +1,5 @@
 import { offerWorktreeDiscard } from '@canopy/app-state';
-import type { WorktreeDiscardDescription } from '@canopy/protocol/portal/worktree-discard';
+import type { WorktreeDiscardDescription } from '@canopy/protocol/remote-control/shell/worktree-discard';
 import { ipcCanopyClient } from '@/client/ipc-canopy-client';
 import { useArchivedContainersStore } from '@/stores/archivedContainersStore';
 

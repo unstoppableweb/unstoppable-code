@@ -34,13 +34,13 @@ import {
   type OperationOrigin,
   type OperationRecord,
 } from '@canopy/protocol/canopy-core';
+import type { DesktopCanopyDispatcher } from '../../canopy-runtime/desktop-runtime';
+import { setDesktopCanopyRuntime } from '../../canopy-runtime/desktop-runtime-access';
 import { legacyPipelineResumeOrigin } from '../pipeline-worker-dispatch';
 import {
   cancelPendingTransientRetryTimer,
-  initTransientErrorRetryScheduler,
   notePipelineExecutionEvent,
-  resetTransientErrorRetrySchedulerForTests,
-  whenTransientRetryRecovered,
+  PipelineTransientRetries,
   withPipelineTransientRetryState,
 } from '../transient-error-retry-scheduler';
 
@@ -79,6 +79,7 @@ const mainWindow = (): BrowserWindow | null => null;
 let dir: string;
 let operations: OperationService;
 let engine: InitiatedWorkEngine;
+let scheduler: PipelineTransientRetries | null = null;
 let resumes: ObservedResume[];
 /** What the stored execution looks like to recovery and to the re-arm pass. */
 let stored: ExecutionState | null;
@@ -189,9 +190,23 @@ function openEngine(): void {
   });
 }
 
+/** Forget the scheduler, as the process ending does. */
+function resetScheduler(): void {
+  scheduler?.resetForTests();
+  scheduler = null;
+  setDesktopCanopyRuntime(null);
+}
+
+function whenTransientRetryRecovered(): Promise<void> {
+  return scheduler?.whenRecovered() ?? Promise.resolve();
+}
+
 function startScheduler(): void {
-  initTransientErrorRetryScheduler({
-    engine,
+  scheduler = new PipelineTransientRetries(engine);
+  setDesktopCanopyRuntime({
+    pipelineTransientRetries: scheduler,
+  } as unknown as DesktopCanopyDispatcher);
+  scheduler.start({
     getWindow: mainWindow,
     listRetryRuns: (executionId) =>
       historyHold.then(() =>
@@ -261,7 +276,7 @@ function startScheduler(): void {
 
 async function restart(): Promise<void> {
   engine.stopStarting();
-  resetTransientErrorRetrySchedulerForTests();
+  resetScheduler();
   operations.close();
   openEngine();
   await operations.ready();
@@ -273,7 +288,7 @@ async function restart(): Promise<void> {
 /** Restart without waiting for recovery, so a test can act during it. */
 async function restartHeld(): Promise<void> {
   engine.stopStarting();
-  resetTransientErrorRetrySchedulerForTests();
+  resetScheduler();
   operations.close();
   openEngine();
   await operations.ready();
@@ -314,7 +329,7 @@ beforeEach(async () => {
   historyHold = Promise.resolve();
   scanHold = Promise.resolve();
   emitted = [];
-  resetTransientErrorRetrySchedulerForTests();
+  resetScheduler();
   openEngine();
   await operations.ready();
   startScheduler();
@@ -323,7 +338,7 @@ beforeEach(async () => {
 
 afterEach(() => {
   engine.stopStarting();
-  resetTransientErrorRetrySchedulerForTests();
+  resetScheduler();
   operations.close();
   rmSync(dir, { recursive: true, force: true });
   jest.useRealTimers();
@@ -571,7 +586,7 @@ describe('pipeline transient retries across a restart (CAN-4175)', () => {
       release = resolve;
     });
     engine.stopStarting();
-    resetTransientErrorRetrySchedulerForTests();
+    resetScheduler();
     operations.close();
     openEngine();
     await operations.ready();

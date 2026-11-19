@@ -376,7 +376,7 @@ export function CustomizeDiscoveryFilterMenu({
                   <Button
                     iconOnly
                     size="sm"
-                    variant="ghost-quiet"
+                    variant="ghost"
                     aria-label="Manage marketplaces"
                     data-testid={`${TEST_ID}-manage-marketplaces`}
                     onClick={(): void => {

@@ -2,7 +2,7 @@ import type { JSX } from 'react';
 import type {
   AutoResumeMetadata,
   AutoResumeReason,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import type { SafetyDenyReason } from '@canopy/protocol/approvals';
 import type { DelegationCapabilitySummary } from '@canopy/protocol/delegation';
 import {

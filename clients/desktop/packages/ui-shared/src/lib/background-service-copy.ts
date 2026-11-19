@@ -1,7 +1,7 @@
 import type {
   BackgroundServiceStatus,
   W5RecoveryStatus,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 
 export interface BackgroundServiceNoticeCopy {
   readonly title: string;

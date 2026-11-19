@@ -736,7 +736,7 @@ export function PipelinesPage({
         }
       >
         <Button
-          variant={chatPanelVisible ? 'ghost-accent' : 'secondary'}
+          variant={chatPanelVisible ? 'ghost' : 'secondary'}
           size="compact"
           iconOnly
           onClick={handleToggleChatPanel}

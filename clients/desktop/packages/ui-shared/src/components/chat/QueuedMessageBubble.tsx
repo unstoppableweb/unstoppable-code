@@ -1,5 +1,5 @@
 import { Stack } from '../Stack';
-import type { AgentSentInfo } from '@canopy/protocol/portal/external-agent-sender';
+import type { AgentSentInfo } from '@canopy/protocol/remote-control/shell/external-agent-sender';
 import {
   AgentSentTitle,
   type AgentSentReceivingContext,
@@ -12,7 +12,7 @@ import type {
   QueuedMessageRetryBlockedReason,
   QueuedMessageWaitingReason,
   SettingsHeldChange,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import { QueuedMessageActions } from './QueuedMessageActions';
 import { QueuedMessageContent } from './QueuedMessageReason';
 import { hostMessagePresentation } from './SteeringRequestTitle';

@@ -7,7 +7,7 @@ import {
   type ChildToolCloseContext,
   type ChildToolLiveness,
 } from './child-tool-liveness';
-import { parseOpenCodeReportedUsage } from '@canopy/protocol/portal';
+import { parseOpenCodeReportedUsage } from '@canopy/protocol/remote-control/shell';
 import { applyDelegationTranscriptEvent } from './delegation-transcript';
 import {
   parseClaudeAssistantBlocks,
@@ -97,7 +97,7 @@ import {
   isClaudeAuthenticationFailureMessage,
 } from './provider-errors';
 import { stripMemoryCitationTags } from './memory-citation';
-import { deriveRuntimeChatMessageId } from '../portal/persisted-chat-projection';
+import { deriveRuntimeChatMessageId } from '../remote-control/persisted-chat-projection';
 
 // `ChatBlock`/`ChatMessage` are exact aliases of the persisted transcript
 // shapes (`apps/desktop-app/.../stores/chatStore.ts` declares them as such);

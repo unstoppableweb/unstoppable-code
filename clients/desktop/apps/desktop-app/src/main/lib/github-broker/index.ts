@@ -64,6 +64,7 @@ export type {
 export {
   GitHubBrokerCredentialResetError,
   GitHubBrokerError,
+  GitHubBrokerLeaseExpiredError,
   GitHubBrokerTimeoutError,
   isGitHubBrokerError,
 } from './errors';
@@ -1035,12 +1036,18 @@ class GitHubBrokerImpl implements GitHubBroker {
       // next to the header, where the HTTP request is actually sent.
       const endpoint = request.endpoint.merge(options);
       endpoint.request = { ...endpoint.request, signal: attempt.signal };
+      // A call left running after its attempt settled is never authorized.
+      attempt.signal.throwIfAborted();
       const authorization = await credentialPort.authorize(attempt.lease);
+      attempt.signal.throwIfAborted();
       // A reset while the lease was being authorized means the header may be
       // the previous credential's: send nothing and let the attempt reissue.
       if (attempt.generation !== this.credentialGeneration) {
         throw new GitHubBrokerCredentialResetError('credential_reset');
       }
+      // The last check before sending: a lease that expired or was revoked
+      // while it was being authorized sends nothing.
+      credentialPort.assertLive(attempt.lease);
       endpoint.headers.authorization = authorization;
       try {
         return await request(endpoint);

@@ -1,4 +1,3 @@
-import type { DailyDripBlockedReason, DailyDripGrantOutcome } from '../billing';
 import type {
   AiGatewayHarness,
   AiGatewayModelFamily,
@@ -447,32 +446,17 @@ export interface AiCreditsOrgPoolFunding {
 
 /** Current AI-credit balance for an account. */
 export interface AiCreditsBalance {
-  dailyDripBlockedReason?: DailyDripBlockedReason;
-  /**
-   * What this read's daily-drip attempt did (CAN-4633). APPEND-ONLY /
-   * optional: older servers omit it, and so do reads with no user wallet.
-   */
-  dailyDripOutcome?: DailyDripGrantOutcome;
-  /** Credits the drip minted during this read; only with `granted`. */
-  dailyDripGrantedCredits?: number;
   /** Resolved account email the balance belongs to. */
   email: string;
   /** Remaining balance, expressed in credits (not USD). */
   credits: number;
   /**
-   * The plan's daily free-credit allowance, shown even when the user has not
-   * opted in (it is what turning the drip on gets them). Older servers omit it;
-   * do not infer usage without it.
+   * The retired daily free-credit allowance.
+   *
+   * @deprecated The daily grant is retired (CAN-4771). The server still sends a
+   * literal `0` because shipped desktops read it; current clients must not.
    */
   dailyDripCapCredits?: number;
-  /**
-   * Whether the user opted in to the daily free-credit drip. APPEND-ONLY /
-   * optional on the wire: older servers omit it, and `undefined` means
-   * "unknown, keep current behavior". Only an explicit `false` hides
-   * free-allowance readouts and offers "Turn on". The server also omits it
-   * when the plan allowance is 0 or unknown (CAN-4762).
-   */
-  dailyDripEnabled?: boolean;
   /**
    * Whether an eligible organization pool is available, including when personal
    * credits remain. Omitted if unchecked or unavailable. A free-allowance

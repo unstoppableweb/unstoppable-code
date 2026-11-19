@@ -23,8 +23,8 @@ import type {
   TranscriptTurnContinuation,
   TranscriptTurnSummary,
 } from '@canopy/agent-transcript/transcript-storage';
-import type { TurnOutcomeCounts } from '@canopy/protocol/portal';
-import { isTurnOutcomeCounts } from '@canopy/protocol/portal';
+import type { TurnOutcomeCounts } from '@canopy/protocol/remote-control/shell';
+import { isTurnOutcomeCounts } from '@canopy/protocol/remote-control/shell';
 import { collectTurnFiles } from '@canopy/desktop-shared/lib/turn-files';
 import { isTurnFileRecord } from '@canopy/protocol/turn-files';
 

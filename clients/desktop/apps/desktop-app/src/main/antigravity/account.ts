@@ -1,7 +1,7 @@
 import {
   isAntigravityPlanLabel,
   type AntigravityAccountSnapshot,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 
 /**
  * The Antigravity plan label from the last model discovery, kept in memory.

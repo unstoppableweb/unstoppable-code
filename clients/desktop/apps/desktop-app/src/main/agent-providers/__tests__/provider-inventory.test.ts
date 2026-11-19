@@ -1,7 +1,7 @@
 import type {
-  PortalProviderUsageEntry,
-  PortalProviderUsageWindow,
-} from '@canopy/protocol/portal';
+  RemoteControlProviderUsageEntry,
+  RemoteControlProviderUsageWindow,
+} from '@canopy/protocol/remote-control/shell';
 import type {
   AgentProviderAuthStatus,
   ModelRegistrySnapshot,
@@ -189,7 +189,7 @@ it("a provider's models are capped at 500", () => {
 });
 
 it('usage limits drop account identity', () => {
-  const window: PortalProviderUsageWindow = {
+  const window: RemoteControlProviderUsageWindow = {
     id: 'five-hour',
     label: '5-hour window',
     usedPercent: 40,
@@ -197,7 +197,7 @@ it('usage limits drop account identity', () => {
     credits: { unit: 'usd', spent: 1, remaining: 2, total: 3 },
     spend: { currency: 'USD', used: 1, limit: null, isEnabled: true },
   };
-  const entry: PortalProviderUsageEntry = {
+  const entry: RemoteControlProviderUsageEntry = {
     provider: 'claude',
     authState: 'authenticated',
     accountEmail: 'person@example.com',

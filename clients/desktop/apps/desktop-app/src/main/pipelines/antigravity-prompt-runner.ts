@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { allowlistedErrnoOrOther } from '@canopy/core-runtime';
 import { runAntigravityPipelinePrompt } from '@canopy/desktop-shared/node/pipelines/antigravity-prompt-runner';
 import { antigravityReadRules } from '@canopy/desktop-shared/node/antigravity/tool-approval';
 import type {
@@ -12,6 +13,7 @@ import { isAntigravityConnectionEnabled } from '../antigravity/connection';
 import { openAntigravityExtensions } from '../antigravity/extensions';
 import { captureAntigravityCapabilitySnapshot } from '../antigravity/capability-snapshot';
 import { assertTurnAuthDependencies } from '../lib/auth-preflight';
+import { logMainProcessWarn } from '../lib/main-process-logging';
 
 export async function runDesktopAntigravityPipelinePrompt(
   request: AntigravityPromptRunnerRequest,
@@ -133,6 +135,13 @@ export async function runDesktopAntigravityPipelinePrompt(
         approval.invalidatePending?.();
         approval.dispose();
       },
+      // main.log is bundled into feedback diagnostics unredacted, and the
+      // original can hold local paths or record contents, so only the closed
+      // code and an allowlisted errno are logged (CAN-7117).
+      onLocalDiagnostic: ({ code, cause }) =>
+        logMainProcessWarn(
+          `[antigravity-pipeline] selected capabilities check failed: ${code} (${allowlistedErrnoOrOther(cause)})`,
+        ),
     },
   );
 }

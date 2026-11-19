@@ -14,7 +14,7 @@ import {
   CoreChatTranscriptBoundedBlocksPageResultSchema,
   parseCoreChatChildPage,
 } from '@canopy/protocol/canopy-core';
-import { transcriptReadFailure } from '@canopy/protocol/portal';
+import { transcriptReadFailure } from '@canopy/protocol/remote-control/shell';
 import type { CanopyCoreRelayReply } from '../../../shared/canopy-core-relay';
 import { createRelayCoreCoworkInvoker } from '@/cloud-chats/relay-invoker';
 import { webCoreLocalId } from '@/lib/chat-authority';

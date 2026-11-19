@@ -9,7 +9,7 @@ import { PrHoverCardsSpecimen } from './componentsLabPrHoverCards';
 export const GAP_ROOT_3D_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
   {
     id: 'pr-hover-cards',
-    name: 'PrHoverCardsProvider',
+    name: 'Pull request hover cards',
     group: 'Unified',
     note: 'The pull request cards presentation setting: a provider and a hook, shown through the GitHub hover card that reads it, with no provider, on, off and nested.',
     source: 'packages/ui-shared/src/components/pr-hover-cards.tsx',

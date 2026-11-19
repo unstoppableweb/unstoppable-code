@@ -1,4 +1,8 @@
-import { GitHubBrokerError, GitHubBrokerTimeoutError } from './errors';
+import {
+  GitHubBrokerAttemptSettledError,
+  GitHubBrokerError,
+  GitHubBrokerTimeoutError,
+} from './errors';
 
 export type GitHubRequestPriority = 'interactive' | 'watcher' | 'background';
 export type GitHubRequestOperation = 'read' | 'mutation';
@@ -399,6 +403,9 @@ export class GitHubRequestScheduler {
     if (entry.settled) return;
     entry.settled = true;
     clearTimeout(entry.timeout);
+    if (!entry.controller.signal.aborted) {
+      entry.controller.abort(new GitHubBrokerAttemptSettledError());
+    }
     if (entry.externalSignal && entry.onExternalAbort) {
       entry.externalSignal.removeEventListener('abort', entry.onExternalAbort);
     }

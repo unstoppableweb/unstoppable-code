@@ -705,10 +705,10 @@ export function GetAiCreditsCta({
   /**
    * Commit if a fresh read shows coverage; report whether it did.
    *
-   * Used after a successful cloud connect: a guest who signs in receives free
-   * starting credits, and the guest copy promises exactly that. Handing them
-   * off to a BILLING page at that point contradicts the offer and parks them
-   * on "Check again" until they happen to alt-tab back.
+   * Used after a successful cloud connect: the account a guest signs in to
+   * may already hold credits. Handing them off to a BILLING page at that
+   * point would ask them to buy what they have and park them on "Check
+   * again" until they happen to alt-tab back.
    *
    * FOUR outcomes, not two. Only ONE of them may open a billing page, so each
    * non-answer has to stay distinguishable from a real "no credits":

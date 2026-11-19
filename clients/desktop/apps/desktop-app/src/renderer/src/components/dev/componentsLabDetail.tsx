@@ -171,7 +171,7 @@ export function DetailHeaderSpecimen(): JSX.Element {
         </SpecimenCell>
       </SpecimenPanel>
 
-      <SpecimenPanel title="DetailMoreMenu (click the ⋯ to open)">
+      <SpecimenPanel title="DetailMoreMenu" hint="Click the ⋯ to open">
         <SpecimenGrid min={200}>
           <SpecimenCell label="Secondary (default): actions, destructive last">
             <DetailMoreMenu
@@ -181,11 +181,11 @@ export function DetailHeaderSpecimen(): JSX.Element {
               menuTestId="lab-more-secondary-menu"
             />
           </SpecimenCell>
-          <SpecimenCell label='variant="ghost-overlay"'>
+          <SpecimenCell label='variant="ghost"'>
             <DetailMoreMenu
               name="Review changes"
               items={MENU_ITEMS}
-              variant="ghost-overlay"
+              variant="ghost"
               triggerTestId="lab-more-ghost-trigger"
               menuTestId="lab-more-ghost-menu"
             />

@@ -3,7 +3,7 @@ import {
   supersedeToolInterruptions,
 } from '../settlement';
 import { isUserTurnBoundary } from './turn-boundary';
-import { parseAgentSentInfo } from '@canopy/protocol/portal/external-agent-sender';
+import { parseAgentSentInfo } from '@canopy/protocol/remote-control/shell/external-agent-sender';
 import { normalizeCommandReadToolBlock } from './command-read-display';
 import type {
   AgentUsage,

@@ -96,7 +96,7 @@ export function SurfacesSpecimen(): JSX.Element {
         </SpecimenCell>
       </SpecimenPanel>
 
-      <SpecimenPanel title="Selected (a picked plan, project or template)">
+      <SpecimenPanel title="Selected" hint="A picked plan, project or template">
         <SpecimenGrid min={180}>
           {VARIANTS.map(({ variant }) => (
             <SpecimenCell key={variant} label={`${variant}, selected`}>
@@ -112,7 +112,7 @@ export function SurfacesSpecimen(): JSX.Element {
           ))}
         </SpecimenGrid>
       </SpecimenPanel>
-      <SpecimenPanel title="Small: 8px corners on a compact box">
+      <SpecimenPanel title="Small" hint="8px corners on a compact box">
         <SpecimenGrid min={180}>
           {VARIANTS.map(({ variant }) => (
             <SpecimenCell key={variant} label={variant}>
@@ -128,7 +128,7 @@ export function SurfacesSpecimen(): JSX.Element {
           ))}
         </SpecimenGrid>
       </SpecimenPanel>
-      <SpecimenPanel title="Drawer: the composer drawer's 22px corners">
+      <SpecimenPanel title="Drawer" hint="The composer drawer's 22px corners">
         <SpecimenGrid min={180}>
           {VARIANTS.map(({ variant }) => (
             <SpecimenCell key={variant} label={variant}>
@@ -145,7 +145,7 @@ export function SurfacesSpecimen(): JSX.Element {
         </SpecimenGrid>
       </SpecimenPanel>
 
-      <SpecimenPanel title="Interactive: the fill darkens on hover">
+      <SpecimenPanel title="Interactive" hint="The fill darkens on hover">
         <SpecimenGrid min={180}>
           {VARIANTS.map(({ variant }) => (
             <SpecimenCell key={variant} label={variant}>

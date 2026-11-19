@@ -3,7 +3,7 @@
 import { memo, type JSX } from 'react';
 import { visibleMessageParts } from '@canopy/agent-transcript';
 import { AppAdvisorWatcherIcon } from '../../icons';
-import type { ChatWatcherFiredInfo } from '@canopy/protocol/portal';
+import type { ChatWatcherFiredInfo } from '@canopy/protocol/remote-control/shell';
 import {
   REPLAY_BLOCK_CLASS,
   REPLAY_MASK_CLASS,

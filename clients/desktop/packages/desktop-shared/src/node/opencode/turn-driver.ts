@@ -1,7 +1,7 @@
 import {
   parseOpenCodeReportedUsage,
   type OpenCodeReportedUsage,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import { AcpClientError } from '../acp';
 import {
   OpenCodeUpdateAccounting,

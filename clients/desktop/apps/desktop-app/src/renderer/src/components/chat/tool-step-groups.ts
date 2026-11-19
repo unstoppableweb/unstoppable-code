@@ -17,7 +17,7 @@ import {
 import {
   classifyTurnStepOutcome,
   type TurnOutcomeEvidence,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import { codexAgentState } from './agent-block-state';
 import type { TurnSummaryCounts } from '@canopy/desktop-shared/lib/turn-utils';
 import {

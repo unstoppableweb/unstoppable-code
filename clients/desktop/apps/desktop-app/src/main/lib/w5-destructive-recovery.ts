@@ -34,7 +34,7 @@ import {
   LIFECYCLE_JOURNAL_DIRECTORY_UNREADABLE_REFUSAL,
   LIFECYCLE_JOURNAL_ENTRY_NAME_PATTERN,
   LIFECYCLE_JOURNAL_UNREADABLE_REFUSAL,
-} from '@canopy/protocol/portal/lifecycle-journal';
+} from '@canopy/protocol/remote-control/shell/lifecycle-journal';
 import { W5CommitRefusedError } from '@canopy/desktop-shared/node/w5-commit-log/errors';
 import { syncDirectory } from '@canopy/execution-engine/node/lib/atomic-file';
 import { writeFileAtomically } from './atomic-file';

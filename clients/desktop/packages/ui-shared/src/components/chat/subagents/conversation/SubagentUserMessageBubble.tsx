@@ -1,6 +1,6 @@
 import { REPLAY_BLOCK_CLASS } from '../../../../lib/replay-privacy';
 import type { JSX, ReactNode } from 'react';
-import type { AgentSentInfo } from '@canopy/protocol/portal/external-agent-sender';
+import type { AgentSentInfo } from '@canopy/protocol/remote-control/shell/external-agent-sender';
 import { UserBubble } from '../../../UserBubble';
 import { SteeringTitle } from '../../SteeringTitle';
 import {

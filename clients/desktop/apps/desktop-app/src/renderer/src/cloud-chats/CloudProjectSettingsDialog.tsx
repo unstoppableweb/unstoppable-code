@@ -17,9 +17,9 @@ import {
   parseHostPortsInput,
 } from '@canopy/protocol/canopy-core/core';
 import type {
-  PortalChatTabPluginSelections,
-  PortalPluginCatalog,
-} from '@canopy/protocol/portal';
+  RemoteControlChatTabPluginSelections,
+  RemoteControlPluginCatalog,
+} from '@canopy/protocol/remote-control/shell';
 import {
   DialogModal,
   ErrorBanner,
@@ -33,8 +33,8 @@ import {
   CloudProjectHostTab,
   CloudProjectNetworkTab,
   CloudProjectPluginsTab,
-  countPortalPluginSelections,
-  PortalPluginsPicker,
+  countRemoteControlPluginSelections,
+  RemoteControlPluginsPicker,
   type CloudProjectHostRoutes,
 } from '@canopy/ui-app';
 import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
@@ -44,7 +44,7 @@ import { createRelayCoreCoworkInvoker } from './relay-invoker';
 import { CLOUD_PROJECT_DANGER_COPY } from './cloud-sidebar-capabilities';
 import type { CloudCoworkSidebarModel } from './useCloudCoworkSidebar';
 
-const EMPTY_SELECTIONS: PortalChatTabPluginSelections = {
+const EMPTY_SELECTIONS: RemoteControlChatTabPluginSelections = {
   collectionIds: [],
   skillRefs: [],
   pluginRefs: [],
@@ -70,17 +70,17 @@ const SYNC_DETAILS =
  * Capabilities still waiting to install or sign in are picks too.
  */
 function storedSelections(
-  selections: PortalChatTabPluginSelections,
-): PortalChatTabPluginSelections | null {
-  return countPortalPluginSelections(selections) > 0 ||
+  selections: RemoteControlChatTabPluginSelections,
+): RemoteControlChatTabPluginSelections | null {
+  return countRemoteControlPluginSelections(selections) > 0 ||
     (selections.unresolvedCapabilities?.length ?? 0) > 0
     ? selections
     : null;
 }
 
 const sameSelections = (
-  left: PortalChatTabPluginSelections | null,
-  right: PortalChatTabPluginSelections | null,
+  left: RemoteControlChatTabPluginSelections | null,
+  right: RemoteControlChatTabPluginSelections | null,
 ): boolean => JSON.stringify(left) === JSON.stringify(right);
 
 const samePorts = (
@@ -188,9 +188,11 @@ export function CloudProjectSettingsDialog({
     return createRelayCoreCoworkInvoker(window.canopyCore);
   }, [givenInvoker]);
   const [settings, setSettings] = useState<CloudProjectSettings | null>(null);
-  const [catalog, setCatalog] = useState<PortalPluginCatalog | null>(null);
+  const [catalog, setCatalog] = useState<RemoteControlPluginCatalog | null>(
+    null,
+  );
   const [pluginSelections, setPluginSelections] =
-    useState<PortalChatTabPluginSelections>(EMPTY_SELECTIONS);
+    useState<RemoteControlChatTabPluginSelections>(EMPTY_SELECTIONS);
   const [loadError, setLoadError] = useState<{
     readonly message: string;
     readonly details?: string;
@@ -586,7 +588,7 @@ export function CloudProjectSettingsDialog({
             <CloudProjectPluginsTab>
               {/* As a desktop cloud chat's picker: the legacy catalog lists
                   account servers as rows, which cloud scope would hide. */}
-              <PortalPluginsPicker
+              <RemoteControlPluginsPicker
                 catalog={catalog}
                 selections={pluginSelections}
                 brandDisplayName="your cloud account"

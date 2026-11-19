@@ -26,7 +26,12 @@ import { sanitizeName } from '../skills/installer';
 import type * as SkillContext from '../skills/skill-install-context';
 import type * as SkillService from '../skills/skill-service';
 import { getLockKey, parseLockKey } from '../skills/lock-file';
-import { deriveSourceId } from '../skills/paths';
+import { deriveSourceId, getSkillsRootDir } from '../skills/paths';
+import {
+  CloudCopyConsentStore,
+  type CloudCopyConsent,
+} from '../skills/cloud-copy-consents';
+import { isInstalledSkillSourceId } from '../skills/installed-skill-cloud-copy';
 import {
   readSkillLockSnapshot,
   skillLockEntryString,
@@ -62,6 +67,8 @@ export interface DesktopSkillCatalogDeps {
     typeof SkillService,
     | 'loadSkills'
     | 'readRawSkill'
+    | 'readInstalledSkillForCloudCopy'
+    | 'fingerprintInstalledSkillForCloudCopy'
     | 'readSkillContent'
     | 'listSkillFiles'
     | 'readSkillFile'
@@ -80,6 +87,8 @@ export interface DesktopSkillCatalogDeps {
   >;
   refreshInventory: (reason: string) => void;
   readLockSnapshot: () => Promise<SkillLockSnapshot>;
+  /** A local skill's cloud-copy consent, or null (CAN-6176, CAN-6943). */
+  readCloudCopyConsent: (localId: string) => CloudCopyConsent | null;
 }
 
 const FAILURE_REFUSALS: Readonly<
@@ -182,7 +191,9 @@ const SKILL_CONTENT_HASH = /^[a-f0-9]{64}$/;
 /** The row's link to a cloud custom skill, preferring the author's own share. */
 async function cloudShareOf(
   row: InstalledSkillInfo,
-  readRawSkill: DesktopSkillCatalogDeps['service']['readRawSkill'],
+  readRawSkill: (localId: string) => Promise<string>,
+  /** For an installed-source skill: whether its folder is the consented one. */
+  folderUnchanged?: (localId: string, remoteId: string) => Promise<boolean>,
 ): Promise<CatalogSkillCloudShare | undefined> {
   const link = row.remote
     ? {
@@ -207,6 +218,12 @@ async function cloudShareOf(
   } catch {
     localContentHash = null;
   }
+  if (
+    localContentHash !== null &&
+    folderUnchanged !== undefined &&
+    !(await folderUnchanged(`${row.sourceId}/${row.name}`, link.remoteId))
+  )
+    localContentHash = null;
   return {
     role: link.role,
     remoteId: link.remoteId,
@@ -217,6 +234,32 @@ async function cloudShareOf(
         : null,
     localContentHash,
   };
+}
+
+/**
+ * Whether an installed skill's folder is still the one its cloud copy was
+ * made from (CAN-6943): its consent for that copy recorded the folder's
+ * fingerprint. No consent, no fingerprint, or a folder that can't be read
+ * all count as changed, so the row offers "Update in cloud".
+ */
+async function installedFolderUnchanged(
+  localId: string,
+  remoteId: string,
+  fingerprint: (localId: string) => Promise<string>,
+  readConsent: (localId: string) => CloudCopyConsent | null,
+): Promise<boolean> {
+  const consent = readConsent(localId);
+  if (
+    consent === null ||
+    consent.remoteId !== remoteId ||
+    consent.sourceFingerprint === undefined
+  )
+    return false;
+  try {
+    return (await fingerprint(localId)) === consent.sourceFingerprint;
+  } catch {
+    return false;
+  }
 }
 
 async function loadDeps(
@@ -231,6 +274,10 @@ async function loadDeps(
       (await import('../plugins/invocable-inventory-service'))
         .refreshInvocableInventoryAfterMutation,
     readLockSnapshot: overrides.readLockSnapshot ?? readSkillLockSnapshot,
+    readCloudCopyConsent:
+      overrides.readCloudCopyConsent ??
+      ((localId): CloudCopyConsent | null =>
+        CloudCopyConsentStore.inSkillsRoot(getSkillsRootDir()).get(localId)),
   };
 }
 
@@ -306,7 +353,8 @@ export function createDesktopSkillCatalogHost(
 
   return {
     async list() {
-      const { service, context, readLockSnapshot } = await deps();
+      const { service, context, readLockSnapshot, readCloudCopyConsent } =
+        await deps();
       const loadedRows =
         succeeded(await call('list', () => service.loadSkills()), 'list') ?? [];
       let rows: typeof loadedRows;
@@ -334,7 +382,27 @@ export function createDesktopSkillCatalogHost(
               ? lock.entries.get(getLockKey(row.sourceId, row.name))
               : undefined;
           const hash = skillLockEntryString(entry, 'skillFolderHash');
-          const cloudShare = await cloudShareOf(row, service.readRawSkill);
+          // A skill installed from GitHub, a URL or a local folder is read
+          // through the installed-source reader (CAN-6943), which serves
+          // GitHub and URL installs `readRawSkill` doesn't, and its copy is
+          // current only while its whole folder matches the consent's.
+          const installedCopy =
+            isInstalledSkillSourceId(row.sourceId) && origin === 'installed';
+          const cloudShare = await cloudShareOf(
+            row,
+            installedCopy
+              ? service.readInstalledSkillForCloudCopy
+              : service.readRawSkill,
+            installedCopy
+              ? (localId, remoteId): Promise<boolean> =>
+                  installedFolderUnchanged(
+                    localId,
+                    remoteId,
+                    service.fingerprintInstalledSkillForCloudCopy,
+                    readCloudCopyConsent,
+                  )
+              : undefined,
+          );
           return {
             entryId: skillEntryId({
               sourceId: row.sourceId,

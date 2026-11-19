@@ -658,6 +658,15 @@ export const CLIENT_FEATURE_FLAGS = {
     description:
       'Temporary: cloud cowork chats in the desktop sidebar and chat view through the web core (CAN-4185); remove at CAN-4186 rollout.',
   },
+  canopyDesktopCloudCopyInstalledSkills: {
+    key: 'canopy-desktop-cloud-copy-installed-skills',
+    launchDarklyDisabledDefaultValue: false,
+    launchDarklyEnabledUnavailableValue: false,
+    // Hosted (cloud copies of installed skills): off in a local-only build.
+    localOnlyDefaultValue: false,
+    description:
+      "Temporary: a desktop cloud chat's picker offers skills installed from GitHub, a URL or a local folder for a private cloud copy (CAN-6943); main refuses them while off.",
+  },
   /**
    * @deprecated Retained for shipped builds; no current code reads it. Free
    * access is the only mode: the subscription tier system and its money
@@ -867,6 +876,7 @@ export type ClientFeatureFlagValues = {
   [CLIENT_FEATURE_FLAGS.canopySharedSpaceNotificationSettings.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyCloudDurableTerminals.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopCloudChats.key]: boolean;
+  [CLIENT_FEATURE_FLAGS.canopyDesktopCloudCopyInstalledSkills.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyFreeAccessEnabled.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopAccountProxy.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopExternalAgentsMenu.key]: boolean;
@@ -1100,6 +1110,9 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_DISABLED_DEFAULTS: ClientFeatureFl
         .launchDarklyDisabledDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopCloudChats.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopCloudChats
+        .launchDarklyDisabledDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopCloudCopyInstalledSkills.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopCloudCopyInstalledSkills
         .launchDarklyDisabledDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyFreeAccessEnabled.key]:
       CLIENT_FEATURE_FLAGS.canopyFreeAccessEnabled
@@ -1336,6 +1349,9 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_ENABLED_UNAVAILABLE_DEFAULTS: Clie
     [CLIENT_FEATURE_FLAGS.canopyDesktopCloudChats.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopCloudChats
         .launchDarklyEnabledUnavailableValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopCloudCopyInstalledSkills.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopCloudCopyInstalledSkills
+        .launchDarklyEnabledUnavailableValue,
     [CLIENT_FEATURE_FLAGS.canopyFreeAccessEnabled.key]:
       CLIENT_FEATURE_FLAGS.canopyFreeAccessEnabled
         .launchDarklyEnabledUnavailableValue,
@@ -1533,6 +1549,9 @@ export const CLIENT_FEATURE_FLAG_LOCAL_ONLY_DEFAULTS: ClientFeatureFlagValues =
       CLIENT_FEATURE_FLAGS.canopyCloudDurableTerminals.localOnlyDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopCloudChats.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopCloudChats.localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopCloudCopyInstalledSkills.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopCloudCopyInstalledSkills
+        .localOnlyDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyFreeAccessEnabled.key]:
       CLIENT_FEATURE_FLAGS.canopyFreeAccessEnabled.localOnlyDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopAccountProxy.key]:

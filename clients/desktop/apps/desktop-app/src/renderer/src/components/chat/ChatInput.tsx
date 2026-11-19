@@ -57,7 +57,7 @@ import {
   ClaudeModStatusDrawer,
   ComposerWorkDrawer,
   LifetimeLimitNotice,
-  PortalModelPicker,
+  RemoteControlModelPicker,
   useClaudeModBandKinds,
   useClaudeModComposerAnswerer,
   useClaudeModSurfaceToasts,
@@ -9008,7 +9008,7 @@ function ChatInputContent({
                   // picker the web's cloud chats use (CAN-6175 R5), with the
                   // brand name the web passes for rows no vendor claims
                   // (CAN-6753).
-                  <PortalModelPicker
+                  <RemoteControlModelPicker
                     hideAgents
                     statusRow
                     brandDisplayName={brandText.appName}

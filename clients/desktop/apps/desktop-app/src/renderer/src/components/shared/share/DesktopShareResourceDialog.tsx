@@ -104,7 +104,7 @@ async function loadDesktopShareAccount(): Promise<DesktopShareAccount | null> {
 }
 
 /** The Organizations list, which creates an organization or accepts an invitation. */
-const ORGANIZATION_SETUP_PORTAL_PATH = '/organization';
+const ORGANIZATION_SETUP_CLOUD_PAGE_PATH = '/organization';
 
 function subscribeDesktopAccountChanged(listener: () => void): () => void {
   window.addEventListener(CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT, listener);
@@ -228,7 +228,7 @@ export function DesktopShareResourceDialog({
   const { onClose } = props;
   const handleSetUpOrganization = useCallback(async (): Promise<boolean> => {
     const opened = await openSettingsPathOrWebReported(
-      ORGANIZATION_SETUP_PORTAL_PATH,
+      ORGANIZATION_SETUP_CLOUD_PAGE_PATH,
     );
     if (opened === 'settings') onClose();
     if (opened === 'web') refreshOnEveryReturn();

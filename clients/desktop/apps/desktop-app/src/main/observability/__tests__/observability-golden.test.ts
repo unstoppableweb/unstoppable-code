@@ -25,7 +25,7 @@ import {
   sweepCrashDumps,
   sweepStartupCrashDumps,
 } from '../crash-dump-sweep';
-import type { OpenCodeAccountSnapshot } from '@canopy/protocol/portal';
+import type { OpenCodeAccountSnapshot } from '@canopy/protocol/remote-control/shell';
 import { setFlagsFromString } from 'node:v8';
 import { runInNewContext } from 'node:vm';
 import type {

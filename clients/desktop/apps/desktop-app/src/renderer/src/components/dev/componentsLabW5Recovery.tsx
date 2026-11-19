@@ -4,7 +4,7 @@ import {
   W5RecoveryReasonSchema,
   type W5RecoveryReason,
   type W5RecoveryStatus,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import {
   W5RecoveryNotice,
   type W5RecoveryNoticeProps,
@@ -85,6 +85,80 @@ const cases: readonly {
     props: {
       status: { state: 'complete', canRecover: false, entries: [] },
       archiveRecovery: { unavailable: false, onReview: noop },
+    },
+  },
+  {
+    label: 'Dismissible blocked changes: restart for recovery available',
+    props: {
+      status: blocked,
+      canRecover: true,
+      onRecover: noop,
+      onDismiss: noop,
+    },
+  },
+  {
+    label: 'Dismissible refusal: recovery needs attention',
+    props: {
+      status: {
+        ...blocked,
+        state: 'refused',
+        canRecover: false,
+        reason: 'source-unavailable',
+      },
+      canRecover: true,
+      onDismiss: noop,
+    },
+  },
+  {
+    label: 'Dismissible recovery: restart required',
+    props: {
+      status: { ...blocked, state: 'restart-required', canRecover: false },
+      onDismiss: noop,
+    },
+  },
+  {
+    label: 'Dismissible recovery: complete',
+    props: {
+      status: { state: 'complete', canRecover: false, entries: [] },
+      onDismiss: noop,
+    },
+  },
+  {
+    label: 'Portal: dismissible read-only cold recovery',
+    props: {
+      status: projectRemoteW5Recovery(blocked),
+      canRecover: false,
+      onDismiss: noop,
+    },
+  },
+  {
+    label: 'Archive and cold recovery together: dismiss both notices',
+    props: {
+      status: blocked,
+      canRecover: true,
+      onRecover: noop,
+      onDismiss: noop,
+      archiveRecovery: {
+        unavailable: false,
+        onReview: noop,
+        onDismiss: noop,
+      },
+    },
+  },
+  {
+    label: 'Dismissed cold recovery: no notice',
+    props: { status: blocked, dismissed: true },
+  },
+  {
+    label: 'Dismissed cold recovery: archive notice remains',
+    props: {
+      status: blocked,
+      dismissed: true,
+      archiveRecovery: {
+        unavailable: false,
+        onReview: noop,
+        onDismiss: noop,
+      },
     },
   },
   {
@@ -212,7 +286,10 @@ const cases: readonly {
 export function W5RecoverySpecimen(): JSX.Element {
   return (
     <div className="flex flex-col gap-6">
-      <SpecimenPanel title="W5RecoveryNotice: lifecycle, capabilities and entries">
+      <SpecimenPanel
+        title="W5RecoveryNotice"
+        hint="Lifecycle, capabilities and entries"
+      >
         {cases.map(({ label, props }) => (
           <SpecimenCell key={label} label={label} wide>
             <div className="w-full">
@@ -221,7 +298,10 @@ export function W5RecoverySpecimen(): JSX.Element {
           </SpecimenCell>
         ))}
       </SpecimenPanel>
-      <SpecimenPanel title="Read-only diagnosis: blocked changes with retained entries">
+      <SpecimenPanel
+        title="Read-only diagnosis"
+        hint="Blocked changes with retained entries"
+      >
         {diagnosisReasons.map((reason) => (
           <SpecimenCell key={reason} label={reason} wide>
             <div className="w-full">
@@ -234,7 +314,10 @@ export function W5RecoverySpecimen(): JSX.Element {
           </SpecimenCell>
         ))}
       </SpecimenPanel>
-      <SpecimenPanel title="Refusals: every protocol reason with retained entries">
+      <SpecimenPanel
+        title="Refusals"
+        hint="Every protocol reason with retained entries"
+      >
         {W5RecoveryReasonSchema.options.map((reason) => (
           <SpecimenCell key={reason} label={reason} wide>
             <div className="w-full">

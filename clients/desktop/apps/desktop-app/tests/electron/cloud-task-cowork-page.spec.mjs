@@ -580,7 +580,9 @@ test("a cloud task archives from its own tab's menu or its sidebar row, and a re
     cloud.world.state.extraAnswers.delete('core.chat.archive');
     await row.first().click({ button: 'right' });
     await window.getByTestId('worktree-actions-menu-archive').first().click();
-    const rowConfirm = window.getByTestId('portal-delete-worktree-confirm');
+    const rowConfirm = window.getByTestId(
+      'remote-control-delete-worktree-confirm',
+    );
     await expect(rowConfirm).toBeVisible();
     await rowConfirm.getByRole('button', { name: /^Archive/ }).click();
     await expect(rowConfirm).toHaveCount(0);
@@ -662,7 +664,9 @@ test('a cloud task offers Delete only where the web core serves it, and deletes 
       await window.getByTestId('worktree-actions-menu-delete').first().click();
 
       // The web's own confirmation: what it removes and for how long.
-      const confirm = window.getByTestId('portal-delete-worktree-confirm');
+      const confirm = window.getByTestId(
+        'remote-control-delete-worktree-confirm',
+      );
       await expect(confirm).toBeVisible();
       await expect(confirm).toContainText(
         'Deleted chats are kept for 7 days, then removed. You can restore it from Archived and deleted.',
@@ -734,7 +738,9 @@ test("an archived cloud task waits on its project's More page, and Restore bring
     await expect(row.first()).toBeVisible({ timeout: 30_000 });
     await row.first().click({ button: 'right' });
     await window.getByTestId('worktree-actions-menu-archive').first().click();
-    const rowConfirm = window.getByTestId('portal-delete-worktree-confirm');
+    const rowConfirm = window.getByTestId(
+      'remote-control-delete-worktree-confirm',
+    );
     await rowConfirm.getByRole('button', { name: /^Archive/ }).click();
     await expect(row).toHaveCount(0, { timeout: 15_000 });
 
@@ -800,7 +806,7 @@ test("a cloud task's Activity lists its project's workspace files, adds and remo
     await window
       .getByTestId('panel-add-menu-item-activity-card-workspace-files')
       .click();
-    const files = window.getByTestId('portal-workspace-files').first();
+    const files = window.getByTestId('remote-control-workspace-files').first();
     await expect(
       files
         .getByTestId('workspace-file-row')
@@ -878,7 +884,7 @@ test('a cloud task with no workspace files adds its first one from Add, and agai
     await window
       .getByTestId('panel-add-menu-item-activity-card-workspace-files')
       .click();
-    const files = window.getByTestId('portal-workspace-files').first();
+    const files = window.getByTestId('remote-control-workspace-files').first();
     await expect(files.getByText('No shared files yet.')).toBeVisible({
       timeout: 15_000,
     });
@@ -1163,13 +1169,13 @@ test("a desktop skill shows in a cloud chat's Plugins picker and reaches the clo
     };
     await openPicker();
     const item = window
-      .getByTestId('portal-plugins-local-item')
+      .getByTestId('remote-control-plugins-local-item')
       .filter({ hasText: 'release-notes' });
     await expect(item).toBeVisible({ timeout: 15_000 });
     await expect(item).toContainText('Add to cloud');
 
     // Add opens the consent, which lists what goes; Cancel sends nothing.
-    await item.getByTestId('portal-plugins-local-add').click();
+    await item.getByTestId('remote-control-plugins-local-add').click();
     const consent = window.getByTestId('cloud-copy-consent');
     await expect(consent).toBeVisible({ timeout: 15_000 });
     await expect(consent.getByTestId('cloud-copy-consent-sent')).toContainText(
@@ -1181,7 +1187,7 @@ test("a desktop skill shows in a cloud chat's Plugins picker and reaches the clo
     expect(sharedSkillCreates).toHaveLength(0);
 
     // Add again, then Add in the consent: the skill goes once, privately.
-    await item.getByTestId('portal-plugins-local-add').click();
+    await item.getByTestId('remote-control-plugins-local-add').click();
     await expect(consent).toBeVisible({ timeout: 15_000 });
     const add = consent.getByTestId('cloud-copy-consent-add');
     await expect(add).toBeEnabled({ timeout: 15_000 });

@@ -175,7 +175,6 @@ export function ShareScopeSelector<T extends string>({
     <SegmentedControl<T>
       label={legend}
       semantics="radio"
-      shape="capsule"
       width="content"
       value={value}
       disabled={disabled}

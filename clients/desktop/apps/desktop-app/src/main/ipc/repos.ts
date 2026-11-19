@@ -1,7 +1,7 @@
 import {
   normalizeRepositoryCloneUrl,
   repositoryNameFromCloneUrl,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import { type Dirent } from 'node:fs';
 import { mkdir, readdir, stat } from 'node:fs/promises';
 import { basename, isAbsolute, join, posix, win32 } from 'node:path';

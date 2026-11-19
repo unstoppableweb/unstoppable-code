@@ -29,7 +29,7 @@ export function decideModelLibraryAccess(input: {
 /** Compatibility claims are rollout context, never model-access authority. */
 export const MODEL_LIBRARY_PROTOCOL_HEADER = 'x-canopy-model-library-protocol';
 export const MODEL_LIBRARY_PROTOCOL_VERSION = 1;
-export const MODEL_LIBRARY_PORTAL_CAPABILITY = 'model_library_v1';
+export const MODEL_LIBRARY_REMOTE_CONTROL_CAPABILITY = 'model_library_v1';
 export function isModelLibraryClientVersion(value: unknown): value is string {
   return (
     typeof value === 'string' &&

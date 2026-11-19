@@ -31,7 +31,7 @@ export interface ToolOccurrenceAdmission {
    * same event can find it. Never a provider tool id alone.
    */
   readonly sourceToken: string;
-  /** `portalToolOccurrenceId` of the call, or of an unpaired result. */
+  /** `remoteControlToolOccurrenceId` of the call, or of an unpaired result. */
   readonly occurrenceId: string;
   readonly call?: CanonicalBlockAddress;
   /** Present only for a terminal result. */

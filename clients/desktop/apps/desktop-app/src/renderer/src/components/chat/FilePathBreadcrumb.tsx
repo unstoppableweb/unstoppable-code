@@ -139,6 +139,17 @@ function BreadcrumbDirectory({
     );
   }
 
+  if (entry.data.entries.length === 0) {
+    return (
+      <div
+        className="px-2 py-1.5 text-xs fg-secondary"
+        style={{ paddingLeft: `${8 + depth * 14}px` }}
+      >
+        Empty folder
+      </div>
+    );
+  }
+
   return (
     <>
       {entry.data.entries.map((child) => {

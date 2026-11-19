@@ -24,6 +24,7 @@ import {
   type LabsExperimentsSnapshot,
 } from '@canopy/desktop-shared/lib/labs-experiments';
 import type { OpenCodeConnectionStatus } from '@canopy/desktop-shared/types/opencode-connection';
+import type { AntigravityRuntimeStatus } from '@canopy/desktop-shared/types/antigravity-runtime';
 import type { AccountProxyStatus } from '@canopy/desktop-shared/types/account-proxy';
 import { isSidebarItemGroupId } from '@canopy/protocol/sidebar';
 import type { ClaudeModSurfacePushEvent } from '@canopy/protocol/extension-ui';
@@ -94,7 +95,7 @@ import { createW5RecoveryApi } from './api/w5-recovery-api';
 import { createBackgroundServiceApi } from './api/background-service-api';
 import { createPanelLayoutApi } from './api/panel-layout-api';
 import { createAccountOrganizationSettingsApi } from './api/account-organization-settings-api';
-import { createAuthenticatedPortalApi } from './api/authenticated-portal-api';
+import { createAuthenticatedCloudPageApi } from './api/authenticated-cloud-page-api';
 import {
   createRemoteControlApi,
   uploadFilesToRemote,
@@ -3341,7 +3342,7 @@ const canopyApi: CanopyApi = {
     ipcRenderer.invoke(IPC_CHANNELS.settingsLoadCanopyCloudAccount),
   getCanopyCloudBaseUrl: () =>
     ipcRenderer.invoke(IPC_CHANNELS.settingsGetCanopyCloudBaseUrl),
-  ...createAuthenticatedPortalApi(ipcRenderer),
+  ...createAuthenticatedCloudPageApi(ipcRenderer),
   loadCanopyCloudAiCredits: (scope) =>
     ipcRenderer.invoke(IPC_CHANNELS.settingsLoadCanopyCloudAiCredits, scope),
   loadCanopyCloudEntitlements: (scope) =>
@@ -4153,6 +4154,26 @@ const canopyApi: CanopyApi = {
       return () => {
         ipcRenderer.removeListener(
           IPC_CHANNELS.opencodeConnectionProgress,
+          handler,
+        );
+      };
+    },
+  },
+  antigravityRuntime: {
+    status: () => ipcRenderer.invoke(IPC_CHANNELS.antigravityRuntimeStatus),
+    install: (operationId) =>
+      ipcRenderer.invoke(IPC_CHANNELS.antigravityRuntimeInstall, operationId),
+    cancel: (operationId) =>
+      ipcRenderer.invoke(IPC_CHANNELS.antigravityRuntimeCancel, operationId),
+    onProgress: (callback) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        status: AntigravityRuntimeStatus,
+      ): void => callback(status);
+      ipcRenderer.on(IPC_CHANNELS.antigravityRuntimeProgress, handler);
+      return () => {
+        ipcRenderer.removeListener(
+          IPC_CHANNELS.antigravityRuntimeProgress,
           handler,
         );
       };

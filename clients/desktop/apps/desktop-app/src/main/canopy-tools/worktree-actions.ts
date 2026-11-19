@@ -142,7 +142,7 @@ import {
   getWorktreePausedHookKeys,
   listHooks,
 } from '../services/hooks-service';
-import { PortalServiceError } from '../services/portal-service-error';
+import { RemoteControlServiceError } from '../services/remote-control-service-error';
 import type { WorktreeChatCoreWrites } from './worktree-chat-core-writes';
 import { isRecord } from '../lib/type-guards';
 import {
@@ -1578,7 +1578,10 @@ async function setHookPaused(
         source: 'app_advisor',
       }));
     } catch (cause) {
-      if (cause instanceof PortalServiceError && cause.code === 'not_found') {
+      if (
+        cause instanceof RemoteControlServiceError &&
+        cause.code === 'not_found'
+      ) {
         return error('not_found', cause.message);
       }
       const refused = hookPauseStorageRefusal(cause);
@@ -1632,7 +1635,7 @@ async function getWorktreeSettings(
       (candidate) => candidate.id === runtime.worktreeId,
     );
     if (!worktree) {
-      throw new PortalServiceError(
+      throw new RemoteControlServiceError(
         'not_found',
         `Worktree ${runtime.worktreeId} not found in project ${runtime.projectId}`,
       );
@@ -1648,7 +1651,10 @@ async function getWorktreeSettings(
       }),
     );
   } catch (cause) {
-    if (cause instanceof PortalServiceError && cause.code === 'not_found') {
+    if (
+      cause instanceof RemoteControlServiceError &&
+      cause.code === 'not_found'
+    ) {
       return error('not_found', cause.message);
     }
     throw cause;

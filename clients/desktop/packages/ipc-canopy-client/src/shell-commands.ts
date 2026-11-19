@@ -29,12 +29,12 @@ import type {
   ShellQueryName,
 } from '@canopy/app-core';
 import type {
-  PortalAgentModelConfig,
-  PortalChatCloudAttachmentRef,
-  PortalChatFileReference,
-  PortalChatSendPayload,
-  PortalEditorFileMentionOption,
-} from '@canopy/protocol/portal';
+  RemoteControlAgentModelConfig,
+  RemoteControlChatCloudAttachmentRef,
+  RemoteControlChatFileReference,
+  RemoteControlChatSendPayload,
+  RemoteControlEditorFileMentionOption,
+} from '@canopy/protocol/remote-control/shell';
 import { REMOTE_IPC_CHANNELS as C } from '@canopy/protocol/remote-control/channels';
 import { isThinkingLevel } from '@canopy/protocol/thinking';
 import {
@@ -278,9 +278,9 @@ function chatCommandReceipt(
 
 /** The composer settings a send carries, as the Portal executor merges them. */
 function sendModelConfig(
-  payload: PortalChatSendPayload,
-): PortalAgentModelConfig | undefined {
-  const config: PortalAgentModelConfig = {
+  payload: RemoteControlChatSendPayload,
+): RemoteControlAgentModelConfig | undefined {
+  const config: RemoteControlAgentModelConfig = {
     ...(payload.thinkingLevel === undefined
       ? {}
       : { thinkingLevel: payload.thinkingLevel }),
@@ -451,7 +451,7 @@ export function createShellCommandHandlers(deps: ShellCommandDeps): {
    * uploaded, sent as its computer path. Null when one is not.
    */
   const resolveAttachments = (
-    refs: readonly PortalChatCloudAttachmentRef[] | undefined,
+    refs: readonly RemoteControlChatCloudAttachmentRef[] | undefined,
     paths: readonly string[] | undefined,
   ): string[] | null | undefined => {
     if (refs === undefined || refs.length === 0) {
@@ -549,7 +549,7 @@ export function createShellCommandHandlers(deps: ShellCommandDeps): {
 
   /** Resolve this client's references for a send; unknown ids never reach the computer. */
   const resolveReferences = (
-    refs: readonly PortalChatFileReference[] | undefined,
+    refs: readonly RemoteControlChatFileReference[] | undefined,
   ): Record<string, unknown>[] | null | undefined => {
     if (refs === undefined || refs.length === 0) return undefined;
     const resolved: Record<string, unknown>[] = [];
@@ -687,7 +687,7 @@ export function createShellCommandHandlers(deps: ShellCommandDeps): {
         root: WireFileTreeRoot,
         relativePath: string,
         kind: 'file' | 'directory',
-      ): PortalEditorFileMentionOption => ({
+      ): RemoteControlEditorFileMentionOption => ({
         referenceId: references.mint(root, relativePath, kind),
         repoId: root.repoId,
         repoName: root.repoName,
@@ -720,7 +720,7 @@ export function createShellCommandHandlers(deps: ShellCommandDeps): {
         0,
         Math.min(payload.limit ?? DEFAULT_MENTIONS, MAX_MENTIONS),
       );
-      const files: PortalEditorFileMentionOption[] = [];
+      const files: RemoteControlEditorFileMentionOption[] = [];
       for (const repo of index.repos) {
         const root = roots.find(
           (candidate) => candidate.repoId === repo.repoId,

@@ -23,21 +23,19 @@ import {
   SECONDARY_SURFACE_OPEN_CLASS,
 } from '../lib/row-chips';
 import { KbdChip } from './KbdChip';
-import { OPERATIONAL_STATUS_COLORS } from '../lib/operational-status-colors';
 
+/**
+ * The five button looks (design decision, 2026-11-18). `primary` is the one
+ * main action, `secondary` every other filled action, `ghost` a quiet action
+ * with no fill at rest, and `destructive` / `ghost-destructive` their
+ * counterparts for an action that loses something. Nothing else exists: the
+ * outline, tinted, warning and the other ghost looks were retired.
+ */
 export type ButtonVariant =
   | 'primary'
   | 'secondary'
-  | 'outline'
   | 'ghost'
-  | 'ghost-overlay'
-  | 'ghost-quiet'
-  | 'ghost-accent'
   | 'ghost-destructive'
-  | 'ghost-warning'
-  | 'ghost-armed'
-  | 'tinted'
-  | 'warning'
   | 'destructive';
 
 /**
@@ -248,37 +246,15 @@ const VARIANT_CLASS_NAMES: Record<ButtonVariant, string> = {
   // The house secondary control surface shared with action chips and the
   // header `Open in` split control; only the ink is added here.
   secondary: `${SECONDARY_SURFACE_CLASS} ${SECONDARY_SURFACE_OPEN_CLASS} fg-primary ${DISABLED_FILL_CLASS_NAME} disabled:[background-image:none] aria-busy:data-[busy-appearance=preserved]:[background-image:none]`,
-  outline: `border bg-base fg-primary hover:bg-secondary active:bg-muted ${DISABLED_FILL_CLASS_NAME} aria-busy:data-[busy-appearance=preserved]:bg-base`,
-  // Pressed (a toggle, `aria-pressed`) takes a stronger overlay than hover,
-  // so a click shows, and it holds while hovered.
-  ghost: `bg-transparent fg-secondary hover:bg-secondary hover:fg-primary not-disabled:aria-pressed:bg-muted not-disabled:aria-pressed:fg-primary ${DISABLED_NO_FILL_CLASS_NAME} aria-busy:data-[busy-appearance=preserved]:fg-secondary`,
-  // Ghost for a control on a raised or hovered surface (a card's row): the
-  // translucent hover layers over whatever is beneath, where `ghost`'s
-  // opaque fill would punch a hole in it.
-  'ghost-overlay': `bg-transparent fg-secondary hover:bg-subtle hover:fg-primary ${DISABLED_NO_FILL_CLASS_NAME} aria-busy:data-[busy-appearance=preserved]:fg-secondary`,
-  // A ghost a step quieter at rest, for actions that repeat on every row of
-  // a list (a chat reply's Copy, Fork, "•••"); hover and focus bring the
-  // full ink back.
-  // Disabled, it keeps no fill: a quiet action that can't run now reads as
-  // a dimmed icon, not a grey disc. Open (a menu) or pressed (a toggle), it
-  // takes the full ink, and its small icons draw a 1.5px visible stroke.
-  'ghost-quiet': `canopy-small-icon-stroke bg-transparent fg-tertiary hover:bg-subtle hover:fg-primary focus-visible:fg-primary not-disabled:aria-expanded:bg-subtle not-disabled:aria-expanded:fg-primary not-disabled:aria-pressed:fg-primary ${DISABLED_NO_FILL_CLASS_NAME} aria-busy:data-[busy-appearance=preserved]:fg-tertiary`,
-  'ghost-accent': `bg-transparent fg-accent hover:bg-accent-subtle hover:fg-accent-strong ${DISABLED_NO_FILL_CLASS_NAME}`,
+  // No fill at rest. The hover is the translucent overlay, so it shows on
+  // any surface (a page, a card, a hovered row) instead of punching an
+  // opaque hole in it. Open (a menu, `aria-expanded`) holds the hover look;
+  // pressed (a toggle, `aria-pressed`) or on (a switch, `aria-checked`)
+  // takes a stronger overlay than hover, so the state shows at rest.
+  ghost: `bg-transparent fg-secondary hover:bg-subtle hover:fg-primary not-disabled:aria-expanded:bg-subtle not-disabled:aria-expanded:fg-primary not-disabled:aria-pressed:bg-muted not-disabled:aria-pressed:fg-primary not-disabled:aria-checked:bg-muted not-disabled:aria-checked:fg-primary ${DISABLED_NO_FILL_CLASS_NAME} aria-busy:data-[busy-appearance=preserved]:fg-secondary`,
   // A quiet destructive action beside other actions (Delete next to Edit),
   // where the filled `destructive` would outweigh the primary choice.
   'ghost-destructive': `bg-transparent fg-destructive hover:bg-destructive-subtle hover:fg-destructive ${DISABLED_NO_FILL_CLASS_NAME}`,
-  // A quiet action that resolves a warning beside other actions (Resolve
-  // conflicts in a header, Install on a plugin row), where the filled
-  // `warning` would outweigh its neighbours.
-  // Pending agent-armed intent: retain unread ink while hovered, without a destructive fill.
-  'ghost-armed': `bg-transparent ${OPERATIONAL_STATUS_COLORS.unread.foreground} hover:bg-subtle ${DISABLED_NO_FILL_CLASS_NAME}`,
-  'ghost-warning': `bg-transparent fg-warning hover:bg-warning-subtle hover:fg-warning ${DISABLED_NO_FILL_CLASS_NAME}`,
-  // A faint filled capsule, a step below `secondary`: the resting choices in
-  // a row whose open or selected one is `secondary` (the composer work
-  // pills). The translucent `--bg-subtle` fill and no edge, so switching to
-  // `secondary` (a ring, not a border) moves nothing.
-  tinted: `bg-subtle fg-secondary hover:bg-muted hover:fg-primary not-disabled:aria-pressed:bg-muted not-disabled:aria-pressed:fg-primary ${DISABLED_FILL_CLASS_NAME} aria-busy:data-[busy-appearance=preserved]:bg-subtle`,
-  warning: `bg-warning-subtle fg-warning hover:bg-warning-subtle/80 active:bg-warning-subtle ${DISABLED_FILL_CLASS_NAME} aria-busy:data-[busy-appearance=preserved]:bg-warning-subtle`,
   destructive: `bg-destructive fg-emphasis hover:bg-destructive-hover ${DISABLED_FILL_CLASS_NAME} aria-busy:data-[busy-appearance=preserved]:bg-destructive`,
 };
 
@@ -384,21 +360,9 @@ const FILL_ROW_HOVER_CLASS_NAMES: Record<ButtonVariant, string> = {
   // source, so a class built by string replacement never gets a rule.
   secondary:
     'group-hover/checklist:[background-image:linear-gradient(var(--bg-subtle),var(--bg-subtle))]',
-  outline: 'group-hover/checklist:bg-secondary',
-  ghost: 'group-hover/checklist:bg-secondary group-hover/checklist:fg-primary',
-  'ghost-overlay':
-    'group-hover/checklist:bg-subtle group-hover/checklist:fg-primary',
-  'ghost-quiet':
-    'group-hover/checklist:bg-subtle group-hover/checklist:fg-primary',
-  'ghost-accent':
-    'group-hover/checklist:bg-accent-subtle group-hover/checklist:fg-accent-strong',
+  ghost: 'group-hover/checklist:bg-subtle group-hover/checklist:fg-primary',
   'ghost-destructive':
     'group-hover/checklist:bg-destructive-subtle group-hover/checklist:fg-destructive',
-  'ghost-warning':
-    'group-hover/checklist:bg-warning-subtle group-hover/checklist:fg-warning',
-  'ghost-armed': 'group-hover/checklist:bg-subtle',
-  tinted: 'group-hover/checklist:bg-muted group-hover/checklist:fg-primary',
-  warning: 'group-hover/checklist:bg-warning-subtle/80',
   destructive: 'group-hover/checklist:bg-destructive-hover',
 };
 
@@ -411,20 +375,9 @@ const GROUP_HOVER_CLASS_NAMES: Record<ButtonVariant, string> = {
     'enabled:group-hover/gitaction:bg-[color-mix(in_srgb,var(--bg-accent),#000_12%)]',
   secondary:
     'enabled:group-hover/gitaction:[background-image:linear-gradient(var(--bg-subtle),var(--bg-subtle))]',
-  outline: 'enabled:group-hover/gitaction:bg-secondary',
   ghost:
-    'enabled:group-hover/gitaction:bg-secondary enabled:group-hover/gitaction:fg-primary',
-  'ghost-overlay':
     'enabled:group-hover/gitaction:bg-subtle enabled:group-hover/gitaction:fg-primary',
-  'ghost-quiet':
-    'enabled:group-hover/gitaction:bg-subtle enabled:group-hover/gitaction:fg-primary',
-  'ghost-accent': 'enabled:group-hover/gitaction:bg-accent-subtle',
   'ghost-destructive': 'enabled:group-hover/gitaction:bg-destructive-subtle',
-  'ghost-warning': 'enabled:group-hover/gitaction:bg-warning-subtle',
-  'ghost-armed': 'enabled:group-hover/gitaction:bg-subtle',
-  tinted:
-    'enabled:group-hover/gitaction:bg-muted enabled:group-hover/gitaction:fg-primary',
-  warning: 'enabled:group-hover/gitaction:bg-warning-subtle/80',
   destructive: 'enabled:group-hover/gitaction:bg-destructive-hover',
 };
 
@@ -434,18 +387,8 @@ const PRESSED_HOVER_CLASS_NAMES: Record<ButtonVariant, string> = {
     'enabled:aria-pressed:bg-[color-mix(in_srgb,var(--bg-accent),#000_12%)]',
   secondary:
     'enabled:aria-pressed:[background-image:linear-gradient(var(--bg-subtle),var(--bg-subtle))]',
-  outline: 'enabled:aria-pressed:bg-secondary',
-  ghost: 'enabled:aria-pressed:bg-secondary enabled:aria-pressed:fg-primary',
-  'ghost-overlay':
-    'enabled:aria-pressed:bg-subtle enabled:aria-pressed:fg-primary',
-  'ghost-quiet':
-    'enabled:aria-pressed:bg-subtle enabled:aria-pressed:fg-primary',
-  'ghost-accent': 'enabled:aria-pressed:bg-accent-subtle',
+  ghost: 'enabled:aria-pressed:bg-subtle enabled:aria-pressed:fg-primary',
   'ghost-destructive': 'enabled:aria-pressed:bg-destructive-subtle',
-  'ghost-warning': 'enabled:aria-pressed:bg-warning-subtle',
-  'ghost-armed': 'enabled:aria-pressed:bg-subtle',
-  tinted: 'enabled:aria-pressed:bg-muted enabled:aria-pressed:fg-primary',
-  warning: 'enabled:aria-pressed:bg-warning-subtle/80',
   destructive: 'enabled:aria-pressed:bg-destructive-hover',
 };
 

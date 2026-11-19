@@ -15,7 +15,7 @@ import {
 import {
   detectClaudeHostedNoBillingSource,
   hasClaudeProxyFailureEvidence,
-} from '@canopy/desktop-shared/portal/provider-usage-limit';
+} from '@canopy/desktop-shared/remote-control/provider-usage-limit';
 import {
   CHILD_TOOL_LIVENESS_STAMP,
   isAiCreditsFailureEventShape,
@@ -24,7 +24,7 @@ import {
   readClaudeApiErrorStatus,
 } from '@canopy/agent-transcript';
 import { withProxyFailureRestored } from './ai-credits-proxy-failure-restore';
-import { chatInputRefusal } from '@canopy/protocol/portal/input-delivery';
+import { chatInputRefusal } from '@canopy/protocol/remote-control/shell/input-delivery';
 import { withClaudeAiCreditsFallbackError } from './claude-ai-credits-fallback-error';
 import { claudeManagedSettingsGuard } from './claude-managed-settings';
 import { normalizeClaudeMaxTurns } from '@canopy/desktop-shared/constants/preferences';

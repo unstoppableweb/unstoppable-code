@@ -83,7 +83,7 @@ export function GuestModelGateContent({
         {renderSignIn(copy.signInAction)}
         {actionableFallback && (
           <Button
-            variant="outline"
+            variant="secondary"
             size="lg"
             className="w-full"
             data-testid={`${dataTestId}-guest-fallback`}

@@ -7,25 +7,25 @@ import {
   type SetStateAction,
 } from 'react';
 import type {
-  PortalAppAdvisorSettings,
-  PortalAppAdvisorSettingsSavePayload,
-  PortalChatTabPluginSelections,
-} from '@canopy/protocol/portal';
+  RemoteControlAppAdvisorSettings,
+  RemoteControlAppAdvisorSettingsSavePayload,
+  RemoteControlChatTabPluginSelections,
+} from '@canopy/protocol/remote-control/shell';
 import {
   clampThinkingLevelToDeclared,
   type ThinkingLevel,
 } from '@canopy/protocol/thinking';
 
 export interface OrchestratorRemoteSettingsSource {
-  readonly onLoad: () => Promise<PortalAppAdvisorSettings | null>;
+  readonly onLoad: () => Promise<RemoteControlAppAdvisorSettings | null>;
   readonly onSave: (
-    patch: PortalAppAdvisorSettingsSavePayload,
+    patch: RemoteControlAppAdvisorSettingsSavePayload,
   ) => Promise<void>;
 }
 interface RemoteSettingsState {
-  readonly settings: PortalAppAdvisorSettings | null;
+  readonly settings: RemoteControlAppAdvisorSettings | null;
   readonly setSettings: Dispatch<
-    SetStateAction<PortalAppAdvisorSettings | null>
+    SetStateAction<RemoteControlAppAdvisorSettings | null>
   >;
   readonly retentionDays: number;
   readonly setRetentionDays: Dispatch<SetStateAction<number>>;
@@ -41,16 +41,16 @@ interface RemoteSettingsState {
   readonly handleSave: () => Promise<void>;
   readonly handleModelChange: (model: string) => void;
   readonly handlePluginChange: (
-    selections: PortalChatTabPluginSelections,
+    selections: RemoteControlChatTabPluginSelections,
   ) => void;
   readonly handleProjectAgentAccessChange: (
-    access: NonNullable<PortalAppAdvisorSettings['projectAgentAccess']>,
+    access: NonNullable<RemoteControlAppAdvisorSettings['projectAgentAccess']>,
   ) => void;
   readonly saveDefaults: (
-    patch: PortalAppAdvisorSettingsSavePayload,
+    patch: RemoteControlAppAdvisorSettingsSavePayload,
   ) => Promise<void>;
   readonly selectedModel:
-    | PortalAppAdvisorSettings['availableModels'][number]
+    | RemoteControlAppAdvisorSettings['availableModels'][number]
     | undefined;
   readonly supportedThinkingLevels: readonly ThinkingLevel[];
 }
@@ -69,9 +69,8 @@ export function useOrchestratorRemoteSettings(
   { onLoad, onSave }: OrchestratorRemoteSettingsSource,
   errorCopy: (error: unknown, action: string) => string,
 ): RemoteSettingsState {
-  const [settings, setSettings] = useState<PortalAppAdvisorSettings | null>(
-    null,
-  );
+  const [settings, setSettings] =
+    useState<RemoteControlAppAdvisorSettings | null>(null);
   const [savedInstructions, setSavedInstructions] = useState('');
   const [retentionDays, setRetentionDays] = useState(DEFAULT_RETENTION_DAYS);
   const [autoArchiveEnabled, setAutoArchiveEnabled] = useState(false);
@@ -136,7 +135,7 @@ export function useOrchestratorRemoteSettings(
   const isDirty = instructionsDirty || retentionDirty || autoArchiveDirty;
 
   const saveDefaults = async (
-    patch: PortalAppAdvisorSettingsSavePayload,
+    patch: RemoteControlAppAdvisorSettingsSavePayload,
   ): Promise<void> => {
     if (!settings) return;
     setSaveError(null);
@@ -171,14 +170,14 @@ export function useOrchestratorRemoteSettings(
   };
 
   const handlePluginChange = (
-    pluginSelections: PortalChatTabPluginSelections,
+    pluginSelections: RemoteControlChatTabPluginSelections,
   ): void => {
     void saveDefaults({ pluginSelections });
   };
 
   const saveProjectAgentAccess = async (
     projectAgentAccess: NonNullable<
-      PortalAppAdvisorSettings['projectAgentAccess']
+      RemoteControlAppAdvisorSettings['projectAgentAccess']
     >,
   ): Promise<void> => {
     if (!settings?.projectAgentAccess || savingProjectAgentAccess) return;
@@ -202,7 +201,7 @@ export function useOrchestratorRemoteSettings(
 
   const handleProjectAgentAccessChange = (
     projectAgentAccess: NonNullable<
-      PortalAppAdvisorSettings['projectAgentAccess']
+      RemoteControlAppAdvisorSettings['projectAgentAccess']
     >,
   ): void => {
     void saveProjectAgentAccess(projectAgentAccess);
@@ -212,7 +211,7 @@ export function useOrchestratorRemoteSettings(
     if (!settings || saving || !isDirty) return;
     setSaving(true);
     setSaveError(null);
-    const patch: PortalAppAdvisorSettingsSavePayload = {};
+    const patch: RemoteControlAppAdvisorSettingsSavePayload = {};
     if (instructionsDirty) patch.instructions = settings.instructions;
     if (retentionDirty) patch.archiveRetentionDays = persistedRetention;
     if (autoArchiveDirty) patch.autoArchiveDays = persistedAutoArchive;

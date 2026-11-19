@@ -12,10 +12,10 @@ import { CanopyCloudClientError, requestCanopyCloudJson } from './client';
 const DIGEST_PREFERENCES_PATH = `/api/v1/${BRAND.web.apiNamespace}/account/digest-preferences`;
 
 /**
- * Weekly-only, from the shared contract the web preferences service uses (an
- * absent row means weekly). Carried alongside an unavailable/unresolved answer
- * only — the renderer must consult `resolved` before treating these as the
- * account's real setting.
+ * Every cadence off, from the shared contract the web preferences service uses
+ * (digests are opt-in, so an absent row means off). Carried alongside an
+ * unavailable/unresolved answer only — the renderer must consult `resolved`
+ * before treating these as the account's real setting.
  *
  * Frozen because {@link UNAVAILABLE} and {@link UNRESOLVED} are module-level
  * singletons returned by reference on every failure: without this, one caller

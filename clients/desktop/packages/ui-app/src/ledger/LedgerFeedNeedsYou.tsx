@@ -46,7 +46,7 @@ import {
 import type { LedgerChatTarget, LedgerLiveWait } from '@canopy/app-core';
 import type { LedgerActorLabel } from '@canopy/protocol/canopy-core';
 import type { LedgerViewScope } from '@canopy/protocol/ledger-view';
-import { validateQuestionControlAnswers } from '@canopy/protocol/portal';
+import { validateQuestionControlAnswers } from '@canopy/protocol/remote-control/shell';
 import {
   ledgerScopeWorkPath,
   type LedgerScopeNamesFor,

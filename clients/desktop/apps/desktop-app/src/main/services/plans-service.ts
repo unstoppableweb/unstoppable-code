@@ -1,8 +1,8 @@
 import type {
   CreateTrackedPlanRequest,
   DeleteTrackedPlanRequest,
-  PortalPlanDetail,
-  PortalPlanSummary,
+  RemoteControlPlanDetail,
+  RemoteControlPlanSummary,
   SaveTrackedPlanCommentsRequest,
   ShareTrackedPlanRequest,
   UnshareTrackedPlanRequest,
@@ -14,7 +14,7 @@ import type {
 } from '@canopy/desktop-shared/types';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import type { BrowserWindow } from 'electron';
-import { type PortalPlanGetPayload } from '@canopy/protocol/portal';
+import { type RemoteControlPlanGetPayload } from '@canopy/protocol/remote-control/shell';
 import {
   createTrackedPlan,
   getTrackedPlan,
@@ -33,13 +33,13 @@ import {
   desktopPlanOperations,
 } from '../canopy-runtime/plan-operations';
 import {
-  planToPortalEntity,
+  planToRemoteControlEntity,
   toPlanDetail,
   toPlanSummary,
   toRequestedPlanDetail,
-} from './plan-portal-projection';
+} from './plan-remote-control-projection';
 
-export { planToPortalEntity };
+export { planToRemoteControlEntity };
 
 type PlanMutationOptions = {
   portalCommandId?: string;
@@ -87,7 +87,7 @@ function validateWorktreeIds(request: TrackedPlanListRequest): void {
 
 export async function listPlans(
   request: TrackedPlanListRequest,
-): Promise<PortalPlanSummary[]> {
+): Promise<RemoteControlPlanSummary[]> {
   validateWorktreeIds(request);
   const plans =
     request.projectId === SHARED_CONTAINER_VIEWER_PROJECT_ID
@@ -110,8 +110,8 @@ export function listTrackedPlanDataWithSkipped(
 }
 
 export async function readPlan(
-  request: PortalPlanGetPayload,
-): Promise<PortalPlanDetail | null> {
+  request: RemoteControlPlanGetPayload,
+): Promise<RemoteControlPlanDetail | null> {
   validateWorktreeIds(request);
   validateId(request.planId, 'planId');
   if (
@@ -145,7 +145,7 @@ export function readTrackedPlanData(
 export async function createPlan(
   request: CreateTrackedPlanRequest,
   options: PlanMutationOptions = {},
-): Promise<PortalPlanDetail> {
+): Promise<RemoteControlPlanDetail> {
   validateWorktreeIds(request);
   assertWritableScope(request.projectId);
   const plan = await createTrackedPlan(request);
@@ -163,7 +163,7 @@ export function createTrackedPlanData(
 export async function updatePlan(
   request: UpdateTrackedPlanRequest,
   options: PlanMutationOptions = {},
-): Promise<PortalPlanDetail | null> {
+): Promise<RemoteControlPlanDetail | null> {
   validateWorktreeIds(request);
   assertWritableScope(request.projectId);
   validateId(request.planId, 'planId');

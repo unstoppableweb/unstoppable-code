@@ -13,7 +13,6 @@ import {
 import type { BackgroundTask } from '@canopy/protocol/background-tasks';
 import {
   AnsiOutput,
-  SpinnerStyleProvider,
   StatusGlyph,
   EmptyStateRow,
   joinDetails,
@@ -190,12 +189,10 @@ function WorkflowInspector({
                   className="flex min-w-0 items-center gap-2.5"
                 >
                   <span className="flex w-3.5 shrink-0 justify-center">
-                    <SpinnerStyleProvider value="comet">
-                      <StatusGlyph
-                        state={AGENT_GLYPH_STATES[agent.state]}
-                        size={14}
-                      />
-                    </SpinnerStyleProvider>
+                    <StatusGlyph
+                      state={AGENT_GLYPH_STATES[agent.state]}
+                      size={14}
+                    />
                   </span>
                   {/* The activity follows the name, as on the drawer rows. */}
                   <span className="min-w-0 max-w-1/2 shrink-0 truncate fg-primary">

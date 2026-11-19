@@ -54,7 +54,7 @@ import {
   DataUsageIcon,
   LoginIcon,
   LogoutIcon,
-  PortalIcon,
+  RemoteControlIcon,
   RaisedHandIcon,
   SettingsIcon,
   SyncIcon,
@@ -92,7 +92,7 @@ export interface SidebarAccountMenuProps {
   onSettingsClick: () => void;
   settingsOpen: boolean;
   /** Opens the Remote Control dialog (the host's `canopy_portal.open` dispatch). */
-  onCanopyPortalClick: () => void;
+  onRemoteControlClick: () => void;
   /**
    * Lowest-priority footer banner slot (the DEV banner), rendered after the
    * account recovery, onboarding, and update banners and immediately above the
@@ -116,7 +116,7 @@ export function SidebarAccountMenu({
   onNavigate,
   onSettingsClick,
   settingsOpen,
-  onCanopyPortalClick,
+  onRemoteControlClick,
   footerBanner,
 }: SidebarAccountMenuProps): JSX.Element {
   const [feedbackModalOpen, setFeedbackModalOpen] = useState(false);
@@ -508,7 +508,7 @@ export function SidebarAccountMenu({
                     handleItemClick(
                       remoteControlLive
                         ? () => openRemoteControlSessions(true)
-                        : onCanopyPortalClick,
+                        : onRemoteControlClick,
                     )
                   }
                   // Starts with the visible label; the state follows it.
@@ -521,7 +521,7 @@ export function SidebarAccountMenu({
                   data-remote-control-live={remoteControlLive || undefined}
                 >
                   <DropdownMenuItemIcon>
-                    <PortalIcon size="xl" aria-hidden="true" />
+                    <RemoteControlIcon size="xl" aria-hidden="true" />
                   </DropdownMenuItemIcon>
                   {REMOTE_CONTROL_LABEL}
                   {remoteControlLive && (

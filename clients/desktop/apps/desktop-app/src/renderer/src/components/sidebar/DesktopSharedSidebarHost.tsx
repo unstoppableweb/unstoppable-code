@@ -81,7 +81,7 @@ import {
   worktreeDiscardBatchPointer,
   worktreeRecoveryBatchPointer,
 } from '@canopy/ui-shared/lib/worktree-discard-copy';
-import type { WorktreeDiscardDescription } from '@canopy/protocol/portal/worktree-discard';
+import type { WorktreeDiscardDescription } from '@canopy/protocol/remote-control/shell/worktree-discard';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import { useSidebarStore } from '@/stores/sidebarStore';
 import { createDiffStatsKey } from '@/stores/projectsStore.diffStats';

@@ -19,7 +19,7 @@ import type {
   WorktreeDiscardSource,
   WorktreeDiscardTarget,
   WorktreeDiscardTargetKind,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import {
   assertArchivedGitStatePurgeable,
   deleteArchivedContainerSnapshotRef,

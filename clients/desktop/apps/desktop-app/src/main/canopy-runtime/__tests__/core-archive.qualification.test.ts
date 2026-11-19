@@ -11,7 +11,7 @@ import {
   type CanopyCallerDescriptor,
   type WorktreeRecoveryFinishResult,
 } from '@canopy/protocol/canopy-core';
-import { worktreeRecoveryResolutionAction } from '@canopy/protocol/portal/worktree-recovery';
+import { worktreeRecoveryResolutionAction } from '@canopy/protocol/remote-control/shell/worktree-recovery';
 import type {
   ArchivedContainerSummary,
   ArchivedContainerSummaryV1,
@@ -30,7 +30,6 @@ import {
 import { LOCAL_DESKTOP_AUTHORITY_ID } from '../desktop-runtime-identity';
 import { closeChatSearchService } from '../../chat-search/service';
 import { disposeElectronDaemonConnections } from '../electron-daemon-access';
-import { cancelDesktopStructureChanged } from '../../services/desktop-structure-signal';
 import { cancelDesktopSessionSnapshotInvalidation } from '../../services/desktop-session-snapshot-invalidation';
 import { peekObservabilityService } from '../../observability';
 import { settleDetachedWork } from '@canopy/desktop-shared/node/lib/detached-work';
@@ -239,7 +238,6 @@ afterEach(async () => {
 afterAll(async () => {
   // The real sidecar tail drains daemon Code Graph jobs through the app singleton.
   await disposeElectronDaemonConnections();
-  cancelDesktopStructureChanged();
   cancelDesktopSessionSnapshotInvalidation();
   for (const directory of fixtureRoots)
     rmSync(directory, { recursive: true, force: true });
@@ -2318,10 +2316,8 @@ persistenceIt(
         expect(scan).toHaveBeenCalledTimes(2);
       } finally {
         await drainFixtureServices();
-        const portal = await import('../../services/desktop-structure-signal');
         const snapshots =
           await import('../../services/desktop-session-snapshot-invalidation');
-        portal.cancelDesktopStructureChanged();
         snapshots.cancelDesktopSessionSnapshotInvalidation();
         scan.mockRestore();
         status.mockRestore();

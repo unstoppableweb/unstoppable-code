@@ -6,12 +6,12 @@
  * messages, raw provider errors, or connection data.
  */
 import {
-  type PortalProviderUsageAccount,
-  type PortalProviderUsageCredits,
-  type PortalProviderUsageError,
-  type PortalProviderUsageErrorKind,
-  type PortalProviderUsageWindow,
-} from '@canopy/protocol/portal';
+  type RemoteControlProviderUsageAccount,
+  type RemoteControlProviderUsageCredits,
+  type RemoteControlProviderUsageError,
+  type RemoteControlProviderUsageErrorKind,
+  type RemoteControlProviderUsageWindow,
+} from '@canopy/protocol/remote-control/shell';
 import { subscriptionLabelForPlanType } from '@canopy/protocol/telemetry';
 import type { AgentProviderType } from '../types';
 import type {
@@ -41,7 +41,7 @@ function finiteNumber(value: number | undefined): number | undefined {
 }
 
 /** An ISO timestamp, or undefined for a missing or invalid time. */
-export function toPortalIsoTimestamp(
+export function toRemoteControlIsoTimestamp(
   value: string | number | null | undefined,
 ): string | undefined {
   if (value === undefined || value === null || value === '') {
@@ -54,7 +54,7 @@ export function toPortalIsoTimestamp(
 function projectCredits(
   credits: ProviderCreditsSnapshot | undefined,
   creditsAreCount: boolean,
-): PortalProviderUsageCredits | undefined {
+): RemoteControlProviderUsageCredits | undefined {
   if (!credits) {
     return undefined;
   }
@@ -80,11 +80,11 @@ function projectCredits(
 export function projectProviderUsageWindows(
   provider: AgentProviderType,
   rateLimits: readonly ProviderRateLimitSnapshot[] | undefined,
-): PortalProviderUsageWindow[] {
+): RemoteControlProviderUsageWindow[] {
   const idCounts = new Map<string, number>();
   const bucketsWithCredits = new Set<string>();
   return buildProviderUsageWindows(provider, rateLimits).map(
-    (window): PortalProviderUsageWindow => {
+    (window): RemoteControlProviderUsageWindow => {
       const occurrence = (idCounts.get(window.key) ?? 0) + 1;
       idCounts.set(window.key, occurrence);
       const bucket = window.key.slice(0, window.key.lastIndexOf('-'));
@@ -95,7 +95,7 @@ export function projectProviderUsageWindows(
         bucketsWithCredits.add(bucket);
       }
       const usedPercent = finiteNumber(window.usedPercent);
-      const resetsAt = toPortalIsoTimestamp(window.resetsAt);
+      const resetsAt = toRemoteControlIsoTimestamp(window.resetsAt);
       const windowDurationMs = finiteNumber(window.windowDurationMs);
       return {
         id: occurrence === 1 ? window.key : `${window.key}-${occurrence}`,
@@ -119,9 +119,9 @@ export function projectProviderUsageWindows(
  * The wire kinds predate `rate_limited`; older clients read a throttled read
  * as a transient service failure, while the curated headline stays specific.
  */
-export function portalProviderUsageErrorKind(
+export function remoteControlProviderUsageErrorKind(
   kind: UsageFetchErrorKind,
-): PortalProviderUsageErrorKind {
+): RemoteControlProviderUsageErrorKind {
   return kind === 'rate_limited' ? 'service' : kind;
 }
 
@@ -129,9 +129,9 @@ export function portalProviderUsageErrorKind(
 export function projectProviderUsageError(
   kind: UsageFetchErrorKind,
   providerLabel: string,
-): PortalProviderUsageError {
+): RemoteControlProviderUsageError {
   return {
-    kind: portalProviderUsageErrorKind(kind),
+    kind: remoteControlProviderUsageErrorKind(kind),
     message: usageFetchErrorHeadline(kind, providerLabel),
   };
 }
@@ -166,11 +166,11 @@ function planLabel(account: AccountProxyUsageProjectionInput): string | null {
 
 function legacyWindows(
   limits: readonly AccountProxyLimit[],
-): PortalProviderUsageWindow[] {
-  return limits.map((limit): PortalProviderUsageWindow => {
+): RemoteControlProviderUsageWindow[] {
+  return limits.map((limit): RemoteControlProviderUsageWindow => {
     const legacy = LEGACY_LIMITS[limit.id];
     const usedPercent = finiteNumber(limit.usedPercent);
-    const resetsAt = toPortalIsoTimestamp(limit.resetsAt);
+    const resetsAt = toRemoteControlIsoTimestamp(limit.resetsAt);
     return {
       id: limit.id,
       label: legacy.label,
@@ -194,9 +194,9 @@ function usageProviderType(provider: string): AgentProviderType | null {
  */
 export function projectAccountProxyUsageAccount(
   account: AccountProxyUsageProjectionInput,
-): PortalProviderUsageAccount {
+): RemoteControlProviderUsageAccount {
   const plan = planLabel(account);
-  const availableAt = toPortalIsoTimestamp(account.availableAt);
+  const availableAt = toRemoteControlIsoTimestamp(account.availableAt);
   const identity = {
     id: account.authIndex,
     ...(account.label ? { label: account.label } : {}),
@@ -221,8 +221,8 @@ export function projectAccountProxyUsageAccount(
     provider === null
       ? []
       : projectProviderUsageWindows(provider, usage.rateLimits);
-  const lastUpdatedAt = toPortalIsoTimestamp(usage.lastUpdatedAt);
-  const retryAt = toPortalIsoTimestamp(usage.retryAt);
+  const lastUpdatedAt = toRemoteControlIsoTimestamp(usage.lastUpdatedAt);
+  const retryAt = toRemoteControlIsoTimestamp(usage.retryAt);
   return {
     ...identity,
     usageSource: usage.source,

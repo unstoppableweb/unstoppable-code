@@ -5,22 +5,22 @@ import {
   type AgentArtifactReceiptV1,
 } from '@canopy/protocol/agent-artifacts';
 import type {
-  PortalChatMessage,
-  PortalChatTurnGroup,
-} from '@canopy/protocol/portal';
+  RemoteControlChatMessage,
+  RemoteControlChatTurnGroup,
+} from '@canopy/protocol/remote-control/shell';
 import { collectTurnAgentArtifacts } from './turn-agent-artifacts';
 
 // Without live keys from the host, each run stays in its home turn.
 const NO_LIVE_RUNS: ReadonlySet<string> = new Set();
 
 interface TurnReceipts {
-  readonly messages: readonly PortalChatMessage[];
+  readonly messages: readonly RemoteControlChatMessage[];
   readonly receipts: readonly AgentArtifactReceiptV1[];
 }
 
 function sameMessages(
-  left: readonly PortalChatMessage[],
-  right: readonly PortalChatMessage[],
+  left: readonly RemoteControlChatMessage[],
+  right: readonly RemoteControlChatMessage[],
 ): boolean {
   return (
     left.length === right.length &&
@@ -36,8 +36,8 @@ function sameMessages(
  * turns' arrays, so streaming a delta re-collects only the turn it touched.
  */
 export function useChatAgentActivityPlacement(
-  turnGroups: readonly PortalChatTurnGroup[],
-  messagesById: Readonly<Record<string, PortalChatMessage | undefined>>,
+  turnGroups: readonly RemoteControlChatTurnGroup[],
+  messagesById: Readonly<Record<string, RemoteControlChatMessage | undefined>>,
   liveRunKeys: ReadonlySet<string> = NO_LIVE_RUNS,
 ): Readonly<Record<string, readonly AgentArtifactReceiptV1[]>> {
   const collectedRef = useRef(new Map<string, TurnReceipts>());

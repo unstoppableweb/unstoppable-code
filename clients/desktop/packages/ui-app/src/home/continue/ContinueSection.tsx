@@ -320,7 +320,7 @@ export function ContinueSection({
               {interruptedSession?.onOpen ? (
                 <Button
                   type="button"
-                  variant="ghost-overlay"
+                  variant="ghost"
                   size="compact"
                   data-testid="home-interrupted-sessions-open"
                   onClick={interruptedSession.onOpen}
@@ -330,7 +330,7 @@ export function ContinueSection({
               ) : null}
               <Button
                 type="button"
-                variant="ghost-overlay"
+                variant="ghost"
                 size="compact"
                 iconOnly
                 aria-label="Dismiss"

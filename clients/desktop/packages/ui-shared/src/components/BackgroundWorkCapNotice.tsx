@@ -2,9 +2,8 @@
 
 import { useEffect, useRef, useState, type JSX } from 'react';
 import { StopwatchIcon } from '../icons/AppIcons';
-import { BusyLabel } from './BusyLabel';
-import { Button } from './Button';
 import { ComposerDrawerSection } from './ComposerDrawer';
+import { Notice, NoticeButton } from './Notice';
 
 export interface BackgroundWorkCapNoticeProps {
   /** Epoch ms at which the chat's background work stops for inactivity. */
@@ -70,50 +69,44 @@ export function BackgroundWorkCapNotice({
     }
   };
 
+  // The drawer is the surface, so the notice draws only its line, at the
+  // inset of the drawer's rows.
   return (
-    <ComposerDrawerSection
-      role="status"
-      data-testid="background-work-cap-notice"
-    >
-      <div className="flex min-w-0 items-center gap-1.5 py-1 pl-1 text-xs">
-        <span
-          aria-hidden="true"
-          className="flex w-6 shrink-0 justify-center fg-tertiary"
-        >
-          <StopwatchIcon size={16} />
-        </span>
-        <div className="min-w-0 flex-1 text-pretty fg-secondary">
-          <span data-testid="background-work-cap-notice-message">
-            {backgroundWorkCapMessage(capExpiresAtMs, nowMs)}
-          </span>
-          {state === 'failed' ? (
-            <span
-              className="block fg-attention"
-              data-testid="background-work-cap-notice-error"
-            >
+    <ComposerDrawerSection data-testid="background-work-cap-notice">
+      <Notice
+        shape="menu"
+        surface="none"
+        icon={<StopwatchIcon size={16} aria-hidden="true" />}
+        detail={
+          state === 'failed' ? (
+            <span data-testid="background-work-cap-notice-error">
               {BACKGROUND_WORK_KEEP_RUNNING_FAILED}
             </span>
-          ) : null}
-        </div>
-        {onKeepRunning === undefined ? null : (
-          <div className="flex shrink-0 items-center gap-1">
-            <Button
-              variant="secondary"
-              size="sm"
-              aria-busy={state === 'extending' || undefined}
+          ) : undefined
+        }
+        announceDetail
+        actions={
+          onKeepRunning === undefined ? undefined : (
+            <NoticeButton
+              busy={state === 'extending'}
+              busyLabel="Extending…"
+              // Not natively disabled: the button keeps keyboard focus, so a
+              // failed request can be retried from where the person is.
               aria-disabled={state === 'extending' || undefined}
               onClick={(): void => {
                 void keepRunning();
               }}
               data-testid="background-work-keep-running"
             >
-              <BusyLabel busy={state === 'extending'} busyText="Extending…">
-                {BACKGROUND_WORK_KEEP_RUNNING_LABEL}
-              </BusyLabel>
-            </Button>
-          </div>
-        )}
-      </div>
+              {BACKGROUND_WORK_KEEP_RUNNING_LABEL}
+            </NoticeButton>
+          )
+        }
+      >
+        <span data-testid="background-work-cap-notice-message">
+          {backgroundWorkCapMessage(capExpiresAtMs, nowMs)}
+        </span>
+      </Notice>
     </ComposerDrawerSection>
   );
 }

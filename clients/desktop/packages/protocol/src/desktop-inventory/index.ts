@@ -14,13 +14,13 @@
  * crypto; this module only defines the canonical serialization.
  */
 import {
-  PORTAL_CATALOG_RESULT_MAX_BYTES,
-  type PortalCollectionsListResult,
-  type PortalMcpListServersResult,
-  type PortalPipelineListResult,
-  type PortalPluginsListMarketplacesResult,
-  type PortalSkillsListResult,
-} from '../portal';
+  REMOTE_CONTROL_CATALOG_RESULT_MAX_BYTES,
+  type RemoteControlCollectionsListResult,
+  type RemoteControlMcpListServersResult,
+  type RemoteControlPipelineListResult,
+  type RemoteControlPluginsListMarketplacesResult,
+  type RemoteControlSkillsListResult,
+} from '../remote-control/shell';
 import type { InstalledItemSnapshot } from '../installed-items';
 import { stableStringify } from '../lib/stable-stringify';
 
@@ -129,11 +129,11 @@ export function isDesktopInventoryScopeKeyValid(
  * values, headers, tokens or local paths), so it syncs unredacted.
  */
 export interface DesktopInventoryPayloadMap {
-  marketplaces: PortalPluginsListMarketplacesResult;
-  skills: PortalSkillsListResult;
-  mcp_servers: PortalMcpListServersResult;
-  collections: PortalCollectionsListResult;
-  pipelines: PortalPipelineListResult;
+  marketplaces: RemoteControlPluginsListMarketplacesResult;
+  skills: RemoteControlSkillsListResult;
+  mcp_servers: RemoteControlMcpListServersResult;
+  collections: RemoteControlCollectionsListResult;
+  pipelines: RemoteControlPipelineListResult;
   installed_items: InstalledItemSnapshot;
 }
 
@@ -178,7 +178,7 @@ export interface DesktopInventoryRemoval {
  * command also fits the store.
  */
 export const MAX_DESKTOP_INVENTORY_DOCUMENT_BYTES =
-  PORTAL_CATALOG_RESULT_MAX_BYTES;
+  REMOTE_CONTROL_CATALOG_RESULT_MAX_BYTES;
 
 /** Hard cap on one sync request body, enforced by the server before parsing. */
 export const MAX_DESKTOP_INVENTORY_REQUEST_BYTES = 4 * 1024 * 1024;

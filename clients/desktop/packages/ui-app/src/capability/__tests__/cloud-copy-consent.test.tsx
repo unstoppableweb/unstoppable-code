@@ -96,11 +96,13 @@ describe('adding a desktop skill or plugin to the cloud account (CAN-6176 9c)', 
     analysisError: string | null = null,
     audience: CloudCopyConsentAudience = 'private',
     kind: 'skill' | 'plugin' = 'plugin',
+    offerKeepInStep: boolean = kind === 'skill',
   ): void => {
     act(() => {
       root.render(
         <CloudCopyConsentDialog
           subject={{ kind, name: 'notes' }}
+          offerKeepInStep={offerKeepInStep}
           replacing={false}
           audience={audience}
           analysis={analysis}
@@ -273,6 +275,15 @@ describe('adding a desktop skill or plugin to the cloud account (CAN-6176 9c)', 
     ]);
   });
 
+  it("never offers keeping an installed skill's copy up to date, so its Add sends it off (CAN-6943)", async () => {
+    // A skill installed from GitHub, a URL or a local folder: any later
+    // change to it asks again.
+    render(READY, false, null, 'private', 'skill', false);
+    expect(keepInStep()).toBeNull();
+    await add();
+    expect(choices).toEqual([{ keepInStep: false }]);
+  });
+
   it('explains a refused add, as the cloud words it, when a same-named plugin from another marketplace is there already (CAN-6725)', async () => {
     const taken =
       'A plugin named notes from Team tools is already in your cloud marketplace. Remove it first or rename this one.';
@@ -280,6 +291,7 @@ describe('adding a desktop skill or plugin to the cloud account (CAN-6176 9c)', 
       root.render(
         <CloudCopyConsentDialog
           subject={{ kind: 'plugin', name: 'notes' }}
+          offerKeepInStep={false}
           replacing={false}
           audience="private"
           analysis={READY}

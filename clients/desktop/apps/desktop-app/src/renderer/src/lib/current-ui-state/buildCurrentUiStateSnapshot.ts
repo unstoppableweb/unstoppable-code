@@ -406,7 +406,9 @@ export function buildCurrentUiStateSnapshot(
       commandPaletteOpen: nav.commandPaletteOpen,
       fileSearchPaletteOpen: nav.fileSearchPaletteOpen,
       prPickerOpen: nav.prPickerOpen,
-      canopyPortalOpen: nav.canopyPortalOpen,
+      // The snapshot key keeps its Portal-era name: the UI-state snapshot is
+      // tunneled to Remote Control peers and read by agents (CAN-7216).
+      canopyPortalOpen: nav.remoteControlDialogOpen,
       // App Advisor sets this slice via a reporter; default to false so the
       // builder works even before the dialog has registered itself.
       appAdvisorOpen: readBoolean(slices['appAdvisor.dialogOpen']) ?? false,
@@ -2365,18 +2367,18 @@ export function buildCurrentUiStateSnapshot(
 
   // -- The Remote Control dialog (its slice key predates the rename). The
   // pairing link and code are never reported.
-  const portalModalSlice = readObject(slices['canopyPortal.modal']);
-  const portalModalBusy = readString(portalModalSlice?.busy);
-  if (portalModalSlice) {
+  const remoteControlModalSlice = readObject(slices['canopyPortal.modal']);
+  const remoteControlModalBusy = readString(remoteControlModalSlice?.busy);
+  if (remoteControlModalSlice) {
     snapshot.canopyPortal = {
       modal: {
-        open: readBoolean(portalModalSlice.open) ?? false,
-        ...(portalModalBusy ? { busy: portalModalBusy } : {}),
-        ...(typeof portalModalSlice.errorVisible === 'boolean'
-          ? { errorVisible: portalModalSlice.errorVisible }
+        open: readBoolean(remoteControlModalSlice.open) ?? false,
+        ...(remoteControlModalBusy ? { busy: remoteControlModalBusy } : {}),
+        ...(typeof remoteControlModalSlice.errorVisible === 'boolean'
+          ? { errorVisible: remoteControlModalSlice.errorVisible }
           : {}),
-        ...(typeof portalModalSlice.pairingQrVisible === 'boolean'
-          ? { pairingQrVisible: portalModalSlice.pairingQrVisible }
+        ...(typeof remoteControlModalSlice.pairingQrVisible === 'boolean'
+          ? { pairingQrVisible: remoteControlModalSlice.pairingQrVisible }
           : {}),
       },
     };

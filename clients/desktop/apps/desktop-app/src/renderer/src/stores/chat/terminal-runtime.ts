@@ -1,6 +1,6 @@
 // Claude managed-terminal runtime state sync helpers.
 import type { ClaudeTerminalRuntimeState } from '@canopy/desktop-shared/types';
-import { parseChatAgentSentInfo } from '@canopy/protocol/portal';
+import { parseChatAgentSentInfo } from '@canopy/protocol/remote-control/shell';
 import type { ClaudeTerminalClientState } from '@/stores/claudeTerminalStore';
 import type { ChatTab, QueuedChatMessage } from './types';
 import { nextMsgId } from './ids';

@@ -11,7 +11,7 @@ import {
 } from 'react';
 import { useOverviewStore } from '@canopy/app-state';
 import { SettingsSelect } from '@canopy/ui-shared/components';
-import type { PortalPipelineRunProjection } from '@canopy/protocol/portal';
+import type { RemoteControlPipelineRunProjection } from '@canopy/protocol/remote-control/shell';
 import { Overview } from '@canopy/ui-app';
 import { useShallow } from 'zustand/react/shallow';
 import { PageTitlebar } from '../shared/PageTitlebar';
@@ -236,7 +236,7 @@ export function OverviewPage(): JSX.Element {
   );
 
   const handleSelectPipelineRun = useCallback(
-    (run: PortalPipelineRunProjection, unread: boolean): void => {
+    (run: RemoteControlPipelineRunProjection, unread: boolean): void => {
       if (!run.workspaceLocalId || !run.worktreeLocalId || !run.localId) return;
       const projectId = run.workspaceLocalId;
       const worktreeId = run.worktreeLocalId;
@@ -254,7 +254,7 @@ export function OverviewPage(): JSX.Element {
   );
 
   const handleDismissPipelineRun = useCallback(
-    (run: PortalPipelineRunProjection): void => {
+    (run: RemoteControlPipelineRunProjection): void => {
       if (!run.workspaceLocalId || !run.worktreeLocalId) return;
       markWorktreePipelineSeen(
         `${run.workspaceLocalId}/${run.worktreeLocalId}`,
@@ -264,7 +264,7 @@ export function OverviewPage(): JSX.Element {
   );
 
   const renderPipelineRunDetails = useCallback(
-    (run: PortalPipelineRunProjection, unread: boolean): ReactNode => {
+    (run: RemoteControlPipelineRunProjection, unread: boolean): ReactNode => {
       if (!run.workspaceLocalId || !run.worktreeLocalId || !run.localId) {
         return null;
       }

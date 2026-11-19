@@ -1,4 +1,4 @@
-import type { ChatTurnPhase } from '@canopy/protocol/portal';
+import type { ChatTurnPhase } from '@canopy/protocol/remote-control/shell';
 import type { PersistedChatTurnState } from '@canopy/agent-transcript/turn';
 
 /** Receipt-time and durable canonical state are independent admission fences. */

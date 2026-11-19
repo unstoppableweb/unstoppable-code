@@ -138,8 +138,12 @@ describe('automations:capability-package:install supporting-file persistence', (
       'script',
       'run.sh',
     );
+    // Each file is written durably into a staging folder beside it, then
+    // renamed into place.
     expect(atomicFile.writeFileAtomically).toHaveBeenCalledWith(
-      destination,
+      expect.stringMatching(
+        /[\\/]assets[\\/]script[\\/]\.install-[0-9a-f-]+[\\/]run\.sh$/,
+      ),
       contents,
       expect.objectContaining({ mode: 0o755, durable: true }),
     );
@@ -151,6 +155,9 @@ describe('automations:capability-package:install supporting-file persistence', (
     expect(fs.readFileSync(destination)).toEqual(contents);
     if (process.platform !== 'win32')
       expect(fs.statSync(destination).mode & 0o777).toBe(0o755);
+    expect(
+      fs.readdirSync(join(mockRoot, 'pipeline-data', 'workflow', 'assets')),
+    ).toEqual(['script']);
   });
 
   it('refuses an install over a manifest from a newer version', async () => {

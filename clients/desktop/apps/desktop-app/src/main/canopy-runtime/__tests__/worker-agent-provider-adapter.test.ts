@@ -4,7 +4,7 @@ import type {
   WorkerAgentProviderId,
   WorkerAgentProviderListResult,
 } from '@canopy/protocol/canopy-core';
-import type { PortalProviderUsageProjection } from '@canopy/protocol/portal';
+import type { RemoteControlProviderUsageProjection } from '@canopy/protocol/remote-control/shell';
 import type { ModelRegistrySnapshot } from '@canopy/desktop-shared/types';
 import {
   createDesktopProviderHost,
@@ -38,7 +38,7 @@ const allSupported: Record<WorkerAgentProviderId, boolean> = {
   opencode: true,
 };
 
-const usage: PortalProviderUsageProjection = {
+const usage: RemoteControlProviderUsageProjection = {
   updatedAt: '2026-11-05T12:00:00.000Z',
   providers: [
     {

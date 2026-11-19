@@ -2,10 +2,10 @@ import {
   isCanopyProxyErrorBody,
   parseCanopyProxyError,
 } from '@canopy/protocol';
-import type { PortalChatMessage } from '@canopy/protocol/portal';
+import type { RemoteControlChatMessage } from '@canopy/protocol/remote-control/shell';
 import type { PersistedChatMessage } from '@canopy/agent-transcript/types';
 
-type Message = PersistedChatMessage | PortalChatMessage;
+type Message = PersistedChatMessage | RemoteControlChatMessage;
 
 interface Row {
   promptBoundary: boolean;

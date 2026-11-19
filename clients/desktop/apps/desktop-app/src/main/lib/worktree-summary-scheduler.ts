@@ -47,6 +47,7 @@ import {
 import { getWorkspaceWorktreeRepoDir } from './paths';
 import { isModelBlockedByStoredPolicy } from './model-policy-state';
 import { resolveHelperWorkOwner } from '../ollama/helper-invocation';
+import { isHelperNoBillingSourceError } from '../agents/helper-no-billing-source';
 import { readPreferencesFile } from '../lib/preferences-store';
 import { getExecutionObservabilityIngest } from '../observability/ingest';
 import type { HelperUsage } from '../agents/utils';
@@ -364,6 +365,20 @@ export async function generateDesktopWorktreeSummary(
       );
       return { result: 'skipped' };
     }
+    // A provider known (from caches) to be signed out with no billing source
+    // would refuse the helper (CAN-7062). Skip before opening an audit entry,
+    // so repeated runs add none; the stored summary stays as it was and the
+    // next run after sign-in generates it.
+    const { isNoBillingSourceRefusalCached } =
+      await import('../agents/no-billing-source-refusal');
+    if (
+      isNoBillingSourceRefusalCached(
+        { model: preferences.worktreeSummaryModel, projectId },
+        requireProviderForModel(preferences.worktreeSummaryModel),
+      )
+    ) {
+      return { result: 'skipped' };
+    }
 
     // Captured before the provider is invoked (LD06), so a model or setting
     // change during generation cannot misattribute the snapshot.
@@ -439,6 +454,13 @@ export async function generateDesktopWorktreeSummary(
       displayLabel = result.displayLabel;
       summaryUsage = result.usage;
     } catch (error) {
+      if (isHelperNoBillingSourceError(error)) {
+        // Refused before any spawn on a cold auth cache (CAN-7062). The probe
+        // that refused it warms the cache, so later runs skip above without
+        // an audit entry. The stored summary is left untouched.
+        observability.finalizeObservedTask(taskKey, 'cancelled', error.message);
+        return { result: 'skipped' };
+      }
       observability.finalizeObservedTask(
         taskKey,
         'failure',

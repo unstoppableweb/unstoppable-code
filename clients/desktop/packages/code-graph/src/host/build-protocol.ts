@@ -7,9 +7,11 @@ import type {
 } from '../types/code-graph';
 import type {
   CodeGraphBaseIdentity,
+  CodeGraphColdFallback,
   CodeGraphSeedOutcome,
   CodeGraphSeedSource,
 } from '../base-graph';
+import type { CodeGraphFailureClass } from '../io-failure';
 import type { BackfillCodeGraphSummaryProjectionResult } from '../summary-projection';
 
 // The requests and responses a code-graph build host exchanges with its
@@ -37,7 +39,7 @@ export interface CodeGraphWorkerBuildRequest {
   options: CodeGraphBuildOptions;
   preparation?: {
     seedSources: readonly CodeGraphSeedSource[];
-    coldFallbacks: readonly { repoId: string; reason: string }[];
+    coldFallbacks: readonly CodeGraphColdFallback[];
     customLanguagesFingerprint: string;
     seedStagingDir: string;
   };
@@ -131,7 +133,19 @@ export type CodeGraphWorkerBuildResponse =
       /** Present when the request carried a start fingerprint. */
       fingerprint?: CodeGraphWorkerFingerprintPersist;
     }
-  | { ok: false; message: string };
+  | CodeGraphWorkerFailure;
+
+/**
+ * A failed build or eager seed. `message` is for in-process use only and is
+ * never forwarded; `failureClass` and `errno` (an errno code only) are what a
+ * receiver may report.
+ */
+export interface CodeGraphWorkerFailure {
+  ok: false;
+  message: string;
+  failureClass?: CodeGraphFailureClass;
+  errno?: string;
+}
 
 /** The worker's second message after a `derivedPending` response. */
 export type CodeGraphWorkerDerivedCompletion =
@@ -153,4 +167,4 @@ export type CodeGraphWorkerEagerSeedResponse =
       source?: 'base-worktree' | 'workspace-shadow';
       durationMs: number;
     }
-  | { ok: false; message: string };
+  | CodeGraphWorkerFailure;

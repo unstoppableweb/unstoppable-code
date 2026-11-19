@@ -1,4 +1,4 @@
-import type { PortalChatTabPluginSelections } from '@canopy/protocol/portal';
+import type { RemoteControlChatTabPluginSelections } from '@canopy/protocol/remote-control/shell';
 import type {
   CanopyErrorPayload,
   CatalogCloudModels,
@@ -840,7 +840,7 @@ describe('cloud chat catalog over the web core (CAN-5972)', () => {
     const notes = { sourceId: 'team/a', skillName: 'notes' };
     const selection = (
       skillRefs: { sourceId: string; skillName: string }[],
-    ): PortalChatTabPluginSelections => ({
+    ): RemoteControlChatTabPluginSelections => ({
       collectionIds: [],
       skillRefs,
       pluginRefs: [],

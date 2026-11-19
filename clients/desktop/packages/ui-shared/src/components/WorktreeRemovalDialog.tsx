@@ -147,7 +147,7 @@ export function WorktreeRemovalDialog({
                 triggerWrapperClassName="inline-flex h-5 shrink-0 items-center align-middle"
               >
                 <Button
-                  variant="ghost-quiet"
+                  variant="ghost"
                   size="sm"
                   iconOnly
                   aria-label="About restoring this worktree"

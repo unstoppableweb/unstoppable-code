@@ -1,17 +1,17 @@
 import type {
-  PortalWorktreeSplitPrStatus,
-  PortalSessionShellState,
-} from '@canopy/protocol/portal';
+  RemoteControlWorktreeSplitPrStatus,
+  RemoteControlSessionShellState,
+} from '@canopy/protocol/remote-control/shell';
 import type { SplitPrProgressEvent } from '@canopy/desktop-shared/types/github';
 import { requestDesktopSessionSnapshotInvalidation } from './desktop-session-snapshot-invalidation';
 
 type SplitPrProjection = Pick<
-  PortalSessionShellState['worktrees'][number],
+  RemoteControlSessionShellState['worktrees'][number],
   'splitPrStatus' | 'splitPrStatusMessage'
 >;
 
 export interface SplitPrProgressProjection {
-  readonly status: PortalWorktreeSplitPrStatus;
+  readonly status: RemoteControlWorktreeSplitPrStatus;
   readonly message: string;
   readonly locked: boolean;
 }
@@ -25,7 +25,7 @@ function key(workspaceId: string, worktreeId: string): string {
 export function setSplitPrRuntimeProjection(
   workspaceId: string,
   worktreeId: string,
-  status: PortalWorktreeSplitPrStatus,
+  status: RemoteControlWorktreeSplitPrStatus,
   message: string,
 ): void {
   runtimeByWorktree.set(key(workspaceId, worktreeId), {

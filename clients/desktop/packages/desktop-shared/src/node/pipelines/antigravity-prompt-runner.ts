@@ -91,12 +91,53 @@ export interface AntigravityPromptHost {
     stopTurn: () => void;
   }): Promise<AntigravityPipelineCapabilities>;
   dispose?(): void | Promise<void>;
+  /**
+   * Local logs only. Receives a selected-capability check's closed code and
+   * its original error; never put either on a transcript, wire or telemetry
+   * path. A throwing hook does not change the step's result.
+   */
+  onLocalDiagnostic?(event: AntigravityLocalDiagnostic): void;
+}
+
+/** Why a selected-capability check failed on an error the step does not show. */
+export type AntigravityCapabilitiesErrorCode =
+  | 'record_unreadable'
+  | 'capture_failed';
+
+export interface AntigravityLocalDiagnostic {
+  code: AntigravityCapabilitiesErrorCode;
+  cause: unknown;
 }
 
 const CAPABILITIES_NOT_RECORDED =
   'This Google workflow session cannot be resumed because its selected capabilities were not recorded. Run the step again from the start.';
 const CAPABILITIES_CHANGED =
   'This Google workflow session cannot be resumed because its selected capabilities changed. Run the step again from the start.';
+
+/**
+ * A selected-capability check that failed on an error the step does not show:
+ * the resume record could not be read, or the capture threw. The message is
+ * the step's existing copy; the original stays a non-enumerable
+ * `runtimeCause` for local logs, never `cause`, which failure classification
+ * walks (CAN-7117).
+ */
+class AntigravityCapabilitiesError extends Error {
+  declare readonly runtimeCause: unknown;
+
+  constructor(
+    message: string,
+    readonly code: AntigravityCapabilitiesErrorCode,
+    runtimeCause: unknown,
+  ) {
+    super(message);
+    Object.defineProperty(this, 'runtimeCause', {
+      configurable: false,
+      enumerable: false,
+      writable: false,
+      value: runtimeCause,
+    });
+  }
+}
 
 /** The capture's recorded reasons, as step failure text. */
 const UNCONFIRMED_REASONS: Readonly<Partial<Record<string, string>>> = {
@@ -357,7 +398,11 @@ export async function runAntigravityPipelinePrompt(
         ).catch((error: unknown) => {
           signal.throwIfAborted();
           if (withdrawal.reason) throw error;
-          throw new Error(CAPABILITIES_NOT_RECORDED);
+          throw new AntigravityCapabilitiesError(
+            CAPABILITIES_NOT_RECORDED,
+            'record_unreadable',
+            error,
+          );
         })
       : undefined;
     // Refused before anything is opened: a resume cannot add or drop
@@ -399,7 +444,11 @@ export async function runAntigravityPipelinePrompt(
       ).catch((error: unknown) => {
         signal.throwIfAborted();
         if (withdrawal.reason) throw error;
-        throw new Error(capabilitiesUnconfirmed(undefined));
+        throw new AntigravityCapabilitiesError(
+          capabilitiesUnconfirmed(undefined),
+          'capture_failed',
+          error,
+        );
       });
       if (!captured.complete)
         throw new Error(capabilitiesUnconfirmed(captured));
@@ -724,7 +773,24 @@ export async function runAntigravityPipelinePrompt(
       };
     }
   } catch (caught) {
+    // An AntigravityCapabilitiesError's closed `code` and local
+    // `runtimeCause` go only to the host's local diagnostic hook. The result
+    // does not carry them: the failure is the shared, versioned
+    // AgentActionFailureMetadata that the step runner writes to
+    // agent-failure.json, and the result type is shared with Codex, so a
+    // field there would widen a persisted contract (CAN-7117). The step still
+    // shows the existing message below.
     const error = updateError() ?? caught;
+    if (error instanceof AntigravityCapabilitiesError) {
+      try {
+        host.onLocalDiagnostic?.({
+          code: error.code,
+          cause: error.runtimeCause,
+        });
+      } catch {
+        // A faulty diagnostic hook never changes the step's result.
+      }
+    }
     const message = mask(
       withdrawal.reason === 'timeout'
         ? stepTimedOutMessage(request.totalTimeoutMs)

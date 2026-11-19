@@ -174,9 +174,9 @@ function SelectionToggleButton({
   // At rest every choice is quiet; the chosen one takes its kind's tone and,
   // through `pressedHover`, keeps that tone's hover fill while pressed.
   const variant = !selected
-    ? 'ghost-quiet'
+    ? 'ghost'
     : kind === 'split'
-      ? 'ghost-accent'
+      ? 'ghost'
       : kind === 'delete'
         ? 'ghost-destructive'
         : 'ghost';

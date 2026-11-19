@@ -19,7 +19,7 @@ import {
   SECONDARY_SURFACE_HOVER_CLASS,
   SECONDARY_SURFACE_OPEN_CLASS,
 } from '../lib/row-chips';
-import type { SearchFieldSize } from './SearchField';
+import type { FieldButtonNest } from './field-button-nest';
 import {
   SIDEBAR_ROW_GRID_CLASSNAME,
   SIDEBAR_ROW_TEXT_INSET_CLASSNAME,
@@ -78,10 +78,28 @@ export const INLINE_CHIP_CLASS = `${CHIP_SHAPE_CLASS} focus-ring cursor-pointer 
 export const STORE_BADGE_CONTROL_CLASS =
   'inline-flex shrink-0 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-line-accent';
 
-const BUTTON_SIZE_CLASS: Record<SearchFieldSize, string> = {
-  sm: 'h-6 min-w-6',
-  md: 'h-6 min-w-6',
-  lg: 'h-7 min-w-7',
+/**
+ * A button nested in a field's end: 24px in the 28px and 32px fields, 28px in
+ * the 36px field and in the palette header.
+ */
+const BUTTON_SIZE_CLASS: Record<FieldButtonNest, string> = {
+  field: 'h-6 min-w-6',
+  'field-md': 'h-6 min-w-6',
+  'field-lg': 'h-7 min-w-7',
+  header: 'h-7 min-w-7',
+};
+
+/**
+ * Its corner is the field's corner less the button's inset, so the two arcs
+ * share a centre (docs/design/forms.md); the header has no edge of its own,
+ * so its buttons stay round. Coarse pointers get a taller field around the
+ * same button, so the inset grows and the corner tightens to the 4px floor.
+ */
+const BUTTON_CORNER_CLASS: Record<FieldButtonNest, string> = {
+  field: 'rounded-field-button pointer-coarse:rounded-sm',
+  'field-md': 'rounded-field-button-md pointer-coarse:rounded-sm',
+  'field-lg': 'rounded-field-button-lg pointer-coarse:rounded-sm',
+  header: 'rounded-full',
 };
 
 const BUTTON_TONE_CLASS = {
@@ -92,7 +110,7 @@ const BUTTON_TONE_CLASS = {
 } as const;
 
 const BUTTON_BASE_CLASS =
-  "canopy-small-icon-stroke focus-ring relative inline-flex shrink-0 select-none items-center justify-center rounded-full px-0 transition-colors before:absolute before:-inset-0.5 before:content-[''] pointer-coarse:before:-inset-2.5 disabled:pointer-events-none disabled:opacity-50";
+  "canopy-small-icon-stroke focus-ring relative inline-flex shrink-0 select-none items-center justify-center px-0 transition-colors before:absolute before:-inset-0.5 before:content-[''] pointer-coarse:before:-inset-2.5 disabled:pointer-events-none disabled:opacity-50";
 
 const TRIGGER_BASE =
   'electron-no-drag focus-ring inline-flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-2.5 text-xs font-normal transition-colors';
@@ -529,13 +547,13 @@ export const SHARED_CONTROL_RECIPES = {
       firstInRow ? `${SIDEBAR_ROW_TEXT_INSET_CLASSNAME} pr-1.5` : 'px-1.5'
     } text-left text-s font-normal fg-tertiary hover:bg-subtle hover:fg-primary`,
   'search-field-endcap': ({
-    size,
+    nest,
     tone,
   }: {
-    size: SearchFieldSize;
+    nest: FieldButtonNest;
     tone: keyof typeof BUTTON_TONE_CLASS;
   }) =>
-    `${BUTTON_BASE_CLASS} ${BUTTON_SIZE_CLASS[size]} ${BUTTON_TONE_CLASS[tone]}`,
+    `${BUTTON_BASE_CLASS} ${BUTTON_SIZE_CLASS[nest]} ${BUTTON_CORNER_CLASS[nest]} ${BUTTON_TONE_CLASS[tone]}`,
   'vendor-store-badge': STORE_BADGE_CONTROL_CLASS,
   'composer-toolbar-chip': ({
     variant,

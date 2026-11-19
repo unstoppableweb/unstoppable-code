@@ -12,9 +12,9 @@
  * slice 3); the composer body itself follows in the next PR.
  */
 import type {
-  PortalChatAgentProviderType,
-  PortalChatUsage,
-} from '@canopy/protocol/portal';
+  RemoteControlChatAgentProviderType,
+  RemoteControlChatUsage,
+} from '@canopy/protocol/remote-control/shell';
 import {
   resolveModelSelectionMetadata,
   advanceThinkingLevelIn,
@@ -68,7 +68,7 @@ export function resolveUsageIndicatorIsCodex(
  * runtime never reported them so their rows hide instead of reading `$0`.
  */
 export function toUsageIndicatorUsage(
-  usage: PortalChatUsage | undefined,
+  usage: RemoteControlChatUsage | undefined,
   fallbackContextWindow: number | undefined,
   fallbackModel: string | undefined,
 ): UsageIndicatorUsage | undefined {
@@ -102,7 +102,7 @@ export function toUsageIndicatorUsage(
 }
 
 /** Prefer the host-captured execution harness over the model-source provider. */
-export function resolvePortalExecutionHarness(
+export function resolveRemoteControlExecutionHarness(
   providerType: ChatThinkingProviderHint,
   capturedHarness: AgentExecutionHarness | undefined,
 ): ChatThinkingProviderHint {
@@ -116,9 +116,9 @@ export function resolvePortalExecutionHarness(
  */
 export function resolveModelOptionProviderType(
   option: ModelCatalogOption | undefined,
-  fallbackProviderType: PortalChatAgentProviderType | undefined,
+  fallbackProviderType: RemoteControlChatAgentProviderType | undefined,
   capturedHarness?: AgentExecutionHarness,
-): PortalChatAgentProviderType | undefined {
+): RemoteControlChatAgentProviderType | undefined {
   if (capturedHarness !== undefined) return capturedHarness;
   if (option === undefined) return fallbackProviderType;
   const provider = option.harness ?? option.provider;
@@ -230,7 +230,7 @@ export function buildComposerOverflowMenuItems({
       onSelect: onTogglePlan,
       closeOnSelect: true,
       ariaLabel: `Plan mode ${effectivePlanMode ? 'on' : 'off'}; tap to toggle`,
-      dataTestId: 'portal-chat-overflow-plan',
+      dataTestId: 'remote-control-chat-overflow-plan',
     });
   }
   if (supportsFastMode) {
@@ -243,7 +243,7 @@ export function buildComposerOverflowMenuItems({
       onSelect: onToggleFast,
       closeOnSelect: true,
       ariaLabel: `Fast mode ${effectiveFastMode ? 'on' : 'off'}; tap to toggle`,
-      dataTestId: 'portal-chat-overflow-fast',
+      dataTestId: 'remote-control-chat-overflow-fast',
     });
   }
   if (thinkingSupported) {
@@ -267,7 +267,7 @@ export function buildComposerOverflowMenuItems({
       },
       closeOnSelect: false,
       ariaLabel: `Thinking level ${thinkingDefaultSelected ? 'default' : displayThinkingLevel}; tap to cycle`,
-      dataTestId: 'portal-chat-overflow-thinking',
+      dataTestId: 'remote-control-chat-overflow-thinking',
     });
   }
   return items;

@@ -7,12 +7,12 @@
  */
 import type { AgentTaskRow } from '@canopy/protocol/cloud-session';
 import type {
-  PortalChatAgentBlockData,
-  PortalChatMessage,
-  PortalChatPart,
-} from '@canopy/protocol/portal';
+  RemoteControlChatAgentBlockData,
+  RemoteControlChatMessage,
+  RemoteControlChatPart,
+} from '@canopy/protocol/remote-control/shell';
 import { AGENT_TASK_MAX_DEPTH } from '@canopy/protocol/cloud-session';
-import { persistedParts } from '../portal/persisted-chat-projection';
+import { persistedParts } from '../remote-control/persisted-chat-projection';
 import type { PersistedChatMessage } from '../types';
 import {
   agentTaskCardFields,
@@ -52,7 +52,7 @@ interface SpawnCall {
   readonly result?: { readonly output: string; readonly isError: boolean };
 }
 
-function spawnCall(part: PortalChatPart): SpawnCall | undefined {
+function spawnCall(part: RemoteControlChatPart): SpawnCall | undefined {
   if (part.kind !== 'tool_use' || !isRecord(part.data)) return undefined;
   const toolUseId = stringField(part.data, 'toolUseId');
   const toolName = stringField(part.data, 'toolName');
@@ -71,7 +71,7 @@ function spawnCall(part: PortalChatPart): SpawnCall | undefined {
 }
 
 /** One child row's parts, its text included, as a delegated card's rows are. */
-function childParts(row: PersistedChatMessage): PortalChatPart[] {
+function childParts(row: PersistedChatMessage): RemoteControlChatPart[] {
   return persistedParts(row, undefined, {
     partTextMaxChars: Number.POSITIVE_INFINITY,
     includeText: true,
@@ -89,7 +89,7 @@ function agentPart(
   task: AgentTaskRow,
   nesting: Nesting,
   depth: number,
-): PortalChatPart {
+): RemoteControlChatPart {
   const subBlocks =
     depth > AGENT_TASK_MAX_DEPTH
       ? []
@@ -108,7 +108,7 @@ function agentPart(
     task,
     subBlocks.filter((part) => part.kind === 'tool_use').length,
   );
-  const data: PortalChatAgentBlockData = {
+  const data: RemoteControlChatAgentBlockData = {
     provider: 'claude',
     toolUseId: spawn.toolUseId,
     subagentType: stringField(spawn.input, 'subagent_type') ?? 'Agent',
@@ -126,10 +126,10 @@ function agentPart(
 }
 
 function nestParts(
-  parts: readonly PortalChatPart[],
+  parts: readonly RemoteControlChatPart[],
   nesting: Nesting,
   depth: number,
-): PortalChatPart[] {
+): RemoteControlChatPart[] {
   return parts.map((part) => {
     const spawn = spawnCall(part);
     const task =
@@ -152,8 +152,8 @@ export function projectAgentTaskTranscript(input: {
   readonly tasks: readonly AgentTaskRow[];
   readonly project: (
     rows: readonly PersistedChatMessage[],
-  ) => PortalChatMessage[];
-}): PortalChatMessage[] {
+  ) => RemoteControlChatMessage[];
+}): RemoteControlChatMessage[] {
   const children = new Map<string, PersistedChatMessage[]>();
   const top: PersistedChatMessage[] = [];
   for (const row of input.messages) {

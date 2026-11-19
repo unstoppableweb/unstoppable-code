@@ -1,4 +1,4 @@
-import { publishedChatToPersistedTab } from '@canopy/agent-transcript/portal/persisted-chat-projection';
+import { publishedChatToPersistedTab } from '@canopy/agent-transcript/remote-control/persisted-chat-projection';
 import {
   COWORK_WORKSPACE_FILE_ROOT_ID,
   SHARED_CONTAINER_VIEWER_PROJECT_ID,

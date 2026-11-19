@@ -7,8 +7,10 @@ import {
   type RefObject,
 } from 'react';
 import { useStore } from 'zustand';
+import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
+import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import type { CloudChatCatalog } from '@canopy/app-state/core-cowork';
-import { PortalPluginsPicker } from '@canopy/ui-app';
+import { RemoteControlPluginsPicker } from '@canopy/ui-app';
 import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import { brandText } from '@/lib/brand';
 import type { CloudChatThreadTarget } from '@canopy/app-state/core-cowork';
@@ -29,9 +31,11 @@ import {
   type LocalCatalog,
 } from './cloud-picker-local-items';
 import type { CloudCapabilityUploadRow } from '@canopy/app-state/core-cowork';
-import type { PortalPluginsLocalItemsSeam } from '@canopy/ui-app';
+import type { RemoteControlPluginsLocalItemsSeam } from '@canopy/ui-app';
 
-type AddedSelection = Awaited<ReturnType<PortalPluginsLocalItemsSeam['onAdd']>>;
+type AddedSelection = Awaited<
+  ReturnType<RemoteControlPluginsLocalItemsSeam['onAdd']>
+>;
 
 /**
  * A cloud chat's skills, plugins and MCP servers in the desktop composer
@@ -131,6 +135,12 @@ function CatalogPicker({
       current = false;
     };
   }, [read, localReads]);
+  // Presentation only: main refuses an installed skill's copy while it's off.
+  const installedSkills = useFeatureFlagsStore((flags) =>
+    flags.isEnabled(
+      CLIENT_FEATURE_FLAGS.canopyDesktopCloudCopyInstalledSkills.key,
+    ),
+  );
   const harness = state.models.find(
     (model) => model.id === state.currentModel,
   )?.harness;
@@ -143,10 +153,11 @@ function CatalogPicker({
             state.entries,
             harness,
             state.thisDesktopUploads,
+            installedSkills,
           ),
-    [local, state.entries, harness, state.thisDesktopUploads],
+    [local, state.entries, harness, state.thisDesktopUploads, installedSkills],
   );
-  const localItems: PortalPluginsLocalItemsSeam | undefined =
+  const localItems: RemoteControlPluginsLocalItemsSeam | undefined =
     accountId === null || rows.length === 0
       ? undefined
       : {
@@ -170,7 +181,7 @@ function CatalogPicker({
   // only once this open has read the chat's saved selection; Save then keeps it.
   return (
     <>
-      <PortalPluginsPicker
+      <RemoteControlPluginsPicker
         open={read && state.status === 'ready'}
         onOpenChange={(open): void => {
           if (!open) onClose();

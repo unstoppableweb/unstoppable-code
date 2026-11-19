@@ -1,3 +1,4 @@
+import { AppErrorErrnoSchema } from '@canopy/protocol/app-errors';
 import {
   WORKER_CODE_GRAPH_GENERATION_FAILURE_REASONS,
   WORKER_CODE_GRAPH_GENERATION_REPORT_CAPABILITY,
@@ -48,11 +49,56 @@ export interface CodeGraphGenerationBuildResult {
   readonly derivedDeferred?: true;
 }
 
+/** Mirrors `@canopy/code-graph`'s `CODE_GRAPH_FAILURE_CLASSES`. */
+const FAILURE_CLASSES = [
+  'permission-denied',
+  'busy',
+  'corrupt',
+  'unsupported-schema',
+  'no-space',
+  'io',
+  'internal',
+] as const;
+
+/** Mirrors `@canopy/code-graph`'s `CodeGraphColdFallbackReason`. */
+const COLD_FALLBACK_REASONS = [
+  'no-seed-source',
+  'no-canonical-source',
+  'no-compatible-base',
+  'seed-copy-failed',
+  'seed-preparation-failed',
+  'duplicate-repository',
+  'invalid-seed-source',
+  'seed-import-failed',
+  'worktree-graph-busy',
+  'seed-flush-failed',
+] as const;
+
+export type CodeGraphGenerationFailureClass = (typeof FAILURE_CLASSES)[number];
+export type CodeGraphGenerationColdFallbackReason =
+  (typeof COLD_FALLBACK_REASONS)[number];
+
+/** `value` when it is one of `allowed`; anything else is not reported. */
+function closed<const T extends string>(
+  allowed: readonly T[],
+  value: string | undefined,
+): T | undefined {
+  return allowed.find((candidate) => candidate === value);
+}
+
+/** Why a repository built cold, as the build host reports it. */
+interface CodeGraphGenerationColdFallback {
+  readonly reason: string;
+  readonly failureClass?: string;
+}
+
 export interface CodeGraphGenerationResultContextInput {
   readonly result: CodeGraphGenerationBuildResult;
   readonly fusionDurationMs?: number;
   readonly seededRepositoryCount?: number;
   readonly coldFallbackRepositoryCount?: number;
+  /** The first cold fallback; only its closed reason and class are kept. */
+  readonly coldFallback?: CodeGraphGenerationColdFallback;
   readonly reusedRepositoryCount?: number;
   readonly preparationFailed?: boolean;
   readonly generationPublished?: boolean;
@@ -97,6 +143,14 @@ export function codeGraphGenerationResultContext(
         : undefined,
       seeded_repository_count: input.seededRepositoryCount,
       cold_fallback_repository_count: input.coldFallbackRepositoryCount,
+      cold_fallback_reason: closed(
+        COLD_FALLBACK_REASONS,
+        input.coldFallback?.reason,
+      ),
+      cold_fallback_failure_class: closed(
+        FAILURE_CLASSES,
+        input.coldFallback?.failureClass,
+      ),
       reused_repository_count: input.reusedRepositoryCount,
       preparation_failed: input.preparationFailed,
       generation_published: input.generationPublished,
@@ -143,8 +197,25 @@ const READ_FAILURES = [
 /** Mirrors `@canopy/code-graph/host`'s failure causes. */
 export type CodeGraphGenerationFailureCause =
   | { readonly kind: 'unavailable' }
-  | { readonly kind: 'worker-response' }
+  | {
+      readonly kind: 'worker-response';
+      readonly failureClass?: string;
+      readonly errno?: string;
+    }
   | { readonly kind: 'error'; readonly error: unknown };
+
+/** A failed worker response's closed class and allowlisted errno, if any. */
+function failureTelemetry(
+  cause: CodeGraphGenerationFailureCause,
+): Record<string, CodeGraphGenerationTelemetryValue> {
+  if (cause.kind !== 'worker-response') return {};
+  const failureClass = closed(FAILURE_CLASSES, cause.failureClass);
+  const errno = AppErrorErrnoSchema.safeParse(cause.errno);
+  return {
+    ...(failureClass === undefined ? {} : { failure_class: failureClass }),
+    ...(errno.success ? { errno: errno.data } : {}),
+  };
+}
 
 function failureReasons(cause: CodeGraphGenerationFailureCause): {
   generation: CodeGraphGenerationFailureReason;
@@ -230,6 +301,7 @@ export interface CodeGraphGenerationObservation {
     };
     readonly seededRepositoryCount: number;
     readonly coldFallbackRepositoryCount: number;
+    readonly coldFallback?: CodeGraphGenerationColdFallback;
     readonly reusedRepositoryCount: number;
     readonly preparationFailed: boolean;
     readonly attemptId: string | undefined;
@@ -282,6 +354,9 @@ export function createCodeGraphGenerationReporter(
           fusionDurationMs: input.response.fusionDurationMs ?? 0,
           seededRepositoryCount: input.seededRepositoryCount,
           coldFallbackRepositoryCount: input.coldFallbackRepositoryCount,
+          ...(input.coldFallback === undefined
+            ? {}
+            : { coldFallback: input.coldFallback }),
           reusedRepositoryCount: input.reusedRepositoryCount,
           preparationFailed: input.preparationFailed,
         }),
@@ -326,7 +401,7 @@ export function createCodeGraphGenerationReporter(
         outcome: 'failure',
         repositoryCount,
         totalMs: input.totalMs,
-        telemetry: {},
+        telemetry: failureTelemetry(input.cause),
         failure: { stage: input.stage, reason: reasons.generation },
         diagnostic: {
           outcome: deferred ? 'deferred' : 'failure',
@@ -340,6 +415,49 @@ export function createCodeGraphGenerationReporter(
         },
       });
     },
+  };
+}
+
+/** A generation's I/O facts, for its local build diagnostic. */
+export interface CodeGraphGenerationIoFacts {
+  failureClass?: CodeGraphGenerationFailureClass;
+  errno?: string;
+  coldFallbackReason?: CodeGraphGenerationColdFallbackReason;
+  coldFallbackFailureClass?: CodeGraphGenerationFailureClass;
+}
+
+function telemetryText(report: Report, key: string): string | undefined {
+  const value = report.telemetry[key];
+  return typeof value === 'string' ? value : undefined;
+}
+
+/**
+ * The failure class, errno and cold-fallback reason a report's telemetry
+ * carries: closed enums and an allowlisted errno only, anything else dropped.
+ */
+export function codeGraphGenerationIoFacts(
+  report: Report,
+): CodeGraphGenerationIoFacts {
+  const failureClass = closed(
+    FAILURE_CLASSES,
+    telemetryText(report, 'failure_class'),
+  );
+  const errno = AppErrorErrnoSchema.safeParse(telemetryText(report, 'errno'));
+  const coldFallbackReason = closed(
+    COLD_FALLBACK_REASONS,
+    telemetryText(report, 'cold_fallback_reason'),
+  );
+  const coldFallbackFailureClass = closed(
+    FAILURE_CLASSES,
+    telemetryText(report, 'cold_fallback_failure_class'),
+  );
+  return {
+    ...(failureClass === undefined ? {} : { failureClass }),
+    ...(errno.success ? { errno: errno.data } : {}),
+    ...(coldFallbackReason === undefined ? {} : { coldFallbackReason }),
+    ...(coldFallbackFailureClass === undefined
+      ? {}
+      : { coldFallbackFailureClass }),
   };
 }
 

@@ -47,7 +47,7 @@ export function AppErrorDetails({
           </span>
           <CopyButton
             value={referenceId}
-            variant="ghost-quiet"
+            variant="ghost"
             glyphSize="xs"
             ariaLabel="Copy reference"
             title="Copy reference"

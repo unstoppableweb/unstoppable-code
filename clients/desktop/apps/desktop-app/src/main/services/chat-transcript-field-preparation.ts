@@ -7,7 +7,7 @@ import {
   type PreparedCodexItemOutput,
 } from '@canopy/agent-transcript';
 import type { PersistedToolOutputReference } from '@canopy/agent-transcript/types';
-import { PORTAL_CHAT_PART_TEXT_MAX_CHARS } from '@canopy/agent-transcript/portal/persisted-chat-projection';
+import { REMOTE_CONTROL_CHAT_PART_TEXT_MAX_CHARS } from '@canopy/agent-transcript/remote-control/persisted-chat-projection';
 import {
   TOOL_OUTPUT_INLINE_BYTES,
   TOOL_OUTPUT_PREVIEW_HEAD_BYTES,
@@ -235,7 +235,7 @@ async function prepareBody(
         field,
         prefix.join(''),
         undefined,
-        observer.codeUnits > PORTAL_CHAT_PART_TEXT_MAX_CHARS,
+        observer.codeUnits > REMOTE_CONTROL_CHAT_PART_TEXT_MAX_CHARS,
       );
     observer.add(chunk);
     prefix.push(chunk);
@@ -270,7 +270,7 @@ async function prepareBody(
     transcriptFieldPreviewFromEnds(start, observer.end),
     reference,
     reference !== undefined ||
-      observer.codeUnits > PORTAL_CHAT_PART_TEXT_MAX_CHARS,
+      observer.codeUnits > REMOTE_CONTROL_CHAT_PART_TEXT_MAX_CHARS,
   );
 }
 

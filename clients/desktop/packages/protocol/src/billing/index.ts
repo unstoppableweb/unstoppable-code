@@ -7,40 +7,6 @@ export const AI_CREDIT_USD_PER_CREDIT: number = 0.15;
 
 import type { ModelLibraryAccess } from '../models/model-library-access';
 import type { WorkOwner } from '../llm-gateway';
-export type DailyDripBlockedReason = 'network_limit' | 'network_unidentified';
-
-export function isDailyDripBlockedReason(
-  value: unknown,
-): value is DailyDripBlockedReason {
-  return value === 'network_limit' || value === 'network_unidentified';
-}
-
-/**
- * What one daily-drip grant attempt did (CAN-4633). `blocked` carries a
- * {@link DailyDripBlockedReason}; `already_granted` and `at_cap` are not
- * blocks (today's drip exists, or the unused drip already fills the cap).
- */
-export const DAILY_DRIP_GRANT_OUTCOMES = [
-  'granted',
-  'already_granted',
-  'at_cap',
-  'blocked',
-  'not_opted_in',
-  'not_eligible',
-  'failed',
-] as const;
-
-export type DailyDripGrantOutcome = (typeof DAILY_DRIP_GRANT_OUTCOMES)[number];
-
-const DAILY_DRIP_GRANT_OUTCOME_SET: ReadonlySet<unknown> = new Set(
-  DAILY_DRIP_GRANT_OUTCOMES,
-);
-
-export function isDailyDripGrantOutcome(
-  value: unknown,
-): value is DailyDripGrantOutcome {
-  return DAILY_DRIP_GRANT_OUTCOME_SET.has(value);
-}
 
 import type { BillingPresentation, EntitlementSource } from './types';
 import {
@@ -78,14 +44,6 @@ export const BILLING_CAPABILITIES = [
 ] as const;
 
 export type BillingCapability = (typeof BILLING_CAPABILITIES)[number];
-
-/**
- * Free AI credits a user wallet tops up to each Pacific day. The free daily
- * allowance is retired (CAN-4763): every plan row carries 0, so no read mints a
- * drip. The constant stays as the typed mirror of
- * billing_plans.daily_drip_cap_credits until the drip mechanism is removed.
- */
-export const DEFAULT_DAILY_DRIP_CAP_CREDITS = 0;
 
 const BILLING_CAPABILITY_SET: ReadonlySet<string> = new Set(
   BILLING_CAPABILITIES,
@@ -283,111 +241,6 @@ export function can(
   return e.capabilities.includes(c);
 }
 
-// ---------------------------------------------------------------------------
-// Daily free AI-credit drip opt-in
-// ---------------------------------------------------------------------------
-
-/**
- * A user's daily free-credit drip preference. `decidedAt` is non-null once the
- * user answered (either way) on any device; it hides the onboarding opt-in card.
- * `capCredits` is the PLAN cap (ungated), so an opted-out user can be shown what
- * turning the drip on gets them.
- */
-export interface DailyCreditDripPreference {
-  enabled: boolean;
-  /** ISO-8601 timestamp of the user's last answer, or `null` if undecided. */
-  decidedAt: string | null;
-  capCredits: number;
-}
-
-/** Body of a daily-drip preference save (PUT). */
-export interface DailyCreditDripPreferenceInput {
-  enabled: boolean;
-}
-
-/**
- * Response of a daily-drip preference save. The preference write is committed
- * whenever this is returned; `balanceCredits` is `null` when the post-save
- * balance read failed (the client should re-fetch), and `granted` is the drip
- * amount minted by the save (`0` when disabling or already granted today).
- */
-export type DailyCreditDripPreferenceSaveResult = DailyCreditDripPreference & {
-  blockedReason?: DailyDripBlockedReason;
-  balanceCredits: number | null;
-  granted: number;
-};
-
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function isNonNegativeFiniteNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
-}
-
-function isIsoTimestamp(value: unknown): value is string {
-  return typeof value === 'string' && !Number.isNaN(Date.parse(value));
-}
-
-/**
- * Narrow an unknown decoded JSON value to a {@link DailyCreditDripPreference}.
- * Unknown extra keys are ignored (forward compat); every known field must have
- * its exact type. Returns `null` on any mismatch.
- */
-export function parseDailyCreditDripPreference(
-  value: unknown,
-): DailyCreditDripPreference | null {
-  if (!isPlainRecord(value)) return null;
-  const { enabled, decidedAt, capCredits } = value;
-  if (typeof enabled !== 'boolean') return null;
-  if (decidedAt !== null && !isIsoTimestamp(decidedAt)) return null;
-  if (!isNonNegativeFiniteNumber(capCredits)) return null;
-  return { enabled, decidedAt, capCredits };
-}
-
-/**
- * Narrow an unknown decoded request body to a
- * {@link DailyCreditDripPreferenceInput}. Strict: `enabled` must be a boolean
- * and no other keys are accepted, so a malformed or misdirected body is
- * rejected instead of partially applied.
- */
-export function parseDailyCreditDripPreferenceInput(
-  value: unknown,
-): DailyCreditDripPreferenceInput | null {
-  if (!isPlainRecord(value)) return null;
-  const keys = Object.keys(value);
-  if (keys.length !== 1 || keys[0] !== 'enabled') return null;
-  const { enabled } = value;
-  if (typeof enabled !== 'boolean') return null;
-  return { enabled };
-}
-
-/**
- * Narrow an unknown decoded JSON value to a
- * {@link DailyCreditDripPreferenceSaveResult}. Returns `null` on any mismatch.
- */
-export function parseDailyCreditDripPreferenceSaveResult(
-  value: unknown,
-): DailyCreditDripPreferenceSaveResult | null {
-  const preference = parseDailyCreditDripPreference(value);
-  if (preference === null || !isPlainRecord(value)) return null;
-  const { balanceCredits, granted, blockedReason } = value;
-  if (blockedReason !== undefined && !isDailyDripBlockedReason(blockedReason))
-    return null;
-  if (
-    balanceCredits !== null &&
-    (typeof balanceCredits !== 'number' || !Number.isFinite(balanceCredits))
-  ) {
-    return null;
-  }
-  if (!isNonNegativeFiniteNumber(granted)) return null;
-  return {
-    ...preference,
-    balanceCredits,
-    granted,
-    ...(blockedReason !== undefined ? { blockedReason } : {}),
-  };
-}
 export {
   computeSubscriptionStatus,
   type SubscriptionStatus,

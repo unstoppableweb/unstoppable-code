@@ -7,6 +7,7 @@ import type {
   PluginProviderSupport,
 } from '@canopy/protocol/plugins';
 import type { PluginHookMember } from './types';
+import type { HarnessCompatibility } from '@canopy/protocol/plugins';
 import { opencodeSupportsCommandHook } from './opencode-support';
 import {
   cursorPluginFacetSupport,
@@ -102,7 +103,9 @@ export const ANTIGRAVITY_PLUGIN_HARNESS_NOTE = 'Labs: no hooks or agents';
 export type PluginHarnessInstallation =
   | 'Installed'
   | 'Not installed'
-  | 'Not supported';
+  | 'Not supported'
+  /** A listing not fetched yet: only its marketplace's harnesses are known. */
+  | 'Unknown until added';
 
 export interface PluginHarnessRow {
   id: PluginHarnessId;
@@ -362,8 +365,19 @@ export function pluginInfoHarnessRows(
    * opens installed plugins, keeps the default.
    */
   installedWhenUnknown = true,
+  /**
+   * The plugin's files haven't been read (a catalog listing not fetched
+   * yet): a harness its marketplace doesn't name is unknown, not
+   * unsupported.
+   */
+  unread = false,
+  /**
+   * What the listing's metadata already says per harness: a harness it
+   * covers stays as read, even while the files are unread.
+   */
+  known?: HarnessCompatibility,
 ): PluginHarnessRow[] {
-  return pluginHarnessRows({
+  const rows = pluginHarnessRows({
     harnesses,
     // One Add for every harness (CAN-6816): New Customize only.
     ...(showHarnessInstalls && plugin.harnessInstalls
@@ -379,4 +393,16 @@ export function pluginInfoHarnessRows(
         }
       : installedWhenUnknown,
   });
+  return unread
+    ? rows.map((row) =>
+        row.installation === 'Not supported' &&
+        // A harness the metadata doesn't cover (Antigravity has no
+        // compatibility result yet) is unknown too.
+        !Object.entries(known?.harnesses ?? {}).some(
+          ([id, result]) => id === row.id && result !== undefined,
+        )
+          ? { ...row, installation: 'Unknown until added' }
+          : row,
+      )
+    : rows;
 }

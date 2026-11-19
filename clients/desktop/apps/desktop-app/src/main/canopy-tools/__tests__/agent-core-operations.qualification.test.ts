@@ -53,6 +53,9 @@ import {
   LEDGER_QUERY_DEFINITIONS,
   PIPELINE_GRANTS,
   PIPELINE_DEFINITION_QUERY_DEFINITIONS,
+  CORE_REVIEW_INSTRUCTION_DEFINITIONS,
+  CORE_REVIEW_QUERY_DEFINITIONS,
+  REVIEW_GRANTS,
   WORKER_CODE_GRAPH_GRANTS,
   WORKER_CODE_GRAPH_INSTRUCTION_DEFINITIONS,
   WORKER_CODE_GRAPH_QUERY_DEFINITIONS,
@@ -95,6 +98,10 @@ import {
   type AgentCoreOperationDispatcher,
 } from '../agent-core-operations';
 import { readFileCommentThreads } from '../file-comment-core-client';
+import {
+  readReviewCommentThread,
+  replyToReviewCommentThread,
+} from '../review-comment-core-client';
 import { createShowVisualHost } from '../show-visual-host';
 import {
   DESKTOP_LEDGER_TOOLS_HOST,
@@ -256,11 +263,17 @@ describe('agent core operations (CAN-4125)', () => {
       ...CORE_CHAT_VISUAL_STAGE_INSTRUCTION_DEFINITIONS,
       ...WORKER_VISUAL_QUERY_DEFINITIONS,
       ...CORE_GUARDED_SETTINGS_INSTRUCTION_DEFINITIONS,
+      ...CORE_REVIEW_QUERY_DEFINITIONS,
+      ...CORE_REVIEW_INSTRUCTION_DEFINITIONS,
     };
     expect(Object.keys(AGENT_CORE_TOOL_OPERATIONS.annotation)).toEqual([
       'core.annotation.thread.get',
       'core.annotation.thread.list',
       'core.annotation.thread.reply',
+    ]);
+    expect(Object.keys(AGENT_CORE_TOOL_OPERATIONS.review)).toEqual([
+      'core.review.get',
+      'core.review.comment.reply',
     ]);
     expect(Object.keys(AGENT_CORE_TOOL_OPERATIONS.ledger)).toEqual([
       'core.ledger.entries.search',
@@ -279,6 +292,42 @@ describe('agent core operations (CAN-4125)', () => {
           ...grants,
         ]);
       }
+  });
+
+  it('the code review comment tools reach core only through the wrapper', async () => {
+    const { dispatcher, recorded } = recordingDispatcher(
+      {
+        review: { version: 1, armed: false, commentThreads: [], diagrams: {} },
+        fingerprint: 'fingerprint-1',
+      },
+      { principals: true },
+    );
+    jest
+      .mocked(getActiveDesktopRuntime)
+      .mockReturnValue(
+        dispatcher as unknown as ReturnType<typeof getActiveDesktopRuntime>,
+      );
+
+    await readReviewCommentThread({ projectId: 'p', worktreeId: 'w' });
+    await replyToReviewCommentThread({
+      projectId: 'p',
+      worktreeId: 'w',
+      threadId: 't',
+      body: 'Done.',
+    });
+
+    expect(recorded).toEqual([
+      {
+        name: 'core.review.get',
+        grants: [REVIEW_GRANTS.read],
+        principalId: 'desktop-review-comment-tools',
+      },
+      {
+        name: 'core.review.comment.reply',
+        grants: [REVIEW_GRANTS.write],
+        principalId: 'desktop-review-comment-tools',
+      },
+    ]);
   });
 
   it('the file comment tools reach core only through the wrapper', async () => {

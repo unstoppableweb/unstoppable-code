@@ -1,5 +1,5 @@
 import type { PersistedChatMessage, FileReference } from '../types';
-import { parseChatAgentSentInfo } from '@canopy/protocol/portal';
+import { parseChatAgentSentInfo } from '@canopy/protocol/remote-control/shell';
 import { PROJECT_READ_MESSAGE_MAX_CHARS } from './project-reads';
 import type { VisibleMessage } from './project-reads';
 

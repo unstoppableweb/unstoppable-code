@@ -98,7 +98,7 @@ export function RemoteAccessTab(): JSX.Element {
     })),
   );
   const openRemoteControl = useNavigationStore(
-    (store) => store.openCanopyPortal,
+    (store) => store.openRemoteControlDialog,
   );
   const [savingAllow, setSavingAllow] = useState(false);
   const [savingUpdates, setSavingUpdates] = useState(false);

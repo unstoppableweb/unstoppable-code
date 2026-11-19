@@ -244,7 +244,6 @@ export function PipelineModelAliasEditor({
       <Stack gap="item">
         <SegmentedControl
           label="Alias mode"
-          shape="capsule"
           width="content"
           value={currentMode}
           disabled={readonly}

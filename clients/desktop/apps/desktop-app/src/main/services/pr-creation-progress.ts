@@ -1,7 +1,7 @@
 import type {
-  PortalPrCreationProgress,
-  PortalPrCreationStep,
-  PortalPullRequestState,
+  RemoteControlPrCreationProgress,
+  RemoteControlPrCreationStep,
+  RemoteControlPullRequestState,
   PrCreationProgressEvent,
 } from '@canopy/desktop-shared/types';
 import { clearPrMergeProgressFeed } from './pr-merge-progress';
@@ -13,14 +13,14 @@ import { clearPrMergeProgressFeed } from './pr-merge-progress';
  * githubStore's `creationProgress` map; the portal has no renderer, so this
  * registry mirrors that reducer main-side and exposes the accumulated feed to
  * `refreshPullRequestState`, which projects it as
- * `PortalPullRequestState.creationProgress`.
+ * `RemoteControlPullRequestState.creationProgress`.
  *
  * State is per-window-of-work runtime state on the Electron main process —
  * intentionally not persisted (a restart mid-creation also drops the
  * renderer's copy).
  */
 
-const progressByKey = new Map<string, PortalPrCreationProgress>();
+const progressByKey = new Map<string, RemoteControlPrCreationProgress>();
 
 function progressKey(projectId: string, worktreeId: string): string {
   return `${projectId}/${worktreeId}`;
@@ -58,7 +58,7 @@ export function cancelPrCreationProgress(
 export function recordPrCreationProgress(event: PrCreationProgressEvent): void {
   const key = progressKey(event.projectId, event.worktreeId);
   const existing = progressByKey.get(key);
-  const step: PortalPrCreationStep = { phase: event.phase };
+  const step: RemoteControlPrCreationStep = { phase: event.phase };
   if (event.repoName !== undefined) step.repoName = event.repoName;
   if (event.error !== undefined) step.error = event.error;
   const steps = [...(existing?.steps ?? []), step];
@@ -83,7 +83,7 @@ export function recordPrCreationProgress(event: PrCreationProgressEvent): void {
 export function getPrCreationProgress(
   projectId: string,
   worktreeId: string,
-): PortalPrCreationProgress | undefined {
+): RemoteControlPrCreationProgress | undefined {
   return progressByKey.get(progressKey(projectId, worktreeId));
 }
 
@@ -95,7 +95,7 @@ export function getPrCreationProgress(
 export function clearStalePrCreationProgress(
   projectId: string,
   worktreeId: string,
-  state: Pick<PortalPullRequestState, 'repos'>,
+  state: Pick<RemoteControlPullRequestState, 'repos'>,
 ): boolean {
   const key = progressKey(projectId, worktreeId);
   const progress = progressByKey.get(key);
@@ -136,7 +136,7 @@ export function clearStalePrCreationProgress(
  * path so deleted worktrees do not pin a leftover feed in this module map for
  * the process lifetime.
  */
-export function clearPortalPrTracking(
+export function clearRemoteControlPrTracking(
   projectId: string,
   worktreeId: string,
 ): void {

@@ -192,6 +192,15 @@ export interface CodeReviewArtifact<T> {
   error?: string;
 }
 
+export interface CodeReviewAnnotationsArtifact extends CodeReviewArtifact<ReviewAnnotationSet> {
+  /**
+   * Annotations a `core.review` read left out, because their path isn't
+   * repository-relative even once normalised. The stored file never holds
+   * this field; `code-review:get` adds it to the review it answers.
+   */
+  skippedAnnotations?: number;
+}
+
 export interface CodeReviewDiagrams {
   logicDiff?: CodeReviewArtifact<LogicDiffDiagram>;
   /** Conditional ERD; absent when not applicable to the branch diff. */
@@ -203,7 +212,7 @@ export interface CodeReviewFile {
   armed: boolean;
   armedAt?: string;
   commentThreads: ReviewCommentThread[];
-  annotations?: CodeReviewArtifact<ReviewAnnotationSet>;
+  annotations?: CodeReviewAnnotationsArtifact;
   diagrams: CodeReviewDiagrams;
 }
 

@@ -3,7 +3,7 @@ import type {
   ChatInputDeliveryEvent,
   ChatInputDeliveryLedger,
   ChatInputDeliveryRow,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import type { ChatSendMessageRequest } from '@canopy/desktop-shared/types';
 import {
   inputSettingsKey,

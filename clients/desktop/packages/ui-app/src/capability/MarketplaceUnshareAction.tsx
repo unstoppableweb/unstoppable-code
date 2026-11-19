@@ -194,7 +194,7 @@ export function MarketplaceUnshareAction({
             ref={triggerRef}
             iconOnly
             size="sm"
-            variant="ghost-quiet"
+            variant="ghost"
             aria-label={MARKETPLACE_UNSHARE_LABEL}
             onClick={unshare.open}
             disabled={unshare.disabled}

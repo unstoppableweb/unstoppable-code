@@ -7,7 +7,7 @@ import {
 } from '../pipelines/package';
 // ---------------------------------------------------------------------------
 import type { WorkspaceContext } from '../workspace-context';
-import type { PortalChatMessage } from '../portal';
+import type { RemoteControlChatMessage } from '../remote-control/shell';
 import type { WirePlanCommentThread } from '../plans';
 import { isSafePortableRelativePath } from '../safe-relative-path';
 import { isUuid } from '../uuid';
@@ -485,7 +485,7 @@ export interface SharedContainerPublishedChat {
   title: string;
   createdAt: string;
   description?: string;
-  messages: PortalChatMessage[];
+  messages: RemoteControlChatMessage[];
 }
 
 /** Immutable local record describing the shared revision a fork came from. */
@@ -1601,7 +1601,9 @@ function isPublishedChatPart(value: unknown): boolean {
   );
 }
 
-function isPublishedChatMessage(value: unknown): value is PortalChatMessage {
+function isPublishedChatMessage(
+  value: unknown,
+): value is RemoteControlChatMessage {
   return (
     isRecord(value) &&
     hasOnlyKeys(value, [

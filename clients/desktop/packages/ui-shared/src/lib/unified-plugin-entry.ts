@@ -189,7 +189,13 @@ export interface UnifiedEntryBundledServer {
 export interface UnifiedEntryHarnessRow {
   readonly id: string;
   readonly name: string;
-  readonly installation: 'Installed' | 'Not installed' | 'Not supported';
+  readonly installation:
+    | 'Installed'
+    | 'Not installed'
+    | 'Not supported'
+    | 'Unknown until added'
+    /** Unknown, while a light preview of the plugin's files is read. */
+    | 'Checking…';
   readonly note?: string;
 }
 

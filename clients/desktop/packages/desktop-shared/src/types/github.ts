@@ -1,8 +1,8 @@
 import {
-  isPortalPrMergeQueuePhase,
-  type PortalPrMergeQueuePhase,
-  type PortalPullRequestCheckExecutionState,
-} from '@canopy/protocol/portal';
+  isRemoteControlPrMergeQueuePhase,
+  type RemoteControlPrMergeQueuePhase,
+  type RemoteControlPullRequestCheckExecutionState,
+} from '@canopy/protocol/remote-control/shell';
 import type { AppError } from '@canopy/protocol/app-errors';
 import type { SplitPlanIssue } from './pr-split-plan';
 
@@ -18,7 +18,7 @@ export type CheckStatus =
   | 'neutral'
   | 'none';
 /** Detailed GitHub check state; shared with the Portal wire vocabulary. */
-export type CheckExecutionState = PortalPullRequestCheckExecutionState;
+export type CheckExecutionState = RemoteControlPullRequestCheckExecutionState;
 export type ReviewStatus =
   | 'approved'
   | 'changes_requested'
@@ -64,7 +64,7 @@ export interface PrLabel {
  * the values. `unknown` is a value this build does not recognize; the PR is
  * still queued.
  */
-export type PrMergeQueuePhase = PortalPrMergeQueuePhase;
+export type PrMergeQueuePhase = RemoteControlPrMergeQueuePhase;
 
 const PR_MERGE_QUEUE_PHASE_BY_GITHUB_STATE: Readonly<
   Record<string, PrMergeQueuePhase>
@@ -79,7 +79,7 @@ const PR_MERGE_QUEUE_PHASE_BY_GITHUB_STATE: Readonly<
 export function isPrMergeQueuePhase(
   value: unknown,
 ): value is PrMergeQueuePhase {
-  return typeof value === 'string' && isPortalPrMergeQueuePhase(value);
+  return typeof value === 'string' && isRemoteControlPrMergeQueuePhase(value);
 }
 
 /** Maps a GitHub `MergeQueueEntryState` value; anything else is `unknown`. */

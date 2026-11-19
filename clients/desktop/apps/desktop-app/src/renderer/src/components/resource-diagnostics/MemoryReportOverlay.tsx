@@ -131,7 +131,7 @@ export function MemoryReportOverlay(): JSX.Element | null {
               <div className="flex items-center justify-end gap-2">
                 {flow.phase === 'saved' ? (
                   <Button
-                    variant="outline"
+                    variant="secondary"
                     size="lg"
                     data-testid="memory-report-open-folder"
                     onClick={() => {

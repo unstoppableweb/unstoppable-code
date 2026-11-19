@@ -38,10 +38,9 @@ export const DesktopAgentActivitySection = memo(
     chatTarget,
     ownerUserMessageId,
   }: DesktopAgentActivitySectionProps): JSX.Element | null {
-    // Create/update cards are compact and stay readable in narrow columns, so
-    // the section packs more per row as the container grows. Pipeline runs and
-    // watched GitHub workflow runs use the same full-width row presentation as
-    // the Pipeline Runs panel.
+    // Created and changed items and watched GitHub workflow runs are rows
+    // under the section's header. Pipeline runs keep the presentation of the
+    // Pipeline Runs panel.
     const artifactItems = artifacts
       .filter(isCapabilityTileReceipt)
       .map((receipt) => (

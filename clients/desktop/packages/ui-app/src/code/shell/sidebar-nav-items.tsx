@@ -13,7 +13,7 @@ import {
   HistoryIcon,
   KanbanIcon,
   LayoutDashboardIcon,
-  PortalIcon,
+  RemoteControlIcon,
   WorkflowsIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
 import { ClaudeLogo } from '@canopy/ui-shared/icons';
@@ -92,7 +92,7 @@ export function getSidebarNavItemDefs(
     'remote-control': {
       key: 'remote-control',
       label: REMOTE_CONTROL_LABEL,
-      icon: <PortalIcon size={iconSize} />,
+      icon: <RemoteControlIcon size={iconSize} />,
     },
     audit: {
       key: 'audit',

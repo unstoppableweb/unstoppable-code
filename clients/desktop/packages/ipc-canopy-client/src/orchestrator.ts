@@ -29,11 +29,11 @@ import type {
   Unsubscribe,
 } from '@canopy/app-core';
 import type {
-  PortalAppAdvisorChatSummary,
-  PortalAskUserQuestion,
-  PortalAskUserQuestionState,
-  PortalChatFileReference,
-} from '@canopy/protocol/portal';
+  RemoteControlAppAdvisorChatSummary,
+  RemoteControlAskUserQuestion,
+  RemoteControlAskUserQuestionState,
+  RemoteControlChatFileReference,
+} from '@canopy/protocol/remote-control/shell';
 import { APP_ADVISOR_PROJECT_ID } from '@canopy/protocol/chat-targets';
 import { REMOTE_IPC_CHANNELS as C } from '@canopy/protocol/remote-control/channels';
 import {
@@ -79,7 +79,7 @@ export interface OrchestratorDeps {
   ) => Promise<string | null>;
   /** This client's `@` references as computer paths; null when one is unknown. */
   readonly resolveReferences: (
-    refs: readonly PortalChatFileReference[] | undefined,
+    refs: readonly RemoteControlChatFileReference[] | undefined,
   ) => Record<string, unknown>[] | null | undefined;
 }
 
@@ -131,7 +131,9 @@ const isToolCancellation = reply<WireAppAdvisorToolCancellation>(
   (value) => isRecord(value) && typeof value.requestId === 'string',
 );
 
-function isAskUserQuestion(value: unknown): value is PortalAskUserQuestion {
+function isAskUserQuestion(
+  value: unknown,
+): value is RemoteControlAskUserQuestion {
   return (
     isRecord(value) &&
     typeof value.question === 'string' &&
@@ -184,7 +186,7 @@ function messageCountOf(tab: ChatTab): number {
 /** One pending question, keyed by its chat and request. */
 interface PendingQuestion {
   readonly chatId: string;
-  readonly state: PortalAskUserQuestionState;
+  readonly state: RemoteControlAskUserQuestionState;
 }
 
 export interface OrchestratorHandlers {
@@ -366,7 +368,7 @@ export function createOrchestratorHandlers(
       return unsupported('appAdvisor.chats', ORCHESTRATOR_UNAVAILABLE);
     }
     const entries = await listEntries();
-    const chats: PortalAppAdvisorChatSummary[] = [];
+    const chats: RemoteControlAppAdvisorChatSummary[] = [];
     for (const [entryOrder, entry] of entries.entries()) {
       const state = await readEntry(entry.id);
       const unread = new Set(

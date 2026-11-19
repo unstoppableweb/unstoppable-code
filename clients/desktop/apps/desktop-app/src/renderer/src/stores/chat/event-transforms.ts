@@ -26,8 +26,8 @@ import {
   type PersistedChatMessage,
 } from '@canopy/desktop-shared/types';
 import { isCanopyAuthFailureEventData } from '@canopy/protocol/auth-recovery';
-import type { ToolInterruptionReason } from '@canopy/protocol/portal';
-import { TOOL_SETTLEMENT_OUTPUT } from '@canopy/protocol/portal';
+import type { ToolInterruptionReason } from '@canopy/protocol/remote-control/shell';
+import { TOOL_SETTLEMENT_OUTPUT } from '@canopy/protocol/remote-control/shell';
 import {
   persistedInterruptedSettlementTime,
   supersedeToolInterruptions,

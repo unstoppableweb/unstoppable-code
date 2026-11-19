@@ -1,5 +1,5 @@
 import {
-  LEGACY_PORTAL_STATE_FILE_MAX_BYTES,
+  LEGACY_REMOTE_CONTROL_STATE_FILE_MAX_BYTES,
   legacyPortalStateFilePath,
   readJsonFileForIdentity,
 } from '../lib/install-identity';
@@ -34,7 +34,7 @@ export async function readLegacyPortalOptIn(): Promise<LegacyPortalOptInRead> {
   try {
     read = await readJsonFileForIdentity(
       legacyPortalStateFilePath(),
-      LEGACY_PORTAL_STATE_FILE_MAX_BYTES,
+      LEGACY_REMOTE_CONTROL_STATE_FILE_MAX_BYTES,
     );
   } catch {
     return { reliable: false };

@@ -28,6 +28,7 @@ import {
   type OperationOrigin,
   type OperationRecord,
 } from '@canopy/protocol/canopy-core';
+import { peekDesktopCanopyRuntime } from '../canopy-runtime/desktop-runtime-access';
 import { pipelineExecutionOwnerOf } from './pipeline-operation-owner';
 import type {
   ResumePipelineExecutionFromMainRequest,
@@ -107,29 +108,54 @@ const RETRY_CANCEL = {
   reason: 'The pending automatic retry no longer applies.',
   requestedBy: 'desktop-pipeline-transient-retry',
 };
-const retryEntries = new Map<string, PipelineRetryEntry>();
-let initializedDependencies: TransientErrorRetrySchedulerDependencies | null =
-  null;
-let recovered: Promise<void> = Promise.resolve();
-let tokenCounter = 0;
+/** One scheduler's state; each `PipelineTransientRetries` owns its own. */
+interface RetryState {
+  entries: Map<string, PipelineRetryEntry>;
+  deps: TransientErrorRetrySchedulerDependencies | null;
+  recovered: Promise<void>;
+  tokenCounter: number;
+  /**
+   * Each execution's transitions run one at a time, in the order they arrive:
+   * a pause, a terminal event, a manual resume, a due retry, recovery and the
+   * startup re-arm. A step that waits (the preference read, the ledger write)
+   * keeps its lane, so what it read still holds when it acts, and the entry's
+   * token says which pause a step belongs to. Only the abort signal and the
+   * resume itself act outside a lane; the resume calls back into the
+   * scheduler.
+   */
+  lanes: Map<string, Promise<void>>;
+  /**
+   * An execution's epoch moves on when something supersedes its pause: a
+   * terminal event, a manual resume or a pause for other reasons. It moves on
+   * when that arrives, not when its step runs, so a step waiting in the lane
+   * (or inside one, on a read) sees that it no longer applies and does
+   * nothing.
+   */
+  epochs: Map<string, number>;
+  /** The reasons a recovery or the startup re-arm is restoring, by execution. */
+  restoring: Map<string, readonly string[]>;
+}
+
+function createRetryState(): RetryState {
+  return {
+    entries: new Map(),
+    deps: null,
+    recovered: Promise.resolve(),
+    tokenCounter: 0,
+    lanes: new Map(),
+    epochs: new Map(),
+    restoring: new Map(),
+  };
+}
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-/*
- * Each execution's transitions run one at a time, in the order they arrive:
- * a pause, a terminal event, a manual resume, a due retry, recovery and the
- * startup re-arm. A step that waits (the preference read, the ledger write)
- * keeps its lane, so what it read still holds when it acts, and the entry's
- * token says which pause a step belongs to. Only the abort signal and the
- * resume itself act outside a lane; the resume calls back into this module.
- */
-const lanes = new Map<string, Promise<void>>();
-
 function inLane<T>(
+  s: RetryState,
   executionId: string,
   step: () => T | Promise<T>,
 ): Promise<T> {
-  const prior = lanes.get(executionId);
+  const prior = s.lanes.get(executionId);
   // An idle lane runs its step at once, so an event's effect is visible
   // before the caller broadcasts it.
   const result = prior
@@ -141,41 +167,30 @@ function inLane<T>(
     (): void => undefined,
     (): void => undefined,
   );
-  lanes.set(executionId, settled);
+  s.lanes.set(executionId, settled);
   void settled.then((): void => {
-    if (lanes.get(executionId) === settled) lanes.delete(executionId);
+    if (s.lanes.get(executionId) === settled) s.lanes.delete(executionId);
   });
   return result;
 }
 
-/*
- * An execution's epoch moves on when something supersedes its pause: a
- * terminal event, a manual resume or a pause for other reasons. It moves on
- * when that arrives, not when its step runs, so a step waiting in the lane
- * (or inside one, on a read) sees that it no longer applies and does
- * nothing.
- */
-const epochs = new Map<string, number>();
-/** The reasons a recovery or the startup re-arm is restoring, by execution. */
-const restoring = new Map<string, readonly string[]>();
-
-function epochOf(executionId: string): number {
-  return epochs.get(executionId) ?? 0;
+function epochOf(s: RetryState, executionId: string): number {
+  return s.epochs.get(executionId) ?? 0;
 }
 
-function supersede(executionId: string): number {
-  const epoch = epochOf(executionId) + 1;
-  epochs.set(executionId, epoch);
+function supersede(s: RetryState, executionId: string): number {
+  const epoch = epochOf(s, executionId) + 1;
+  s.epochs.set(executionId, epoch);
   return epoch;
 }
 
-function isCurrent(executionId: string, epoch: number): boolean {
-  return epochOf(executionId) === epoch;
+function isCurrent(s: RetryState, executionId: string, epoch: number): boolean {
+  return epochOf(s, executionId) === epoch;
 }
 
-function nextToken(): number {
-  tokenCounter += 1;
-  return tokenCounter;
+function nextToken(s: RetryState): number {
+  s.tokenCounter += 1;
+  return s.tokenCounter;
 }
 
 function targetKeyOf(executionId: string): string {
@@ -202,8 +217,8 @@ function clearTimer(entry: PipelineRetryEntry): void {
   entry.timer = null;
 }
 
-function cancelRetryRun(entry: PipelineRetryEntry): void {
-  const engine = initializedDependencies?.engine;
+function cancelRetryRun(s: RetryState, entry: PipelineRetryEntry): void {
+  const engine = s.deps?.engine;
   if (!engine) return;
   const dropAccepted = entry.dropAccepted;
   entry.dropAccepted = null;
@@ -241,10 +256,11 @@ async function dropAcceptedRun(
   });
 }
 
-export function withPipelineTransientRetryState(
+function withRetryDisplay(
+  s: RetryState,
   state: ExecutionState,
 ): ExecutionState {
-  const display = retryEntries.get(state.id)?.display;
+  const display = s.entries.get(state.id)?.display;
   return state.transient_retry === display
     ? state
     : { ...state, transient_retry: display };
@@ -256,44 +272,46 @@ export function withPipelineTransientRetryState(
  * countdown goes.
  */
 function clearCountdownWhenCancelled(
+  s: RetryState,
   executionId: string,
   token: number,
   operationId: string,
 ): void {
-  const engine = initializedDependencies?.engine;
+  const engine = s.deps?.engine;
   if (!engine) return;
   void engine
     .waitForRun(operationId)
     .then(({ status }) =>
-      inLane(executionId, (): void => {
-        const current = retryEntries.get(executionId);
+      inLane(s, executionId, (): void => {
+        const current = s.entries.get(executionId);
         if (status !== 'cancelled' || current?.token !== token) return;
         if (!current.display) return;
         current.display = undefined;
-        emitRetryState(current);
+        emitRetryState(s, current);
       }),
     )
     .catch(() => undefined);
 }
 
-function emitRetryState(entry: PipelineRetryEntry): void {
-  initializedDependencies?.emitEvent?.({
+function emitRetryState(s: RetryState, entry: PipelineRetryEntry): void {
+  s.deps?.emitEvent?.({
     ...entry.lastEvent,
     type: 'execution.updated',
-    state: withPipelineTransientRetryState(entry.lastEvent.state),
+    state: withRetryDisplay(s, entry.lastEvent.state),
     timestamp: new Date().toISOString(),
   });
 }
 
 function deleteEntry(
+  s: RetryState,
   executionId: string,
   options: { cancelRun: boolean } = { cancelRun: true },
 ): void {
-  const entry = retryEntries.get(executionId);
-  retryEntries.delete(executionId);
+  const entry = s.entries.get(executionId);
+  s.entries.delete(executionId);
   if (entry) clearTimer(entry);
-  if (entry?.pending && options.cancelRun) cancelRetryRun(entry);
-  if (entry) emitRetryState(entry);
+  if (entry?.pending && options.cancelRun) cancelRetryRun(s, entry);
+  if (entry) emitRetryState(s, entry);
 }
 
 function isTerminalEvent(event: ExecutionEvent): boolean {
@@ -345,15 +363,15 @@ function pruneTerminalAttemptHistory(
   }
 }
 
-function clearScheduledBatch(entry: PipelineRetryEntry): void {
+function clearScheduledBatch(s: RetryState, entry: PipelineRetryEntry): void {
   clearTimer(entry);
-  if (entry.pending) cancelRetryRun(entry);
+  if (entry.pending) cancelRetryRun(s, entry);
   entry.pending = false;
   entry.scheduledReasonIds = [];
   entry.scheduledSignatures = [];
   entry.display = undefined;
-  entry.token = nextToken();
-  emitRetryState(entry);
+  entry.token = nextToken(s);
+  emitRetryState(s, entry);
 }
 
 type StepAttempts =
@@ -458,6 +476,7 @@ function ended(
  * waits out what is left of its delay.
  */
 async function runRetry(
+  s: RetryState,
   executionId: string,
   token: number,
   origin: OperationOrigin,
@@ -473,27 +492,27 @@ async function runRetry(
       return ended('stopped', startedAt);
     }
   }
-  const dependencies = initializedDependencies;
+  const dependencies = s.deps;
   if (!dependencies) return ended('stopped', startedAt);
   type Decision =
     | { go: false; status: InitiatedWorkRunResult['status'] }
     | { go: true; statusReasonIds: string[] };
-  const epoch = epochOf(executionId);
-  const decision = await inLane(executionId, async (): Promise<Decision> => {
-    const entry = retryEntries.get(executionId);
-    if (!entry || entry.token !== token || !isCurrent(executionId, epoch))
+  const epoch = epochOf(s, executionId);
+  const decision = await inLane(s, executionId, async (): Promise<Decision> => {
+    const entry = s.entries.get(executionId);
+    if (!entry || entry.token !== token || !isCurrent(s, executionId, epoch))
       return { go: false, status: 'stopped' };
     let preferences: PipelineRetryPreferences;
     try {
       preferences = await dependencies.readPreferences();
     } catch {
-      deleteEntry(executionId, { cancelRun: false });
+      deleteEntry(s, executionId, { cancelRun: false });
       return { go: false, status: 'failed' };
     }
-    if (control.signal.aborted || !isCurrent(executionId, epoch))
+    if (control.signal.aborted || !isCurrent(s, executionId, epoch))
       return { go: false, status: 'stopped' };
     if (!preferences.autoRetryTransientErrorsPipelines) {
-      deleteEntry(executionId, { cancelRun: false });
+      deleteEntry(s, executionId, { cancelRun: false });
       return { go: false, status: 'stopped' };
     }
     const signatures = [...entry.scheduledSignatures];
@@ -502,7 +521,7 @@ async function runRetry(
       entry.attempts.set(signature, (entry.attempts.get(signature) ?? 0) + 1);
     if (entry.display) {
       entry.display = { ...entry.display, nextRetryAt: null };
-      emitRetryState(entry);
+      emitRetryState(s, entry);
     }
     control.recordArtifact({ kind: 'pipelineExecution', id: executionId });
     return { go: true, statusReasonIds: [...entry.scheduledReasonIds] };
@@ -520,18 +539,18 @@ async function runRetry(
       getWindow,
     });
   } catch {
-    await inLane(executionId, () => {
-      if (retryEntries.get(executionId)?.token === token)
-        deleteEntry(executionId, { cancelRun: false });
+    await inLane(s, executionId, () => {
+      if (s.entries.get(executionId)?.token === token)
+        deleteEntry(s, executionId, { cancelRun: false });
     });
     return ended('failed', startedAt);
   }
-  return inLane(executionId, () => {
-    const current = retryEntries.get(executionId);
+  return inLane(s, executionId, () => {
+    const current = s.entries.get(executionId);
     if (current?.token !== token) return ended('succeeded', startedAt);
     current.pending = false;
     if (result.status === 'stale-noop') {
-      deleteEntry(executionId, { cancelRun: false });
+      deleteEntry(s, executionId, { cancelRun: false });
       return ended('stopped', startedAt);
     }
     return ended('succeeded', startedAt);
@@ -551,13 +570,14 @@ interface RetryPlan {
  * so a restart before then finds it queued and resumes it.
  */
 async function submitRetry(
+  s: RetryState,
   entry: PipelineRetryEntry,
   token: number,
   epoch: number,
   plan: RetryPlan,
   getWindow: () => BrowserWindow | null,
 ): Promise<void> {
-  const dependencies = initializedDependencies;
+  const dependencies = s.deps;
   if (!dependencies) return;
   const { state, executionId } = entry.lastEvent;
   const statusReasonIds = [...entry.scheduledReasonIds];
@@ -589,8 +609,8 @@ async function submitRetry(
     targetKey: targetKeyOf(executionId),
   };
   const abandon = (): void => {
-    if (retryEntries.get(executionId)?.token === token)
-      deleteEntry(executionId, { cancelRun: false });
+    if (s.entries.get(executionId)?.token === token)
+      deleteEntry(s, executionId, { cancelRun: false });
   };
   entry.pending = true;
   try {
@@ -601,13 +621,13 @@ async function submitRetry(
       abandon();
       return;
     }
-    const live = retryEntries.get(executionId);
-    if (live?.token !== token || !isCurrent(executionId, epoch)) {
+    const live = s.entries.get(executionId);
+    if (live?.token !== token || !isCurrent(s, executionId, epoch)) {
       if (live?.token === token) live.pending = false;
       await dropAcceptedRun(dependencies.engine, acceptance.operationId, run);
       return;
     }
-    clearCountdownWhenCancelled(executionId, token, acceptance.operationId);
+    clearCountdownWhenCancelled(s, executionId, token, acceptance.operationId);
     live.dropAccepted = (): Promise<void> =>
       dropAcceptedRun(dependencies.engine, acceptance.operationId, run);
     live.timer = setTimeout(
@@ -619,9 +639,9 @@ async function submitRetry(
             ...run,
             gates: [],
             execute: (control) =>
-              runRetry(executionId, token, origin, control, getWindow),
+              runRetry(s, executionId, token, origin, control, getWindow),
           })
-          .catch(() => inLane(executionId, abandon));
+          .catch(() => inLane(s, executionId, abandon));
       },
       Math.max(0, plan.notBefore - Date.now()),
     );
@@ -635,21 +655,22 @@ async function submitRetry(
  * preference, then record the run with its due time.
  */
 async function scheduleRetry(
+  s: RetryState,
   executionId: string,
   token: number,
   epoch: number,
   getWindow: () => BrowserWindow | null,
   occurrenceSuffix?: string,
 ): Promise<void> {
-  const dependencies = initializedDependencies;
+  const dependencies = s.deps;
   if (!dependencies) return;
   try {
     const preferences = await dependencies.readPreferences();
-    const liveEntry = retryEntries.get(executionId);
+    const liveEntry = s.entries.get(executionId);
     if (!liveEntry || liveEntry.token !== token) return;
-    if (!isCurrent(executionId, epoch)) return;
+    if (!isCurrent(s, executionId, epoch)) return;
     if (!preferences.autoRetryTransientErrorsPipelines) {
-      deleteEntry(executionId);
+      deleteEntry(s, executionId);
       return;
     }
     const attempt = Math.min(
@@ -666,8 +687,9 @@ async function scheduleRetry(
       nextRetryAt: notBefore,
       exhausted: false,
     };
-    emitRetryState(liveEntry);
+    emitRetryState(s, liveEntry);
     await submitRetry(
+      s,
       liveEntry,
       token,
       epoch,
@@ -680,12 +702,13 @@ async function scheduleRetry(
       getWindow,
     );
   } catch {
-    if (retryEntries.get(executionId)?.token === token)
-      deleteEntry(executionId);
+    if (s.entries.get(executionId)?.token === token)
+      deleteEntry(s, executionId);
   }
 }
 
 function handlePaused(
+  s: RetryState,
   event: ExecutionEvent,
   epoch: number,
   getWindow: () => BrowserWindow | null,
@@ -694,10 +717,10 @@ function handlePaused(
   if (event.state.parent_execution_id) return;
 
   const transientReasons = transientReasonsOf(event.state);
-  const existing = retryEntries.get(event.executionId);
+  const existing = s.entries.get(event.executionId);
   if (existing) pruneTerminalAttemptHistory(existing.attempts, event.state);
   if (transientReasons.length === 0) {
-    if (existing) clearScheduledBatch(existing);
+    if (existing) clearScheduledBatch(s, existing);
     return;
   }
   const entry: PipelineRetryEntry = existing ?? {
@@ -705,7 +728,7 @@ function handlePaused(
     attempts: new Map<string, number>(),
     scheduledReasonIds: [],
     scheduledSignatures: [],
-    token: nextToken(),
+    token: nextToken(s),
     pending: false,
     timer: null,
     dropAccepted: null,
@@ -727,13 +750,13 @@ function handlePaused(
   )
     return;
   clearTimer(entry);
-  if (existing?.pending) cancelRetryRun(existing);
+  if (existing?.pending) cancelRetryRun(s, existing);
   entry.pending = false;
-  const token = nextToken();
+  const token = nextToken(s);
   entry.scheduledReasonIds = scheduledReasonIds;
   entry.scheduledSignatures = transientStepSignature(scheduledReasons);
   entry.token = token;
-  retryEntries.set(event.executionId, entry);
+  s.entries.set(event.executionId, entry);
   if (entry.scheduledSignatures.length === 0) {
     entry.display = {
       attempt: PIPELINE_TRANSIENT_RETRY_MAX_ATTEMPTS,
@@ -741,10 +764,11 @@ function handlePaused(
       nextRetryAt: null,
       exhausted: true,
     };
-    emitRetryState(entry);
+    emitRetryState(s, entry);
     return;
   }
   return scheduleRetry(
+    s,
     event.executionId,
     token,
     epoch,
@@ -776,30 +800,30 @@ function pausedEventOf(state: ExecutionState): ExecutionEvent {
 }
 
 /** Restart recovery for this source's runs: resume, reconcile or end. */
-function createResumer(): InitiatedWorkResumer<null> {
+function createResumer(s: RetryState): InitiatedWorkResumer<null> {
   return {
     targetKey: (operation) =>
       targetKeyOf(
         retryContextOf(operation.origin)?.executionId ?? operation.operationId,
       ),
     resume: async (operation): Promise<InitiatedWorkResumption<null>> => {
-      const dependencies = initializedDependencies;
+      const dependencies = s.deps;
       const context = retryContextOf(operation.origin);
       if (!dependencies || !context)
         return { status: 'invalidated', message: 'Unknown retry run.' };
       const executionId = context.executionId;
-      const epoch = epochOf(executionId);
-      restoring.set(executionId, context.statusReasonIds);
-      return inLane(executionId, () =>
-        recoverRetry(dependencies, operation, context, epoch),
+      const epoch = epochOf(s, executionId);
+      s.restoring.set(executionId, context.statusReasonIds);
+      return inLane(s, executionId, () =>
+        recoverRetry(s, dependencies, operation, context, epoch),
       ).finally(() => {
-        if (restoring.get(executionId) === context.statusReasonIds)
-          restoring.delete(executionId);
+        if (s.restoring.get(executionId) === context.statusReasonIds)
+          s.restoring.delete(executionId);
       });
     },
     reconcile: async (operation): Promise<OperationRecovery> => {
       const context = retryContextOf(operation.origin);
-      const dependencies = initializedDependencies;
+      const dependencies = s.deps;
       if (!context || !dependencies) return { status: 'lost' };
       const state = await dependencies.readExecution(context.executionId);
       if (pausedOn(state, context.statusReasonIds)) return { status: 'lost' };
@@ -822,6 +846,7 @@ function createResumer(): InitiatedWorkResumer<null> {
  * otherwise restore its entry and resume it once it is due.
  */
 async function recoverRetry(
+  s: RetryState,
   dependencies: TransientErrorRetrySchedulerDependencies,
   operation: OperationRecord,
   context: InitiatedWorkPipelineTransientRetryOriginContext,
@@ -831,16 +856,16 @@ async function recoverRetry(
     status: 'invalidated',
     message: 'The execution changed while its retry was recovered.',
   };
-  if (!isCurrent(context.executionId, epoch)) return superseded;
+  if (!isCurrent(s, context.executionId, epoch)) return superseded;
   const state = await dependencies.readExecution(context.executionId);
-  if (!isCurrent(context.executionId, epoch)) return superseded;
+  if (!isCurrent(s, context.executionId, epoch)) return superseded;
   if (!pausedOn(state, context.statusReasonIds))
     return {
       status: 'invalidated',
       message: 'The execution is no longer paused for this retry.',
     };
   const preferences = await dependencies.readPreferences();
-  if (!isCurrent(context.executionId, epoch)) return superseded;
+  if (!isCurrent(s, context.executionId, epoch)) return superseded;
   if (!preferences.autoRetryTransientErrorsPipelines)
     return {
       status: 'invalidated',
@@ -859,7 +884,7 @@ async function recoverRetry(
     scheduledSignatures.push(signature);
   }
   // A pause seen while recovery ran has its own retry; leave it in place.
-  const current = retryEntries.get(context.executionId);
+  const current = s.entries.get(context.executionId);
   if (
     current &&
     !sameReasons(current.scheduledReasonIds, context.statusReasonIds)
@@ -868,7 +893,7 @@ async function recoverRetry(
       status: 'invalidated',
       message: 'A newer pause has its own retry.',
     };
-  const token = nextToken();
+  const token = nextToken(s);
   const entry: PipelineRetryEntry = {
     lastEvent: pausedEventOf(state),
     // A restart resets the attempt count, as it does on develop.
@@ -886,9 +911,10 @@ async function recoverRetry(
       exhausted: false,
     },
   };
-  retryEntries.set(context.executionId, entry);
-  emitRetryState(entry);
+  s.entries.set(context.executionId, entry);
+  emitRetryState(s, entry);
   clearCountdownWhenCancelled(
+    s,
     context.executionId,
     token,
     operation.operationId,
@@ -899,6 +925,7 @@ async function recoverRetry(
       gates: [],
       execute: (control) =>
         runRetry(
+          s,
           context.executionId,
           token,
           operation.origin,
@@ -912,9 +939,10 @@ async function recoverRetry(
 
 /** The execution's latest retry run. */
 async function latestRetryRun(
+  s: RetryState,
   executionId: string,
 ): Promise<OperationRecord | null> {
-  const dependencies = initializedDependencies;
+  const dependencies = s.deps;
   if (!dependencies) return null;
   const runs = await dependencies.listRetryRuns(executionId);
   return (
@@ -930,8 +958,8 @@ async function latestRetryRun(
  * attempt 1, as develop does after a restart. A pause whose latest retry was
  * cancelled stays without one.
  */
-async function rearm(): Promise<void> {
-  const dependencies = initializedDependencies;
+async function rearm(s: RetryState): Promise<void> {
+  const dependencies = s.deps;
   if (!dependencies) return;
   await dependencies.engine.whenRecovered();
   const live = new Set(
@@ -943,17 +971,17 @@ async function rearm(): Promise<void> {
   // The epochs the scan's snapshots belong to: anything that supersedes an
   // execution while the scan runs, or while an earlier execution is
   // re-armed, leaves its snapshot stale, so it is skipped.
-  const scannedEpochs = new Map(epochs);
+  const scannedEpochs = new Map(s.epochs);
   for (const state of await dependencies.listPausedExecutions()) {
     if (state.parent_execution_id || state.status !== 'paused') continue;
     if (transientReasonsOf(state).length === 0) continue;
     const epoch = scannedEpochs.get(state.id) ?? 0;
     const reasons = transientReasonsOf(state).map((reason) => reason.id);
-    restoring.set(state.id, reasons);
-    await inLane(state.id, () =>
-      rearmExecution(dependencies, state, live, epoch),
+    s.restoring.set(state.id, reasons);
+    await inLane(s, state.id, () =>
+      rearmExecution(s, dependencies, state, live, epoch),
     ).finally(() => {
-      if (restoring.get(state.id) === reasons) restoring.delete(state.id);
+      if (s.restoring.get(state.id) === reasons) s.restoring.delete(state.id);
     });
   }
 }
@@ -977,15 +1005,16 @@ async function resumeBegan(
 
 /** The startup re-arm for one paused execution, in its lane. */
 async function rearmExecution(
+  s: RetryState,
   dependencies: TransientErrorRetrySchedulerDependencies,
   state: ExecutionState,
   live: ReadonlySet<string>,
   epoch: number,
 ): Promise<void> {
-  if (!isCurrent(state.id, epoch)) return;
-  if (retryEntries.has(state.id) || live.has(targetKeyOf(state.id))) return;
-  const latest = await latestRetryRun(state.id);
-  if (!isCurrent(state.id, epoch)) return;
+  if (!isCurrent(s, state.id, epoch)) return;
+  if (s.entries.has(state.id) || live.has(targetKeyOf(state.id))) return;
+  const latest = await latestRetryRun(s, state.id);
+  if (!isCurrent(s, state.id, epoch)) return;
   const context = latest ? retryContextOf(latest.origin) : null;
   // The latest retry, when it was for the pause the execution is in now.
   const samePause =
@@ -1007,9 +1036,10 @@ async function rearmExecution(
     (await resumeBegan(dependencies, state.id, samePause))
   )
     return;
-  if (!isCurrent(state.id, epoch)) return;
+  if (!isCurrent(s, state.id, epoch)) return;
   // A new retry for the same pause needs its own occurrence.
   await handlePaused(
+    s,
     pausedEventOf(state),
     epoch,
     dependencies.getWindow,
@@ -1017,40 +1047,26 @@ async function rearmExecution(
   );
 }
 
-export function initTransientErrorRetryScheduler(
-  dependencies: TransientErrorRetrySchedulerDependencies,
-): void {
-  initializedDependencies = dependencies;
-  dependencies.engine.registerResumer('system', createResumer(), {
-    sourceId: SOURCE,
-  });
-  recovered = rearm().catch(() => undefined);
-}
-
-/** Resolves once restart recovery and the startup re-arm have run. */
-export function whenTransientRetryRecovered(): Promise<void> {
-  return recovered;
-}
-
-export function notePipelineExecutionEvent(
+function noteEvent(
+  s: RetryState,
   event: ExecutionEvent,
   getWindow: () => BrowserWindow | null,
 ): void {
-  if (!initializedDependencies) return;
-  const epoch = supersedes(event)
-    ? supersede(event.executionId)
-    : epochOf(event.executionId);
-  void inLane(event.executionId, () => {
-    const existing = retryEntries.get(event.executionId);
+  if (!s.deps) return;
+  const epoch = supersedes(s, event)
+    ? supersede(s, event.executionId)
+    : epochOf(s, event.executionId);
+  void inLane(s, event.executionId, () => {
+    const existing = s.entries.get(event.executionId);
     if (existing) existing.lastEvent = event;
     // An ending clears the retry in lane order, whatever arrived after it.
     if (isTerminalEvent(event)) {
-      deleteEntry(event.executionId);
+      deleteEntry(s, event.executionId);
       return undefined;
     }
-    if (!isCurrent(event.executionId, epoch)) return undefined;
+    if (!isCurrent(s, event.executionId, epoch)) return undefined;
     return event.type === 'execution.paused'
-      ? handlePaused(event, epoch, getWindow)
+      ? handlePaused(s, event, epoch, getWindow)
       : undefined;
   }).catch(() => undefined);
 }
@@ -1060,13 +1076,13 @@ export function notePipelineExecutionEvent(
  * terminal event or a pause for other reasons does; the same pause seen
  * again does not.
  */
-function supersedes(event: ExecutionEvent): boolean {
+function supersedes(s: RetryState, event: ExecutionEvent): boolean {
   if (isTerminalEvent(event)) return true;
   if (event.type !== 'execution.paused') return false;
-  const entry = retryEntries.get(event.executionId);
+  const entry = s.entries.get(event.executionId);
   const current = entry?.pending
     ? entry.scheduledReasonIds
-    : restoring.get(event.executionId);
+    : s.restoring.get(event.executionId);
   if (!current) return true;
   const scheduled = transientReasonsOf(event.state)
     .filter(
@@ -1078,29 +1094,101 @@ function supersedes(event: ExecutionEvent): boolean {
   return !sameReasons(Array.from(new Set(scheduled)), current);
 }
 
-export function cancelPendingTransientRetryTimer(
+function cancelPending(
+  s: RetryState,
   executionId: string,
   ownToken?: number,
 ): void {
   // A retry's own resume does not cancel it; anything else supersedes it.
-  const current = retryEntries.get(executionId);
+  const current = s.entries.get(executionId);
   if (current && ownToken !== undefined && ownToken === current.token) return;
-  supersede(executionId);
+  supersede(s, executionId);
   // The reset runs in lane order even when a later pause has moved the epoch
   // on, so that pause starts from a fresh attempt count.
-  void inLane(executionId, () => {
-    const entry = retryEntries.get(executionId);
+  void inLane(s, executionId, () => {
+    const entry = s.entries.get(executionId);
     if (!entry || ownToken === entry.token) return;
-    deleteEntry(executionId);
+    deleteEntry(s, executionId);
   }).catch(() => undefined);
 }
 
-export function resetTransientErrorRetrySchedulerForTests(): void {
-  retryEntries.clear();
-  lanes.clear();
-  epochs.clear();
-  restoring.clear();
-  initializedDependencies = null;
-  recovered = Promise.resolve();
-  tokenCounter = 0;
+/** What the host supplies when the scheduler starts; the runtime gives the engine. */
+export type TransientRetryHost = Omit<
+  TransientErrorRetrySchedulerDependencies,
+  'engine'
+>;
+
+/**
+ * A pipeline's automatic transient retries, owned by the desktop runtime and
+ * started from main before IPC registration (CAN-4175). All of the
+ * scheduler's state lives on the instance.
+ */
+export class PipelineTransientRetries {
+  private readonly s = createRetryState();
+
+  constructor(private readonly engine: TransientRetryEngine) {}
+
+  /** Register restart recovery for this source and run the startup re-arm. */
+  start(host: TransientRetryHost): void {
+    this.s.deps = { ...host, engine: this.engine };
+    this.engine.registerResumer('system', createResumer(this.s), {
+      sourceId: SOURCE,
+    });
+    this.s.recovered = rearm(this.s).catch(() => undefined);
+  }
+
+  /** Resolves once restart recovery and the startup re-arm have run. */
+  whenRecovered(): Promise<void> {
+    return this.s.recovered;
+  }
+
+  noteEvent(
+    event: ExecutionEvent,
+    getWindow: () => BrowserWindow | null,
+  ): void {
+    noteEvent(this.s, event, getWindow);
+  }
+
+  withDisplay(state: ExecutionState): ExecutionState {
+    return withRetryDisplay(this.s, state);
+  }
+
+  cancelPending(executionId: string, ownToken?: number): void {
+    cancelPending(this.s, executionId, ownToken);
+  }
+
+  /** Tests only: forget everything, as the process ending does. */
+  resetForTests(): void {
+    this.s.entries.clear();
+    this.s.lanes.clear();
+    this.s.epochs.clear();
+    this.s.restoring.clear();
+    this.s.deps = null;
+    this.s.recovered = Promise.resolve();
+    this.s.tokenCounter = 0;
+  }
+}
+
+function liveScheduler(): PipelineTransientRetries | null {
+  return peekDesktopCanopyRuntime()?.pipelineTransientRetries ?? null;
+}
+
+export function withPipelineTransientRetryState(
+  state: ExecutionState,
+): ExecutionState {
+  return liveScheduler()?.withDisplay(state) ?? state;
+}
+
+export function notePipelineExecutionEvent(
+  event: ExecutionEvent,
+  getWindow: () => BrowserWindow | null,
+): void {
+  liveScheduler()?.noteEvent(event, getWindow);
+}
+
+export function cancelPendingTransientRetryTimer(
+  executionId: string,
+  ownToken?: number,
+): void {
+  liveScheduler()?.cancelPending(executionId, ownToken);
 }

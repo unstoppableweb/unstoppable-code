@@ -1,6 +1,6 @@
 import { reportMainAppError } from '@canopy/desktop-instrumentation/electron/main';
 import { usesExactWorktreeBaseCatalogue } from '../remote-control/host/bridge-window';
-import { worktreeRemovalIntent } from '@canopy/protocol/portal/worktree-recovery';
+import { worktreeRemovalIntent } from '@canopy/protocol/remote-control/shell/worktree-recovery';
 import { withWorktreeGitRead } from '../lib/worktree-read-availability';
 import type { BrowserWindow } from 'electron';
 import {

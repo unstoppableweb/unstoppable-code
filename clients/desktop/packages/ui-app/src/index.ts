@@ -108,6 +108,10 @@ export {
   type GitHubWorkflowRunRowState,
   type GitHubWorkflowRunRowStatus,
 } from './code/activity/github/GitHubWorkflowRunRow';
+export {
+  GitHubWorkflowRunActivityRow,
+  type GitHubWorkflowRunActivityRowProps,
+} from './code/activity/github/GitHubWorkflowRunActivityRow';
 export { githubWorkflowJobTiers } from './code/activity/github/github-workflow-job-tiers';
 export {
   GITHUB_PLACEHOLDER_JOB_PREFIX,
@@ -371,11 +375,11 @@ export {
   type BackgroundTrayAgentStep,
 } from './code/activity/background-tray/AgentRow';
 export {
-  portalBackgroundProcessToTask,
-  portalBackgroundTrayAgents,
-  portalBackgroundTrayRuns,
-  portalBackgroundTrayWatchers,
-} from './code/activity/portal-background-tray-mapper';
+  remoteControlBackgroundProcessToTask,
+  remoteControlBackgroundTrayAgents,
+  remoteControlBackgroundTrayRuns,
+  remoteControlBackgroundTrayWatchers,
+} from './code/activity/remote-control-background-tray-mapper';
 export {
   McpServersSectionBody,
   type McpServersSectionBodyProps,
@@ -967,7 +971,7 @@ export {
   getSlashCommandInsertText,
   resolveComposerThinking,
   resolveModelOptionProviderType,
-  resolvePortalExecutionHarness,
+  resolveRemoteControlExecutionHarness,
   resolveUsageIndicatorIsCodex,
   toUsageIndicatorUsage,
   type ComposerOverflowMenuArgs,
@@ -1015,36 +1019,32 @@ export {
   type BaseBranchTarget,
 } from './code/composer/BaseBranchPicker';
 export {
-  useWorktreeBaseBranches,
-  type WorktreeBaseBranches,
-} from './code/composer/useWorktreeBaseBranches';
-export {
-  PortalDirectoryPicker,
+  RemoteControlDirectoryPicker,
   type DirectoryPickerOption,
-} from './code/composer/PortalDirectoryPicker';
+} from './code/composer/RemoteControlDirectoryPicker';
 export {
-  PortalModelPicker,
-  type PortalModelPickerProps,
-} from './code/composer/PortalModelPicker';
+  RemoteControlModelPicker,
+  type RemoteControlModelPickerProps,
+} from './code/composer/RemoteControlModelPicker';
 export {
   PendingAttachmentRow,
   type PendingAttachmentChip,
 } from './code/composer/pending-attachment-row';
 export {
-  countPortalPluginSelections,
-  PORTAL_PLUGINS_MCP_NEEDS_RECONNECTING_LABEL,
-  PORTAL_PLUGINS_MCP_NOT_SIGNED_IN_LABEL,
-  PORTAL_PLUGINS_PROJECT_DEFAULT_LABEL,
-  PortalPluginsPicker,
+  countRemoteControlPluginSelections,
+  REMOTE_CONTROL_PLUGINS_MCP_NEEDS_RECONNECTING_LABEL,
+  REMOTE_CONTROL_PLUGINS_MCP_NOT_SIGNED_IN_LABEL,
+  REMOTE_CONTROL_PLUGINS_PROJECT_DEFAULT_LABEL,
+  RemoteControlPluginsPicker,
   type AccountMcpEntryComponentProps,
   type AccountMcpSeam,
   type AddMarketplaceConfirmation,
   type AddMarketplaceDialogComponent,
   type AddMarketplaceSeam,
-  type PortalPluginsLocalItem,
-  type PortalPluginsLocalItemsSeam,
-  type PortalPluginsPickerProps,
-} from './code/composer/PortalPluginsPicker';
+  type RemoteControlPluginsLocalItem,
+  type RemoteControlPluginsLocalItemsSeam,
+  type RemoteControlPluginsPickerProps,
+} from './code/composer/RemoteControlPluginsPicker';
 export {
   MoveProjectToOrganizationDialog,
   moveProjectToOrganizationErrorMessage,

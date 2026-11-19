@@ -292,7 +292,7 @@ export function PipelineRunDetail({
             // `portal-*` testids are preserved verbatim from the inline
             // detail this replaces so existing web and Electron coverage
             // keeps selecting the same surfaces.
-            data-testid="portal-pipeline-step-log"
+            data-testid="remote-control-pipeline-step-log"
           >
             <PipelineStepBillingLine
               route={selectedStepBillingRoute}

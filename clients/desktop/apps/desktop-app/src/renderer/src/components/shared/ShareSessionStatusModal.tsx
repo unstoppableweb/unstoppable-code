@@ -96,7 +96,7 @@ export function ShareSessionStatusModal(): JSX.Element | null {
         {!sharing && (
           <DialogActionFooter padding="top">
             {status.phase === 'error' && (
-              <Button variant="outline" size="lg" onClick={close}>
+              <Button variant="secondary" size="lg" onClick={close}>
                 Close
               </Button>
             )}

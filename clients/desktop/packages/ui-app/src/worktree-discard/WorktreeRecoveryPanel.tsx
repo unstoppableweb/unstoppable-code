@@ -14,8 +14,8 @@ import {
 } from '@canopy/app-state';
 import { worktreeDiscardStoreFor } from '@canopy/app-state/worktree-discard';
 import type { WorktreeRecoveryListResult } from '@canopy/protocol/canopy-core';
-import type { W5RecoveryStatus } from '@canopy/protocol/portal';
-import { formatWorktreeRecoveryReason } from '@canopy/protocol/portal/worktree-recovery';
+import type { W5RecoveryStatus } from '@canopy/protocol/remote-control/shell';
+import { formatWorktreeRecoveryReason } from '@canopy/protocol/remote-control/shell/worktree-recovery';
 import {
   Button,
   CodeBlock,
@@ -28,7 +28,6 @@ import {
   ListRowStatic,
   LoadingButton,
   Stack,
-  W5RecoveryNotice,
   type W5RecoveryNoticeProps,
 } from '@canopy/ui-shared/components';
 import {
@@ -43,6 +42,8 @@ import {
   hasRecoveryMaterial,
   needsRecoveryReview,
 } from './recovery-attention';
+import { WorkspaceRecoveryNotice } from './WorkspaceRecoveryNotice';
+import type { WorkspaceRecoveryDismissalStore } from './recovery-dismissal-store';
 
 const RECOVERY_CHECK_GAP_MS = 30_000;
 
@@ -195,6 +196,7 @@ export function WorktreeRecoveryPanel({
   onRecover,
   coldBusy,
   service,
+  dismissalStore,
 }: {
   readonly client: CanopyClient;
   /** null waits for the shell; undefined supports hosts without a shell snapshot. */
@@ -205,6 +207,7 @@ export function WorktreeRecoveryPanel({
   readonly coldBusy?: boolean;
   /** The background service notice shown with the blocked-changes notice. */
   readonly service?: W5RecoveryNoticeProps['service'];
+  readonly dismissalStore: WorkspaceRecoveryDismissalStore;
 }): JSX.Element {
   const supported = client.capabilities.worktreeRecoveryResolution === true;
   const [, setDismissalRevision] = useState(0);
@@ -458,7 +461,8 @@ export function WorktreeRecoveryPanel({
       );
     return (
       <>
-        <W5RecoveryNotice
+        <WorkspaceRecoveryNotice
+          dismissalStore={dismissalStore}
           service={service}
           status={status}
           canRecover={canRecover}
@@ -525,6 +529,7 @@ export function WorktreeRecoveryPanel({
     client,
     coldBusy,
     deleting,
+    dismissalStore,
     error,
     finishCleanup,
     message,

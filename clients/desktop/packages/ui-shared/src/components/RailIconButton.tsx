@@ -72,10 +72,10 @@ const BUTTON_TONE_VARIANTS: Record<
   Exclude<RailIconButtonTone, NativeTone>,
   ButtonVariant
 > = {
-  neutral: 'ghost-quiet',
-  secondary: 'ghost-overlay',
-  warning: 'ghost-warning',
-  armed: 'ghost-armed',
+  neutral: 'ghost',
+  secondary: 'ghost',
+  warning: 'ghost',
+  armed: 'ghost',
 };
 
 /**

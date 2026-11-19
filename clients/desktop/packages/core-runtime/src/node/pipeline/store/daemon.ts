@@ -11,3 +11,10 @@ export {
   pipelineLocalMetadataPath,
   type DaemonPipelineLocalMetadataEnvironmentOptions,
 } from './daemon-local-metadata';
+export {
+  DAEMON_PIPELINE_ASSETS_MODULE,
+  createDaemonPipelineAssetEnvironment,
+  pipelineAssetsDir,
+  pipelineAssetsManifestPath,
+  type DaemonPipelineAssetEnvironmentOptions,
+} from './daemon-assets';

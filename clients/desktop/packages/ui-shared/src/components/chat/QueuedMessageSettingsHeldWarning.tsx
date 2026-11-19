@@ -1,5 +1,5 @@
 import type { JSX } from 'react';
-import type { SettingsHeldChange } from '@canopy/protocol/portal';
+import type { SettingsHeldChange } from '@canopy/protocol/remote-control/shell';
 import { WarningIcon } from '../../icons/AppIcons';
 import { ActionTooltip } from '../ActionTooltip';
 

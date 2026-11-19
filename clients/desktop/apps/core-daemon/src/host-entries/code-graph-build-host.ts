@@ -15,6 +15,7 @@ installCodeGraphResourcesDirResolver(
 );
 serveCodeGraphBuildHost(channel, {
   openFilesBlockReplacement: hostOperatingSystem() === 'win32',
+  flushRequiresWriteHandle: hostOperatingSystem() === 'win32',
   // The launcher passes the Git it selected in the host's environment.
   gitExecutable: process.env.CANOPY_GIT_EXECUTABLE?.trim() || 'git',
 });

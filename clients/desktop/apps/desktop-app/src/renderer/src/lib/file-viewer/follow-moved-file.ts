@@ -1,6 +1,6 @@
 import { fileViewerKey } from '@canopy/app-state';
 import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
-import type { PortalFileReadPayload } from '@canopy/protocol/portal';
+import type { RemoteControlFileReadPayload } from '@canopy/protocol/remote-control/shell';
 import { waitForChatScopeLive } from '@/stores/chat/slices/revisioned';
 import type { ChatTab } from '@/stores/chat/types';
 import { worktreeKey } from '@/stores/chat/utils';
@@ -104,7 +104,7 @@ const followed = new Map<
  */
 export function registerFileTab(
   tabId: string,
-  request: PortalFileReadPayload,
+  request: RemoteControlFileReadPayload,
 ): boolean {
   const previous = controller.getFileKey(tabId);
   const key = controller.registerTab(tabId, request);

@@ -3,7 +3,7 @@ import {
   archiveRefusalOutcome,
   type WorktreeDiscardOffer,
 } from '@canopy/app-state';
-import type { WorktreeRecoveryDescription } from '@canopy/protocol/portal/worktree-recovery';
+import type { WorktreeRecoveryDescription } from '@canopy/protocol/remote-control/shell/worktree-recovery';
 import type {
   ArchiveWorktreeResponse,
   WorktreeDiscardDescription,

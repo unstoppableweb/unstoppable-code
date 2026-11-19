@@ -494,64 +494,6 @@ describe('App Advisor worktree actions in main (CAN-5829)', () => {
     expect(h.surfaces.ensureAppAdvisorWindow).not.toHaveBeenCalled();
   });
 
-  it.each([
-    ['an external agent through the Portal', true, 'agent'],
-    ['a person', false, 'person'],
-  ] as const)(
-    'an advisor question answered by %s reaches the tool marked as such (CAN-6024)',
-    async (_label, agentOriginated, answeredBy) => {
-      const actual = jest.requireActual<typeof AppAdvisorIpcModule>(
-        '../../ipc/app-advisor',
-      );
-      mockRequestRendererTool.mockImplementation(
-        (...args: Parameters<typeof actual.requestAppAdvisorRendererTool>) =>
-          actual.requestAppAdvisorRendererTool(...args),
-      );
-      const send = jest.fn();
-      const window = {
-        isDestroyed: (): boolean => false,
-        webContents: {
-          isDestroyed: (): boolean => false,
-          isCrashed: (): boolean => false,
-          mainFrame: { isDestroyed: (): boolean => false, detached: false },
-          send,
-        },
-      };
-      const h = setup(window);
-
-      const answers = h.runtime.requestUserAnswers([
-        { question: 'Update the PR?', options: ['Yes', 'No'] },
-      ]);
-      let requestId: string | undefined;
-      for (let attempt = 0; attempt < 50 && !requestId; attempt += 1) {
-        await new Promise((resolve) => setImmediate(resolve));
-        const request = send.mock.calls
-          .flatMap((call: unknown[]) => call)
-          .find(
-            (arg: unknown): arg is { kind: string; requestId: string } =>
-              typeof arg === 'object' &&
-              arg !== null &&
-              (arg as { kind?: unknown }).kind === 'ask_user_question',
-          );
-        requestId = request?.requestId;
-      }
-      expect(requestId).toBeDefined();
-      expect(
-        actual.completeAppAdvisorAskUserRequest(
-          requestId ?? '',
-          'advisor-chat',
-          { question: 'Update the PR?', selectedOptions: ['Yes'] },
-          { agentOriginated },
-        ),
-      ).toBe(true);
-
-      await expect(answers).resolves.toEqual([
-        expect.objectContaining({ selectedOptions: ['Yes'], answeredBy }),
-      ]);
-      mockRequestRendererTool.mockReset();
-    },
-  );
-
   it('a failed plan import answers its error and imports nothing', async () => {
     const h = setup();
     mockDispatchWorktreeAction.mockRejectedValueOnce(

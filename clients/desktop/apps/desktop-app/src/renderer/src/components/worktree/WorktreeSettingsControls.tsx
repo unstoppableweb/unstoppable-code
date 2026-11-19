@@ -75,7 +75,6 @@ export function SourceLocalToggle({
         label="Settings source"
         value={mode}
         width="content"
-        shape="capsule"
         options={SOURCE_LOCAL_OPTIONS}
         onChange={onChange}
       />

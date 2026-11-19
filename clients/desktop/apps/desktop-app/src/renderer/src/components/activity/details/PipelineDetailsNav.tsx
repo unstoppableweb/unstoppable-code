@@ -292,7 +292,7 @@ function PipelineNavJob({
       <WorkflowNavJobRow active={parentActive} matrix={isMatrix}>
         {isMatrix && (
           <Button
-            variant="ghost-quiet"
+            variant="ghost"
             size="sm"
             iconOnly
             onClick={(): void => setUserExpanded((value) => !value)}
@@ -445,7 +445,7 @@ function PipelineStatusFilter({
     >
       <Button
         ref={buttonRef}
-        variant={active ? 'warning' : 'ghost'}
+        variant={active ? 'secondary' : 'ghost'}
         size="sm"
         iconOnly
         onClick={(): void => setOpen((v) => !v)}

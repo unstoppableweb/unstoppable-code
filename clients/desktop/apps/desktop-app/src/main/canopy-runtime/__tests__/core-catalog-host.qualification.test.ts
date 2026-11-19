@@ -17,7 +17,7 @@ import {
   type CanopyCallerDescriptor,
   type CatalogPluginHarnesses,
 } from '@canopy/protocol/canopy-core';
-import type { PortalPluginCatalog } from '@canopy/protocol/portal';
+import type { RemoteControlPluginCatalog } from '@canopy/protocol/remote-control/shell';
 import {
   INHERITED_PLUGIN_DEFAULTS_VERSION,
   globalConnectorsLeftOut,
@@ -52,7 +52,7 @@ const ref = (name: string): { marketplaceId: string; pluginName: string } => ({
   pluginName: name,
 });
 
-const catalog: PortalPluginCatalog = {
+const catalog: RemoteControlPluginCatalog = {
   collections: [
     {
       id: 'col',

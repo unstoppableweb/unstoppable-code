@@ -307,7 +307,6 @@ export function WatcherManagementModal({
       maxWidth="md"
       maxHeight="70vh"
       headerAlignment="center"
-      closeButtonAppearance="compact"
       placement="center"
       scrollableBody={false}
       trapFocus

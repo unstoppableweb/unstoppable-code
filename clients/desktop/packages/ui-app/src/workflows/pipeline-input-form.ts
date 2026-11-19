@@ -5,11 +5,11 @@
  * `plan_ready` dialog and the web Workflows page's cloud Run dialog
  * (CAN-6341), so every form validates declared inputs the same way.
  */
-import type { PortalPipelineInputDefinition } from '@canopy/protocol/portal';
+import type { RemoteControlPipelineInputDefinition } from '@canopy/protocol/remote-control/shell';
 
 export function visibleInputDefinitions(
-  definitions: Record<string, PortalPipelineInputDefinition> | undefined,
-): Record<string, PortalPipelineInputDefinition> {
+  definitions: Record<string, RemoteControlPipelineInputDefinition> | undefined,
+): Record<string, RemoteControlPipelineInputDefinition> {
   return Object.fromEntries(
     Object.entries(definitions ?? {}).filter(
       ([, definition]) =>
@@ -20,7 +20,7 @@ export function visibleInputDefinitions(
 }
 
 export function initializeInputValues(
-  definitions: Record<string, PortalPipelineInputDefinition>,
+  definitions: Record<string, RemoteControlPipelineInputDefinition>,
 ): Record<string, string> {
   return Object.fromEntries(
     Object.entries(definitions).map(([name, definition]) => [
@@ -31,7 +31,7 @@ export function initializeInputValues(
 }
 
 export function validateInputValues(
-  definitions: Record<string, PortalPipelineInputDefinition>,
+  definitions: Record<string, RemoteControlPipelineInputDefinition>,
   values: Record<string, string>,
 ): Record<string, string> {
   const errors: Record<string, string> = Object.create(null) as Record<
@@ -67,7 +67,7 @@ export function validateInputValues(
 }
 
 export function buildInputPayload(
-  definitions: Record<string, PortalPipelineInputDefinition>,
+  definitions: Record<string, RemoteControlPipelineInputDefinition>,
   values: Record<string, string>,
 ): Record<string, string> | undefined {
   const payload = Object.fromEntries(

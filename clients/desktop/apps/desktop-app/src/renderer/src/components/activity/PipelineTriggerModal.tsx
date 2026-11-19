@@ -2068,7 +2068,6 @@ export function PipelineTriggerModal({
                         <div className="flex">
                           <SegmentedControl
                             label="Workflow source"
-                            shape="capsule"
                             width="content"
                             value={sourceFilter}
                             onChange={setSourceFilter}
@@ -2465,7 +2464,7 @@ export function PipelineTriggerModal({
                   }
                 >
                   <Button
-                    variant={watcherEnabled ? 'ghost-accent' : 'ghost'}
+                    variant="ghost"
                     size="sm"
                     iconOnly
                     role="switch"
@@ -2524,7 +2523,7 @@ export function PipelineTriggerModal({
 
             {step === 'select' && (
               <Button
-                variant={hasConfigurationStep ? 'primary' : 'warning'}
+                variant={hasConfigurationStep ? 'primary' : 'secondary'}
                 size="compact"
                 disabled={
                   !selectedPipeline ||

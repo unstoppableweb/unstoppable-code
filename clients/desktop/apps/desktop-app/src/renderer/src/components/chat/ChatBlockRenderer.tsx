@@ -74,6 +74,7 @@ import {
   GitHubReferencePreview,
   LinearReferencePreview,
   ManagedDelegationCard,
+  overlayManagedDelegationSnapshot,
   type ChatVisualOwner,
 } from '@canopy/ui-app';
 import type {
@@ -943,35 +944,69 @@ const DelegatedAgentCallCard = memo(function DelegatedAgentCallCard({
   const waitingDelegations = useContext(WaitingDelegationsContext);
   const target = stopControls?.target;
   const delegationId = block.delegationId;
+  // A cloud card keeps its first state; the web core's read is current
+  // (CAN-7245).
+  const shown = useMemo(
+    () =>
+      stopControls?.liveSnapshots === undefined
+        ? block
+        : overlayManagedDelegationSnapshot(
+            block,
+            stopControls.liveSnapshots.get(delegationId),
+          ),
+    [block, delegationId, stopControls?.liveSnapshots],
+  );
+  // A cloud delegate has no stream hint here: its lifecycle reloads its
+  // open pages, as on the web.
+  const liveEpoch = stopControls?.liveEpochs?.get(delegationId);
+  const pagesHint = useMemo(
+    () =>
+      liveEpoch === undefined
+        ? hint
+        : {
+            epoch: (hint?.epoch ?? 0) + liveEpoch,
+            ...(hint?.streamRevision !== undefined
+              ? { streamRevision: hint.streamRevision }
+              : {}),
+          },
+    [hint, liveEpoch],
+  );
   const onOpenChat = useSubagentOpenChatCallback(
     'managed',
     delegationId,
     block.description,
   );
-  const live = block.status === 'pending' || block.status === 'running';
+  const live = shown.status === 'pending' || shown.status === 'running';
+  // A cloud chat stops only the delegates on its own cards (CAN-7245).
+  const ownDelegationIds = stopControls?.ownDelegationIds;
+  const owned =
+    ownDelegationIds === undefined || ownDelegationIds.has(delegationId);
   const onStop = useMemo(
     () =>
-      target && live
+      target && live && owned
         ? (): Promise<boolean> =>
             requestManagedDelegationStop(target, delegationId)
         : undefined,
-    [delegationId, live, target],
+    [delegationId, live, owned, target],
   );
   const revision = block.workspaceDiscarded
     ? undefined
     : block.isolatedWorkspace?.revision;
+  // Only a scope that reads a delegate's retained worktree here offers Load
+  // changes; a cloud scope's doesn't (CAN-7245).
+  const worktreeDetails = stopControls?.worktreeDetails === true;
   const onLoadChanges = useMemo(
     () =>
-      target && revision
+      target && revision && worktreeDetails
         ? (): Promise<DelegationWorkspaceChanges> =>
             requestManagedDelegationChanges(target, delegationId, revision)
         : undefined,
-    [delegationId, revision, target],
+    [delegationId, revision, target, worktreeDetails],
   );
   return (
     <ManagedDelegationCard
-      delegation={block}
-      runGeneration={block.runGeneration}
+      delegation={shown}
+      runGeneration={shown.runGeneration ?? block.runGeneration}
       onCopyNativeSessionId={copyNativeSessionId}
       onOpenChat={onOpenChat}
       onExpandedChange={setExpanded}
@@ -982,7 +1017,7 @@ const DelegatedAgentCallCard = memo(function DelegatedAgentCallCard({
       }
       waitingOnParent={waitingDelegations.has(delegationId)}
       {...(source ? { source: transcriptReadSource(source) } : {})}
-      hint={hint}
+      hint={pagesHint}
       renderRows={(entries, shown) =>
         renderDelegationChildRows(entries, block, renderSubBlock, shown)
       }

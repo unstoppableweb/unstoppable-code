@@ -5,7 +5,7 @@ import type {
   LifecycleJournalEntryMatch,
   LifecycleJournalQuarantineResult,
   LifecycleJournalUnreadableEntry,
-} from '@canopy/protocol/portal/lifecycle-journal';
+} from '@canopy/protocol/remote-control/shell/lifecycle-journal';
 import { ConfirmDialog } from '@canopy/ui-shared/components/ConfirmDialog';
 import { Fact, FactList } from '@canopy/ui-shared/components';
 import {

@@ -4,9 +4,9 @@ import type { CoworkFolderMissing } from '@canopy/protocol/canopy-core';
  *
  * Each Portal feature (chat, terminal, scripts, hooks, plans, pipelines,
  * diff, files, …) plugs in a single command adapter that the dispatcher
- * invokes when a matching `PortalCommandEnvelope` lands. Adapters MUST stay
+ * invokes when a matching `RemoteControlCommandEnvelope` lands. Adapters MUST stay
  * decoupled from the worker internals; the only seam they may touch is the
- * {@link PortalAdapterContext} they receive from the dispatcher.
+ * {@link RemoteControlAdapterContext} they receive from the dispatcher.
  *
  * The context exposes the renderer window accessor plus three thin helpers:
  * `enqueueEvent` for spontaneous events (e.g. streamed terminal output, state
@@ -20,9 +20,9 @@ import type { CoworkFolderMissing } from '@canopy/protocol/canopy-core';
  * - `fail` produces `portal.command.failed` with
  *   `{ commandId, sequenceNumber, error: { code, message }, retryable?, generatedAt }`.
  *
- * Adapter signatures should use `PortalCommandPayloadMap[T]` to type their
+ * Adapter signatures should use `RemoteControlCommandPayloadMap[T]` to type their
  * payload rather than re-declaring the shape locally; that keeps every
- * adapter in lockstep with the closed `PortalCommandType` enum and the
+ * adapter in lockstep with the closed `RemoteControlCommandType` enum and the
  * mirrored server `types.ts`.
  */
 import type { BrowserWindow } from 'electron';
@@ -35,17 +35,17 @@ import type {
   ChatCommandExecutionOptions,
   ChatCommandResult,
   ChatStateCommandPort,
-  PortalCommandEnvelope,
-  PortalEventEnvelope,
+  RemoteControlCommandEnvelope,
+  RemoteControlEventEnvelope,
 } from '@canopy/desktop-shared/types';
 import type {
   ExternalAgentSender,
-  PortalWorktreeCreateRefusal,
-  PortalWorktreeCreateRefusalReason,
-} from '@canopy/protocol/portal';
+  RemoteControlWorktreeCreateRefusal,
+  RemoteControlWorktreeCreateRefusalReason,
+} from '@canopy/protocol/remote-control/shell';
 
 /**
- * Stable error codes emitted by adapters via {@link PortalAdapterContext.fail}.
+ * Stable error codes emitted by adapters via {@link RemoteControlAdapterContext.fail}.
  *
  * These match the failure codes pinned by the transport plan so the browser
  * can route on `error.code` rather than parsing free-form messages:
@@ -61,7 +61,7 @@ import type {
  * forward compatibility), but any new code added here MUST also be reflected
  * in the cross-repo parity test so the browser stays aware of it.
  */
-export type PortalAdapterFailureCode =
+export type RemoteControlAdapterFailureCode =
   | 'invalid_payload'
   | 'invalid_target'
   | 'not_found'
@@ -72,7 +72,7 @@ export type PortalAdapterFailureCode =
   | 'execution_failed'
   | 'github_not_connected'
   | 'unsupported_command'
-  | PortalWorktreeCreateRefusalReason;
+  | RemoteControlWorktreeCreateRefusalReason;
 
 /**
  * Runtime context handed to every adapter by the dispatcher. Adapters
@@ -82,7 +82,7 @@ export type PortalAdapterFailureCode =
  *
  * Implementations MUST guarantee that:
  *
- * - `enqueueEvent` accepts any `PortalEventEnvelope` (the dispatcher fills
+ * - `enqueueEvent` accepts any `RemoteControlEventEnvelope` (the dispatcher fills
  *   in `eventId`/`occurredAt` if the adapter omitted them).
  * - `complete` and `fail` always emit canonical `portal.command.completed`
  *   / `portal.command.failed` envelopes for the *given* command. Calling
@@ -90,7 +90,7 @@ export type PortalAdapterFailureCode =
  * - Neither helper throws — adapters can call them inside a `catch` block
  *   without worrying about cascading failures.
  */
-export interface PortalAdapterContext {
+export interface RemoteControlAdapterContext {
   sessionId?: string | null;
   /** Validated server-attested sender metadata from the Portal envelope. */
   origin?: ExternalAgentSender;
@@ -129,7 +129,7 @@ export interface PortalAdapterContext {
    * queue. Use this for streamed feature events such as terminal output,
    * chat frames, state deltas, file/diff snapshots, etc.
    */
-  enqueueEvent(event: PortalEventEnvelope): void;
+  enqueueEvent(event: RemoteControlEventEnvelope): void;
 
   /**
    * Emit the canonical `portal.command.completed` envelope for `command`.
@@ -140,33 +140,33 @@ export interface PortalAdapterContext {
    * to match the wire contract.
    */
   complete<TResult = unknown>(
-    command: PortalCommandEnvelope,
+    command: RemoteControlCommandEnvelope,
     result?: TResult,
   ): void;
 
   /**
    * Emit the canonical `portal.command.failed` envelope for `command`.
    *
-   * `code` SHOULD be one of the {@link PortalAdapterFailureCode} values so
+   * `code` SHOULD be one of the {@link RemoteControlAdapterFailureCode} values so
    * the browser can route on a stable string. The signature accepts a bare
    * `string` for forward compatibility with future codes added to the plan;
    * any new code added in code review MUST also be reflected in
-   * {@link PortalAdapterFailureCode}.
+   * {@link RemoteControlAdapterFailureCode}.
    *
    * `retryable` defaults to `false`; set it to `true` only for transient
    * transport-level failures the browser may safely resubmit.
    */
   fail(
-    command: PortalCommandEnvelope,
+    command: RemoteControlCommandEnvelope,
     code: string,
     message: string,
     retryable?: boolean,
     details?: {
-      refusal?: PortalWorktreeCreateRefusal;
+      refusal?: RemoteControlWorktreeCreateRefusal;
       coworkFolderMissing?: CoworkFolderMissing;
       /**
        * A stable refusal reason carried beside a closed top-level code, as
-       * `PortalCommandFailedPayload.response` (CAN-6701).
+       * `RemoteControlCommandFailedPayload.response` (CAN-6701).
        */
       response?: { code: string; message: string };
     },

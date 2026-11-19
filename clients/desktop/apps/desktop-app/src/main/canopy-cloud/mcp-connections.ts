@@ -228,9 +228,12 @@ export async function startAccountMcpConnection(
     if (browser === 'embedded') {
       let embeddedUrl: string | null = null;
       if (signInPath !== null) {
-        const { mintAuthenticatedPortalUrl } =
-          await import('./authenticated-portal');
-        embeddedUrl = await mintAuthenticatedPortalUrl(signInPath, credentials);
+        const { mintAuthenticatedCloudPageUrl } =
+          await import('./authenticated-cloud-page');
+        embeddedUrl = await mintAuthenticatedCloudPageUrl(
+          signInPath,
+          credentials,
+        );
         if (embeddedUrl === null) {
           // A signed-out fallback must satisfy the same origin and scheme
           // restrictions as a minted page, even with a malformed cloud base.
@@ -266,9 +269,9 @@ export async function startAccountMcpConnection(
     }
     let opened = false;
     if (signInPath !== null) {
-      const { openAuthenticatedPortalPage } =
-        await import('./authenticated-portal');
-      opened = await openAuthenticatedPortalPage(signInPath, {
+      const { openAuthenticatedCloudPage } =
+        await import('./authenticated-cloud-page');
+      opened = await openAuthenticatedCloudPage(signInPath, {
         credentialContext: credentials,
       });
     }

@@ -5,7 +5,7 @@ import {
   readChatInputDeliveryFailure,
   readChatInputRefusal,
   type ChatInputDeliveryFailure,
-} from '@canopy/protocol/portal/input-delivery';
+} from '@canopy/protocol/remote-control/shell/input-delivery';
 import { buildChatSessionKey } from '../agents/session-key';
 import type { SessionDiagnosticRecord } from '../observability/service';
 

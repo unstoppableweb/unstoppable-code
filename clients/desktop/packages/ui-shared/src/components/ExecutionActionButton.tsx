@@ -68,19 +68,19 @@ export interface ExecutionActionButtonProps extends Pick<
 /**
  * Each variant is a `Button` variant (docs/design/buttons.md). Labelled
  * actions are the 28px `compact` capsule; an empty label renders the 28px
- * `sm` icon-only circle. The chip tones are the ghost variants that resolve
- * or destroy beside routine actions (`ghost-warning`, `ghost-destructive`);
- * `text` is the quiet ghost repeated on every row; `destructive` (the Stop
- * caption) is the destructive ghost too, never a solid fill.
+ * `sm` icon-only circle. The chip tones are the ghosts that resolve or
+ * destroy beside routine actions (`ghost`, `ghost-destructive`); `text` is
+ * the same ghost repeated on every row; `destructive` (the Stop caption) is
+ * the destructive ghost too, never a solid fill.
  */
 const BUTTON_VARIANTS: Record<ExecutionActionButtonVariant, ButtonVariant> = {
   default: 'secondary',
   primary: 'primary',
-  warning: 'ghost-warning',
+  warning: 'ghost',
   destructive: 'ghost-destructive',
   'destructive-chip': 'ghost-destructive',
   ghost: 'ghost',
-  text: 'ghost-quiet',
+  text: 'ghost',
   'ghost-destructive': 'ghost-destructive',
 };
 

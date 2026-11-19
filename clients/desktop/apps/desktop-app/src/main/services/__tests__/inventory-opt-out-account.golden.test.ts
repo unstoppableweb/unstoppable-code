@@ -73,13 +73,13 @@ jest.mock('../desktop-inventory-sync-signals', () => ({
   subscribeDesktopInventoryChanges: (): (() => void) => (): void => undefined,
 }));
 jest.mock('../plugin-catalog-service', () => ({
-  listPortalMarketplaces: (): Promise<unknown> =>
+  listRemoteControlMarketplaces: (): Promise<unknown> =>
     Promise.resolve({ marketplaces: [] }),
-  listPortalMcpServers: (): Promise<unknown> =>
+  listRemoteControlMcpServers: (): Promise<unknown> =>
     Promise.resolve({ servers: [] }),
-  listPersonalPortalCollections: (): Promise<unknown> =>
+  listPersonalRemoteControlCollections: (): Promise<unknown> =>
     Promise.resolve({ collections: [] }),
-  listPersonalPortalSkills: (): Promise<unknown> =>
+  listPersonalRemoteControlSkills: (): Promise<unknown> =>
     Promise.resolve({ skills: [] }),
 }));
 jest.mock('../desktop-inventory-pipeline-documents', () => ({

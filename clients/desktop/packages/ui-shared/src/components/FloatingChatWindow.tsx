@@ -128,7 +128,9 @@ export function FloatingChatWindow({
         data-testid={`${dataTestId}-header`}
         className="flex h-11 shrink-0 select-none items-center gap-1 pl-4 pr-2"
       >
-        {switcher ? (
+        {/* With no chat to switch to, the title is plain text: a menu
+            always has a row. */}
+        {switcher && switcher.items.length > 0 ? (
           <div className="flex min-w-0 flex-1">
             <FloatingChatTitleMenu
               title={title}

@@ -166,6 +166,9 @@ it.each(['project', 'workspace'] as const)(
     expect(mockOrder[0]).toBe('admission');
     expect(mockOrder.indexOf('git')).toBeGreaterThan(0);
   },
+  // Match the source-change golden's real-Git/W5 budget. If this still times out,
+  // investigate a stalled operation rather than increasing the budget again.
+  30_000,
 );
 
 it.each(['project', 'workspace'] as const)(

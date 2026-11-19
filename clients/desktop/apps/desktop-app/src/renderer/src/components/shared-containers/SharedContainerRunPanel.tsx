@@ -125,7 +125,7 @@ function SharedContainerRunCommandRow({
           </p>
           {showRun && (
             <Button
-              variant="outline"
+              variant="secondary"
               size="sm"
               data-testid={`shared-container-run-command-start-${command.name}`}
               disabled={runDisabled}
@@ -320,7 +320,7 @@ export function SharedContainerRunPanel({
               {unsetNames.length > 0 && (
                 <Button
                   className="self-start"
-                  variant="outline"
+                  variant="secondary"
                   size="sm"
                   data-testid="shared-container-run-env-placeholders"
                   disabled={run.pending}
@@ -366,7 +366,7 @@ export function SharedContainerRunPanel({
         {allowed && (
           <div className="flex items-center gap-2">
             <Button
-              variant="outline"
+              variant="secondary"
               size="sm"
               data-testid="shared-container-run-refresh"
               disabled={run.pending}
@@ -402,7 +402,7 @@ export function SharedContainerRunPanel({
         <div className="flex justify-end gap-2">
           {allowed && (
             <Button
-              variant="outline"
+              variant="secondary"
               size="lg"
               data-testid="shared-container-run-revoke"
               disabled={run.pending}
@@ -411,7 +411,7 @@ export function SharedContainerRunPanel({
               Turn off running
             </Button>
           )}
-          <Button variant="outline" size="lg" onClick={onClose}>
+          <Button variant="secondary" size="lg" onClick={onClose}>
             Close
           </Button>
           {!allowed && (

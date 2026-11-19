@@ -1,5 +1,5 @@
 import type { JSX } from 'react';
-import type { PortalProviderUsageAccount } from '@canopy/protocol/portal';
+import type { RemoteControlProviderUsageAccount } from '@canopy/protocol/remote-control/shell';
 import {
   Button,
   PlanOpenImplementationAction,
@@ -86,7 +86,7 @@ const STATUSES = [
 export function PlanStatusSpecimen(): JSX.Element {
   return (
     <div className="flex flex-col gap-6">
-      <SpecimenPanel title="PlanReviewStatusBadge: one tone per status">
+      <SpecimenPanel title="PlanReviewStatusBadge" hint="One tone per status">
         <SpecimenGrid min={200}>
           {STATUSES.map((status) => (
             <SpecimenCell key={status.kind} label={status.kind}>
@@ -99,7 +99,10 @@ export function PlanStatusSpecimen(): JSX.Element {
           </SpecimenCell>
         </SpecimenGrid>
       </SpecimenPanel>
-      <SpecimenPanel title="PlanStatusNote: an outcome and a link beside the status">
+      <SpecimenPanel
+        title="PlanStatusNote"
+        hint="An outcome and a link beside the status"
+      >
         <SpecimenGrid min={240}>
           <SpecimenCell label="Outcome and link">
             <PlanStatusNote
@@ -127,7 +130,10 @@ export function PlanStatusSpecimen(): JSX.Element {
           </SpecimenCell>
         </SpecimenGrid>
       </SpecimenPanel>
-      <SpecimenPanel title="PlanProvenance: where an imported plan came from">
+      <SpecimenPanel
+        title="PlanProvenance"
+        hint="Where an imported plan came from"
+      >
         <SpecimenGrid min={280}>
           <SpecimenCell label="Imported with a path">
             <div className="flex w-64 text-2xs fg-secondary">
@@ -163,7 +169,7 @@ const NOW = Date.parse('2026-11-04T12:00:00.000Z');
 const FIVE_HOURS_MS = 5 * 60 * 60 * 1000;
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 
-const BASE_WINDOWS: PortalProviderUsageAccount['windows'] = [
+const BASE_WINDOWS: RemoteControlProviderUsageAccount['windows'] = [
   {
     id: 'five-hour',
     label: '5-hour window',
@@ -181,8 +187,8 @@ const BASE_WINDOWS: PortalProviderUsageAccount['windows'] = [
 ];
 
 function account(
-  overrides: Partial<PortalProviderUsageAccount>,
-): PortalProviderUsageAccount {
+  overrides: Partial<RemoteControlProviderUsageAccount>,
+): RemoteControlProviderUsageAccount {
   return {
     id: 'acct',
     label: 'dev@acme.test',
@@ -203,7 +209,7 @@ const NO_WINDOWS = account({ windows: [], lastUpdatedAt: undefined });
 
 const ACCOUNT_CASES: readonly {
   label: string;
-  account: PortalProviderUsageAccount;
+  account: RemoteControlProviderUsageAccount;
 }[] = [
   { label: 'Live limits', account: LIVE },
   {
@@ -244,7 +250,10 @@ const ACCOUNT_CASES: readonly {
 export function ProviderAccountUsageSpecimen(): JSX.Element {
   return (
     <div className="flex flex-col gap-6">
-      <SpecimenPanel title="ProviderAccountUsage (a usage group's account)">
+      <SpecimenPanel
+        title="ProviderAccountUsage"
+        hint="A usage group's account"
+      >
         <SpecimenGrid min={320}>
           {ACCOUNT_CASES.map((item) => (
             <SpecimenCell key={item.label} label={item.label}>
@@ -263,7 +272,10 @@ export function ProviderAccountUsageSpecimen(): JSX.Element {
           ))}
         </SpecimenGrid>
       </SpecimenPanel>
-      <SpecimenPanel title="ProviderAccountUsageDetails (inside a Settings row)">
+      <SpecimenPanel
+        title="ProviderAccountUsageDetails"
+        hint="Inside a Settings row"
+      >
         <SpecimenGrid min={320}>
           <SpecimenCell label="Open">
             <div className="w-full">

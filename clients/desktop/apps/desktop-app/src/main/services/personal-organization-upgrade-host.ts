@@ -67,9 +67,6 @@ async function identity(): Promise<UpgradeIdentity> {
 export function getPersonalOrganizationUpgradeService(): PersonalOrganizationUpgradeService {
   service ??= createPersonalOrganizationUpgradeService({
     identity,
-    // Portal is retired (CAN-5986): no desktop session can be current, so
-    // work bound to one never resumes.
-    sessionCurrent: () => false,
     destination: async (organizationId, captured) => {
       const policy = await readPersonalProjectConversionPolicy(
         captured.accountId,

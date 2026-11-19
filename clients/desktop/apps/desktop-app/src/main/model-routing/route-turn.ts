@@ -1,3 +1,4 @@
+import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import type { WorkOwner } from '@canopy/protocol/llm-gateway';
 import {
   isModelRoutingContextWarm,
@@ -29,6 +30,8 @@ import {
 } from '@canopy/execution-engine/lib/gateway-model-availability';
 import { isCodexModelAvailableToAccount } from '@canopy/desktop-shared/lib/default-model-lane';
 import { isOpenCodeGatewayRouteSupported } from '@canopy/desktop-shared/lib/opencode-gateway-models';
+import { getAiCreditsRoutingContextWithStatus } from '../agents/ai-credits-routing';
+import { getFeatureFlagService } from '../feature-flags/service';
 import { isProviderNativelyAuthenticatedForRouting } from '../auth/provider-auth-state';
 import { isModelBlockedByStoredPolicy } from '../lib/model-policy-state';
 import { buildDesktopRoutingCandidateSet } from './candidates';
@@ -41,6 +44,30 @@ export interface DesktopAutoTurnResolution {
   harness: ModelRoutingHarness;
   durableLoss: boolean;
   attribution: ModelRoutingAttributionV1;
+}
+
+/** The credits read has not settled yet. */
+const CREDITS_READ_PENDING = Symbol('credits-read-pending');
+/** The credits read confirmed no credits while the resolve call ran. */
+const CONFIRMED_NO_CREDITS = Symbol('confirmed-no-credits');
+
+/**
+ * Start the AI Credits read for a subscription-lane Auto turn. Resolves true
+ * only when the account has confirmed it has no credits. A failed, degraded
+ * or inconclusive read resolves false, so the server decides as before. The
+ * returned promise never rejects, so a turn that returns before awaiting it
+ * leaves no unhandled rejection.
+ */
+function startConfirmedNoCreditsRead(owner: WorkOwner): Promise<boolean> {
+  return getAiCreditsRoutingContextWithStatus({ owner })
+    .then(
+      ({ context, degraded }) =>
+        !degraded &&
+        context !== null &&
+        context.creditsEligibilityKnown &&
+        !context.creditsEligible,
+    )
+    .catch(() => false);
 }
 
 function uniqueModels(): ChatModel[] {
@@ -130,6 +157,18 @@ export async function routeDesktopAutoTurn(input: {
     openCode || input.request.aiCreditsRouting
       ? 'ai_credits'
       : 'provider_subscription';
+  // Started now and checked after the candidate set is built, so the read
+  // overlaps the auth probes. Without a work owner the server decides. With
+  // the rollout flag off, resolve answers `policy_blocked`, which takes the
+  // chat out of Auto, so the local shortcut must not answer instead.
+  const confirmedNoCreditsRead =
+    lane === 'provider_subscription' &&
+    input.workOwner !== undefined &&
+    getFeatureFlagService().isEnabled(
+      CLIENT_FEATURE_FLAGS.canopySharedAutoModelRouting.key,
+    )
+      ? startConfirmedNoCreditsRead(input.workOwner)
+      : undefined;
   const priorConversation = hasPriorConversation(
     input.tab,
     input.request.userMessageId,
@@ -301,6 +340,42 @@ export async function routeDesktopAutoTurn(input: {
     };
   };
 
+  // Confirmed no credits: the server would only answer with this same
+  // fallback, so the resolve call is skipped. A fallback that is already the
+  // chat's model needs no change and no notice; the chat stays in Auto and
+  // routes again once credits return.
+  const fallbackModelId = candidateSet.fallbackModelId;
+  const noCreditsResolution = (): DesktopAutoTurnResolution | null => {
+    if (
+      candidateSet.localModelIdByWireId.get(fallbackModelId) ===
+      input.request.model
+    )
+      return null;
+    return resolutionFromResponse(
+      {
+        schemaVersion: 1,
+        requestId: input.request.userMessageId,
+        outcome: 'fallback',
+        modelId: fallbackModelId,
+        fallbackReason: 'insufficient_credits',
+      },
+      false,
+    );
+  };
+
+  // A read that has already answered decides before any resolve call. This
+  // relies on `Promise.race` settling with the first already-settled entry in
+  // array order, so the read must stay ahead of the pending sentinel.
+  const settledRead =
+    confirmedNoCreditsRead === undefined
+      ? false
+      : await Promise.race([
+          confirmedNoCreditsRead,
+          Promise.resolve(CREDITS_READ_PENDING),
+        ]);
+  input.signal?.throwIfAborted();
+  if (settledRead === true) return noCreditsResolution();
+
   // Wire identity, like every other model id in this payload.
   const currentWireModelId = input.request.model
     ? (resolveGatewayModelEntry(input.request.model)?.gatewayId ??
@@ -318,11 +393,38 @@ export async function routeDesktopAutoTurn(input: {
     candidates: candidateSet.candidates,
     state,
   };
-  const resolved = await resolveDesktopAutoModel(routingRequest, {
-    ...(input.signal ? { signal: input.signal } : {}),
+  if (confirmedNoCreditsRead === undefined || settledRead === false) {
+    const resolved = await resolveDesktopAutoModel(routingRequest, {
+      ...(input.signal ? { signal: input.signal } : {}),
+      ...(input.workOwner ? { workOwner: input.workOwner } : {}),
+    });
+    // Everything past this point is local identity again: dispatch, the model
+    // change, pricing, and the audit attribution all speak Canopy model ids.
+    return resolutionFromResponse(resolved.response, resolved.durableLoss);
+  }
+
+  // The read is still in flight. Resolve now, exactly when it ran before, so
+  // the read never makes a turn slower than the resolve call alone. If the
+  // read confirms no credits first, the resolve call is abandoned.
+  const abandonResolve = new AbortController();
+  const resolving = resolveDesktopAutoModel(routingRequest, {
+    signal: input.signal
+      ? AbortSignal.any([input.signal, abandonResolve.signal])
+      : abandonResolve.signal,
     ...(input.workOwner ? { workOwner: input.workOwner } : {}),
   });
-  // Everything past this point is local identity again: dispatch, the model
-  // change, pricing, and the audit attribution all speak Canopy model ids.
-  return resolutionFromResponse(resolved.response, resolved.durableLoss);
+  const first = await Promise.race([
+    resolving,
+    confirmedNoCreditsRead.then<
+      Awaited<typeof resolving> | typeof CONFIRMED_NO_CREDITS
+    >((confirmed) => (confirmed ? CONFIRMED_NO_CREDITS : resolving)),
+  ]);
+  if (first === CONFIRMED_NO_CREDITS) {
+    // The abandoned call rejects with the abort reason; nothing awaits it.
+    resolving.catch(() => undefined);
+    abandonResolve.abort();
+    input.signal?.throwIfAborted();
+    return noCreditsResolution();
+  }
+  return resolutionFromResponse(first.response, first.durableLoss);
 }

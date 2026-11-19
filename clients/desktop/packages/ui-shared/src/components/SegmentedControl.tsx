@@ -72,11 +72,6 @@ export interface SegmentedControlProps<T extends string> {
    * (each under a tooltip) and would otherwise leave an empty run of track.
    */
   readonly width?: 'control' | 'fill' | 'content';
-  /**
-   * `rounded` (default): the 8px corner of the settings control rectangle.
-   * `capsule`: the 28px capsule of the compact settings buttons.
-   */
-  readonly shape?: SegmentedControlShape;
   readonly disabled?: boolean;
   /**
    * Give every segment a 44px touch target on coarse pointers, for a picker
@@ -88,21 +83,14 @@ export interface SegmentedControlProps<T extends string> {
   readonly dataTestId?: string;
 }
 
-/** The track's corner: the control rectangle or the compact capsule. */
-export type SegmentedControlShape = 'rounded' | 'capsule';
-
 /**
- * The 28px height of the settings buttons, sunk into the `bg-depth` well so
- * the raised segment stands above it, with the segments inset 2px.
+ * The 28px capsule of the compact buttons, sunk into the `bg-depth` well so
+ * the raised segment stands above it, with the segments inset 2px. A
+ * segmented picker has this one shape (design decision, 2026-11-12: the
+ * rounded rectangle is retired).
  */
 const TRACK_CLASS_NAME =
-  'relative inline-flex h-7 shrink-0 items-stretch gap-0.5 bg-depth p-0.5';
-
-/** The 8px corner of the control rectangle, or the compact capsule. */
-const TRACK_CORNER_CLASS_NAME: Record<SegmentedControlShape, string> = {
-  rounded: 'rounded-md',
-  capsule: 'rounded-full',
-};
+  'relative inline-flex h-7 shrink-0 items-stretch gap-0.5 rounded-full bg-depth p-0.5';
 
 const TRACK_WIDTH_CLASS_NAME = {
   control: 'min-w-52',
@@ -111,19 +99,13 @@ const TRACK_WIDTH_CLASS_NAME = {
 } as const;
 
 /**
- * The segment's corner nests inside the track's: 8px less the 2px inset, or
- * a capsule inside the capsule track, so the corners nest at any width.
+ * The segment is a capsule inside the capsule track, so the corners nest at
+ * any width.
  */
-const SEGMENT_CORNER_CLASS_NAME: Record<SegmentedControlShape, string> = {
-  rounded: 'rounded-[calc(var(--radius-md)-2px)]',
-  capsule: 'rounded-full',
-};
+const SEGMENT_CORNER_CLASS_NAME = 'rounded-full';
 
-/** The capsule segment takes the compact button's 12px sides. */
-const SEGMENT_PADDING_CLASS_NAME: Record<SegmentedControlShape, string> = {
-  rounded: 'px-2',
-  capsule: 'px-3',
-};
+/** A segment takes the compact button's 12px sides. */
+const SEGMENT_PADDING_CLASS_NAME = 'px-3';
 
 /** An icon-only segment: a square inside the 28px track. */
 const ICON_SEGMENT_PADDING_CLASS_NAME = 'w-6 px-0';
@@ -131,10 +113,9 @@ const ICON_SEGMENT_PADDING_CLASS_NAME = 'w-6 px-0';
 function segmentClassName(
   selected: boolean,
   unavailable: boolean,
-  shape: SegmentedControlShape,
   iconOnly: boolean,
 ): string {
-  return `focus-ring relative inline-flex flex-1 basis-0 items-center justify-center gap-1 whitespace-nowrap ${iconOnly ? ICON_SEGMENT_PADDING_CLASS_NAME : SEGMENT_PADDING_CLASS_NAME[shape]} text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${SEGMENT_CORNER_CLASS_NAME[shape]} ${
+  return `focus-ring relative inline-flex flex-1 basis-0 items-center justify-center gap-1 whitespace-nowrap ${iconOnly ? ICON_SEGMENT_PADDING_CLASS_NAME : SEGMENT_PADDING_CLASS_NAME} text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${SEGMENT_CORNER_CLASS_NAME} ${
     selected ? 'fg-primary' : 'fg-secondary hover:fg-primary'
   }${unavailable ? ' cursor-not-allowed opacity-60' : ''}`;
 }
@@ -236,7 +217,6 @@ export function SegmentedControl<T extends string>({
   semantics = 'toggle',
   describedBy,
   width = 'control',
-  shape = 'rounded',
   disabled,
   touchTarget = false,
   dataTestId,
@@ -349,14 +329,14 @@ export function SegmentedControl<T extends string>({
       aria-describedby={describedBy}
       onBlur={roving ? onTrackBlur : undefined}
       data-testid={dataTestId}
-      className={`${TRACK_CLASS_NAME} ${TRACK_CORNER_CLASS_NAME[shape]} ${TRACK_WIDTH_CLASS_NAME[width]}${touchTarget ? ' pointer-coarse:h-auto' : ''}`.trim()}
+      className={`${TRACK_CLASS_NAME} ${TRACK_WIDTH_CLASS_NAME[width]}${touchTarget ? ' pointer-coarse:h-auto' : ''}`.trim()}
     >
       {surface && (
         <span
           ref={surfaceRef}
           aria-hidden="true"
           data-testid={dataTestId ? `${dataTestId}-indicator` : undefined}
-          className={`absolute inset-y-0.5 origin-top-left ${SEGMENT_CORNER_CLASS_NAME[shape]} ${SECONDARY_SURFACE_SHELL_CLASS}`}
+          className={`absolute inset-y-0.5 origin-top-left ${SEGMENT_CORNER_CLASS_NAME} ${SECONDARY_SURFACE_SHELL_CLASS}`}
           style={{ left: surface.left, width: surface.width }}
         />
       )}
@@ -400,7 +380,7 @@ export function SegmentedControl<T extends string>({
               if (unavailable) option.onUnavailablePress?.();
               else onChange(option.value);
             }}
-            className={`${segmentClassName(selected, unavailable, shape, iconOnly)}${touchTarget ? ' pointer-coarse:min-h-11 pointer-coarse:min-w-11' : ''}`}
+            className={`${segmentClassName(selected, unavailable, iconOnly)}${touchTarget ? ' pointer-coarse:min-h-11 pointer-coarse:min-w-11' : ''}`}
           >
             {iconOnly ? (
               option.icon

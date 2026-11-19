@@ -49,6 +49,8 @@ export async function applyWorktreeCreationReservation(
   workspaceId: string,
   decision: WorktreeCreationReservationDecision,
   preconditions: WorktreeCreationReservationPreconditions,
+  onAdmitted?: () => void,
+  options?: { persistCollisionCleanup?: false },
 ): Promise<WorktreeCreationReservationOutcome> {
   // Set by the updater, which runs under the list lock.
   const pass: WorktreeCreationReservationOutcome = { status: 'reserved' };
@@ -59,10 +61,21 @@ export async function applyWorktreeCreationReservation(
       const next = applyWorktreeCreationReservationTo(rows, decision);
       if ('refusal' in next) refuse(next.refusal);
       pass.status = next.status;
+      // Keyed collisions must not reconcile groups or persist filtered tombstones:
+      // a later candidate's no-effect failure may release the same key.
+      if (
+        next.status !== 'collision' ||
+        options?.persistCollisionCleanup !== false
+      )
+        onAdmitted?.();
       return next.worktrees;
     },
     {
       requireAuthoritativeRead: true,
+      shouldWrite:
+        options?.persistCollisionCleanup === false
+          ? (): boolean => pass.status !== 'collision'
+          : undefined,
       sidebarItemGroupId: decision.sidebarItemGroupId,
       newItemId: decision.worktree.id,
       w5Commit: {

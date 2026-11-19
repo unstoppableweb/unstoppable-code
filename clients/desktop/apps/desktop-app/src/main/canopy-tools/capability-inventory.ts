@@ -365,9 +365,9 @@ export async function readCapabilityInventory(
   } else if (kind === 'plugin') {
     sources.push(
       inventorySource(['installed', 'available'], async () => {
-        const { listPortalMarketplaces } =
+        const { listRemoteControlMarketplaces } =
           await import('../services/plugin-catalog-service');
-        const result = await listPortalMarketplaces();
+        const result = await listRemoteControlMarketplaces();
         return {
           items: result.marketplaces.flatMap((m) =>
             m.plugins.map((p) =>
@@ -396,9 +396,9 @@ export async function readCapabilityInventory(
   } else if (kind === 'mcp-server') {
     sources.push(
       inventorySource(['installed'], async () => {
-        const { listPortalMcpServers } =
+        const { listRemoteControlMcpServers } =
           await import('../services/plugin-catalog-service');
-        const result = await listPortalMcpServers();
+        const result = await listRemoteControlMcpServers();
         return {
           items: result.servers.map((s) =>
             row(
@@ -444,9 +444,9 @@ export async function readCapabilityInventory(
   } else if (kind === 'collection') {
     sources.push(
       inventorySource(['installed'], async () => {
-        const { listPortalCollections } =
+        const { listRemoteControlCollections } =
           await import('../services/plugin-catalog-service');
-        const result = await listPortalCollections();
+        const result = await listRemoteControlCollections();
         return {
           items: result.collections.map((c) =>
             row(

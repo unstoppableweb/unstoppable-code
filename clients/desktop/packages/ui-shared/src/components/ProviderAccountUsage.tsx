@@ -1,9 +1,9 @@
 import { Stack } from './Stack';
 import type { JSX, ReactNode } from 'react';
 import type {
-  PortalProviderUsageAccount,
-  PortalProviderUsageWindow,
-} from '@canopy/protocol/portal';
+  RemoteControlProviderUsageAccount,
+  RemoteControlProviderUsageWindow,
+} from '@canopy/protocol/remote-control/shell';
 import {
   UsageRow,
   UsageRowList,
@@ -35,7 +35,7 @@ function fullTime(at: string): string | undefined {
   return Number.isFinite(date.getTime()) ? date.toLocaleString() : undefined;
 }
 
-function windowCard(window: PortalProviderUsageWindow): UsageLimitCard {
+function windowCard(window: RemoteControlProviderUsageWindow): UsageLimitCard {
   return {
     key: window.id,
     title: window.label,
@@ -57,7 +57,7 @@ function windowCard(window: PortalProviderUsageWindow): UsageLimitCard {
 
 /** How fresh an account's limits are, or undefined when nothing was read. */
 function freshnessText(
-  account: PortalProviderUsageAccount,
+  account: RemoteControlProviderUsageAccount,
   nowMs: number,
 ): string | undefined {
   if (account.usageSource === 'passive') return PASSIVE_SOURCE_LABEL;
@@ -73,7 +73,7 @@ function freshnessText(
  * is allowed. Nothing retries on its own, so the copy does not promise it.
  */
 function errorText(
-  account: PortalProviderUsageAccount,
+  account: RemoteControlProviderUsageAccount,
   nowMs: number,
 ): string | undefined {
   if (!account.error) return undefined;
@@ -94,7 +94,7 @@ function errorText(
  * first, otherwise how fresh the limits are.
  */
 export function providerAccountUsageStatusText(
-  account: PortalProviderUsageAccount,
+  account: RemoteControlProviderUsageAccount,
   nowMs: number,
 ): string | undefined {
   return errorText(account, nowMs) ?? freshnessText(account, nowMs);
@@ -107,7 +107,7 @@ const SEVEN_DAY_MS = 7 * 24 * 60 * 60 * 1000;
  * provider's scoped 7-day windows (`7-day Opus`), or its first window.
  */
 export function providerAccountUsageLeadWindowId(
-  account: PortalProviderUsageAccount,
+  account: RemoteControlProviderUsageAccount,
 ): string | undefined {
   return (
     account.windows.find((window) => window.windowDurationMs === SEVEN_DAY_MS)
@@ -117,7 +117,7 @@ export function providerAccountUsageLeadWindowId(
 
 /** An account's windows as the composer popover's limit rows. */
 export function providerAccountUsageSummaryLimits(
-  account: PortalProviderUsageAccount,
+  account: RemoteControlProviderUsageAccount,
 ): UsageIndicatorAccountSummaryProps['limits'] {
   return account.windows.map((window) => {
     const credits = window.credits;
@@ -155,7 +155,7 @@ function AccountUsageFreshness({
   account,
   nowMs,
 }: {
-  account: PortalProviderUsageAccount;
+  account: RemoteControlProviderUsageAccount;
   nowMs: number;
 }): JSX.Element | null {
   const freshness = freshnessText(account, nowMs);
@@ -176,7 +176,7 @@ function AccountUsageError({
   account,
   nowMs,
 }: {
-  account: PortalProviderUsageAccount;
+  account: RemoteControlProviderUsageAccount;
   nowMs: number;
 }): JSX.Element | null {
   const error = errorText(account, nowMs);
@@ -190,7 +190,7 @@ function AccountUsageError({
 
 /** An account's windows as rows. */
 function accountWindowRows(
-  account: PortalProviderUsageAccount,
+  account: RemoteControlProviderUsageAccount,
   nowMs: number,
 ): JSX.Element[] {
   return account.windows.map((window) => (
@@ -200,7 +200,7 @@ function accountWindowRows(
 
 /** No windows and no failed read: usage is unknown, never 0%. */
 function usageUnavailable(
-  account: PortalProviderUsageAccount,
+  account: RemoteControlProviderUsageAccount,
   nowMs: number,
 ): boolean {
   return account.windows.length === 0 && !errorText(account, nowMs);
@@ -216,7 +216,7 @@ export function ProviderAccountUsageDetails({
   nowMs,
   collapsible = false,
 }: {
-  account: PortalProviderUsageAccount;
+  account: RemoteControlProviderUsageAccount;
   nowMs: number;
   /** Settings keeps quota details behind a closed disclosure. */
   collapsible?: boolean;
@@ -259,7 +259,7 @@ export function ProviderAccountUsage({
   nowMs,
   children,
 }: {
-  account: PortalProviderUsageAccount;
+  account: RemoteControlProviderUsageAccount;
   providerLabel: string;
   nowMs: number;
   children?: ReactNode;

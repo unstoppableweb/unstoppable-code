@@ -1,4 +1,4 @@
-import type { PortalSessionShellState } from '@canopy/protocol/portal';
+import type { RemoteControlSessionShellState } from '@canopy/protocol/remote-control/shell';
 import type { SidebarChatSearchResult } from '../code/shell/sidebar-chat-search-model';
 import { workspaceColor, workspaceKind } from '../code/shell/sidebar-model';
 import { toRecencyMs } from '../code/shell/sidebar/sidebar-ordering';
@@ -14,7 +14,7 @@ import type {
 } from './search-palette-items';
 
 type SnapshotStandaloneChat = Pick<
-  PortalSessionShellState['standaloneChats'][number],
+  RemoteControlSessionShellState['standaloneChats'][number],
   'localId' | 'lastMessageAt' | 'createdAt'
 >;
 

@@ -632,7 +632,11 @@ export function PluginDetailHost({
   const linkedHarnessRows =
     discoveryTable?.rows ??
     harnessRows?.map((row) => {
-      if (row.installation !== 'Not supported') return row;
+      if (
+        row.installation !== 'Not supported' &&
+        row.installation !== 'Unknown until added'
+      )
+        return row;
       const copy = alternatives?.find((alternative) =>
         (alternative.marketplaceVariant?.provider ?? alternative.label)
           .toLowerCase()
@@ -847,7 +851,7 @@ export function PluginDetailHost({
   const hasInstallActions =
     (canInstall && builtInPanel) ||
     (!!plugin.externalSource && !discoveryEnabled) ||
-    showInstallPrompt ||
+    (showInstallPrompt && !discoveryEnabled) ||
     installing;
   const installActions = hasInstallActions ? (
     <>
@@ -893,7 +897,7 @@ export function PluginDetailHost({
             testId="plugin-detail-update-error"
           />
         )}
-      {showInstallPrompt && !installing && (
+      {showInstallPrompt && !installing && !discoveryEnabled && (
         <div className="flex flex-col items-center justify-center py-12 text-center gap-4">
           <p className="text-s fg-secondary">
             This plugin&rsquo;s content is hosted externally and needs to be
@@ -1069,7 +1073,23 @@ export function PluginDetailHost({
         updateNotice={updateNotice}
         publisher={publisher}
         facts={discoveryFacts}
-        worksWithNotice={shownWorksWithNotice}
+        worksWithNotice={
+          // New Customize: Add's failure on the section it would fill.
+          discoveryEnabled &&
+          showInstallPrompt &&
+          !installing &&
+          installError ? (
+            <>
+              {shownWorksWithNotice}
+              <DetailFactError
+                error={installError}
+                testId="plugin-detail-host-install-error"
+              />
+            </>
+          ) : (
+            shownWorksWithNotice
+          )
+        }
         statusContent={
           statusContent ? (
             <DetailActionSlotsProvider slots={actionSlots}>

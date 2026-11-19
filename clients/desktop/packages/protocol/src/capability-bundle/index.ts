@@ -20,7 +20,7 @@
 // primitives, so every consumer can use it without pulling in zod, Node
 // built-ins, Prisma, or application modules.
 // Where a shape mirrors another module (the provenance snapshot mirrors
-// `PortalChatTabPluginSelections` in `packages/protocol/src/portal`), the
+// `RemoteControlChatTabPluginSelections` in `packages/protocol/src/remote-control/shell`), the
 // fields are declared inline with a doc comment naming the source.
 // ---------------------------------------------------------------------------
 
@@ -295,7 +295,7 @@ export interface CapabilityBundleMemory {
 
 /**
  * Reference to one selected shared skill. Mirrors the `skillRefs` element of
- * `PortalChatTabPluginSelections` (`packages/protocol/src/portal`).
+ * `RemoteControlChatTabPluginSelections` (`packages/protocol/src/remote-control/shell`).
  */
 export interface CapabilityBundleSkillRef {
   sourceId: string;
@@ -310,7 +310,7 @@ export interface CapabilityBundleSkillRef {
 
 /**
  * Reference to one selected plugin. Mirrors the `pluginRefs` element of
- * `PortalChatTabPluginSelections` (`packages/protocol/src/portal`).
+ * `RemoteControlChatTabPluginSelections` (`packages/protocol/src/remote-control/shell`).
  */
 export interface CapabilityBundlePluginRef {
   marketplaceId: string;
@@ -321,8 +321,8 @@ export interface CapabilityBundlePluginRef {
 
 /**
  * Reference to one selected MCP server configuration. Mirrors the
- * `mcpServerRefs` element of `PortalChatTabPluginSelections`
- * (`packages/protocol/src/portal`).
+ * `mcpServerRefs` element of `RemoteControlChatTabPluginSelections`
+ * (`packages/protocol/src/remote-control/shell`).
  */
 export interface CapabilityBundleMcpServerRef {
   serverId: string;
@@ -494,8 +494,8 @@ export const CAPABILITY_BUNDLE_CATALOG_BRAND_MAX_LENGTH = 64;
 /**
  * Snapshot of the input selections the bundle was produced from, plus the
  * list of capabilities the producer actually resolved. The selection fields
- * structurally mirror `PortalChatTabPluginSelections`
- * (`packages/protocol/src/portal`); runtime refs are declared inline to avoid
+ * structurally mirror `RemoteControlChatTabPluginSelections`
+ * (`packages/protocol/src/remote-control/shell`); runtime refs are declared inline to avoid
  * a dependency on the Portal transport. Catalog identities use the pure
  * shared Try it contract.
  */

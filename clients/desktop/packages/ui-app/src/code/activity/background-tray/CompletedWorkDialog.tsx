@@ -112,7 +112,6 @@ export function CompletedWorkDialog({
           title="Completed work"
           maxWidth="md"
           headerAlignment="center"
-          closeButtonAppearance="compact"
           placement="center"
           scrollableBody={false}
           trapFocus

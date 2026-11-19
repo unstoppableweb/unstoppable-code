@@ -1,6 +1,10 @@
 import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
+  allowlistedErrnoOrOther,
+  isAllowlistedErrno,
+} from '@canopy/core-runtime';
+import {
   acquireW5DesktopDeleteGate,
   type W5DesktopDeleteGate,
 } from '@canopy/core-platform/w5-process-file-lock';
@@ -56,7 +60,17 @@ function decodeOutcome(value: unknown): ArchiveWorktreeResponse {
       throw new Error('The saved deletion warnings are unreadable.');
     warnings.push(warning);
   }
-  return { success: value.success, warnings };
+  // Outcomes saved before CAN-7117 have no code. A saved value outside this
+  // build's allowlist (a wider allowlist, or a hand edit) reads as `other`
+  // rather than failing the replay or echoing an unvetted string.
+  const code = value.cleanupErrorCode;
+  return {
+    success: value.success,
+    warnings,
+    ...(code === undefined
+      ? {}
+      : { cleanupErrorCode: isAllowlistedErrno(code) ? code : 'other' }),
+  };
 }
 
 /** I3/A14′: one admitted CLI hard delete; never a retained-container writer. */
@@ -301,17 +315,25 @@ export function deleteRoutedCliWorktree(
           // Every successful headless deletion leaves these desktop-owned sidecars.
           warnings.push(SIDECAR_WARNING);
           signal.throwIfAborted();
+          let cleanupCode: string | undefined;
           try {
             await removePersistedWorktreeDataDirectory(
               options.workspaceId,
               options.worktreeId,
             );
-          } catch {
+          } catch (error) {
             warnings.push(
               'Failed to remove persisted worktree data. Desktop reconciliation must finish cleanup.',
             );
+            cleanupCode = allowlistedErrnoOrOther(error);
           }
-          const outcome: ArchiveWorktreeResponse = { success: true, warnings };
+          const outcome: ArchiveWorktreeResponse = {
+            success: true,
+            warnings,
+            ...(cleanupCode === undefined
+              ? {}
+              : { cleanupErrorCode: cleanupCode }),
+          };
           // Removal and outcome are separate: keep the reservation through all tails.
           await store.withCommit(
             {

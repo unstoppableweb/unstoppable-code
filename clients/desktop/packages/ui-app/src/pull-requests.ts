@@ -66,15 +66,15 @@ export {
   type PullRequestProgressTooltipProps,
 } from './code/pull-requests/PullRequestProgressTooltip';
 export {
-  portalPlannedSteps,
-  portalPullRequestActionPayload,
-  portalPullRequestActionsFacts,
-  portalPullRequestActivity,
-  portalPullRequestMergeRepo,
-  portalPullRequestProgress,
-  type PortalPullRequestActionsRow,
-  type PortalPullRequestStep,
-} from './code/pull-requests/pull-request-actions-portal';
+  remoteControlPlannedSteps,
+  remoteControlPullRequestActionPayload,
+  remoteControlPullRequestActionsFacts,
+  remoteControlPullRequestActivity,
+  remoteControlPullRequestMergeRepo,
+  remoteControlPullRequestProgress,
+  type RemoteControlPullRequestActionsRow,
+  type RemoteControlPullRequestStep,
+} from './code/pull-requests/pull-request-actions-remote-control';
 export {
   AlignBaseBranchConfirmation,
   BaseBranchDriftTooltipContent,

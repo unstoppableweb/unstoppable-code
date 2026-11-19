@@ -1,21 +1,21 @@
 import {
   parseChatAgentSentInfo,
   type ChatAgentSentInfo,
-  type PortalChatPart,
-} from '@canopy/protocol/portal';
+  type RemoteControlChatPart,
+} from '@canopy/protocol/remote-control/shell';
 import type { SubagentNode, SubagentTree } from '../subagent-tree';
 import { placeRunPrompt, subagentParentTitle } from './shared';
 import type {
-  PortalSubagentChatTranscript,
-  PortalSubagentChatTranscriptItem,
-  PortalSubagentRunObservation,
+  RemoteControlSubagentChatTranscript,
+  RemoteControlSubagentChatTranscriptItem,
+  RemoteControlSubagentRunObservation,
 } from './types';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function partText(part: PortalChatPart): string | undefined {
+function partText(part: RemoteControlChatPart): string | undefined {
   if (part.kind !== 'text' || !isRecord(part.data)) return undefined;
   const text = part.data['text'];
   return typeof text === 'string' ? text : undefined;
@@ -26,7 +26,9 @@ function partText(part: PortalChatPart): string | undefined {
  * wire fields (see `agentSentWireFields`). Malformed or mixed sender-kind
  * fields yield no attribution.
  */
-function partAgentSent(part: PortalChatPart): ChatAgentSentInfo | undefined {
+function partAgentSent(
+  part: RemoteControlChatPart,
+): ChatAgentSentInfo | undefined {
   if (!isRecord(part.data)) return undefined;
   const data = part.data;
   const senderKind = data['agentSentSenderKind'];
@@ -107,7 +109,7 @@ const PIPELINE_WIRE_KEYS = [
 
 /** Who wrote an authored child message, from its flat wire fields. */
 function partAuthor(
-  part: PortalChatPart,
+  part: RemoteControlChatPart,
 ):
   | { readonly kind: 'user'; readonly steering: boolean }
   | { readonly kind: 'agent'; readonly description?: string }
@@ -137,14 +139,14 @@ function partAuthor(
  * run shows its prompt. Hosts pass a native Claude agent's part, or a
  * single-receiver Codex agent's part, as its only run.
  */
-export function buildPortalSubagentChatTranscript(input: {
+export function buildRemoteControlSubagentChatTranscript(input: {
   readonly tree: SubagentTree;
   readonly node: SubagentNode;
-  readonly runs: readonly PortalSubagentRunObservation[];
-}): PortalSubagentChatTranscript {
+  readonly runs: readonly RemoteControlSubagentRunObservation[];
+}): RemoteControlSubagentChatTranscript {
   const { tree, node } = input;
   const parentTitle = subagentParentTitle(tree, node);
-  const latestByRun = new Map<number, PortalSubagentRunObservation>();
+  const latestByRun = new Map<number, RemoteControlSubagentRunObservation>();
   for (const run of input.runs) latestByRun.set(run.runGeneration, run);
   const runs = Array.from(latestByRun.values()).sort(
     (left, right) => left.runGeneration - right.runGeneration,
@@ -166,7 +168,7 @@ export function buildPortalSubagentChatTranscript(input: {
     };
   }
 
-  const items: PortalSubagentChatTranscriptItem[] = [];
+  const items: RemoteControlSubagentChatTranscriptItem[] = [];
   runs.forEach((run, runIndex) => {
     const prefix = `run-${run.runGeneration}`;
     if (runIndex > 0) {
@@ -176,7 +178,7 @@ export function buildPortalSubagentChatTranscript(input: {
         runGeneration: run.runGeneration,
       });
     }
-    const body: PortalSubagentChatTranscriptItem[] = [];
+    const body: RemoteControlSubagentChatTranscriptItem[] = [];
     if (run.subBlocksTruncated) {
       body.push({
         kind: 'truncated',

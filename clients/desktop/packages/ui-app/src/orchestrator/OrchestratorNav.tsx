@@ -74,7 +74,7 @@ export function OrchestratorNav({
   return (
     <OrchestratorNavFrame
       presentation="rail"
-      testId="portal-app-advisor-nav"
+      testId="remote-control-app-advisor-nav"
       controls={
         <OrchestratorNavControls
           collapsed={false}
@@ -194,7 +194,7 @@ function AdvisorNavRow({
   return (
     <WorkEntryRow
       title={entry.title}
-      testId={`portal-app-advisor-nav-entry-${entry.id}`}
+      testId={`remote-control-app-advisor-nav-entry-${entry.id}`}
       entryId={entry.id}
       selected={selected}
       working={entry.turnActive}

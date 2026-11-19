@@ -35,7 +35,7 @@
 /**
  * Frozen runtime list of every panel kind that can appear on the wire. Use
  * this in validators and tests so the closed union stays in lockstep with the
- * type (same convention as `PORTAL_COMMAND_TYPES`).
+ * type (same convention as `REMOTE_CONTROL_COMMAND_TYPES`).
  */
 export const PANEL_KINDS = [
   'chat',
@@ -153,7 +153,7 @@ export const PANEL_KINDS = [
  * of truth for each kind's behavior (title, icon, render, `canPopOut`,
  * `isWindowBound`).
  *
- * Growth pattern (matches `PortalCommandType`): new kinds MUST be added to
+ * Growth pattern (matches `RemoteControlCommandType`): new kinds MUST be added to
  * `PANEL_KINDS` first, then registered in the desktop registry. Persisted
  * files containing a kind unknown to this build fail `migratePanelLayout`
  * and fall back to the default layout, so ship the union addition with (or

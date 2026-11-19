@@ -16,7 +16,7 @@ import {
   CLOUD_FIRST_WORKSPACE_NAME,
   isDefaultCoworkWorkspaceName,
 } from '@canopy/protocol/ui-labels';
-import type { PortalStandaloneWorkEntryFields } from '@canopy/protocol';
+import type { RemoteControlStandaloneWorkEntryFields } from '@canopy/protocol';
 import {
   Dot,
   ErrorBanner,
@@ -33,7 +33,11 @@ import {
   type WorktreeMenuItem,
   WorkEntryRowMenuItems,
   WorkspaceSectionHeader,
+  SPACE_NOTIFICATION_MENU_COPY,
+  SpaceNotificationMenuStatusLine,
   isSpaceNotificationMuted,
+  spaceNotificationMenuUnavailable,
+  type SpaceNotificationMenuStatus,
   type SpaceNotificationMenuChoice,
   type SpaceNotificationMenuState,
   type WorkEntryRowMenuContext,
@@ -55,9 +59,9 @@ import {
 } from './sidebar';
 import type { AgentExecutionHarness } from '@canopy/protocol/models';
 import type {
-  PortalRowBackend,
-  PortalWorkspaceLayout,
-} from '@canopy/protocol/portal';
+  RemoteControlRowBackend,
+  RemoteControlWorkspaceLayout,
+} from '@canopy/protocol/remote-control/shell';
 import { withSelectionGroupItems } from './sidebar-selection-menu-items';
 import { compareWorkspaces } from './workspace-sections-model';
 import { workspaceLayout } from './worktree-status';
@@ -96,9 +100,9 @@ export interface StandaloneChatsSidebarWorkspace {
    */
   readonly type?: 'single-repo' | 'multi-repo' | 'cowork';
   /** Placement axis — only a flat workspace can own unparented chats. */
-  readonly layout?: PortalWorkspaceLayout;
+  readonly layout?: RemoteControlWorkspaceLayout;
   /** Execution owner, used to resolve older snapshots without a sort mode. */
-  readonly backend?: PortalRowBackend;
+  readonly backend?: RemoteControlRowBackend;
   /** Explicit ordering mode for the workspace's Work Entry rows. */
   readonly itemSortMode?: SidebarSortMode;
   readonly itemGroups?: readonly SidebarItemGroup[];
@@ -108,11 +112,11 @@ export interface StandaloneChatsSidebarWorkspace {
 
 /**
  * One flat chat as the sidebar reads it. The Work Entry fields
- * ({@link PortalStandaloneWorkEntryFields}) let the Chats section group chats
+ * ({@link RemoteControlStandaloneWorkEntryFields}) let the Chats section group chats
  * into the Work Entries desktop lists; all are optional, so a projection from
  * an older desktop still renders each chat as its own entry.
  */
-export interface StandaloneChatsSidebarChat extends PortalStandaloneWorkEntryFields {
+export interface StandaloneChatsSidebarChat extends RemoteControlStandaloneWorkEntryFields {
   readonly localId: string;
   /**
    * The owning cowork workspace. Places the chat in its workspace's section,
@@ -180,7 +184,7 @@ export interface StandaloneChatsSidebarSectionTestIds {
   /**
    * Base id of a Chats-section Work Entry row; the row suffixes its parts
    * (`-thinking`, `-unread`, `-done`). Defaults to
-   * `portal-chats-work-entry-${entryId}`.
+   * `remote-control-chats-work-entry-${entryId}`.
    */
   readonly workEntryRow?: (entryId: string) => string;
 }
@@ -1253,11 +1257,17 @@ function ChatsSectionWorkEntryRow({
     row.unreadChats.some((chat) => chat.localId !== selectedStandaloneChatId);
   const title = row.title.trim() ? row.title : row.targetChat.title;
   const workspaceLocalId = row.targetChat.projectLocalId;
-  const offersNotifications =
-    notifications?.getState(workspaceLocalId, row.workEntryId) !== undefined;
+  const notificationState = notifications?.getState(
+    workspaceLocalId,
+    row.workEntryId,
+  );
+  // An unavailable state (a first read that failed) draws no choices.
+  const notificationsUnavailable =
+    notificationState !== undefined &&
+    spaceNotificationMenuUnavailable(notificationState);
   const rowTestId =
     testIds?.workEntryRow?.(row.workEntryId) ??
-    `portal-chats-work-entry-${row.workEntryId}`;
+    `remote-control-chats-work-entry-${row.workEntryId}`;
   const multiSelect =
     selectionListId === undefined ? undefined : multiSelectProp;
   const selectionKey = workEntryRowKey(
@@ -1310,8 +1320,11 @@ function ChatsSectionWorkEntryRow({
           ...menu.slice(insertionIndex),
         ]
       : menu;
-  const showsNotifications =
-    !replaces && notifications !== undefined && offersNotifications;
+  // The menu mounts the notification rows whenever the entry has a state,
+  // available or not: mounting them is what retries the read on open.
+  const mountsNotifications =
+    !replaces && notifications !== undefined && notificationState !== undefined;
+  const showsNotifications = mountsNotifications && !notificationsUnavailable;
   const selectionSource = replaces
     ? withSelectionGroupItems(selectionMenu?.items ?? [], menu)
     : (selectionMenu?.items ?? []);
@@ -1328,12 +1341,27 @@ function ChatsSectionWorkEntryRow({
   const showsArchive = !replaces && archive !== undefined;
   const offersSelectItem =
     !replaces && selectable && multiSelect?.onSelectItem !== undefined;
-  const hasMenu =
+  const hasOtherRows =
     rowMenu.length > 0 ||
-    showsNotifications ||
     offersSelectItem ||
     selectionItems.length > 0 ||
     showsArchive;
+  // With nothing else to list, the failed read is the menu's one line, so
+  // the menu never opens empty and opening it still retries.
+  const unavailableStatus: SpaceNotificationMenuStatus | undefined =
+    mountsNotifications &&
+    notificationsUnavailable &&
+    !hasOtherRows &&
+    notificationState !== undefined
+      ? {
+          tone: 'failure',
+          text:
+            notificationState.failure ??
+            SPACE_NOTIFICATION_MENU_COPY.loadFailed,
+        }
+      : undefined;
+  const hasMenu =
+    hasOtherRows || showsNotifications || unavailableStatus !== undefined;
   return (
     <SidebarRowFrame
       data-testid={testIds?.chatRow?.(row.targetChat.localId)}
@@ -1408,7 +1436,7 @@ function ChatsSectionWorkEntryRow({
                       }}
                     />
                   )}
-                  {showsNotifications && notifications !== undefined && (
+                  {mountsNotifications && notifications !== undefined && (
                     <WorkEntryNotificationMenuItems
                       menu={menuContext}
                       workspaceLocalId={workspaceLocalId}
@@ -1416,9 +1444,14 @@ function ChatsSectionWorkEntryRow({
                       notifications={notifications}
                     />
                   )}
+                  {unavailableStatus !== undefined && (
+                    <SpaceNotificationMenuStatusLine
+                      status={unavailableStatus}
+                    />
+                  )}
                   {/* The notification renderer already includes Select item.
                       Without notifications, reuse those same standard rows. */}
-                  {offersSelectItem && !showsNotifications && (
+                  {offersSelectItem && !mountsNotifications && (
                     <WorkEntryRowMenuItems menu={menuContext} />
                   )}
                   {selectionItems.length > 0 && (

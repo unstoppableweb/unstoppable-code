@@ -9,6 +9,7 @@ import type {
 import {
   createPlatformServices,
   createFileIndexingMatchPolicy,
+  hostPlatformArchitecture,
   hostPlatformOperatingSystem,
   hostPlatformServices,
 } from '../index';
@@ -163,6 +164,10 @@ it('selects the running host once at composition', () => {
   const semantics =
     process.platform === 'win32' ? 'first-instance-pipe' : 'filesystem-socket';
   expect(hostPlatformServices(provider(semantics)).os).toBe(process.platform);
+});
+
+it('reports the running host architecture', () => {
+  expect(hostPlatformArchitecture()).toBe(process.arch);
 });
 
 it('reports the running host and fails closed on an unsupported one', () => {

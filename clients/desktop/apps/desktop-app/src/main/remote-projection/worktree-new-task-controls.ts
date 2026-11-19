@@ -1,7 +1,7 @@
-import type { PortalEntityEnvelope } from '@canopy/desktop-shared/types';
+import type { RemoteControlEntityEnvelope } from '@canopy/desktop-shared/types';
 import type { WorkOwner } from '@canopy/protocol/llm-gateway';
-import { isRecord } from '@canopy/desktop-shared/portal/persisted-chat-projection';
-import { peekPortalProviderAvailability } from '../auth/provider-auth-state';
+import { isRecord } from '@canopy/desktop-shared/remote-control/persisted-chat-projection';
+import { peekRemoteControlProviderAvailability } from '../auth/provider-auth-state';
 import { buildProjectedModelCatalog } from './model-catalog-projection';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import { getFeatureFlagService } from '../feature-flags';
@@ -27,13 +27,13 @@ export function isDesktopModelRoutingSupported(): boolean {
  * rows and the runtime-connected key like the chat summaries do.
  */
 export function projectNewTaskControls(
-  entities: PortalEntityEnvelope[],
+  entities: RemoteControlEntityEnvelope[],
   worktreeLocalId: string,
   owner: WorkOwner | undefined,
   /** See `resolveCatalogAgentDefaultModel`. */
   agentDefaultModel: string | undefined,
   projectId?: string,
-): PortalEntityEnvelope[] {
+): RemoteControlEntityEnvelope[] {
   const availableModels = buildProjectedModelCatalog(undefined, {
     cursor: true,
     antigravity: true,
@@ -43,7 +43,7 @@ export function projectNewTaskControls(
     agentDefaultModel,
     projectId,
   });
-  const providerAvailability = peekPortalProviderAvailability();
+  const providerAvailability = peekRemoteControlProviderAvailability();
   const modelRoutingSupported = isDesktopModelRoutingSupported();
   return entities.map((entity) =>
     entity.entityType === 'worktree' && entity.localId === worktreeLocalId

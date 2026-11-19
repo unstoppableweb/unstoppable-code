@@ -78,6 +78,10 @@ import type {
 } from '@canopy/protocol/memory-sync';
 import { runLocalMemoryStructuredHelper } from './structured-helper';
 import {
+  isHelperNoBillingSourceError,
+  type HelperNoBillingSourceError,
+} from '../../agents/helper-no-billing-source';
+import {
   isSyncedMemoryReplica,
   localMemoryReplicaHooks,
   type LocalMemorySyncedConsolidation,
@@ -770,7 +774,10 @@ async function generateStructuredOutput(
   } catch (error) {
     finalizeObservedHelperTask(
       taskKey,
-      'failure',
+      // Refused before any spawn: the provider is signed out with no billing
+      // source (CAN-7062). The run fails without consuming its input; the
+      // run-model check skips later runs before they open an entry.
+      isHelperNoBillingSourceError(error) ? 'cancelled' : 'failure',
       error instanceof Error ? error.message : String(error),
       // Unwraps TransientAgentRetryExhaustedError too, so exhausted retries
       // still record their accumulated cross-attempt usage.
@@ -1495,8 +1502,25 @@ async function runConsolidation(
           synced.shouldContinue() &&
           (options.shouldContinue === undefined ||
             (await options.shouldContinue()));
+  // The engine turns a model error into a `failed` result. A helper refused
+  // before any spawn because its provider is signed out with no billing
+  // source (CAN-7062) is rethrown after the engine returns instead, so the
+  // caller records a skip; nothing was consumed. Only a `failed` run is
+  // rethrown: a refused compaction retry after the output was applied keeps
+  // the applied result.
+  const model = consolidationModel(options);
+  const refused: { error: HelperNoBillingSourceError | null } = {
+    error: null,
+  };
   const result = await runMemoryConsolidation(input, {
-    model: consolidationModel(options),
+    model: async (request) => {
+      try {
+        return await model(request);
+      } catch (error) {
+        if (isHelperNoBillingSourceError(error)) refused.error = error;
+        throw error;
+      }
+    },
     ...(shouldContinue ? { shouldContinue } : {}),
     listScopeTopics: () => readScopeTopicInventory(options.scopeDir),
     confirmPrunable: async (candidates) => {
@@ -1513,6 +1537,7 @@ async function runConsolidation(
     warn: reportConsolidationWarning,
     now: () => options.now ?? new Date(),
   });
+  if (refused.error !== null && result.status === 'failed') throw refused.error;
   if (result.metrics !== undefined) return result;
   const before = {
     memoryMd: priorState.memoryMd ?? '',

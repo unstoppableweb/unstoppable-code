@@ -46,7 +46,7 @@ export function ExportSessionConfirmationModal({
         </p>
       </div>
       <DialogActionFooter>
-        <Button variant="outline" size="lg" onClick={onCancel}>
+        <Button variant="secondary" size="lg" onClick={onCancel}>
           Cancel
         </Button>
         <Button

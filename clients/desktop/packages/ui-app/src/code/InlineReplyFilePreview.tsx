@@ -3,9 +3,9 @@
 import { useEffect, useMemo, useRef, useState, type JSX } from 'react';
 import { useOptionalCanopyClient } from '@canopy/app-state';
 import type {
-  PortalFilePreview,
-  PortalFileReadPayload,
-} from '@canopy/protocol/portal';
+  RemoteControlFilePreview,
+  RemoteControlFileReadPayload,
+} from '@canopy/protocol/remote-control/shell';
 import { turnFileHref } from '@canopy/protocol/turn-files';
 import type { TurnFileRecord } from '@canopy/protocol/turn-files';
 import {
@@ -23,7 +23,7 @@ import { parseCsvTableContent } from './file/FileCsvPreview';
 import { fileExtension, resolveFileRenderKind } from './file/file-kind';
 
 export interface InlineReplyPreviewContent extends Pick<
-  PortalFilePreview,
+  RemoteControlFilePreview,
   'content' | 'language'
 > {
   readonly truncated?: boolean;
@@ -35,7 +35,7 @@ export interface InlineReplyPreviewContent extends Pick<
 }
 
 export type InlineReplyDocumentReader = (
-  request: PortalFileReadPayload,
+  request: RemoteControlFileReadPayload,
   kind: 'pdf' | 'xlsx' | 'image',
   signal: AbortSignal,
 ) => Promise<InlineReplyPreviewContent | null>;

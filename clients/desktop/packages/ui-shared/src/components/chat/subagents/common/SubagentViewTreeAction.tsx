@@ -20,7 +20,7 @@ export function SubagentViewTreeAction({
   if (appearance === 'section') {
     return (
       <Button
-        variant="ghost-overlay"
+        variant="ghost"
         size="compact"
         data-testid={dataTestId}
         onClick={onClick}

@@ -9,6 +9,7 @@ import {
   DIGEST_WEEKDAY_LABELS,
   digestMonthlyDescription,
   digestOrdinalDay,
+  digestPreferencesDescription,
   digestWeeklyDescription,
 } from '@canopy/protocol/digests';
 import { toAppError } from '@canopy/protocol/app-errors';
@@ -219,14 +220,14 @@ export function CloudDigestSettings(): JSX.Element | null {
   );
 
   const handleOpenDigests = useCallback((): void => {
-    // `openAuthenticatedPortalPage` returns false rather than throwing on every
+    // `openAuthenticatedCloudPage` returns false rather than throwing on every
     // realistic failure — it degrades to `openUnauthenticated`, which itself
     // swallows errors and returns false when the base URL is unconfigured. The
-    // other call sites (openBillingPage, CanopyPortalModal) honor that; ignoring
+    // other call sites (openBillingPage, RemoteControlModal) honor that; ignoring
     // it here made the button silently do nothing, and the bare `void` left an
     // unhandled rejection on the one path that does reject (missing IPC bridge).
     void window.api
-      .openAuthenticatedPortalPage('/account/digests')
+      .openAuthenticatedCloudPage('/account/digests')
       .then((opened) => {
         if (!opened && mounted.current) {
           setError({ error: 'Could not open digests in your browser.' });
@@ -265,11 +266,11 @@ export function CloudDigestSettings(): JSX.Element | null {
   if (!state || !state.available) return null;
 
   // An unresolved load has no idea what the account's cadences are. Rendering
-  // `state.preferences` here would show the weekly-only placeholder as if it
-  // were the user's setting — a user whose account has weekly OFF would see
-  // "Weekly" on below "Could not load digest settings." That is exactly the
-  // fiction the main process refuses to make (it returns `resolved: false`
-  // precisely so "every cadence off" is never asserted). Show no switch at all
+  // `state.preferences` here would show the all-off placeholder as if it
+  // were the user's setting — a user whose account has weekly ON would see
+  // every cadence off below "Could not load digest settings." That is exactly
+  // the fiction the main process refuses to make (it returns `resolved: false`
+  // precisely so no cadence state is asserted). Show no switch at all
   // and a retry, so nothing is claimed and nothing can be written.
   const unresolved = !state.resolved;
   // A retry clears the load error until it answers, so an unresolved state
@@ -284,8 +285,11 @@ export function CloudDigestSettings(): JSX.Element | null {
       title="Work digests"
       description={
         <>
-          A periodic summary of your {brandText.appName} activity, emailed to
-          you. Applies everywhere you are signed in to {brandText.serverName}.
+          {digestPreferencesDescription({
+            kind: 'account',
+            productName: brandText.appName,
+          })}{' '}
+          Applies everywhere you are signed in to {brandText.serverName}.
         </>
       }
       dataTestId="settings-cloud-digests"

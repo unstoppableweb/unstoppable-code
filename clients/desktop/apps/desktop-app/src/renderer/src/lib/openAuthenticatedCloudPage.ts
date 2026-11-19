@@ -23,9 +23,7 @@ export function openAuthenticatedCloudPage(path: string): void {
   };
 
   try {
-    void window.api
-      .openAuthenticatedPortalPage(path)
-      .catch(openUnauthenticated);
+    void window.api.openAuthenticatedCloudPage(path).catch(openUnauthenticated);
   } catch {
     openUnauthenticated();
   }
@@ -41,7 +39,7 @@ export async function openAuthenticatedCloudPageReported(
   path: string,
 ): Promise<boolean> {
   try {
-    return await window.api.openAuthenticatedPortalPage(path);
+    return await window.api.openAuthenticatedCloudPage(path);
   } catch {
     return false;
   }

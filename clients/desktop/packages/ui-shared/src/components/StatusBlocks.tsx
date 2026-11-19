@@ -219,7 +219,6 @@ function StringErrorBanner({
         actions={actions}
         data-testid={testId}
         {...dismiss}
-        edge="destructive"
         errorSource={errorSource}
         {...(displayErrorCode === undefined ? {} : { displayErrorCode })}
         errorRecordingChokePoint="banner"
@@ -238,7 +237,6 @@ function StringErrorBanner({
       actions={actions}
       data-testid={testId}
       {...dismiss}
-      edge="destructive"
       errorSource={errorSource}
       {...(displayErrorCode === undefined ? {} : { displayErrorCode })}
       errorRecordingChokePoint="banner"
@@ -461,7 +459,6 @@ function AppErrorBanner({
       data-testid={testId}
       data-app-error-code={error.code}
       {...dismiss}
-      edge="destructive"
       // The structured error records itself above; the text recorder would
       // count the same failure again without its code or reference.
       errorRecordingDisabled

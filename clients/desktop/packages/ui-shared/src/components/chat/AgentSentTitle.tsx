@@ -6,8 +6,8 @@ import {
 } from '../control-button-shared';
 import { ControlButton } from '../Button';
 import { memo, type JSX } from 'react';
-import type { ChatAgentSentInfo } from '@canopy/protocol/portal';
-import type { AgentSentInfo } from '@canopy/protocol/portal/external-agent-sender';
+import type { ChatAgentSentInfo } from '@canopy/protocol/remote-control/shell';
+import type { AgentSentInfo } from '@canopy/protocol/remote-control/shell/external-agent-sender';
 import { AgentIcon, WorkflowIcon } from '../../icons/AppIcons';
 import { REPLAY_MASK_CLASS } from '../../lib/replay-privacy';
 import { AgentSentMarker } from './AgentSentMarker';

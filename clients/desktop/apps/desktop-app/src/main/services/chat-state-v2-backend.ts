@@ -5917,7 +5917,7 @@ export class ChatStateV2Backend {
       let mutations: ChatCoreMutation[];
       try {
         mutations = await build(view, baseRevision, {
-          getPortalSendReceipt: (userMessageId) =>
+          getRemoteControlSendReceipt: (userMessageId) =>
             current.recovery.receipts.find(
               (receipt) => receipt.portalSend?.userMessageId === userMessageId,
             ),

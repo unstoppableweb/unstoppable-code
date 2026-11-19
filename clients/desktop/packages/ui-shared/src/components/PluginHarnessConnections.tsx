@@ -67,7 +67,17 @@ export function HarnessLogoList({
 export interface PluginHarnessConnectionRow {
   id: string;
   name: string;
-  installation: 'Installed' | 'Not installed' | 'Not supported';
+  /**
+   * `Unknown until added`: a plugin not added yet whose files nothing has
+   * read, so only its marketplace's own harness is known.
+   */
+  installation:
+    | 'Installed'
+    | 'Not installed'
+    | 'Not supported'
+    | 'Unknown until added'
+    /** That unknown, while a light preview of the plugin's files is read. */
+    | 'Checking…';
 }
 
 /**

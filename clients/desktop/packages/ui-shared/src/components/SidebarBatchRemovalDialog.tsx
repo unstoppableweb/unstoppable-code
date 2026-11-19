@@ -264,7 +264,7 @@ function ConfirmSummary({
                 triggerWrapperClassName="inline-flex h-5 items-center align-middle"
               >
                 <Button
-                  variant="ghost-quiet"
+                  variant="ghost"
                   size="sm"
                   iconOnly
                   aria-label={`About restoring these ${unitLabel.plural}`}

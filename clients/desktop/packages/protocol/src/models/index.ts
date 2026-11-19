@@ -37,7 +37,7 @@ export * from './model-library-access';
 
 /**
  * The concrete providers a projected catalog model can belong to. Mirrors the
- * desktop `AgentProviderType` and the wire `PortalChatAgentProviderType`; kept
+ * desktop `AgentProviderType` and the wire `RemoteControlChatAgentProviderType`; kept
  * as its own local union so this module has no cross-import into the portal
  * contract.
  */
@@ -230,7 +230,7 @@ export interface ModelCatalogOption {
 /**
  * The desktop's projected model catalog: a flat, serializable list of every
  * model + custom Agent the connected desktop can currently offer. Projected on
- * `PortalChatSummaryEntity.availableModels`; consumed by the portal model
+ * `RemoteControlChatSummaryEntity.availableModels`; consumed by the portal model
  * picker.
  *
  * Absence and emptiness carry different meanings, and clients that drop a

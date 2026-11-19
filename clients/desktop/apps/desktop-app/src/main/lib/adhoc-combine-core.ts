@@ -649,10 +649,13 @@ export async function mapCandidatesToDestinationRepos(
 
 export async function listCompatibilitySymlinkReservedWorktreeIds(
   workspaceId: string,
+  options?: { persistRemovalCleanup?: false },
 ): Promise<Set<string>> {
   const rootDir = getWorkspaceWorktreesRootDir(workspaceId);
   const reserved = new Set<string>();
-  const worktrees = await readWorkspaceWorktrees(workspaceId).catch(() => []);
+  const worktrees = await readWorkspaceWorktrees(workspaceId, options).catch(
+    () => [],
+  );
   for (const worktree of worktrees) {
     for (const link of worktree.compatibilitySymlinks ?? []) {
       if (dirname(link.path) === rootDir) {

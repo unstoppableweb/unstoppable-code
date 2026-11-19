@@ -1400,6 +1400,10 @@ export function getOpenCodeRuntimeRootDir(): string {
   return path.join(getCanopyDataDir(), 'opencode-runtime');
 }
 
+export function getAntigravityRuntimeRootDir(): string {
+  return path.join(getCanopyDataDir(), 'antigravity-runtime');
+}
+
 export function getOpenCodeRuntimeStateDir(): string {
   return path.join(getCanopyDataDir(), 'opencode-runtime-state');
 }

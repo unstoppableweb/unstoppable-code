@@ -7,6 +7,7 @@ import {
   turnChangedFileRowsFrom,
   type TurnFileChipViewProps,
 } from '@canopy/ui-shared/components';
+import { RevertIcon } from '@canopy/ui-shared/icons/AppIcons';
 import {
   SpecimenCell,
   SpecimenGrid,
@@ -128,7 +129,7 @@ export function TurnFileChipSpecimen(): JSX.Element {
           </SpecimenCell>
         </SpecimenGrid>
       </SpecimenPanel>
-      <SpecimenPanel title="Summary presentation (one file in a header)">
+      <SpecimenPanel title="Summary presentation" hint="One file in a header">
         <SpecimenCell label="Created" wide>
           <Surface
             variant="inset"
@@ -159,8 +160,11 @@ function FilesSummary({
   actions,
   singleFile,
   changedFiles,
+  width,
   children,
 }: {
+  /** The card's width in px; it fills its cell without one. */
+  readonly width?: number;
   readonly initiallyExpanded?: boolean;
   readonly heading: string;
   readonly detail?: ReactNode;
@@ -171,7 +175,7 @@ function FilesSummary({
 }): JSX.Element {
   const [expanded, setExpanded] = useState(initiallyExpanded);
   return (
-    <div className="w-full">
+    <div className="w-full max-w-full" style={width ? { width } : undefined}>
       <TurnFilesSummaryView
         heading={heading}
         expanded={expanded}
@@ -199,7 +203,90 @@ const OUTPUTS = [
   <Chip key="chart" filename="chart.png" />,
 ];
 
-export function TurnFilesSummarySpecimen(): JSX.Element {
+/** The desktop chat's actions on a turn's files: Undo, then View changes. */
+const TURN_ACTIONS = (
+  <span className="flex shrink-0 items-center gap-2">
+    <Button variant="ghost" size="sm">
+      Undo
+      <RevertIcon aria-hidden="true" />
+    </Button>
+    <Button variant="secondary" size="sm">
+      View changes
+    </Button>
+  </span>
+);
+
+// One action keeps the host's wrapper, as the desktop chat passes it.
+const VIEW_CHANGES = (
+  <span className="flex shrink-0 items-center gap-2">
+    <Button variant="secondary" size="sm">
+      View changes
+    </Button>
+  </span>
+);
+
+const LINE_COUNTS = <span className="text-xs fg-tertiary">+2,689 −685</span>;
+
+// Under 32rem the card gives the heading its own row; the actions take the
+// next one.
+const NARROW_CARD_PX = 330;
+
+function TurnFilesActionsPanel(): JSX.Element {
+  return (
+    <SpecimenPanel
+      title="Actions"
+      hint="At the end of the heading’s row in a wide card: Undo, then View changes. Under the heading in a narrow one, in the same order, with the first label on the heading’s left edge"
+    >
+      <SpecimenCell
+        label="Wide: the actions sit at the end of the heading’s row"
+        wide
+      >
+        <FilesSummary
+          heading="Edited 62 files, 1 other file"
+          detail={LINE_COUNTS}
+          actions={TURN_ACTIONS}
+          changedFiles={CHANGED}
+        />
+      </SpecimenCell>
+      <SpecimenGrid min={NARROW_CARD_PX}>
+        <SpecimenCell label="Narrow, one action">
+          <FilesSummary
+            width={NARROW_CARD_PX}
+            heading="Edited 62 files, 1 other file"
+            detail={LINE_COUNTS}
+            actions={VIEW_CHANGES}
+            changedFiles={CHANGED}
+          />
+        </SpecimenCell>
+        <SpecimenCell label="Narrow: Undo, then View changes, as in a wide card">
+          <FilesSummary
+            width={NARROW_CARD_PX}
+            heading="Edited 62 files, 1 other file"
+            detail={LINE_COUNTS}
+            actions={TURN_ACTIONS}
+            changedFiles={CHANGED}
+          />
+        </SpecimenCell>
+        <SpecimenCell label="Narrow, one changed file">
+          <FilesSummary
+            width={NARROW_CARD_PX}
+            heading="1 file changed"
+            actions={VIEW_CHANGES}
+            singleFile={
+              <Chip
+                filename="src/app.ts"
+                change="updated"
+                presentation="summary"
+              />
+            }
+          />
+        </SpecimenCell>
+      </SpecimenGrid>
+    </SpecimenPanel>
+  );
+}
+
+function TurnFilesStatesPanel(): JSX.Element {
   return (
     <SpecimenPanel title="Files a turn changed or saved">
       <SpecimenCell label="Folded: click the heading to open" wide>
@@ -280,5 +367,14 @@ export function TurnFilesSummarySpecimen(): JSX.Element {
         />
       </SpecimenCell>
     </SpecimenPanel>
+  );
+}
+
+export function TurnFilesSummarySpecimen(): JSX.Element {
+  return (
+    <div className="flex flex-col gap-6">
+      <TurnFilesStatesPanel />
+      <TurnFilesActionsPanel />
+    </div>
   );
 }

@@ -14,16 +14,12 @@ import {
   SkillUpdateNotice,
   SkillUpdateStatus,
   SmoothStreamingProvider,
-  SpinnerStyleProvider,
   StandardPresentationProvider,
   StartChatSummary,
   StartingPointChip,
   StatusLabel,
   StoreBadgeLink,
   StuckAgentNotice,
-  ThinkingSpinner,
-  type SpinnerStyle,
-  type SpinnerTone,
   type StatusLabelSize,
   type StatusLabelTone,
   type StuckAgentCheckResult,
@@ -99,7 +95,7 @@ const SKILL_UPDATE_CASES: readonly {
   },
 ];
 
-function SkillUpdateSection(): JSX.Element {
+export function SkillUpdateSection(): JSX.Element {
   const now = Date.now();
   return (
     <div className="flex flex-col gap-6">
@@ -125,7 +121,10 @@ function SkillUpdateSection(): JSX.Element {
           </div>
         </SpecimenCell>
       </SpecimenPanel>
-      <SpecimenPanel title="SkillUpdateStatus (the detail header’s meta line)">
+      <SpecimenPanel
+        title="SkillUpdateStatus"
+        hint="The detail header’s meta line"
+      >
         <SpecimenGrid min={240}>
           <SpecimenCell label="checking">
             <span className="text-xs fg-secondary">
@@ -160,7 +159,7 @@ function SkillUpdateSection(): JSX.Element {
 
 type CheckOutcome = StuckAgentCheckResult | 'fail';
 
-function StuckAgentSection(): JSX.Element {
+export function StuckAgentSection(): JSX.Element {
   const [outcome, setOutcome] = useState<CheckOutcome>('running');
   const check = (): Promise<StuckAgentCheckResult> =>
     new Promise((resolve, reject) => {
@@ -213,12 +212,15 @@ function StuckAgentSection(): JSX.Element {
 
 // ------------------------------------------------ Starting point + chat
 
-function StartingPointSection(): JSX.Element {
+export function StartingPointSection(): JSX.Element {
   const [selected, setSelected] = useState<string | null>('Web app');
   const toggle = (name: string) => (): void =>
     setSelected((current) => (current === name ? null : name));
   return (
-    <SpecimenPanel title="StartingPointChip (press the chosen one again to clear it)">
+    <SpecimenPanel
+      title="StartingPointChip"
+      hint="Press the chosen one again to clear it"
+    >
       <SpecimenCell
         label="Live: a Blueprint picker, hover for the description"
         wide
@@ -287,7 +289,7 @@ function StartingPointSection(): JSX.Element {
   );
 }
 
-function StartChatSummarySection(): JSX.Element {
+export function StartChatSummarySection(): JSX.Element {
   return (
     <SpecimenPanel title="StartChatSummary">
       <SpecimenCell label="steps and an action" wide>
@@ -355,9 +357,12 @@ const LABEL_SIZES: readonly StatusLabelSize[] = [
   's',
 ];
 
-function StatusLabelSection(): JSX.Element {
+export function StatusLabelSection(): JSX.Element {
   return (
-    <SpecimenPanel title="StatusLabel (a row’s status, in its state’s ink)">
+    <SpecimenPanel
+      title="StatusLabel"
+      hint="A row’s status, in its state’s ink"
+    >
       <SpecimenGrid min={200}>
         {LABEL_TONES.map((tone) => (
           <SpecimenCell key={tone} label={tone}>
@@ -387,10 +392,13 @@ function StatusLabelSection(): JSX.Element {
   );
 }
 
-function StoreBadgeSection(): JSX.Element {
+export function StoreBadgeSection(): JSX.Element {
   const [last, setLast] = useState('nothing pressed yet');
   return (
-    <SpecimenPanel title="StoreBadgeLink (the official artwork, never recolored)">
+    <SpecimenPanel
+      title="StoreBadgeLink"
+      hint="The official artwork, never recolored"
+    >
       <SpecimenCell label="callback activation (desktop): Live" wide>
         <StoreBadgeLink
           link={{
@@ -440,7 +448,7 @@ function StoreBadgeSection(): JSX.Element {
 
 // ------------------------------------------------------------ Slash menu
 
-function SlashCommandSection(): JSX.Element {
+export function SlashCommandSection(): JSX.Element {
   return (
     <SpecimenPanel title="Slash command primitives">
       <SpecimenGrid min={260}>
@@ -503,44 +511,6 @@ function SlashCommandSection(): JSX.Element {
 
 // ---------------------------------------------------------- Presentation
 
-const SPINNER_TONES: readonly SpinnerTone[] = [
-  'inherit',
-  'primary',
-  'secondary',
-  'tertiary',
-  'accent',
-  'warning',
-  'destructive',
-];
-
-function SpinnerStyleSection(): JSX.Element {
-  const styles: readonly SpinnerStyle[] = ['dots', 'comet'];
-  return (
-    <SpecimenPanel title="SpinnerStyleProvider (the host chooses once; every spinner follows)">
-      {styles.map((style) => (
-        <SpecimenCell
-          key={style}
-          label={`value="${style}": LoadingSpinner by tone, then ThinkingSpinner`}
-          wide
-        >
-          <SpinnerStyleProvider value={style}>
-            {SPINNER_TONES.map((tone) => (
-              <span
-                key={tone}
-                className="inline-flex items-center gap-1 text-xs fg-secondary"
-              >
-                <LoadingSpinner tone={tone} sizePx={14} decorative />
-                {tone}
-              </span>
-            ))}
-            <ThinkingSpinner tone="secondary" />
-          </SpinnerStyleProvider>
-        </SpecimenCell>
-      ))}
-    </SpecimenPanel>
-  );
-}
-
 const STREAM_TEXT =
   'Smooth streaming reveals **whole words** on a steady beat, so a reply never\njumps. Half-typed markup such as `code` stays hidden until it closes.';
 
@@ -589,10 +559,13 @@ function StreamingReply({ run }: { readonly run: number }): JSX.Element {
   );
 }
 
-function SmoothStreamingSection(): JSX.Element {
+export function SmoothStreamingSection(): JSX.Element {
   const [run, setRun] = useState(0);
   return (
-    <SpecimenPanel title="SmoothStreamingProvider (a streaming reply, with and without)">
+    <SpecimenPanel
+      title="SmoothStreamingProvider"
+      hint="A streaming reply, with and without"
+    >
       <SpecimenCell label="Live: replay both streams" wide>
         <Button size="compact" onClick={(): void => setRun((n) => n + 1)}>
           Replay
@@ -615,10 +588,13 @@ function SmoothStreamingSection(): JSX.Element {
   );
 }
 
-function StandardPresentationSection(): JSX.Element {
+export function StandardPresentationSection(): JSX.Element {
   const [run, setRun] = useState(0);
   return (
-    <SpecimenPanel title="StandardPresentationProvider (desktop and web chats: comet spinner, smooth streaming, PR hover cards, compact queue)">
+    <SpecimenPanel
+      title="StandardPresentationProvider"
+      hint="Desktop and web chats: smooth streaming, PR hover cards, compact queue"
+    >
       <SpecimenCell label="inside the provider" wide>
         <StandardPresentationProvider>
           <span className="inline-flex items-center gap-2 text-xs fg-secondary">
@@ -628,11 +604,7 @@ function StandardPresentationSection(): JSX.Element {
           <StreamingReply run={run} />
         </StandardPresentationProvider>
       </SpecimenCell>
-      <SpecimenCell label="outside it: today’s dot spinner" wide>
-        <span className="inline-flex items-center gap-2 text-xs fg-secondary">
-          <LoadingSpinner tone="secondary" sizePx={14} decorative />
-          Working…
-        </span>
+      <SpecimenCell label="outside it" wide>
         <Badge muted>unchanged defaults</Badge>
         <Button size="compact" onClick={(): void => setRun((n) => n + 1)}>
           Replay stream
@@ -642,43 +614,31 @@ function StandardPresentationSection(): JSX.Element {
   );
 }
 
-export function StatusPartsSpecimen(): JSX.Element {
+export function WorkflowSourceSection(): JSX.Element {
   return (
-    <div className="flex flex-col gap-6">
-      <SkillUpdateSection />
-      <StuckAgentSection />
-      <StartingPointSection />
-      <StartChatSummarySection />
-      <SpecimenPanel title="Workflow source metadata">
-        <SpecimenGrid min={160}>
-          {['Bundled', 'Custom', 'Project', 'Shared', 'Curated', 'Local'].map(
-            (label) => (
-              <SpecimenCell key={label} label={label}>
-                <PipelineSourceLabel>{label}</PipelineSourceLabel>
-              </SpecimenCell>
-            ),
-          )}
-          <SpecimenCell label="Shared by you, organization">
-            <PipelineSourceLabel audience="organization">
-              Custom
-            </PipelineSourceLabel>
-          </SpecimenCell>
-          <SpecimenCell label="Shared by you, public link">
-            <PipelineSourceLabel audience="private">Custom</PipelineSourceLabel>
-          </SpecimenCell>
-          <SpecimenCell label="Long provenance" wide>
-            <PipelineSourceLabel>
-              Project workflow from the release automation collection
-            </PipelineSourceLabel>
-          </SpecimenCell>
-        </SpecimenGrid>
-      </SpecimenPanel>
-      <StatusLabelSection />
-      <StoreBadgeSection />
-      <SlashCommandSection />
-      <SpinnerStyleSection />
-      <SmoothStreamingSection />
-      <StandardPresentationSection />
-    </div>
+    <SpecimenPanel title="Workflow source metadata">
+      <SpecimenGrid min={160}>
+        {['Bundled', 'Custom', 'Project', 'Shared', 'Curated', 'Local'].map(
+          (label) => (
+            <SpecimenCell key={label} label={label}>
+              <PipelineSourceLabel>{label}</PipelineSourceLabel>
+            </SpecimenCell>
+          ),
+        )}
+        <SpecimenCell label="Shared by you, organization">
+          <PipelineSourceLabel audience="organization">
+            Custom
+          </PipelineSourceLabel>
+        </SpecimenCell>
+        <SpecimenCell label="Shared by you, public link">
+          <PipelineSourceLabel audience="private">Custom</PipelineSourceLabel>
+        </SpecimenCell>
+        <SpecimenCell label="Long provenance" wide>
+          <PipelineSourceLabel>
+            Project workflow from the release automation collection
+          </PipelineSourceLabel>
+        </SpecimenCell>
+      </SpecimenGrid>
+    </SpecimenPanel>
   );
 }

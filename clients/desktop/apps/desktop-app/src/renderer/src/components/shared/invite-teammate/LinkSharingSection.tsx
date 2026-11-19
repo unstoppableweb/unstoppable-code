@@ -313,7 +313,7 @@ export function LinkSharingSection({
         {hint && policyLink && (
           <Button
             className="self-start"
-            variant="outline"
+            variant="secondary"
             size="compact"
             data-testid={`${TEST_ID}-manage-policy`}
             onClick={(): void => {

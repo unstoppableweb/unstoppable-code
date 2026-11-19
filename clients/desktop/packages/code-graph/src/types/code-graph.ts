@@ -344,6 +344,12 @@ export interface CodeGraphBuildResult {
   filesSkipped: number;
   filesRemoved: number;
   parseFailures: number;
+  /**
+   * Files that exist but could not be read or stat'ed (not missing): their
+   * prior facts were kept and the build's freshness is not content-verified.
+   * A count only, never paths; present only when non-zero.
+   */
+  filesUnreadable?: number;
   symbolCount: number;
   edgeCount: number;
   durationMs: number;

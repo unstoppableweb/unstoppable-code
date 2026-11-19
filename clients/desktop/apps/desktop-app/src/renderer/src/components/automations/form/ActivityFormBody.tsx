@@ -89,6 +89,7 @@ import {
   DateField,
   Disclosure,
   ErrorBanner,
+  FieldButton,
   FORM_FIELD_LABEL_CLASS,
   FormField,
   type FormFieldControlProps,
@@ -262,7 +263,6 @@ function WorkspaceActionModeControl({
         }))}
         onChange={onChange}
         label="Project action type"
-        shape="capsule"
         width="content"
         disabled={disabled}
         dataTestId="automations-form-workspace-action-mode"
@@ -306,7 +306,6 @@ function InterfaceModeControl({
       }))}
       onChange={onChange}
       label="Claude chat mode"
-      shape="capsule"
       width="content"
       dataTestId="automations-form-interface-mode"
     />
@@ -1190,22 +1189,17 @@ export function ActivityFormBody({
                         spellCheck={false}
                         data-testid="automations-form-cron"
                         trailing={
-                          <Tooltip label="Generate cron expression">
-                            <Button
-                              variant="ghost"
-                              size="compact"
-                              iconOnly
-                              aria-label="Generate cron expression"
-                              disabled={cronGenerating}
-                              onClick={(): void => {
-                                setCronAssistantOpen((open) => !open);
-                                setCronGenerationWarning(null);
-                              }}
-                              data-testid="automations-form-cron-assistant"
-                            >
-                              <AppAdvisorIcon size="sm" />
-                            </Button>
-                          </Tooltip>
+                          <FieldButton
+                            tone="ghost"
+                            aria-label="Generate cron expression"
+                            disabled={cronGenerating}
+                            onClick={(): void => {
+                              setCronAssistantOpen((open) => !open);
+                              setCronGenerationWarning(null);
+                            }}
+                            data-testid="automations-form-cron-assistant"
+                            icon={<AppAdvisorIcon size="sm" />}
+                          />
                         }
                       />
                     )}
@@ -1970,7 +1964,6 @@ function SegmentedControl<T extends string>({
         }))}
         onChange={onChange}
         label={label}
-        shape="capsule"
         width="content"
         disabled={disabled}
         dataTestId={testId}

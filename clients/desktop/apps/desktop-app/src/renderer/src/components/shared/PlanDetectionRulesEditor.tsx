@@ -155,7 +155,6 @@ export function PlanDetectionRulesEditor({
                 label="Rule type"
                 value={kind}
                 width="content"
-                shape="capsule"
                 dataTestId={`${dataTestIdPrefix}-kind`}
                 options={[
                   { value: 'include', label: 'Include' },

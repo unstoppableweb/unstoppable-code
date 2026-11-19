@@ -77,6 +77,7 @@ jest.mock('../../lib/main-process-logging', () => ({
 
 import { CUSTOM_SOURCE_ID, getSkillDir } from '../../skills/paths';
 import * as skillService from '../../skills/skill-service';
+import { CloudCopyConsentStore } from '../../skills/cloud-copy-consents';
 import { removeSkill, saveCustomSkill } from '../../skills/skill-service';
 import { runSkillMutation } from '../../skills/skill-mutations';
 import * as skillContext from '../../skills/skill-install-context';
@@ -298,6 +299,149 @@ describe('desktop skill catalog host (CAN-4124)', () => {
       localContentHash: received,
     });
     expect(byName.get('b')?.cloudShare).toBeUndefined();
+  });
+
+  describe('a skill installed from a source, linked to its cloud copy (CAN-6943)', () => {
+    const RAW_X = '---\nname: x\ndescription: X\n---\n';
+    const HASH_X = createHash('sha256').update(RAW_X, 'utf8').digest('hex');
+    const LOCAL_ID = 'github:o:r/x';
+    const LINK = {
+      accountId: 'acct-1',
+      remoteId: 'installed-copy',
+      contentHash: HASH_X,
+      shareScope: 'private' as const,
+      sharedAt: '2026-11-10T00:00:00.000Z',
+    };
+    const consents = (): CloudCopyConsentStore =>
+      CloudCopyConsentStore.inSkillsRoot(skillsDir());
+    // One dispatcher per test: its operation kinds register once.
+    let dispatcher: ReturnType<typeof compose>;
+    beforeEach(() => {
+      dispatcher = compose();
+    });
+    /** As a publish leaves it: the link, and a consent naming the folder. */
+    const publishCopy = async (): Promise<void> => {
+      skillService.writeSkillRemoteMetadata(LOCAL_ID, LINK);
+      consents().set(LOCAL_ID, {
+        accountId: 'acct-1',
+        remoteId: 'installed-copy',
+        keepInStep: false,
+        consentedAt: '2026-11-10T00:00:00.000Z',
+        selectedOptionalResourceIds: [],
+        files: [],
+        withheld: [],
+        audience: 'private',
+        sourceFingerprint:
+          await skillService.fingerprintInstalledSkillForCloudCopy(LOCAL_ID),
+      });
+    };
+    const shareOf = async (): Promise<unknown> =>
+      (
+        await dispatcher.query(
+          'core.catalog.skill.list',
+          {},
+          { caller: reader },
+        )
+      ).skills.find((row) => row.skillName === 'x')?.cloudShare;
+    const linkFile = (): Record<string, unknown> => {
+      const parsed: unknown = JSON.parse(
+        readFileSync(join(skillsDir(), '.share-links.json'), 'utf8'),
+      );
+      return typeof parsed === 'object' && parsed !== null ? { ...parsed } : {};
+    };
+    const remove = (
+      sourceId: string,
+      skillName: string,
+      key: string,
+    ): Promise<unknown> =>
+      dispatcher.instruction(
+        'core.catalog.skill.remove',
+        { skill: { sourceId, skillName }, _meta: keyed(key) },
+        { caller: writer, metadata: keyed(key) },
+      );
+
+    it('hashes its own SKILL.md, which readRawSkill still refuses, and reads in step while its folder is the consented one', async () => {
+      writeInstalled();
+      // Every other caller of readRawSkill still reads local-folder installs only.
+      await expect(skillService.readRawSkill(LOCAL_ID)).rejects.toThrow(
+        'Invalid skill id.',
+      );
+      await expect(
+        skillService.readInstalledSkillForCloudCopy(LOCAL_ID),
+      ).resolves.toBe(RAW_X);
+      await publishCopy();
+      // In step, so the picker doesn't offer "Update in cloud".
+      await expect(shareOf()).resolves.toEqual({
+        role: 'author',
+        remoteId: 'installed-copy',
+        linkedContentHash: HASH_X,
+        localContentHash: HASH_X,
+      });
+    });
+
+    it('reads out of step when only a supporting file changes, or with no consent naming its folder', async () => {
+      writeInstalled();
+      const dir = getSkillDir('github:o:r', 'x');
+      writeFileSync(join(dir, 'lint.sh'), 'echo one\n');
+      await publishCopy();
+      await expect(shareOf()).resolves.toMatchObject({
+        localContentHash: HASH_X,
+      });
+      // A source update that leaves SKILL.md alone still offers the update.
+      writeFileSync(join(dir, 'lint.sh'), 'echo two\n');
+      await expect(shareOf()).resolves.toMatchObject({
+        linkedContentHash: HASH_X,
+        localContentHash: null,
+      });
+      // A linked copy without that consent never reads as in step either.
+      writeFileSync(join(skillsDir(), '.cloud-copy-consents.json'), '{}');
+      await expect(shareOf()).resolves.toMatchObject({
+        localContentHash: null,
+      });
+    });
+
+    it('keeps its link and consent through a real uninstall, so a reinstall finds the same copy', async () => {
+      writeInstalled();
+      await publishCopy();
+      const consent = consents().get(LOCAL_ID);
+      await remove('github:o:r', 'x', 'k-installed');
+      expect(() => statSync(getSkillDir('github:o:r', 'x'))).toThrow();
+      // Nothing in the cloud is touched; the link and consent stay as they were.
+      expect(linkFile()[LOCAL_ID]).toMatchObject({
+        remoteId: 'installed-copy',
+      });
+      expect(consents().get(LOCAL_ID)).toEqual(consent);
+      // Reinstalled with the same files: linked to the same copy, in step.
+      writeInstalled();
+      await expect(shareOf()).resolves.toEqual({
+        role: 'author',
+        remoteId: 'installed-copy',
+        linkedContentHash: HASH_X,
+        localContentHash: HASH_X,
+      });
+    });
+
+    it('drops the link on uninstall as before for a custom skill, and for one with no consent naming that copy', async () => {
+      writeInstalled();
+      skillService.writeSkillRemoteMetadata(LOCAL_ID, LINK);
+      await remove('github:o:r', 'x', 'k-unconsented');
+      expect(linkFile()[LOCAL_ID]).toBeUndefined();
+
+      await saveCustom('c');
+      skillService.writeSkillRemoteMetadata('custom:app/c', LINK);
+      consents().set('custom:app/c', {
+        accountId: 'acct-1',
+        remoteId: 'installed-copy',
+        keepInStep: true,
+        consentedAt: '2026-11-10T00:00:00.000Z',
+        selectedOptionalResourceIds: [],
+        files: [],
+        withheld: [],
+        audience: 'private',
+      });
+      await remove('custom:app', 'c', 'k-custom');
+      expect(linkFile()['custom:app/c']).toBeUndefined();
+    });
   });
 
   it('still lists skills when the install receipts cannot be read, without recipient links (CAN-6176)', async () => {

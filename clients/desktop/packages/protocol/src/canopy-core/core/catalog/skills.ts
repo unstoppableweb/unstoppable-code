@@ -62,7 +62,12 @@ export const CatalogSkillCloudShareSchema = z.strictObject({
   remoteId: IdSchema,
   /** The SKILL.md hash the link recorded; null when it recorded none. */
   linkedContentHash: SkillContentHashSchema.nullable(),
-  /** The local SKILL.md hash now; null when it could not be read. */
+  /**
+   * The local SKILL.md hash now; null when it could not be read. For a skill
+   * installed from GitHub, a URL or a local folder (CAN-6943), also null when
+   * any file in its folder changed since its copy was made, so it never reads
+   * as in step.
+   */
   localContentHash: SkillContentHashSchema.nullable(),
 });
 export type CatalogSkillCloudShare = z.output<

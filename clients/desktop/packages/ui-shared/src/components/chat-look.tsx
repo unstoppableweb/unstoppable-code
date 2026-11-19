@@ -138,7 +138,7 @@ export function useStepBadges(): boolean {
  * iconOnly>`; this is the same recipe for a control that must stay a plain
  * `<button>`.
  */
-export const CLEAN_ICON_BUTTON_VARIANT = 'ghost-quiet';
+export const CLEAN_ICON_BUTTON_VARIANT = 'ghost';
 export const CLEAN_FOOTER_ICON_BUTTON_CLASS = buttonClassName({
   variant: CLEAN_ICON_BUTTON_VARIANT,
   size: 'sm',

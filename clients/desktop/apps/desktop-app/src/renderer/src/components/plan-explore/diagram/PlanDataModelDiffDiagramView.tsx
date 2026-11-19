@@ -956,7 +956,6 @@ export const PlanDataModelDiffDiagram = forwardRef<
         >
           <SegmentedControl
             label="Diagram view"
-            shape="capsule"
             width="content"
             value={primaryView}
             onChange={setPrimaryView}
@@ -979,7 +978,6 @@ export const PlanDataModelDiffDiagram = forwardRef<
           >
             <SegmentedControl
               label="Diff layout"
-              shape="capsule"
               width="content"
               value={presentation}
               onChange={setPresentation}

@@ -55,6 +55,7 @@
     "./auto-delete-attention": "./src/auto-delete-attention.tsx",
     "./worktree-discard": "./src/worktree-discard/index.ts",
     "./managed-delegation": "./src/managed-delegation/index.ts",
+    "./managed-delegation-progress": "./src/managed-delegation-progress.ts",
     "./worktree-discard/presentation": "./src/worktree-discard/presentation.ts",
     "./local-memory": "./src/local-memory/index.ts",
     "./cost": "./src/cost/index.ts",

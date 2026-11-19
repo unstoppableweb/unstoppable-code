@@ -220,7 +220,6 @@ function ChatVisualBlockContent({
           // The user opened the panel to look at these visuals, so they take a
           // live frame before visuals in the transcript.
           prioritized={variant === 'panel'}
-          frameUrl={host.frameUrl}
           remoteAssets={remoteAssets}
           testIds={CHAT_VISUAL_TEST_IDS}
         />

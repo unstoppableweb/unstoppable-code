@@ -366,8 +366,20 @@ export function TurnFilesSummaryView({
             />
           ) : null}
           {actions && (
+            // In a narrow card the title row takes the whole line and the
+            // actions wrap under it. There they start on the title's line
+            // (8px toggle inset + 36px tile + 12px gap = 56px), not at the
+            // right edge, where they lined up with nothing. A wide card
+            // keeps them at the end of the title row.
+            //
+            // The actions keep the hosts' order at every width (the
+            // alternative first, the main action last: Undo, View changes),
+            // so Tab always follows what is drawn. Wrapped under the title, a
+            // pair starts with the ghost alternative, whose label sits 10px
+            // inside its box: the pair moves left by that much so the label,
+            // not the invisible box, is on the title's line.
             <span
-              className={`relative z-10 ml-auto flex shrink-0 ${singleOutput ? 'col-start-3 row-start-1' : 'pb-2 @min-[32rem]/turn-files:pb-0'}`}
+              className={`relative z-10 flex shrink-0 ${singleOutput ? 'col-start-3 row-start-1 ml-auto' : 'pb-2 pl-14 @max-[32rem]/turn-files:[&>*:has(>:nth-child(2))]:-ml-2.5 @min-[32rem]/turn-files:ml-auto @min-[32rem]/turn-files:pb-0 @min-[32rem]/turn-files:pl-0'}`}
             >
               {actions}
             </span>

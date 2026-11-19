@@ -5,7 +5,7 @@ import type {
   TranscriptBlocksReference,
   TodoItem,
 } from './types';
-import type { TurnOutcomeCounts } from '@canopy/protocol/portal';
+import type { TurnOutcomeCounts } from '@canopy/protocol/remote-control/shell';
 import type { TurnFileRecord as TranscriptTurnFile } from '@canopy/protocol/turn-files';
 
 export const TRANSCRIPT_PAGE_SIZE = 500;

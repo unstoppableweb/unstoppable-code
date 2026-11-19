@@ -1,4 +1,4 @@
-import { PORTAL_CATALOG_RESULT_MAX_BYTES } from '@canopy/protocol/portal';
+import { REMOTE_CONTROL_CATALOG_RESULT_MAX_BYTES } from '@canopy/protocol/remote-control/shell';
 
 /** Serialized UTF-8 byte length of a JSON result, as the wire would carry it. */
 export function resultByteLength(result: unknown): number {
@@ -35,7 +35,7 @@ export function fitListResult<TItem, TResult>(
   truncated = false,
 ): TResult {
   const complete = build(items, truncated);
-  if (resultByteLength(complete) <= PORTAL_CATALOG_RESULT_MAX_BYTES) {
+  if (resultByteLength(complete) <= REMOTE_CONTROL_CATALOG_RESULT_MAX_BYTES) {
     return complete;
   }
   let low = 0;
@@ -43,7 +43,9 @@ export function fitListResult<TItem, TResult>(
   while (low < high) {
     const mid = Math.ceil((low + high) / 2);
     const candidate = build(items.slice(0, mid), true);
-    if (resultByteLength(candidate) <= PORTAL_CATALOG_RESULT_MAX_BYTES) {
+    if (
+      resultByteLength(candidate) <= REMOTE_CONTROL_CATALOG_RESULT_MAX_BYTES
+    ) {
       low = mid;
     } else {
       high = mid - 1;
@@ -69,7 +71,7 @@ export function fitReadResult<TResult>(
   let current = result;
   let targetBytes = Buffer.byteLength(getBody(result), 'utf8');
   while (
-    resultByteLength(current) > PORTAL_CATALOG_RESULT_MAX_BYTES &&
+    resultByteLength(current) > REMOTE_CONTROL_CATALOG_RESULT_MAX_BYTES &&
     targetBytes > 0
   ) {
     targetBytes = Math.floor(targetBytes / 2);
@@ -79,7 +81,7 @@ export function fitReadResult<TResult>(
       true,
     );
   }
-  if (resultByteLength(current) > PORTAL_CATALOG_RESULT_MAX_BYTES) {
+  if (resultByteLength(current) > REMOTE_CONTROL_CATALOG_RESULT_MAX_BYTES) {
     // Metadata alone is over budget, so no body cut can rescue it. Throw so the
     // adapter fails the command explicitly instead of emitting an oversized
     // event the transport would silently drop.

@@ -404,7 +404,7 @@ function cloneState(state: ExecutionState): ExecutionState {
   return structuredClone(state);
 }
 
-function recordPortalCommandReceipt(
+function recordRemoteControlCommandReceipt(
   state: ExecutionState,
   commandId: string | undefined,
 ): void {
@@ -1991,7 +1991,7 @@ function executeState(
       if (initiationSource !== undefined) {
         currentState.initiation_source = initiationSource;
       }
-      recordPortalCommandReceipt(currentState, portalCommandId);
+      recordRemoteControlCommandReceipt(currentState, portalCommandId);
     });
     // The resume is saved: agents paused on the checkpoints it consumed run
     // again, so the host stops offering them as Ledger owners.
@@ -3325,7 +3325,7 @@ export async function resumePipeline(
     recoveredState.child_pipeline_authorizations =
       options.childPipelineAuthorizations;
   }
-  recordPortalCommandReceipt(recoveredState, options.portalCommandId);
+  recordRemoteControlCommandReceipt(recoveredState, options.portalCommandId);
   revokeReplayedSurvival(recoveredState);
   await saveExecutionState(recoveredState, options.runtime.executionsDir, {
     cancellation: 'clear_before',
@@ -3435,7 +3435,7 @@ export async function retryPipelineExecution(
   const pipelinePackageOverlay = await loadPipelinePackageExecutionOverlay(
     retryState.pipeline_package_snapshot,
   );
-  recordPortalCommandReceipt(retryState, options.portalCommandId);
+  recordRemoteControlCommandReceipt(retryState, options.portalCommandId);
   if (options.executionContext !== undefined)
     retryState.execution_context = options.executionContext;
   if (options.initiator !== undefined) retryState.initiator = options.initiator;

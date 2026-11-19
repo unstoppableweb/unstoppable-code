@@ -221,7 +221,6 @@ function OverviewSection({
           }))}
           onChange={onTypeFilterChange}
           label="Library type filter"
-          shape="capsule"
           width="content"
         />
         <SearchField

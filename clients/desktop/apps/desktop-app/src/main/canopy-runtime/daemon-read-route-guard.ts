@@ -67,6 +67,17 @@ const PROTOCOL_PENDING: ReadRouteDisposition = {
   until: 'CAN-4729',
   reason: 'Stays in-process until CAN-4729 decides its daemon route.',
 };
+/**
+ * CAN-4729's decision: Electron main's own Git spawns, Browse and the
+ * installer resolve Git from this detection, so a daemon route would add a
+ * round trip without retiring main's detection. Reconsider when main no
+ * longer runs Git (CAN-6803).
+ */
+const EXECUTABLE_RETAINED: ReadRouteDisposition = {
+  kind: 'blocked',
+  until: 'CAN-4729',
+  reason: 'Stays in-process: main resolves Git for its own spawns from it.',
+};
 const CHANGED_FILES_PENDING: ReadRouteDisposition = {
   kind: 'blocked',
   until: 'CAN-4103',
@@ -158,7 +169,7 @@ export const READ_ROUTE_PREREQUISITES: Readonly<
   'git.branch.list': ELIGIBLE,
   'git.remote.get': REMOTE_RETAINED,
   'git.worktree.health.get': PROTOCOL_PENDING,
-  'git.executable.get': PROTOCOL_PENDING,
+  'git.executable.get': EXECUTABLE_RETAINED,
   'git.status.get': CHANGED_FILES_PENDING,
   'git.diff.get': CHANGED_FILES_PENDING,
 };

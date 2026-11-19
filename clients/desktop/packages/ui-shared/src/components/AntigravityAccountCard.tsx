@@ -1,7 +1,7 @@
 'use client';
 
 import type { JSX } from 'react';
-import type { AntigravityAccountSnapshot } from '@canopy/protocol/portal';
+import type { AntigravityAccountSnapshot } from '@canopy/protocol/remote-control/shell';
 import { UsageGroup, UsageRow, UsageRowList } from './UsageGroup';
 
 interface AntigravityAccountCardProps {

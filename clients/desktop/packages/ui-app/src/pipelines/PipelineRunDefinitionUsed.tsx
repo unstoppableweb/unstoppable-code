@@ -1,7 +1,7 @@
 'use client';
 
 import type { JSX } from 'react';
-import type { PortalPipelineDefinitionViewModel } from '@canopy/protocol/portal';
+import type { RemoteControlPipelineDefinitionViewModel } from '@canopy/protocol/remote-control/shell';
 import { PipelineReadDetail } from './PipelineReadDetail';
 import { Surface } from '@canopy/ui-shared/components';
 
@@ -10,7 +10,7 @@ export interface PipelineRunDefinitionUsedProps {
    * The definition the run started with, from its recorded snapshot. `null`
    * when the run recorded none.
    */
-  definition: PortalPipelineDefinitionViewModel | null;
+  definition: RemoteControlPipelineDefinitionViewModel | null;
 }
 
 /**

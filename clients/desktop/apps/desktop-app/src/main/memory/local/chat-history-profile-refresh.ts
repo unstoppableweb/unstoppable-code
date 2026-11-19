@@ -21,6 +21,7 @@ import {
 import { isLocalMemoryConsolidationRunning } from './consolidation-run-tracker';
 import { recordConsolidationRun } from './consolidation-state';
 import { resolveLocalMemoryRunModel } from './helper-model';
+import { isHelperNoBillingSourceError } from '../../agents/helper-no-billing-source';
 
 export type ChatHistoryProfileRefreshResult =
   | { status: 'updated' | 'unchanged' | 'no-titles' | 'disabled' | 'no-facts' }
@@ -104,6 +105,11 @@ async function summarizeAndSave(
       helperModel,
     );
   } catch (error) {
+    // Refused before any spawn: the provider is signed out with no billing
+    // source (CAN-7062). Nothing is saved, so a later scan retries.
+    if (isHelperNoBillingSourceError(error)) {
+      return skipForUnavailableModel(scopeDir, error.message);
+    }
     const reason = failureReason(error);
     process.emitWarning(reason, { code: 'LOCAL_MEMORY_CHAT_PROFILE_FAILED' });
     return { status: 'failed', reason };

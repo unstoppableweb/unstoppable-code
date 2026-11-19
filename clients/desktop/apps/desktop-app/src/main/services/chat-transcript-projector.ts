@@ -4,12 +4,12 @@
  * their canonical message ids and turn lifecycle cannot drift.
  */
 export {
-  PORTAL_CHAT_SEED_MESSAGE_LIMIT,
-  PORTAL_CHAT_TRANSCRIPT_MESSAGE_LIMIT,
-  limitPortalChatTranscript,
-  limitPortalChatTranscriptForSeedWithMetadata,
-  type PortalChatTranscriptSeed,
-  persistedMessageToPortalMessage,
+  REMOTE_CONTROL_CHAT_SEED_MESSAGE_LIMIT,
+  REMOTE_CONTROL_CHAT_TRANSCRIPT_MESSAGE_LIMIT,
+  limitRemoteControlChatTranscript,
+  limitRemoteControlChatTranscriptForSeedWithMetadata,
+  type RemoteControlChatTranscriptSeed,
+  persistedMessageToRemoteControlMessage,
   projectPersistedChatTranscript,
-} from '@canopy/desktop-shared/portal/persisted-chat-projection';
-export { isTerminalRuntimeChatEvent } from '@canopy/desktop-shared/portal/runtime-chat-projection';
+} from '@canopy/desktop-shared/remote-control/persisted-chat-projection';
+export { isTerminalRuntimeChatEvent } from '@canopy/desktop-shared/remote-control/runtime-chat-projection';

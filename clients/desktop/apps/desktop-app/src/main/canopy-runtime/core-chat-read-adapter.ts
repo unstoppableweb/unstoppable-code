@@ -348,8 +348,8 @@ export function createCoreChatReadAdapter(
           ? { chatId: chatScope.chatId, ...params.identity }
           : undefined;
         let receipt;
-        if (identity && port.getPortalSendReceipt) {
-          const probe = await port.getPortalSendReceipt({
+        if (identity && port.getRemoteControlSendReceipt) {
+          const probe = await port.getRemoteControlSendReceipt({
             projectId: chatScope.projectId,
             worktreeId: chatScope.worktreeId,
             commandId: params.commandId,

@@ -248,33 +248,91 @@ export function customizeWorksWithRows(
     Pick<UnifiedPluginEntry, 'state'>,
 ): PluginWorksWithRow[] {
   const rows = customizeEntryHarnessRows(entry);
-  if (rows !== undefined)
+  if (rows !== undefined) {
+    // An installed copy in the group (another marketplace's listing) fills
+    // the harnesses it serves.
+    const installedRows = (entry.marketplaceListings ?? [])
+      .filter(
+        (listing) =>
+          listing.state === 'installed' || listing.state === 'needs-auth',
+      )
+      .flatMap((listing) => listing.harnessRows ?? []);
     return rows.map((row) => ({
       id: row.id,
       name: row.name,
-      installation: row.installation,
+      installation:
+        row.installation !== 'Installed' &&
+        installedRows.some(
+          (theirs) =>
+            theirs.id === row.id && theirs.installation === 'Installed',
+        )
+          ? 'Installed'
+          : row.installation,
     }));
+  }
   const supported = new Set(customizeWorksWithHarnesses(entry));
+  // Not added, and no copy's files read: only the marketplace's own
+  // harness is known, so the others are unknown rather than unsupported.
+  // Per harness: compatibility may cover only some of them.
+  const listings = [entry, ...(entry.marketplaceListings ?? [])];
+  const copyRead =
+    entry.state !== 'available' ||
+    listings.some(
+      (listing) =>
+        listing.state === 'installed' || listing.state === 'needs-auth',
+    );
+  // A harness an installed copy in the group serves reads Installed.
+  const installedVia = new Set(
+    listings
+      .filter(
+        (listing) =>
+          listing !== entry &&
+          (listing.state === 'installed' || listing.state === 'needs-auth'),
+      )
+      .flatMap((listing) =>
+        customizeWorksWithHarnesses({ ...listing, marketplaceListings: [] }),
+      ),
+  );
+  const verified = (harness: CustomizeDiscoveryHarness): boolean =>
+    copyRead ||
+    listings.some(
+      (listing) =>
+        listing.harnessCompatibility?.harnesses[harness] !== undefined,
+    );
   return CUSTOMIZE_DISCOVERY_HARNESS_OPTIONS.map(({ value }) => ({
     id: value,
     name: CHIP_NAMES[value],
     installation: !supported.has(value)
-      ? 'Not supported'
-      : entry.state === 'available'
-        ? 'Not installed'
-        : 'Installed',
+      ? verified(value)
+        ? 'Not supported'
+        : 'Unknown until added'
+      : entry.state !== 'available' || installedVia.has(value)
+        ? 'Installed'
+        : 'Not installed',
   }));
 }
 
 /** The Works with table for an entry, as its tile's chips read it. */
 export function CustomizeEntryWorksWith({
   entry,
+  checking = false,
 }: {
   readonly entry: Parameters<typeof customizeWorksWithRows>[0];
+  /** A preview of the plugin's files is being read: unknown rows say so. */
+  readonly checking?: boolean;
 }): JSX.Element | null {
+  const rows = customizeWorksWithRows(entry);
   return (
     <PluginWorksWith
-      rows={customizeWorksWithRows(entry)}
+      rows={
+        checking
+          ? rows.map((row) =>
+              row.installation === 'Unknown until added'
+                ? { ...row, installation: 'Checking…' }
+                : row,
+            )
+          : rows
+      }
       caption="Installation by harness"
     />
   );

@@ -23,11 +23,11 @@ import {
 } from 'react';
 import {
   readTurnTimerAutoRoutedModelLabel,
-  type PortalAskUserQuestionAnswer,
-  type PortalAskUserQuestionState,
-  type PortalChatPart,
-  type PortalChatToolFamily,
-} from '@canopy/protocol/portal';
+  type RemoteControlAskUserQuestionAnswer,
+  type RemoteControlAskUserQuestionState,
+  type RemoteControlChatPart,
+  type RemoteControlChatToolFamily,
+} from '@canopy/protocol/remote-control/shell';
 import type { TranscriptContentField } from '@canopy/protocol/canopy-core/core';
 import {
   agentSecretToolRowLabel,
@@ -57,7 +57,7 @@ import {
   isAskUserQuestionToolName,
   markdownOptions,
   parseAskUserQuestionTexts,
-  portalAskUserQuestionRecordState,
+  remoteControlAskUserQuestionRecordState,
   readToolCallResult,
   interruptedToolCallResult,
   ToolCallResultSection,
@@ -97,7 +97,7 @@ import { useClaudeModsSkippedHost } from '../capability/claude-mods/ClaudeModsSk
 import { DeferredClaudeModsSkippedPart } from '../capability/claude-mods/DeferredClaudeModsSkippedPart';
 
 /**
- * Renders one neutral {@link PortalChatPart} by dispatching on its typed `kind`
+ * Renders one neutral {@link RemoteControlChatPart} by dispatching on its typed `kind`
  * and reusing the write-once `@canopy/ui-shared` chat primitives. The part's
  * free-form `data` is narrowed with type-guard predicates (never `as`). This is
  * the transport-neutral counterpart to the web portal's `PartRenderer` and the
@@ -124,7 +124,7 @@ export const ToolNamespaceContext = createContext<string | undefined>(
 );
 
 export interface ChatPartViewProps {
-  readonly part: PortalChatPart;
+  readonly part: RemoteControlChatPart;
   readonly messageId?: string;
   /**
    * Whether the owning message is still streaming. Gates the `turn_timer`
@@ -180,7 +180,7 @@ export interface AskUserQuestionRequestStatus {
  */
 export interface AskUserQuestionInteraction {
   /** Projected question states for the chat currently being rendered. */
-  readonly states: readonly PortalAskUserQuestionState[];
+  readonly states: readonly RemoteControlAskUserQuestionState[];
   /** Render read-only with the reconnect helper (relay disconnected). */
   readonly disconnected?: boolean;
   /** Hard-disable the controls (e.g. commands unavailable). */
@@ -194,7 +194,7 @@ export interface AskUserQuestionInteraction {
   /** Submit the structured answers for a request. */
   readonly onAnswer: (
     requestId: string,
-    answers: PortalAskUserQuestionAnswer[],
+    answers: RemoteControlAskUserQuestionAnswer[],
   ) => void;
   /** Dismiss a request without answering. */
   readonly onDismiss: (requestId: string) => void;
@@ -214,7 +214,7 @@ export interface AskUserQuestionInteraction {
 const AskUserQuestionInteractionContext =
   createContext<AskUserQuestionInteraction | null>(null);
 
-const NO_COMPOSER_QUESTIONS: readonly PortalAskUserQuestionState[] = [];
+const NO_COMPOSER_QUESTIONS: readonly RemoteControlAskUserQuestionState[] = [];
 const ComposerAskUserQuestionsContext = createContext(NO_COMPOSER_QUESTIONS);
 /** The host's composer asks every pending question, one at a time. */
 const ComposerAsksQuestionsContext = createContext(false);
@@ -265,7 +265,7 @@ export function AskUserQuestionInteractionProvider({
    * Unanswered questions the host's composer asks. The transcript row one of
    * them matches renders nothing, as desktop's does while its composer asks.
    */
-  composerQuestions?: readonly PortalAskUserQuestionState[];
+  composerQuestions?: readonly RemoteControlAskUserQuestionState[];
   /**
    * The host's composer asks every pending question, one after another, so
    * the transcript shows none of them (the question card is retired where
@@ -349,7 +349,7 @@ function ModelAccessFailurePart({
   return (
     <CodexAccountModelNotice
       failure={failure}
-      dataTestId="portal-chat-codex-account-model-notice"
+      dataTestId="remote-control-chat-codex-account-model-notice"
       {...(actionable
         ? {
             onUseFallback: (): void => {
@@ -447,7 +447,7 @@ function readDeliverable(data: Record<string, unknown>): DeliverableRef | null {
   return { deliverableId, filename, sizeBytes, mediaType, contentSha256 };
 }
 
-// A Record over the union forces every `PortalChatPart` kind to be listed —
+// A Record over the union forces every `RemoteControlChatPart` kind to be listed —
 // adding a new kind to the protocol fails to compile here (rather than silently
 // dropping coerced sub-blocks of the new kind). The Set is derived from it.
 /**
@@ -473,7 +473,7 @@ export const CHAT_PART_REPLAY_POLICY = {
   account_switch: 'blocked',
   mods_skipped: 'blocked',
 } as const satisfies Record<
-  PortalChatPart['kind'],
+  RemoteControlChatPart['kind'],
   'blocked' | 'content-blocked'
 >;
 const PART_KINDS: ReadonlySet<string> = new Set(
@@ -500,7 +500,7 @@ function readNumber(
   return typeof value === 'number' ? value : undefined;
 }
 
-function partData(part: PortalChatPart): Record<string, unknown> {
+function partData(part: RemoteControlChatPart): Record<string, unknown> {
   return isRecord(part.data) ? part.data : {};
 }
 
@@ -635,12 +635,12 @@ function readAgentUsage(
     : undefined;
 }
 
-function isPartKind(kind: string): kind is PortalChatPart['kind'] {
+function isPartKind(kind: string): kind is RemoteControlChatPart['kind'] {
   return PART_KINDS.has(kind);
 }
 
-/** Narrow an untyped sub-block into a {@link PortalChatPart}, or `null`. */
-function coercePart(value: unknown): PortalChatPart | null {
+/** Narrow an untyped sub-block into a {@link RemoteControlChatPart}, or `null`. */
+function coercePart(value: unknown): RemoteControlChatPart | null {
   if (!isRecord(value)) {
     return null;
   }
@@ -653,7 +653,7 @@ function coercePart(value: unknown): PortalChatPart | null {
     kind === 'tool_result'
       ? rowFieldIdentity(value['outputLocator'])
       : undefined;
-  const outputLocator: PortalChatPart['outputLocator'] =
+  const outputLocator: RemoteControlChatPart['outputLocator'] =
     locator?.field === 'output'
       ? {
           messageId: locator.messageId,
@@ -673,7 +673,7 @@ function coercePart(value: unknown): PortalChatPart | null {
 
 // Record over the union → every tool family must be listed (a new family fails
 // to compile here). The Set is derived from it.
-const TOOL_FAMILY_FLAGS: Record<PortalChatToolFamily, true> = {
+const TOOL_FAMILY_FLAGS: Record<RemoteControlChatToolFamily, true> = {
   read: true,
   edit: true,
   write: true,
@@ -701,7 +701,7 @@ const TOOL_FAMILIES: ReadonlySet<string> = new Set(
   Object.keys(TOOL_FAMILY_FLAGS),
 );
 
-function isToolFamily(value: string): value is PortalChatToolFamily {
+function isToolFamily(value: string): value is RemoteControlChatToolFamily {
   return TOOL_FAMILIES.has(value);
 }
 
@@ -942,7 +942,7 @@ function ChatPartContent({
         // be answered; the shared resolver settles it from the projection.
         const presentation = resolveAskUserQuestionPresentation(
           askUserQuestionResultEvidence(result, input),
-          portalAskUserQuestionRecordState(
+          remoteControlAskUserQuestionRecordState(
             [...(askUserInteraction?.states ?? []), ...composerQuestions],
             {
               toolName,
@@ -1130,7 +1130,7 @@ function ChatPartContent({
         : [];
       const subParts = rawSubBlocks
         .map((sub) => coercePart(sub))
-        .filter((sub): sub is PortalChatPart => sub !== null);
+        .filter((sub): sub is RemoteControlChatPart => sub !== null);
       const subBlocks =
         subParts.length > 0
           ? subParts

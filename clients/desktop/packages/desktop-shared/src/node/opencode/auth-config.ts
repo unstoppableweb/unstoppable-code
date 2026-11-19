@@ -1,4 +1,5 @@
 import { hostPlatformOperatingSystem } from '@canopy/core-platform';
+import { allowlistedErrnoOrOther } from '@canopy/core-runtime';
 import { open, stat } from 'node:fs/promises';
 import { homedir, userInfo } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -109,6 +110,27 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/**
+ * An `auth.json` open failure. Only its allowlisted errno (`other` for the
+ * rest) may leave this host; the original error, whose message names the
+ * path, stays a non-enumerable `runtimeCause` for local logs (CAN-7117).
+ */
+class OpenCodeCredentialsReadError extends Error {
+  readonly code: string;
+  declare readonly runtimeCause: unknown;
+
+  constructor(runtimeCause: unknown) {
+    super('OpenCode provider credentials could not be read.');
+    this.code = allowlistedErrnoOrOther(runtimeCause);
+    Object.defineProperty(this, 'runtimeCause', {
+      configurable: false,
+      enumerable: false,
+      writable: false,
+      value: runtimeCause,
+    });
+  }
+}
+
 /** Native API/OAuth credentials stay native-owned, including token refresh. */
 export async function assertOpenCodeAuthConfigSafe(
   env: NodeJS.ProcessEnv,
@@ -119,7 +141,7 @@ export async function assertOpenCodeAuthConfigSafe(
   const file = join(openCodeNativeDataDir(env, cwd), 'auth.json');
   const handle = await open(file, 'r').catch((error: unknown) => {
     if (isRecord(error) && error.code === 'ENOENT') return undefined;
-    throw new Error('OpenCode provider credentials could not be read.');
+    throw new OpenCodeCredentialsReadError(error);
   });
   if (!handle) return;
   let source: string;

@@ -42,6 +42,22 @@
   font-family: var(--font-sans);
 }
 
+/* The stage's well runs the sheet's full width, with the 560px stage centred
+   in it, so the band lines up with the specimen cards under it. The band
+   takes the well's fill and corner; the stage inside keeps neither. */
+.canopy-lab-stage-band {
+  display: flex;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: 12px;
+  background: var(--bg-depth);
+}
+
+.canopy-lab-stage-band .ss-stage {
+  border-radius: 0;
+  background: transparent;
+}
+
 /* Canopy's default border color (`* { border-color: var(--line-base) }` in
    canopy-tokens-core.css) is unlayered, and the kit's unlayered guard loads
    after it and hands borders back to the layers, so inside a stage a divider

@@ -108,7 +108,13 @@ export function customizeHarnessRows(
         tooltip: tooltip(row.name, 'copy', true, copy),
       };
     }
-    if (row.installation !== 'Not supported')
+    // Unknown (nothing read the plugin's files yet) looks for a copy that
+    // serves the harness, as Not supported does.
+    if (
+      row.installation !== 'Not supported' &&
+      row.installation !== 'Unknown until added' &&
+      row.installation !== 'Checking…'
+    )
       return {
         ...row,
         support: 'own',
@@ -123,7 +129,14 @@ export function customizeHarnessRows(
       const theirs = alternative.harnessRows?.find(
         (candidate) => candidate.id === row.id,
       );
-      return theirs !== undefined && theirs.installation !== 'Not supported'
+      // Only a copy known to serve it: unknown is not support. An unread
+      // listing's unknown harness fills only from an installed copy (spec
+      // 3b), never another uninstalled listing.
+      return theirs !== undefined &&
+        theirs.installation !== 'Not supported' &&
+        theirs.installation !== 'Unknown until added' &&
+        (row.installation !== 'Unknown until added' ||
+          theirs.installation === 'Installed')
         ? [{ alternative, installed: theirs.installation === 'Installed' }]
         : [];
     });
@@ -137,7 +150,11 @@ export function customizeHarnessRows(
       return {
         ...row,
         support: 'none',
-        tooltip: tooltip(row.name, 'none', false, undefined),
+        // Unknown is not unsupported: the tooltip says which it is.
+        tooltip:
+          row.installation === 'Unknown until added'
+            ? `${row.name}: unknown until added`
+            : tooltip(row.name, 'none', false, undefined),
       };
     const copy = copyOf(best.alternative);
     return {

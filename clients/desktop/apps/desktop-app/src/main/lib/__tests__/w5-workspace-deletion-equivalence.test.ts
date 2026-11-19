@@ -12,7 +12,7 @@ import type {
 } from '@canopy/desktop-shared/node/archive-recovery-store';
 import type { ArchiveRecoverySettlementPorts } from '../archive-recovery-settlement';
 import type { WorktreeRecoveryResolveParams } from '@canopy/protocol/canopy-core';
-import type { WorktreeRecoveryDescription } from '@canopy/protocol/portal/worktree-recovery';
+import type { WorktreeRecoveryDescription } from '@canopy/protocol/remote-control/shell/worktree-recovery';
 import {
   journalSchema,
   type DestructiveRecoveryRecord,

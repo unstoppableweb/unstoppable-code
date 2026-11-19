@@ -13,7 +13,7 @@ const selectedBrandId = process.env.CANOPY_BRAND ?? 'canopy';
  * waiting to be unified. `pnpm exec vite --config
  * apps/desktop-app/src/renderer/components-lab.vite.mts`, then
  * http://127.0.0.1:5188/components-lab.html (`?component=<id>` opens one
- * component, `?theme=dark` starts in dark).
+ * page, `?theme=dark` starts in dark).
  */
 export default defineConfig({
   root: configDir,

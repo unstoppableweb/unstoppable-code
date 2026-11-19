@@ -1,6 +1,6 @@
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import { RpcPublicError } from './transport/rpc-peer';
-import { isExplicitWorktreeBaseBranch } from '@canopy/protocol/portal';
+import { isExplicitWorktreeBaseBranch } from '@canopy/protocol/remote-control/shell';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;

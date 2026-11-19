@@ -1,14 +1,16 @@
 import {
   resolveWorkspaceLayout,
-  type PortalSessionShellState,
-  type PortalRowBackend,
-  type PortalWorkspaceLayout,
-} from '@canopy/protocol/portal';
+  type RemoteControlSessionShellState,
+  type RemoteControlRowBackend,
+  type RemoteControlWorkspaceLayout,
+} from '@canopy/protocol/remote-control/shell';
 
 /** The worktree shape carried on the neutral shell snapshot. */
-export type SnapshotWorktree = PortalSessionShellState['worktrees'][number];
+export type SnapshotWorktree =
+  RemoteControlSessionShellState['worktrees'][number];
 /** The workspace shape carried on the neutral shell snapshot. */
-export type SnapshotWorkspace = PortalSessionShellState['workspaces'][number];
+export type SnapshotWorkspace =
+  RemoteControlSessionShellState['workspaces'][number];
 /** Browser-compatible workspace projection before legacy `type` normalization. */
 export type SidebarWorkspace = Omit<SnapshotWorkspace, 'type'> & {
   readonly type?: SnapshotWorkspace['type'];
@@ -31,7 +33,7 @@ export type SidebarWorkspace = Omit<SnapshotWorkspace, 'type'> & {
  */
 export function workspaceLayout(
   workspace: Pick<SidebarWorkspace, 'type' | 'layout'>,
-): PortalWorkspaceLayout {
+): RemoteControlWorkspaceLayout {
   return resolveWorkspaceLayout(workspace);
 }
 
@@ -83,8 +85,8 @@ export function untitledTaskLabel(title: string | undefined): string {
 export function deriveWorkspaceBackend(
   workspace: Pick<SidebarWorkspace, 'localId' | 'backend'>,
   worktrees: readonly SnapshotWorktree[],
-): Exclude<PortalRowBackend, 'desktop'> | null {
-  let resolved: PortalRowBackend | undefined;
+): Exclude<RemoteControlRowBackend, 'desktop'> | null {
+  let resolved: RemoteControlRowBackend | undefined;
   for (const worktree of worktrees) {
     if (worktree.workspaceLocalId !== workspace.localId) continue;
     if (worktree.backend === undefined) continue;

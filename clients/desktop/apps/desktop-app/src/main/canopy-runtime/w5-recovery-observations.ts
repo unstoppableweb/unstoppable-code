@@ -1,6 +1,6 @@
 import { CanopyClientError } from '@canopy/core-client';
 import { CoreWorkspaceRecordsTargetSchema } from '@canopy/protocol/canopy-core';
-import type { W5RecoveryEntry } from '@canopy/protocol/portal';
+import type { W5RecoveryEntry } from '@canopy/protocol/remote-control/shell';
 import type {
   W5RecordPortCall,
   W5RecordRecoveryTarget,

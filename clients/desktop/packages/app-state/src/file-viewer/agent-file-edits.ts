@@ -1,9 +1,9 @@
 import type { ChatMessageEvent } from '@canopy/app-core';
 import { turnFilePath } from '@canopy/protocol/file-path';
 import type {
-  PortalChatMessage,
-  PortalChatPart,
-} from '@canopy/protocol/portal';
+  RemoteControlChatMessage,
+  RemoteControlChatPart,
+} from '@canopy/protocol/remote-control/shell';
 
 /**
  * The project/worktree scope an agent edit belongs to. Hosts project chat
@@ -322,10 +322,10 @@ function eventScope(event: ChatMessageEvent): AgentFileEditScope | null {
 
 /** Tool parts of a message, including those nested in agent blocks. */
 function collectToolParts(
-  parts: readonly PortalChatPart[] | undefined,
+  parts: readonly RemoteControlChatPart[] | undefined,
   depth: number,
-  out: PortalChatPart[],
-): PortalChatPart[] {
+  out: RemoteControlChatPart[],
+): RemoteControlChatPart[] {
   if (!parts || depth > MAX_PART_DEPTH) return out;
   for (const part of parts) {
     if (part.kind === 'tool_use' || part.kind === 'tool_result') {
@@ -336,7 +336,7 @@ function collectToolParts(
       const subBlocks = part.data.subBlocks;
       if (Array.isArray(subBlocks)) {
         const nested = subBlocks.filter(
-          (block): block is PortalChatPart =>
+          (block): block is RemoteControlChatPart =>
             isRecord(block) && typeof block.kind === 'string',
         );
         collectToolParts(nested, depth + 1, out);
@@ -346,7 +346,7 @@ function collectToolParts(
   return out;
 }
 
-function messageTimestamp(message: PortalChatMessage): number {
+function messageTimestamp(message: RemoteControlChatMessage): number {
   return Math.max(message.createdAtMs, message.updatedAtMs ?? 0);
 }
 

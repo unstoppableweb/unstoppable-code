@@ -13,7 +13,7 @@ import {
 import type {
   ChatInputDeliveryAction,
   ChatInputDeliveryView,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import { TrashIcon } from '../../icons';
 import { Button } from '../Button';
 import { Tooltip } from '../Tooltip';

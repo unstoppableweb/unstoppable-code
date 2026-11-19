@@ -1,4 +1,4 @@
-import type { PortalPipelineListResult } from '@canopy/protocol/portal';
+import type { RemoteControlPipelineListResult } from '@canopy/protocol/remote-control/shell';
 import { fitListResult } from './result-budget';
 
 /**
@@ -7,7 +7,7 @@ import { fitListResult } from './result-budget';
  * the live `portal.pipeline.list` command would have returned.
  */
 export function fitPipelineListResult(
-  pipelines: PortalPipelineListResult['pipelines'],
+  pipelines: RemoteControlPipelineListResult['pipelines'],
   options: {
     /**
      * The list is already known to be incomplete (a discovery bound cut
@@ -16,10 +16,10 @@ export function fitPipelineListResult(
      */
     truncated?: boolean;
   } = {},
-): PortalPipelineListResult {
+): RemoteControlPipelineListResult {
   return fitListResult(
     pipelines,
-    (rows, truncated): PortalPipelineListResult => ({
+    (rows, truncated): RemoteControlPipelineListResult => ({
       pipelines: rows,
       ...(truncated ? { truncated: true } : {}),
     }),

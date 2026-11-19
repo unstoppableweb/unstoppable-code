@@ -438,7 +438,6 @@ export function TodayStatisticsPanel(): JSX.Element {
                   label="Detail explorer view"
                   value={mode}
                   width="content"
-                  shape="capsule"
                   options={DETAIL_MODES}
                   onChange={setMode}
                 />

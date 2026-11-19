@@ -49,8 +49,12 @@ stage.
   Frames: `.playwright/components-lib/film/final/{light,dark,phone}/<id>.png`
   with each run's log beside it. Runner:
   `.playwright/components-lib/film-all.sh`.
-- Results: all 15 stages end `rehearsal passed` in all three runs (light,
-  dark, phone), on the final code.
+  The phone run predates the lab's page shell: `&width=phone` is gone, so a
+  phone run films `?component=<id>&frame=1` in a 390px viewport instead.
+- Results: all 15 stages end `rehearsal passed` in the light and dark runs.
+  The phone run also passed, but it is historical: it filmed the removed
+  `&width=phone` column. The current 390px `&frame=1` layout has not been
+  through the stage gate, so the phone layout is unverified on this code.
 - Reduced motion: the jsdom test renders every stage's poster with
   `prefers-reduced-motion` on; the light and dark sheet captures in
   `.playwright/components-lib/` are taken with reduced motion, so each shows

@@ -1,4 +1,4 @@
-import type { PortalChatMessage } from '@canopy/protocol/portal';
+import type { RemoteControlChatMessage } from '@canopy/protocol/remote-control/shell';
 import {
   NO_TOOL_APPROVAL_WAIT,
   isAskUserQuestionToolName,
@@ -25,7 +25,7 @@ function readNumber(value: unknown): number | undefined {
 }
 
 /** A question still waiting on its answer holds the turn for its own form. */
-function awaitsAnswer(messages: readonly PortalChatMessage[]): boolean {
+function awaitsAnswer(messages: readonly RemoteControlChatMessage[]): boolean {
   return messages.some((message) =>
     normalizeChatMessageParts(message.parts ?? []).some((part) => {
       if (part.kind !== 'tool_use' || !isRecord(part.data)) return false;
@@ -53,14 +53,14 @@ function awaitsAnswer(messages: readonly PortalChatMessage[]): boolean {
  * pause, so its turn keeps its own presentation. Cloud timers project no
  * pause, so cloud turns never wait (see `docs/tool-approvals.md`).
  */
-export function portalTurnApprovalWait({
+export function remoteControlTurnApprovalWait({
   complete,
   timer,
   messages,
 }: {
   readonly complete: boolean;
   readonly timer: unknown;
-  readonly messages: readonly PortalChatMessage[];
+  readonly messages: readonly RemoteControlChatMessage[];
 }): ToolApprovalWait {
   if (complete || !isRecord(timer)) return NO_TOOL_APPROVAL_WAIT;
   const paused = isTurnTimerPaused({

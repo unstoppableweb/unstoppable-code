@@ -4,7 +4,7 @@ import { requestAppAdvisorPresentation } from '../app-advisor/advisor-presentati
 import {
   readAutoResumeMetadata,
   type AutoResumeMetadata,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import { hasChatContinuationSession } from '@canopy/desktop-shared/lib/chat-model-selection';
 import { collectTurnFiles } from '@canopy/desktop-shared/lib/turn-files';
 import {
@@ -51,17 +51,17 @@ import type {
   PersistedChatMessage,
   PersistedPendingQuestion,
   PersistedChatTab,
-  HostPortalChatSendPayload,
-  PortalChatSummaryEntity,
-  PortalChatSummaryPluginSelections,
-  PortalChatTabPluginSelections,
-  PortalChatTurnGroup,
+  HostRemoteControlChatSendPayload,
+  RemoteControlChatSummaryEntity,
+  RemoteControlChatSummaryPluginSelections,
+  RemoteControlChatTabPluginSelections,
+  RemoteControlChatTurnGroup,
 } from '@canopy/desktop-shared/types';
 import { isBotProjectId } from '@canopy/protocol/chat-targets';
 import {
   chatAgentSent,
   type AgentSentInfo,
-} from '@canopy/protocol/portal/external-agent-sender';
+} from '@canopy/protocol/remote-control/shell/external-agent-sender';
 import type { AppAdvisorToolRuntimeSurfaces } from '../app-advisor/runtime';
 import {
   APP_ADVISOR_PROJECT_ID,
@@ -82,10 +82,10 @@ import {
   normalizeAgentModelConfig,
 } from '@canopy/desktop-shared/types';
 import { REMOTE_CONTROL_LABEL } from '@canopy/protocol';
-import type { PortalChatScheduledMessages } from '@canopy/protocol/portal';
+import type { RemoteControlChatScheduledMessages } from '@canopy/protocol/remote-control/shell';
 import { resolveClaudeForkResumePoint } from '@canopy/desktop-shared/lib/claude-fork-resume-point';
 import { readCodexSpeedRecord } from '@canopy/execution-engine/lib/codex-speed';
-import { getPortalChatToolFamily } from '@canopy/desktop-shared/lib/portal-tool-family';
+import { getRemoteControlChatToolFamily } from '@canopy/desktop-shared/lib/remote-control-tool-family';
 import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import { newChatPluginDefaultsStamp } from '@canopy/desktop-shared/lib/effective-plugin-selections';
 import { isUsageInitiationSource } from '@canopy/desktop-shared/lib/turn-utils';
@@ -129,12 +129,12 @@ import {
   clearPersistedUsageLimitBanner,
 } from '../lib/chat-usage-limit-cleanup';
 import { sendToWindow, sendToWindowDetailed } from '../lib/window-send';
-import { peekPortalProviderAvailability } from '../auth/provider-auth-state';
+import { peekRemoteControlProviderAvailability } from '../auth/provider-auth-state';
 import { buildProjectedModelCatalog } from '../remote-projection/model-catalog-projection';
 import { isDesktopModelRoutingSupported } from '../remote-projection/worktree-new-task-controls';
-import { PORTAL_CHAT_TRANSCRIPT_MESSAGE_LIMIT } from './chat-transcript-projector';
+import { REMOTE_CONTROL_CHAT_TRANSCRIPT_MESSAGE_LIMIT } from './chat-transcript-projector';
 import { buildAutomationInfoMessage } from './automation-info-message';
-import { portalChatTabsCache } from './portal-chat-tabs-cache';
+import { remoteControlChatTabsCache } from './remote-control-chat-tabs-cache';
 import {
   checkWatcherDeliveryIngress,
   WatcherDeliveryHeldError,
@@ -151,8 +151,8 @@ import { listWorkEntryIds } from '../lib/cowork-work-entries';
 import { mapWithConcurrency } from '../lib/concurrency';
 import { getChatQueueService } from './chat-queue-service';
 import { applyProviderSwitchToSession } from './chat-provider-sessions';
-import { projectPortalQuestionStates } from '../lib/portal-question-states';
-import { projectPortalLastTurnEnd } from '../lib/portal-turn-end';
+import { projectRemoteControlQuestionStates } from '../lib/remote-control-question-states';
+import { projectRemoteControlLastTurnEnd } from '../lib/remote-control-turn-end';
 import { assertNotSplitLocked } from './split-lock-service';
 import {
   applyLiveSessionSettings,
@@ -813,7 +813,7 @@ async function dispatchLocalWorktreeChatMessageNow(
 // Live caller surfaces belong to this request, not the serializable queue
 // payload. Restored/edited rows use the application's registered surfaces.
 // Billing constraints are persisted separately on the main-owned queue row.
-const portalQueueOptions = new WeakMap<
+const remoteControlQueueOptions = new WeakMap<
   ChatSendMessageRequest,
   ChatServiceOptions
 >();
@@ -1010,7 +1010,7 @@ async function dispatchHostQueuedWorktreeChatMessageNow(
     return;
   }
   const getWindow = getWorktreeChatWindow;
-  const portalOptions = portalQueueOptions.get(request);
+  const remoteControlOptions = remoteControlQueueOptions.get(request);
   if (fromQueue) {
     const cancelledAutomaticRetry = cancelTransientRetryForChat(
       request,
@@ -1204,7 +1204,7 @@ async function dispatchHostQueuedWorktreeChatMessageNow(
     getWindow,
     creditRetryAttemptId: queueOptions.creditRetryAttemptId,
     appAdvisorSurfaces: queuedAppAdvisorSurfaces,
-    ...portalOptions,
+    ...remoteControlOptions,
     ...(automationExecutionContext !== undefined
       ? { executionContext: automationExecutionContext }
       : {}),
@@ -1493,7 +1493,7 @@ export interface NewChatSendMessageRequest extends Omit<
 
 type WorktreeChatSendRequest =
   | ChatSendMessageRequest
-  | HostPortalChatSendPayload
+  | HostRemoteControlChatSendPayload
   | NewChatSendMessageRequest;
 
 /** Main-owned provenance can only be attached after trusted command intake. */
@@ -1502,7 +1502,7 @@ type TrustedWorktreeChatSendRequest = WorktreeChatSendRequest & {
   autoResume?: AutoResumeMetadata;
 };
 
-function normalizePortalChatModelConfig(
+function normalizeRemoteControlChatModelConfig(
   request: WorktreeChatSendRequest,
 ): AgentModelConfig | undefined {
   const normalized = normalizeAgentModelConfig(request.modelConfig) ?? {};
@@ -1604,7 +1604,7 @@ function upsertMessage(
 }
 
 /**
- * Build the `PortalChatTurnGroup[]` skeleton from a chat tab's persisted
+ * Build the `RemoteControlChatTurnGroup[]` skeleton from a chat tab's persisted
  * messages. One group per user-message turn; all assistant messages up to
  * the next user message belong to that turn. The last assistant message in
  * each turn is treated as `final`; preceding assistant messages are
@@ -1616,7 +1616,7 @@ function upsertMessage(
  */
 function deriveChatTurnGroups(
   tab: PersistedChatTab,
-): PortalChatTurnGroup[] | undefined {
+): RemoteControlChatTurnGroup[] | undefined {
   if (
     tab.transcript &&
     !Object.prototype.propertyIsEnumerable.call(tab, 'messages')
@@ -1624,32 +1624,34 @@ function deriveChatTurnGroups(
     return undefined;
   if (tab.messages.length === 0) return undefined;
   // Only derive groups for the message window the portal transcript cache
-  // actually holds (limitPortalChatTranscript keeps the last
-  // PORTAL_CHAT_TRANSCRIPT_MESSAGE_LIMIT). Groups referencing older messages
+  // actually holds (limitRemoteControlChatTranscript keeps the last
+  // REMOTE_CONTROL_CHAT_TRANSCRIPT_MESSAGE_LIMIT). Groups referencing older messages
   // are dead weight on the wire — real worktrees carry thousands of messages,
   // and unbounded turn groups pushed worktree snapshots past the 1MiB portal
   // event cap, dropping the whole snapshot.
   const windowedTab: PersistedChatTab =
-    tab.messages.length <= PORTAL_CHAT_TRANSCRIPT_MESSAGE_LIMIT
+    tab.messages.length <= REMOTE_CONTROL_CHAT_TRANSCRIPT_MESSAGE_LIMIT
       ? tab
       : {
           ...tab,
-          messages: tab.messages.slice(-PORTAL_CHAT_TRANSCRIPT_MESSAGE_LIMIT),
+          messages: tab.messages.slice(
+            -REMOTE_CONTROL_CHAT_TRANSCRIPT_MESSAGE_LIMIT,
+          ),
         };
   return deriveChatTurnGroupsFromWindow(windowedTab);
 }
 
 function deriveChatTurnGroupsFromWindow(
   tab: PersistedChatTab,
-): PortalChatTurnGroup[] | undefined {
-  const groups: PortalChatTurnGroup[] = [];
+): RemoteControlChatTurnGroup[] | undefined {
+  const groups: RemoteControlChatTurnGroup[] = [];
   let pendingUserMessageId: string | null = null;
   let pendingAssistantIds: string[] = [];
   let pendingMessages: PersistedChatMessage[] = [];
 
   const counts: Required<
     Omit<
-      NonNullable<PortalChatTurnGroup['summary']>,
+      NonNullable<RemoteControlChatTurnGroup['summary']>,
       'thinkingCount' | 'messageCount'
     >
   > = {
@@ -1700,7 +1702,7 @@ function deriveChatTurnGroupsFromWindow(
       pendingAssistantIds.length > 0 ? [pendingAssistantIds.slice(-1)[0]] : [];
     const intermediateMessageIds =
       pendingAssistantIds.length > 1 ? pendingAssistantIds.slice(0, -1) : [];
-    const summary: PortalChatTurnGroup['summary'] = {};
+    const summary: RemoteControlChatTurnGroup['summary'] = {};
     if (counts.bashCount > 0) summary.bashCount = counts.bashCount;
     if (counts.readCount > 0) summary.readCount = counts.readCount;
     if (counts.editCount > 0) summary.editCount = counts.editCount;
@@ -1749,7 +1751,7 @@ function deriveChatTurnGroupsFromWindow(
     pendingAssistantIds.push(message.id);
     for (const block of message.blocks) {
       if (block.type !== 'tool_use') continue;
-      const family = getPortalChatToolFamily(block.toolName);
+      const family = getRemoteControlChatToolFamily(block.toolName);
       switch (family) {
         case 'bash':
           counts.bashCount += 1;
@@ -1815,7 +1817,7 @@ function deriveChatTurnGroupsFromWindow(
 
 function summarizePluginSelections(
   selections: ChatTabPluginSelections | undefined,
-): PortalChatSummaryPluginSelections | undefined {
+): RemoteControlChatSummaryPluginSelections | undefined {
   if (!selections) {
     return undefined;
   }
@@ -1835,7 +1837,7 @@ function summarizePluginSelections(
  */
 function detailPluginSelections(
   selections: ChatTabPluginSelections | undefined,
-): PortalChatTabPluginSelections | undefined {
+): RemoteControlChatTabPluginSelections | undefined {
   if (!selections) {
     return undefined;
   }
@@ -1857,7 +1859,7 @@ type ScheduledMessageChatIdentity = {
 
 type ScheduledMessageSummaryContext = {
   scheduledMessagesIndex:
-    | ReadonlyMap<string, PortalChatScheduledMessages>
+    | ReadonlyMap<string, RemoteControlChatScheduledMessages>
     | undefined;
   scheduledMessageChatKey: (identity: ScheduledMessageChatIdentity) => string;
 };
@@ -1895,9 +1897,12 @@ function chatSummaryEntity(input: {
    * `'app-advisor'`.
    */
   surface: 'worktree' | 'app-advisor';
-  scheduledMessagesIndex?: ReadonlyMap<string, PortalChatScheduledMessages>;
+  scheduledMessagesIndex?: ReadonlyMap<
+    string,
+    RemoteControlChatScheduledMessages
+  >;
   scheduledMessageChatKey?: (identity: ScheduledMessageChatIdentity) => string;
-}): PortalChatSummaryEntity {
+}): RemoteControlChatSummaryEntity {
   const surface = input.surface;
   const inputSession = getInputSession(
     input.workspaceId,
@@ -2005,7 +2010,7 @@ function chatSummaryEntity(input: {
         }
       : undefined;
   const chatTurnGroups = deriveChatTurnGroups(input.tab);
-  const lastTurnEnd = projectPortalLastTurnEnd(input.tab);
+  const lastTurnEnd = projectRemoteControlLastTurnEnd(input.tab);
   const normalizedPluginSelections = input.tab.pluginSelections
     ? normalizePluginSelections(input.tab.pluginSelections)
     : undefined;
@@ -2166,7 +2171,7 @@ function chatSummaryEntity(input: {
     // managed runtime, so their projections carry the Cursor rows and the
     // runtime-connected key. Cowork stays native-auth-only (it refuses
     // Cursor), which is why that peek keeps the key out.
-    providerAvailability: peekPortalProviderAvailability(),
+    providerAvailability: peekRemoteControlProviderAvailability(),
     ...(pluginSelections ? { pluginSelections } : {}),
     ...(pluginSelectionsDetail ? { pluginSelectionsDetail } : {}),
     deferredToolsAllowed: input.tab.deferredToolsAllowed !== false,
@@ -2174,7 +2179,7 @@ function chatSummaryEntity(input: {
     ...(lastTurnEnd ? { lastTurnEnd } : {}),
     ...(input.pendingQuestions !== undefined
       ? {
-          pendingQuestions: projectPortalQuestionStates(
+          pendingQuestions: projectRemoteControlQuestionStates(
             input.tab.id,
             input.pendingQuestions,
           ),
@@ -2426,9 +2431,9 @@ async function sendWorktreeChatMessageNow(
     request.worktreeId,
   );
 
-  const authorizedPortalDispatch = options.queueDispatch !== undefined;
+  const authorizedRemoteControlDispatch = options.queueDispatch !== undefined;
   if (
-    !authorizedPortalDispatch &&
+    !authorizedRemoteControlDispatch &&
     !options.preserveTransientRetry &&
     request.chatId
   ) {
@@ -3037,7 +3042,7 @@ async function sendWorktreeChatMessageNow(
     }
     request = sanitized;
   }
-  const modelConfig = normalizePortalChatModelConfig(request);
+  const modelConfig = normalizeRemoteControlChatModelConfig(request);
   const inheritedExecutionHarness =
     existingTab?.executionHarness ??
     (existingTab?.model
@@ -3275,9 +3280,9 @@ async function sendWorktreeChatMessageNow(
       approvalMode,
     });
   }
-  if (!authorizedPortalDispatch) {
+  if (!authorizedRemoteControlDispatch) {
     const { getChatQueueService } = await import('./chat-queue-service');
-    portalQueueOptions.set(queuedRequest, options);
+    remoteControlQueueOptions.set(queuedRequest, options);
     const queue = getChatQueueService();
     if (options.requiredAccountProxyConnectionId !== undefined) {
       await queue.submit(queuedRequest, 'portal', undefined, {
@@ -3755,10 +3760,10 @@ export async function cancelWorktreeChatTurn(
 export async function listWorktreeChatSummaries(input: {
   workspaceId: string;
   worktreeId: string;
-}): Promise<PortalChatSummaryEntity[]> {
+}): Promise<RemoteControlChatSummaryEntity[]> {
   validateId(input.workspaceId, 'workspaceId');
   validateId(input.worktreeId, 'worktreeId');
-  const tabsFile = await portalChatTabsCache.read(
+  const tabsFile = await remoteControlChatTabsCache.read(
     input.workspaceId,
     input.worktreeId,
   );

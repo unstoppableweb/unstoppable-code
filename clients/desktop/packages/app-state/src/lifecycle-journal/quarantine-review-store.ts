@@ -4,7 +4,7 @@ import type {
   LifecycleJournalInspection,
   LifecycleJournalQuarantineResult,
   LifecycleJournalUnreadableEntry,
-} from '@canopy/protocol/portal/lifecycle-journal';
+} from '@canopy/protocol/remote-control/shell/lifecycle-journal';
 
 /**
  * CAN-5335: the review a deletion or archive refusal opens when an unreadable

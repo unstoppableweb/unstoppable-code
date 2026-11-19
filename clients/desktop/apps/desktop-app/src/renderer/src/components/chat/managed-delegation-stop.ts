@@ -1,5 +1,6 @@
 import { createContext } from 'react';
 import type {
+  AgentDelegationSnapshot,
   AgentDelegationStatus,
   DelegationWorkspaceChanges,
 } from '@canopy/protocol/delegation';
@@ -7,6 +8,11 @@ import {
   AGENT_ACTIVITY_STOP_ALL_FAILED_LABEL,
   DELEGATED_AGENT_STOP_FAILED_LABEL,
 } from '@canopy/ui-shared/components';
+import {
+  stopAllCloudDelegations,
+  stopCloudDelegation,
+} from '@/cloud-chats/cloud-delegation-stop';
+import { isWebCoreScope } from '@/lib/chat-authority';
 import { extractIpcErrorMessage } from '@/lib/errors';
 import { useGitHubStore } from '@/stores/githubStore';
 import type { DisplayBlock, TurnGroupOrMessage } from './types';
@@ -33,6 +39,27 @@ export interface ManagedDelegationStopState {
 export interface ManagedDelegationStopControls {
   readonly target: ManagedDelegationChatTarget;
   readonly withLiveDescendants: ReadonlySet<string>;
+  /**
+   * The scope reads a delegate's retained worktree here
+   * (`delegationWorktreeDetails`): a card offers Load changes only then.
+   */
+  readonly worktreeDetails: boolean;
+  /**
+   * A cloud chat's delegates as the web core last read them (CAN-7245): the
+   * transcript keeps each card's first state, so a card shows and stops by
+   * this instead.
+   */
+  readonly liveSnapshots?: ReadonlyMap<string, AgentDelegationSnapshot>;
+  /**
+   * Per cloud delegate, bumps when the web core reads its lifecycle change:
+   * its open child pages read again, as the web's do (CAN-7245).
+   */
+  readonly liveEpochs?: ReadonlyMap<string, number>;
+  /**
+   * The delegates a cloud chat's cards own (CAN-7245): only these get a
+   * Stop, so a delegate's own delegate shown in a card's pages offers none.
+   */
+  readonly ownDelegationIds?: ReadonlySet<string>;
 }
 
 export const ManagedDelegationStopContext =
@@ -55,15 +82,20 @@ function isLiveStatus(status: AgentDelegationStatus): boolean {
  */
 export function selectManagedDelegationStopState(
   groups: readonly TurnGroupOrMessage[],
+  liveSnapshots?: ReadonlyMap<string, AgentDelegationSnapshot>,
 ): ManagedDelegationStopState {
   const latest = new Map<string, DelegationEntry>();
   const visit = (block: DisplayBlock): void => {
     if (block.type === 'delegated_agent_call') {
       const runGeneration = block.runGeneration ?? 1;
       const previous = latest.get(block.delegationId);
+      const live = liveSnapshots?.get(block.delegationId);
       if (!previous || runGeneration >= previous.runGeneration) {
         latest.set(block.delegationId, {
-          status: block.status,
+          status:
+            live !== undefined && (live.runGeneration ?? 1) >= runGeneration
+              ? live.status
+              : block.status,
           ...(block.parentDelegationId !== undefined
             ? { parentDelegationId: block.parentDelegationId }
             : {}),
@@ -98,6 +130,23 @@ export function selectManagedDelegationStopState(
   };
 }
 
+/** Every managed delegation a chat's transcript names, at any depth. */
+export function selectManagedDelegationIds(
+  groups: readonly TurnGroupOrMessage[],
+): string[] {
+  const ids = new Set<string>();
+  const visit = (block: DisplayBlock): void => {
+    if (block.type === 'delegated_agent_call') ids.add(block.delegationId);
+    if ('subBlocks' in block) block.subBlocks.forEach(visit);
+  };
+  for (const group of groups) {
+    const messages =
+      group.kind === 'turn-group' ? group.assistantMessages : [group.message];
+    for (const message of messages) message.blocks.forEach(visit);
+  }
+  return Array.from(ids).sort();
+}
+
 function reportStopFailure(
   target: ManagedDelegationChatTarget,
   lead: string,
@@ -121,6 +170,12 @@ export async function requestManagedDelegationStop(
   target: ManagedDelegationChatTarget,
   delegationId: string,
 ): Promise<boolean> {
+  if (isWebCoreScope(target.projectId)) {
+    const result = await stopCloudDelegation(target, delegationId);
+    if (result.ok) return true;
+    reportStopFailure(target, DELEGATED_AGENT_STOP_FAILED_LABEL, result.error);
+    return false;
+  }
   try {
     const result = await window.api.managedDelegation.stop({
       projectId: target.projectId,
@@ -148,6 +203,16 @@ export async function requestManagedDelegationStop(
 export async function requestManagedDelegationStopAll(
   target: ManagedDelegationChatTarget,
 ): Promise<boolean> {
+  if (isWebCoreScope(target.projectId)) {
+    const result = await stopAllCloudDelegations(target);
+    if (result.ok) return true;
+    reportStopFailure(
+      target,
+      AGENT_ACTIVITY_STOP_ALL_FAILED_LABEL,
+      result.error,
+    );
+    return false;
+  }
   try {
     const result = await window.api.managedDelegation.stopAll({
       projectId: target.projectId,

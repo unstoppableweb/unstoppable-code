@@ -26,7 +26,7 @@ import {
 import {
   normalizeRepositoryCloneUrl,
   repositoryNameFromCloneUrl,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import { normalizeWorkspaceOwner } from '@canopy/execution-engine/lib/workspace-owner';
 import type {
   BoundCopyRepository,

@@ -22,7 +22,7 @@ import type { FilesystemRoot } from './root-catalog';
 import { isSafeFilesystemRelativePath } from './relative-path';
 
 // Ported from the desktop `file-reference:resolve` (markdown) and Portal
-// `resolvePortalFileLink` (transcript) resolvers (CAN-5038); the
+// `resolveRemoteControlFileLink` (transcript) resolvers (CAN-5038); the
 // `worker.filesystem.link.resolve` spec states the same rules.
 
 export type FilesystemLinkFailure =

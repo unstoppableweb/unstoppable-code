@@ -20,7 +20,6 @@ import {
   buildAgentVisualGestureRequest,
   buildAgentVisualGestureWatchMessage,
   buildAgentVisualHostContextMessage,
-  buildAgentVisualLoadMessage,
   buildAgentVisualSrcDoc,
   buildAgentVisualWrapperSrcDoc,
   clampAgentVisualHeight,
@@ -88,14 +87,6 @@ export interface AgentVisualFrameProps {
    * at, such as an entry in the Chat visuals panel.
    */
   prioritized?: boolean;
-  /**
-   * A same-origin URL where the host serves the relay's shell document
-   * (`buildAgentVisualShellDocument`, with its response headers). Set by a
-   * host whose page policy would apply to an inline frame and block the
-   * visual's scripts; the frame then loads from this URL and takes its agent
-   * document by message. Absent, the frame is built inline around it.
-   */
-  frameUrl?: string;
   /**
    * Whether the visual may load CDN scripts, styles and fonts. Defaults to
    * true; hosts pass `allowsAgentVisualRemoteAssets(capabilities)`.
@@ -216,14 +207,9 @@ export function AgentVisualFrame(
     document: string;
     retry: number;
     theme: AgentVisualTheme;
-    title: string;
-    frameUrl: string | undefined;
     remoteAssets: boolean;
-    /** Counts rebuilds, so a served frame is loaded again for each. */
-    version: number;
-    agentSrcDoc: string;
-    /** The inline wrapper; absent for a frame the host serves. */
-    srcDoc: string | undefined;
+    /** The inline wrapper around the agent document. */
+    srcDoc: string;
   } | null>(null);
   const theme = useRef(props.theme);
   theme.current = props.theme;
@@ -247,7 +233,6 @@ export function AgentVisualFrame(
     !source.current ||
     source.current.document !== props.document ||
     source.current.retry !== retry ||
-    source.current.frameUrl !== props.frameUrl ||
     source.current.remoteAssets !== remoteAssets ||
     (!mounted && source.current.theme !== props.theme)
   ) {
@@ -258,19 +243,12 @@ export function AgentVisualFrame(
       document: props.document,
       retry,
       theme: props.theme,
-      title: props.title,
-      frameUrl: props.frameUrl,
       remoteAssets,
-      version: (source.current?.version ?? 0) + 1,
-      agentSrcDoc,
-      srcDoc:
-        props.frameUrl === undefined
-          ? buildAgentVisualWrapperSrcDoc(agentSrcDoc, {
-              title: props.title,
-              appearance: props.theme.appearance,
-              remoteAssets,
-            })
-          : undefined,
+      srcDoc: buildAgentVisualWrapperSrcDoc(agentSrcDoc, {
+        title: props.title,
+        appearance: props.theme.appearance,
+        remoteAssets,
+      }),
     };
   }
 
@@ -423,18 +401,6 @@ export function AgentVisualFrame(
         else if (message.gesture === 'unclear') returnFocus();
         else if (ownerDocument.activeElement === frame.current)
           confirmedRef.current = true;
-      } else if (message.state === 'awaiting-document') {
-        // Only a frame the host serves asks; an inline one holds its document.
-        const current = source.current;
-        if (current?.frameUrl !== undefined)
-          frame.current?.contentWindow?.postMessage(
-            buildAgentVisualLoadMessage({
-              srcdoc: current.agentSrcDoc,
-              title: current.title,
-              appearance: current.theme.appearance,
-            }),
-            '*',
-          );
       } else if (message.state === 'ready' || message.state === 'alive') {
         // A theme posted while the new frame was still loading was lost.
         if (message.state === 'ready')
@@ -719,20 +685,12 @@ export function AgentVisualFrame(
         {mounted ? (
           <>
             <iframe
-              // A served frame takes one document, so each rebuild is a new
-              // frame; an inline one reloads when its srcdoc changes.
-              key={
-                source.current.frameUrl === undefined
-                  ? undefined
-                  : source.current.version
-              }
               ref={frame}
               data-testid={props.testIds.frame}
               title={props.title}
               sandbox={AGENT_VISUAL_FRAME_SANDBOX}
               referrerPolicy="no-referrer"
               allow={AGENT_VISUAL_FRAME_ALLOW}
-              src={source.current.frameUrl}
               srcDoc={source.current.srcDoc}
               inert={!activated}
               // Agent content: kept out of session replay on every surface.

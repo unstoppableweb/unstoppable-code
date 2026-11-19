@@ -47,7 +47,7 @@ describe('canonical send receipt reads', () => {
   it('checks grants and local scope before querying any receipt', async () => {
     const port = portFixture();
     const probe = jest.fn().mockResolvedValue({ outcome: 'matched', receipt });
-    port.getPortalSendReceipt = probe;
+    port.getRemoteControlSendReceipt = probe;
     const dispatcher = createDesktopRuntime({
       chatServices: { getPort: () => port },
     });

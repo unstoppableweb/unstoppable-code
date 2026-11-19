@@ -7,7 +7,7 @@
  * control keeps its `aria-label`, so `[aria-label="..."]` queries resolve.
  */
 import { useId, type JSX } from 'react';
-import type { PortalPipelineInputDefinition } from '@canopy/protocol/portal';
+import type { RemoteControlPipelineInputDefinition } from '@canopy/protocol/remote-control/shell';
 import {
   DialogFormField,
   Select,
@@ -17,13 +17,15 @@ import {
 
 export interface PipelineInputFieldProps {
   name: string;
-  definition: PortalPipelineInputDefinition;
+  definition: RemoteControlPipelineInputDefinition;
   value: string;
   error?: string;
   onChange: (value: string) => void;
 }
 
-function emptyOption(definition: PortalPipelineInputDefinition): SelectOption {
+function emptyOption(
+  definition: RemoteControlPipelineInputDefinition,
+): SelectOption {
   return {
     value: '',
     label: definition.required ? 'Select…' : 'Use default',
@@ -32,7 +34,7 @@ function emptyOption(definition: PortalPipelineInputDefinition): SelectOption {
 }
 
 function selectOptions(
-  definition: PortalPipelineInputDefinition,
+  definition: RemoteControlPipelineInputDefinition,
   type: string,
 ): readonly SelectOption[] {
   const values =

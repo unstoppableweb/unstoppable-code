@@ -8,7 +8,9 @@ export type AcpErrorCode =
   | 'invalid-input'
   | 'stale-generation'
   | 'protocol'
-  | 'provider';
+  | 'provider'
+  /** The host's own update handler threw or rejected (CAN-7117). */
+  | 'handler-failed';
 
 /**
  * Deliberately excludes raw provider errors, prompts, and credential-bearing
@@ -22,6 +24,12 @@ export class AcpClientError extends Error {
   readonly rpcCode?: number;
   /** Bounded, redacted agent text for Copy details, never a display headline. */
   readonly providerDetails?: string;
+  /**
+   * The host failure behind a `handler-failed` error, for local logs only.
+   * Non-enumerable, and not `cause`, so serialization and the cause walkers
+   * of telemetry and failure classification never reach it (CAN-7117).
+   */
+  declare readonly runtimeCause: unknown;
 
   constructor(
     readonly code: AcpErrorCode,
@@ -30,6 +38,7 @@ export class AcpClientError extends Error {
       method?: string;
       rpcCode?: number;
       providerDetails?: string;
+      runtimeCause?: unknown;
     } = {},
   ) {
     super(message);
@@ -38,5 +47,11 @@ export class AcpClientError extends Error {
     if (details.rpcCode !== undefined) this.rpcCode = details.rpcCode;
     if (details.providerDetails !== undefined)
       this.providerDetails = details.providerDetails;
+    Object.defineProperty(this, 'runtimeCause', {
+      configurable: false,
+      enumerable: false,
+      writable: false,
+      value: details.runtimeCause,
+    });
   }
 }

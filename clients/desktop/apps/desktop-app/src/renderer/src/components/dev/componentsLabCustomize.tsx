@@ -1410,7 +1410,7 @@ export function CustomizePartsSpecimen(): JSX.Element {
         </SpecimenCell>
       </SpecimenPanel>
 
-      <SpecimenPanel title="CustomizeRowMenu (click the ⋯ to open)">
+      <SpecimenPanel title="CustomizeRowMenu" hint="Click the ⋯ to open">
         <SpecimenGrid min={200}>
           <SpecimenCell label="Actions, then a destructive item after a divider">
             <CustomizeRowMenu

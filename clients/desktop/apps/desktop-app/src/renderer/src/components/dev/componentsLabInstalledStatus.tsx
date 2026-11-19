@@ -184,7 +184,7 @@ export function InstalledStatusSpecimen(): JSX.Element {
         </SpecimenGrid>
       </SpecimenPanel>
 
-      <SpecimenPanel title="InstalledItemStatusPicker (click to open)">
+      <SpecimenPanel title="InstalledItemStatusPicker" hint="Click to open">
         <SpecimenGrid min={200}>
           <SpecimenCell label="Live: choose a status">
             <InteractivePicker />
@@ -265,7 +265,7 @@ export function InstalledStatusSpecimen(): JSX.Element {
         </SpecimenGrid>
       </SpecimenPanel>
 
-      <SpecimenPanel title="InstalledItemStatusControl (the card picker)">
+      <SpecimenPanel title="InstalledItemStatusControl" hint="The card picker">
         <SpecimenGrid min={200}>
           <SpecimenCell label="Ready">
             <InstalledItemStatusControl
@@ -313,7 +313,10 @@ export function InstalledStatusSpecimen(): JSX.Element {
         </SpecimenGrid>
       </SpecimenPanel>
 
-      <SpecimenPanel title="InstalledItemStatusRow (the detail Status section)">
+      <SpecimenPanel
+        title="InstalledItemStatusRow"
+        hint="The detail Status section"
+      >
         {ROW_STATES.map(({ label, state }, index) => (
           <SpecimenCell key={label} label={label} wide>
             <div className="w-full">
@@ -335,7 +338,7 @@ export function InstalledStatusSpecimen(): JSX.Element {
         ))}
       </SpecimenPanel>
 
-      <SpecimenPanel title="InstalledStatusFilterDropdown (click to open)">
+      <SpecimenPanel title="InstalledStatusFilterDropdown" hint="Click to open">
         <SpecimenGrid min={220}>
           <SpecimenCell label="Live: any status, then each one">
             <FilterDropdownDemo />

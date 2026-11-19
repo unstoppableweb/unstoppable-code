@@ -16,7 +16,7 @@ import { isNativeError } from 'node:util/types';
 import {
   decodeWorktreeBaseBranch,
   isExplicitWorktreeBaseBranch,
-} from '@canopy/protocol/portal';
+} from '@canopy/protocol/remote-control/shell';
 import {
   consumeW5Metadata,
   prepareW5Metadata,
@@ -74,7 +74,13 @@ import { isFilesOnlyRestoreGitless } from './files-only-restore-git';
 import { randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { listUnmanagedWorktreeRepositories } from './unmanaged-worktree-repository';
+import { canonicalizePossiblyMissingPath } from './worktree-registration-removal';
 import { lstat, mkdir, readdir, rm } from 'node:fs/promises';
+import {
+  claimWorktreeMetadataDirectory,
+  removeEmptyWorktreeMetadataDirectory,
+  type WorktreeMetadataIdentity,
+} from './worktree-metadata-reservation';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import type { BrowserWindow } from 'electron';
@@ -158,6 +164,7 @@ import {
   isBranchNameAvailable,
   isAncestor,
   isRegisteredWorktreePath,
+  listRegisteredWorktreePaths,
   listCheckedOutBranches,
   pruneWorktrees,
   removeWindowsWorktreeReparsePoints,
@@ -482,6 +489,7 @@ async function seedCreatedWorktreePanelLayoutMode(
 interface ReservedWorktree {
   id: string;
   metadataDir: string;
+  metadataIdentity?: WorktreeMetadataIdentity;
 }
 
 interface PersistedReservation {
@@ -1909,6 +1917,8 @@ async function reserveWorktreeMetadataDir(
   workspaceId: string,
   candidateIds: Set<string>,
   claimedId?: string,
+  onReserved?: () => void,
+  captureIdentity = false,
 ): Promise<ReservedWorktree> {
   for (let attempt = 0; attempt < MAX_RESERVATION_ATTEMPTS; attempt += 1) {
     // The claim is tried on the first attempt only; on EEXIST it joins the
@@ -1920,8 +1930,12 @@ async function reserveWorktreeMetadataDir(
     const metadataDir = getWorktreeDataDir(workspaceId, id);
     await mkdir(dirname(metadataDir), { recursive: true });
     try {
-      await mkdir(metadataDir, { recursive: false });
-      return { id, metadataDir };
+      const metadataIdentity = await claimWorktreeMetadataDirectory(
+        metadataDir,
+        onReserved,
+        captureIdentity,
+      );
+      return { id, metadataDir, metadataIdentity };
     } catch (error) {
       if (isNodeErrorCode(error, 'EEXIST')) {
         candidateIds.add(id);
@@ -1934,18 +1948,47 @@ async function reserveWorktreeMetadataDir(
   throw new Error('Failed to reserve a unique worktree id after 8 attempts');
 }
 
-/** Whether the reserved id was already listed, so nothing was written. */
+/** Whether the reservation encountered an already-listed id. */
 async function stageWorktreeCreationReservation(
   workspaceId: string,
   decision: WorktreeCreationReservationDecision,
   expectedRevision: number | undefined,
+  onAdmitted?: () => void,
+  options?: { persistCollisionCleanup?: false },
 ): Promise<boolean> {
   const reserved = await applyWorktreeCreationReservation(
     workspaceId,
     decision,
     { expectedRevision },
+    onAdmitted,
+    options,
   );
   return reserved.status === 'collision';
+}
+
+async function isRegisteredCreationCheckoutPath(
+  repositoryPath: string,
+  checkoutPath: string,
+): Promise<boolean> {
+  if (await isRegisteredWorktreePath(repositoryPath, checkoutPath)) return true;
+  // Missing-parent evidence supplements the legacy probe; its unavailability
+  // must not become a new admission refusal.
+  const registeredPaths = await listRegisteredWorktreePaths(
+    repositoryPath,
+  ).catch(() => new Set<string>());
+  if (registeredPaths.size === 0) return false;
+  if (registeredPaths.has(checkoutPath)) return true;
+  const canonicalCheckout = await canonicalizePossiblyMissingPath(
+    checkoutPath,
+  ).catch(() => checkoutPath);
+  for (const registeredPath of Array.from(registeredPaths)) {
+    // A missing checkout can still be registered under a replaced parent.
+    const canonicalRegistered = await canonicalizePossiblyMissingPath(
+      registeredPath,
+    ).catch(() => registeredPath);
+    if (canonicalRegistered === canonicalCheckout) return true;
+  }
+  return false;
 }
 
 async function reserveAndPersistWorktree(
@@ -1964,14 +2007,21 @@ async function reserveAndPersistWorktree(
     ? []
     : await readWorkspaceWorktrees(
         workspaceId,
-        boundaryCommit?.expectedRevisions || boundaryCommit?.beforeDecision
+        keyed ||
+          boundaryCommit?.expectedRevisions ||
+          boundaryCommit?.beforeDecision
           ? { persistRemovalCleanup: false }
           : undefined,
       );
   const candidateIds = new Set(
     existingWorktreeIds ?? persistedWorktrees.map((worktree) => worktree.id),
   );
-  for (const id of Array.from(await collectReservedWorktreeIds(workspaceId))) {
+  for (const id of Array.from(
+    await collectReservedWorktreeIds(
+      workspaceId,
+      keyed ? { persistRemovalCleanup: false } : undefined,
+    ),
+  )) {
     candidateIds.add(id);
   }
   // The claim becomes a directory name, so only a generator-shaped id for
@@ -1984,108 +2034,173 @@ async function reserveAndPersistWorktree(
       ? claimedWorktreeId
       : undefined;
 
+  let candidatesCleaned = true;
   for (let attempt = 0; attempt < MAX_RESERVATION_ATTEMPTS; attempt += 1) {
-    keyed?.attempt.beforeEffects();
     boundaryAttempt?.beforeEffects();
-    const reservation = await reserveWorktreeMetadataDir(
-      workspaceId,
-      candidateIds,
-      attempt === 0 ? claim : undefined,
-    );
-    if (isCandidateUsable) {
-      let usable = false;
-      try {
-        usable = await isCandidateUsable(reservation.id);
-      } catch (error) {
-        await rm(reservation.metadataDir, { recursive: true, force: true });
-        throw error;
-      }
-      if (!usable) {
-        await rm(reservation.metadataDir, { recursive: true, force: true });
-        candidateIds.add(reservation.id);
-        continue;
-      }
-    }
-
-    const worktree = buildWorktree(reservation.id);
-    if (worktree.creation) {
-      for (const checkout of worktree.creation.checkouts) {
-        // A metadata reservation proves nothing about an existing checkout.
-        const exists = await lstat(checkout.checkoutPath).then(
-          () => true,
-          (error: unknown) => {
-            if (isNodeErrorCode(error, 'ENOENT')) return false;
-            throw error;
-          },
-        );
-        if (
-          exists ||
-          (await isRegisteredWorktreePath(
-            checkout.repositoryPath,
-            checkout.checkoutPath,
-          ))
-        ) {
-          await rm(reservation.metadataDir, { recursive: true, force: true });
-          refuseWorktreeCreation(
-            'checkout-reserved',
-            `Checkout path "${checkout.checkoutPath}" is already in use`,
-          );
-        }
-      }
-    }
-    let collision = false;
-
+    let reservation: ReservedWorktree;
+    let acquired = false;
     try {
-      await commitW5BoundaryStep(
-        boundaryCommit,
-        boundaryCommit ? w5CompositionLocks({ lists: [workspaceId] }) : [],
-        async () => {
-          collision = await stageWorktreeCreationReservation(
-            workspaceId,
-            { kind: 'worktree.create.reserve', worktree, sidebarItemGroupId },
-            expectedRevision,
-          );
+      reservation = await reserveWorktreeMetadataDir(
+        workspaceId,
+        candidateIds,
+        attempt === 0 ? claim : undefined,
+        (): void => {
+          acquired = true;
+          keyed?.attempt.beforeEffects();
         },
+        keyed !== undefined,
       );
     } catch (error) {
-      if (keyed) throw error;
-      // Reconciliation can fail after the row is durable. Only remove the
-      // reservation when an authoritative read confirms it is unregistered.
-      let unregistered = false;
-      try {
-        const current = await readWorkspaceWorktreesDetailed(workspaceId);
-        // A partial read leaves out rows it cannot read, which could be
-        // this reservation's.
-        unregistered =
-          (current.authority === 'ok' || current.authority === 'absent') &&
-          !current.worktrees.some((entry) => entry.id === reservation.id);
-      } catch {
-        // Unknown registry state must retain potentially registered metadata.
-      }
-      if (unregistered)
-        await rm(reservation.metadataDir, { recursive: true, force: true });
+      if (keyed && !acquired && candidatesCleaned)
+        throw keyed.attempt.confirmEffectsAbsent(normalizeError(error));
       throw error;
     }
+    const removeEmptyReservation = async (): Promise<void> => {
+      if (!keyed) {
+        await rm(reservation.metadataDir, { recursive: true, force: true });
+        return;
+      }
+      await removeEmptyWorktreeMetadataDirectory(
+        reservation.metadataDir,
+        reservation.metadataIdentity,
+      );
+    };
+    const discardCandidate = async (): Promise<void> => {
+      try {
+        await removeEmptyReservation();
+      } catch (error) {
+        if (!keyed) throw error;
+        // Preserve unproved material, but keep trying other available ids.
+        candidatesCleaned = false;
+      }
+    };
+    let publicationStarted = false;
+    try {
+      if (isCandidateUsable) {
+        let usable = false;
+        try {
+          usable = await isCandidateUsable(reservation.id);
+        } catch (error) {
+          if (!keyed) await removeEmptyReservation();
+          throw error;
+        }
+        if (!usable) {
+          await discardCandidate();
+          candidateIds.add(reservation.id);
+          continue;
+        }
+      }
 
-    if (!collision) {
-      return {
-        id: reservation.id,
-        metadataDir: reservation.metadataDir,
-        worktree,
-      };
+      const worktree = buildWorktree(reservation.id);
+      if (worktree.creation) {
+        for (const checkout of worktree.creation.checkouts) {
+          // A metadata reservation proves nothing about an existing checkout.
+          const exists = await lstat(checkout.checkoutPath).then(
+            () => true,
+            (error: unknown) => {
+              if (isNodeErrorCode(error, 'ENOENT')) return false;
+              throw error;
+            },
+          );
+          if (
+            exists ||
+            (await isRegisteredCreationCheckoutPath(
+              checkout.repositoryPath,
+              checkout.checkoutPath,
+            ))
+          ) {
+            if (!keyed) await removeEmptyReservation();
+            refuseWorktreeCreation(
+              'checkout-reserved',
+              `Checkout path "${checkout.checkoutPath}" is already in use`,
+            );
+          }
+        }
+      }
+      let collision = false;
+
+      try {
+        publicationStarted = !keyed;
+        await commitW5BoundaryStep(
+          boundaryCommit,
+          boundaryCommit ? w5CompositionLocks({ lists: [workspaceId] }) : [],
+          async () => {
+            collision = await stageWorktreeCreationReservation(
+              workspaceId,
+              { kind: 'worktree.create.reserve', worktree, sidebarItemGroupId },
+              expectedRevision,
+              () => {
+                publicationStarted = true;
+              },
+              keyed ? { persistCollisionCleanup: false } : undefined,
+            );
+          },
+        );
+      } catch (error) {
+        if (keyed) throw error;
+        // Reconciliation can fail after the row is durable. Only remove the
+        // reservation when an authoritative read confirms it is unregistered.
+        let unregistered = false;
+        try {
+          const current = await readWorkspaceWorktreesDetailed(workspaceId);
+          // A partial read leaves out rows it cannot read, which could be
+          // this reservation's.
+          unregistered =
+            (current.authority === 'ok' || current.authority === 'absent') &&
+            !current.worktrees.some((entry) => entry.id === reservation.id);
+        } catch {
+          // Unknown registry state must retain potentially registered metadata.
+        }
+        if (unregistered)
+          await rm(reservation.metadataDir, { recursive: true, force: true });
+        throw error;
+      }
+
+      if (!collision) {
+        return {
+          id: reservation.id,
+          metadataDir: reservation.metadataDir,
+          worktree,
+        };
+      }
+
+      await discardCandidate();
+      candidateIds.add(reservation.id);
+    } catch (error) {
+      // Only keyed creates add cleanup for thrown pre-publication probes;
+      // unkeyed candidate-probe, refusal and collision cleanup stays local.
+      if (!publicationStarted && keyed) {
+        let removed = false;
+        try {
+          await removeEmptyReservation();
+          removed = true;
+        } catch {
+          // Failed cleanup retains uncertainty, but never replaces the cause.
+        }
+        if (removed && candidatesCleaned)
+          throw keyed.attempt.confirmEffectsAbsent(normalizeError(error));
+      }
+      throw error;
     }
-
-    await rm(reservation.metadataDir, { recursive: true, force: true });
-    candidateIds.add(reservation.id);
   }
 
-  throw new Error('Failed to reserve a unique worktree id after 8 attempts');
+  const exhausted = new Error(
+    'Failed to reserve a unique worktree id after 8 attempts',
+  );
+  // Every rejected candidate was removed and every collision decision returned.
+  throw candidatesCleaned && keyed
+    ? keyed.attempt.confirmEffectsAbsent(exhausted)
+    : exhausted;
 }
 
 async function collectReservedWorktreeIds(
   workspaceId: string,
+  options?: { persistRemovalCleanup?: false },
 ): Promise<Set<string>> {
-  const ids = await listCompatibilitySymlinkReservedWorktreeIds(workspaceId);
+  const ids = await listCompatibilitySymlinkReservedWorktreeIds(
+    workspaceId,
+    options,
+  );
   for (const root of [
     getWorkspaceWorktreesRootDir(workspaceId),
     getWorktreeDataRootDir(workspaceId),
@@ -3189,12 +3304,50 @@ async function removeWorktreeRecord(
   return removedWorktrees.length > 0;
 }
 
+/** Refreshing refs during admission is not checkout or publication uncertainty.
+ * Keep fetch's ordinary accounting everywhere else, including setup. */
+function creationPreparationAttempt(
+  attempt: W5KeyedAttempt | undefined,
+): W5KeyedAttempt | undefined {
+  return attempt ? { ...attempt, beforeEffects: (): void => {} } : undefined;
+}
+
+async function withCreationFailureAccounting<T>(
+  options: CreateWorktreeServiceOptions,
+  create: (options: CreateWorktreeServiceOptions) => Promise<T>,
+): Promise<T> {
+  const keyed = options.w5KeyedCreation;
+  if (!keyed) return create(options);
+  let effectsStarted = false;
+  const attempt: W5KeyedAttempt = {
+    ...keyed.attempt,
+    beforeEffects: (): void => {
+      effectsStarted = true;
+      keyed.attempt.beforeEffects();
+    },
+    confirmEffectsAbsent: (error): Error => {
+      effectsStarted = false;
+      return keyed.attempt.confirmEffectsAbsent(error);
+    },
+  };
+  try {
+    return await create({ ...options, w5KeyedCreation: { ...keyed, attempt } });
+  } catch (error) {
+    // These readers and branch/base probes cannot allocate a checkout or
+    // publish a row. Do not teach the generic keyed runner to release errors.
+    if (!effectsStarted) throw attempt.validationError(normalizeError(error));
+    throw error;
+  }
+}
+
 export function createSingleRepoWorktree(
   ...args: Parameters<typeof createAdmittedSingleRepoWorktree>
 ): Promise<CreateWorktreeResponse> {
   // Admitted before git checks, the metadata reservation and its list row.
-  return withStorageAdmission([WORKTREE_LIST_STORAGE], () =>
-    createAdmittedSingleRepoWorktree(...args),
+  return withCreationFailureAccounting(args[0], (options) =>
+    withStorageAdmission([WORKTREE_LIST_STORAGE], () =>
+      createAdmittedSingleRepoWorktree(options),
+    ),
   );
 }
 
@@ -3202,6 +3355,9 @@ async function createAdmittedSingleRepoWorktree(
   options: CreateWorktreeServiceOptions,
 ): Promise<CreateWorktreeResponse> {
   const attempt = options.w5KeyedCreation?.attempt ?? options.w5BoundaryAttempt;
+  const preparationAttempt = options.w5KeyedCreation
+    ? creationPreparationAttempt(attempt)
+    : attempt;
   validateId(options.workspaceId, 'workspaceId');
   const selection = resolveWorktreeCreationSelection(options, 'single-repo');
   if (options.baseWorktreeId) {
@@ -3240,7 +3396,7 @@ async function createAdmittedSingleRepoWorktree(
     await ensureExistingBranchIsUsable(
       referenceRepoPath,
       existingBranch,
-      attempt,
+      preparationAttempt,
       options.existingBranchNamespace,
     );
   }
@@ -3254,7 +3410,7 @@ async function createAdmittedSingleRepoWorktree(
       referenceRepoPath,
       options.baseBranch,
       options.allowBaseBranchNetwork !== false,
-      attempt,
+      preparationAttempt,
     );
   } else if (options.baseWorktreeId) {
     const baseWorktreePath = getWorktreeDir(
@@ -3880,8 +4036,10 @@ export function createMultiRepoWorktree(
   ...args: Parameters<typeof createAdmittedMultiRepoWorktree>
 ): Promise<CreateWorkspaceWorktreeResponse> {
   // Admitted before git checks, the metadata reservation and its list row.
-  return withStorageAdmission([WORKTREE_LIST_STORAGE], () =>
-    createAdmittedMultiRepoWorktree(...args),
+  return withCreationFailureAccounting(args[0], (options) =>
+    withStorageAdmission([WORKTREE_LIST_STORAGE], () =>
+      createAdmittedMultiRepoWorktree(options),
+    ),
   );
 }
 
@@ -3889,6 +4047,9 @@ async function createAdmittedMultiRepoWorktree(
   options: CreateWorktreeServiceOptions,
 ): Promise<CreateWorkspaceWorktreeResponse> {
   const attempt = options.w5KeyedCreation?.attempt ?? options.w5BoundaryAttempt;
+  const preparationAttempt = options.w5KeyedCreation
+    ? creationPreparationAttempt(attempt)
+    : attempt;
   validateId(options.workspaceId, 'workspaceId');
   const selection = resolveWorktreeCreationSelection(options, 'multi-repo');
   if (options.baseWorktreeId) {
@@ -3900,7 +4061,8 @@ async function createAdmittedMultiRepoWorktree(
   // (see its doc comment and docs/repo-shadow.md "Latency invariant").
   const workspace = await getWorkspaceById(
     options.workspaceId,
-    !!options.w5BoundaryCommit?.expectedRevisions ||
+    !!options.w5KeyedCreation ||
+      !!options.w5BoundaryCommit?.expectedRevisions ||
       !!options.w5BoundaryCommit?.beforeDecision,
   );
   if (workspace.type !== 'multi-repo') {
@@ -3989,7 +4151,7 @@ async function createAdmittedMultiRepoWorktree(
     await ensureExistingBranchIsUsable(
       referenceRepoPath,
       existingBranch,
-      attempt,
+      preparationAttempt,
     );
   }
   if (options.baseBranch) {
@@ -3997,14 +4159,14 @@ async function createAdmittedMultiRepoWorktree(
       repoPaths,
       options.baseBranch,
       options.allowBaseBranchNetwork !== false,
-      attempt,
+      preparationAttempt,
     );
   } else if (mappedBaseBranches) {
     baseResolutions = await resolveMappedMultiRepoBaseBranches(
       repoPaths,
       mappedBaseBranches,
       options.allowBaseBranchNetwork !== false,
-      attempt,
+      preparationAttempt,
     );
   }
   const trackedRepoBaseBranches = options.baseWorktreeId
