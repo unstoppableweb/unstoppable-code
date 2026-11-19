@@ -779,6 +779,70 @@ test('chat: a message sent from /chat runs on the desktop and its reply streams 
   openChatReply = reply;
 });
 
+/** The open composer's text, without the editor's placeholder. */
+function composerText(page) {
+  return composer(page).evaluate((element) => {
+    const copy = element.cloneNode(true);
+    for (const node of copy.querySelectorAll('[data-slate-placeholder]'))
+      node.remove();
+    return (copy.textContent ?? '').replace(/\uFEFF/g, '').trim();
+  });
+}
+
+/** Closes the open menu and deletes the `typed` text from the composer. */
+async function clearComposer(page, typed) {
+  await page.keyboard.press('Escape');
+  for (let index = 0; index < typed.length; index += 1)
+    await page.keyboard.press('Backspace');
+  await expect.poll(() => composerText(page), POLL).toBe('');
+}
+
+test('composer menus: the open chat’s / and @ menus and its Plugins picker are served by the computer over direct', async () => {
+  test.setTimeout(240_000);
+  const page = primary.page;
+  await expect(composer(page)).toBeVisible();
+  expect(await composerText(page)).toBe('');
+
+  // `/` lists the chat's inventory from the computer (CAN-7217).
+  await composer(page).click();
+  await page.keyboard.type('/');
+  await expect(
+    page
+      .locator('[data-testid^="remote-control-chat-capability-"]:visible')
+      .first(),
+  ).toBeVisible({ timeout: 60_000 });
+  await clearComposer(page, '/');
+
+  // `@` searches the demo worktree's files on the computer.
+  await page.keyboard.type('@status');
+  await expect(
+    page
+      .locator('[data-testid="remote-control-chat-file-result"]:visible')
+      .filter({ hasText: 'status.ts' })
+      .first(),
+  ).toBeVisible({ timeout: 60_000 });
+  await clearComposer(page, '@status');
+
+  // The Plugins picker reads the computer's catalog, which always lists the
+  // app's built-in skills.
+  await page
+    .locator('[data-testid="remote-control-chat-plus-button"]:visible')
+    .first()
+    .click();
+  await page.getByTestId('remote-control-chat-plus-plugins').click();
+  const picker = page.getByTestId('remote-control-plugins-modal');
+  await expect(picker).toBeVisible({ timeout: 30_000 });
+  await expect(picker.getByText(/pipeline[- ]writing/i).first()).toBeVisible({
+    timeout: 60_000,
+  });
+  await expect(picker.getByText(/^No plugins are available/)).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await expect(picker).toHaveCount(0);
+
+  expect(await composerText(page)).toBe('');
+  expect(primary.remoteControlRequests).toEqual([]);
+});
+
 test('existing desktop chats: a chat started on the desktop lists in its worktree with its transcript over direct', async () => {
   test.setTimeout(240_000);
   const seeded = await registerChatReply('SEEDED');
@@ -1307,7 +1371,9 @@ test('owner: the relay’s device cap refuses another browser as too_many_device
 // ---------------------------------------------------------------------------
 
 test('inventory: the synced desktop inventory and the Marketplace serve over direct', async () => {
-  test.setTimeout(600_000);
+  // CAN-7262 added one more Allow incoming off/on cycle (a relay leave and
+  // rejoin) to prove the unpause report clears the paused flag.
+  test.setTimeout(720_000);
   const profile = await openProfile(await seedSessionCookie(userA.userId));
   try {
     const page = await profile.open('/account/plugins');
@@ -1422,6 +1488,20 @@ test('inventory: the synced desktop inventory and the Marketplace serve over dir
       label: 'the desktop to leave the relay',
     });
 
+    // With the switch on and Allow incoming off, the desktop reports its
+    // uploads paused, and the account read says so (CAN-7262).
+    const readUploadsPaused = async () =>
+      (await readInventory()).body.device?.uploadsPaused;
+    await expect
+      .poll(async () => (await readUploadsPaused())?.reason, {
+        ...POLL,
+        timeout: 60_000,
+      })
+      .toBe('allow_incoming_off');
+    const pausedSince = (await readUploadsPaused())?.since;
+    expect(typeof pausedSince).toBe('string');
+    expect(new Date(pausedSince).toISOString()).toBe(pausedSince);
+
     // Turning this computer's sync switch off deletes its documents on the
     // web, and the settings row returns to idle once the delete lands.
     const optedOut = await desktop.window.evaluate(() =>
@@ -1464,6 +1544,32 @@ test('inventory: the synced desktop inventory and the Marketplace serve over dir
       )
       .toBe(true);
     expect(await ownDocumentCount()).toBeGreaterThan(0);
+    // The opt-out removed the device's status row with its documents.
+    await expect
+      .poll(readUploadsPaused, { ...POLL, timeout: 60_000 })
+      .toBeUndefined();
+
+    // One more cycle with the documents in place: Allow incoming off pauses,
+    // and turning it back on reports the unpause, which alone clears the
+    // flag when nothing changed (no document PUT is sent).
+    await desktop.window.evaluate(() =>
+      window.api.remoteControl.setAllowIncoming(false),
+    );
+    await expect
+      .poll(async () => (await readUploadsPaused())?.reason, {
+        ...POLL,
+        timeout: 60_000,
+      })
+      .toBe('allow_incoming_off');
+    await desktop.window.evaluate(() =>
+      window.api.remoteControl.setAllowIncoming(true),
+    );
+    await relay.waitFor((ids) => ids.has(desktop.deviceId), {
+      label: 'the desktop to rejoin the relay after the pause',
+    });
+    await expect
+      .poll(readUploadsPaused, { ...POLL, timeout: 60_000 })
+      .toBeUndefined();
     // The paired browser the later cases drive reconnects on its own.
     if (primary?.page) {
       await waitForOwnerState(

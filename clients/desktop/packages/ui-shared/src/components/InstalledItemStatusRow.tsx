@@ -32,6 +32,7 @@ import {
   InstalledItemStatusUnavailable,
 } from './InstalledItemStatusPicker';
 import { Notice } from './Notice';
+import { useItemStateMarks } from './ItemStateMark';
 import {
   DETAIL_FACT_GRID_CLASS,
   DETAIL_FACT_VALUE_OFFSET_CLASS,
@@ -203,6 +204,15 @@ function InstalledItemMoreMenu({
   const menuId = useId();
   // A host's own rows (a plugin's Update) join this menu, above Uninstall.
   const hostItems = useDetailMoreItems();
+  // New Customize: a destructive host row (an MCP server's scoped Delete…)
+  // already removes the item, so a second Uninstall… beside it would read as
+  // the same action. A disabled Delete… removes nothing, so Uninstall stays.
+  const newCustomize = useItemStateMarks();
+  const hostRemoves =
+    newCustomize &&
+    hostItems.some(
+      (item) => item.destructive === true && item.disabled !== true,
+    );
   return (
     <>
       <span ref={anchorRef} className="inline-flex">
@@ -240,15 +250,19 @@ function InstalledItemMoreMenu({
           <DetailMoreMenuRows
             items={[
               ...hostItems,
-              {
-                id: 'uninstall',
-                label: 'Uninstall…',
-                icon: <TrashIcon />,
-                testId: `${testId}-uninstall`,
-                onSelect: onUninstall,
-                disabled,
-                destructive: true,
-              },
+              ...(hostRemoves
+                ? []
+                : [
+                    {
+                      id: 'uninstall',
+                      label: 'Uninstall…',
+                      icon: <TrashIcon />,
+                      testId: `${testId}-uninstall`,
+                      onSelect: onUninstall,
+                      disabled,
+                      destructive: true,
+                    },
+                  ]),
             ]}
             onClose={(): void => {
               setOpen(false);

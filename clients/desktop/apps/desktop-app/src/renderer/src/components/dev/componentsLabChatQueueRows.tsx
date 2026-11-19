@@ -727,6 +727,14 @@ const UNSAVED_EDITS = [
 /** A cleared edit, kept as empty text: Restore has nothing to put back. */
 const CLEARED_EDITS = [{ id: 'entry-2', text: '' }];
 
+const UNCONFIRMED_EDITS = [
+  {
+    id: 'entry-3',
+    text: 'Book Studio B for Thursday at 3pm.',
+    unconfirmed: true,
+  },
+];
+
 /**
  * A queued message's edit that wasn't saved (CAN-6799), the same on every
  * host since CAN-6801 gave the web Restore.
@@ -745,6 +753,13 @@ export function UnsavedMessageEditsSpecimen(): JSX.Element {
         <SpecimenCell label="A cleared edit: Restore keeps the card">
           <UnsavedMessageEdits
             drafts={CLEARED_EDITS}
+            onDismiss={(): void => undefined}
+            onRestore={(): void => undefined}
+          />
+        </SpecimenCell>
+        <SpecimenCell label="A cloud save whose answer never came: it may have saved (CAN-7196)">
+          <UnsavedMessageEdits
+            drafts={UNCONFIRMED_EDITS}
             onDismiss={(): void => undefined}
             onRestore={(): void => undefined}
           />

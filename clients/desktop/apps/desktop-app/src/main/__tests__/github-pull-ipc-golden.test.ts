@@ -71,6 +71,7 @@ jest.mock('../observability', () => ({
 }));
 
 import { registerGitHubHandlers } from '../ipc/github';
+import * as gitHelpers from '../lib/git';
 import {
   createDesktopRuntime,
   type DesktopCanopyDispatcher,
@@ -692,6 +693,144 @@ describe('worker.git.pull expectedHeadSha', () => {
     });
     expect(git(path, ['rev-parse', 'HEAD'])).toBe(tip);
   });
+});
+
+// CAN-7169: a clone checks out whatever branch the remote's HEAD names, so a
+// hostile remote can leave a local branch named like an option. Both
+// shapes reach the pull through every path and are refused before Git runs:
+// no marker program runs and HEAD does not move.
+describe.each(['--upload-pack=sub/pwned', '-uxyz'])(
+  'an existing branch named %s',
+  (hostile) => {
+    const marker = (): string => join(dir, 'PWNED');
+    const safeId = (worktreeId: string): string =>
+      `${worktreeId}-${hostile.length}`;
+
+    /** A checkout whose current branch is `hostile` and is behind origin. */
+    const hostileCheckout = (worktreeId: string): string => {
+      const path = singleWorktree(worktreeId);
+      const tip = advanceOrigin(worktreeId, `${worktreeId}-remote.txt`);
+      git(origin, ['update-ref', `refs/heads/${hostile}`, tip]);
+      git(path, ['update-ref', `refs/heads/${hostile}`, 'HEAD']);
+      git(path, ['symbolic-ref', 'HEAD', `refs/heads/${hostile}`]);
+      git(path, ['config', `branch.${hostile}.remote`, 'origin']);
+      git(path, ['config', `branch.${hostile}.merge`, `refs/heads/${hostile}`]);
+      mkdirSync(join(path, 'sub'), { recursive: true });
+      writeFileSync(
+        join(path, 'sub', 'pwned'),
+        `#!/bin/sh\necho ran > '${marker()}'\nexec git-upload-pack "$@"\n`,
+        { mode: 0o755 },
+      );
+      writeFileSync(join(commonDirOf(path), 'info', 'exclude'), 'sub/\n', {
+        flag: 'a',
+      });
+      return path;
+    };
+    afterEach(() => {
+      rmSync(marker(), { force: true });
+      git(origin, ['update-ref', '-d', `refs/heads/${hostile}`]);
+    });
+
+    it('refuses the IPC pull before Git runs', async () => {
+      const id = safeId('hostile-ipc');
+      const path = hostileCheckout(id);
+      const head = git(path, ['rev-parse', 'HEAD']);
+      const response = await pull(single(id));
+      expect(existsSync(marker())).toBe(false);
+      expect(response.repos).toEqual([]);
+      expect(response.failedRepos).toHaveLength(1);
+      expect(git(path, ['rev-parse', 'HEAD'])).toBe(head);
+      expect(git(path, ['symbolic-ref', 'HEAD'])).toBe(`refs/heads/${hostile}`);
+    });
+
+    it('refuses worker.git.pull before Git runs', async () => {
+      if (!runtime) throw new Error('no runtime');
+      const id = safeId('hostile-worker');
+      const path = hostileCheckout(id);
+      const head = git(path, ['rev-parse', 'HEAD']);
+      const outcome: unknown = await runtime
+        .instruction(
+          'worker.git.pull',
+          {
+            scope: { workspaceId: SINGLE, worktreeId: id },
+            branch: hostile,
+            strategy: 'fast-forward',
+          },
+          { caller: { ...desktopCaller, grants: ['worker.git.write'] } },
+        )
+        .then(
+          () => 'pulled',
+          (error: unknown) => error,
+        );
+      expect(existsSync(marker())).toBe(false);
+      expect(outcome).toMatchObject({
+        payload: {
+          kind: 'invalid_argument',
+          message: 'The branch name is not a valid branch name.',
+        },
+      });
+      expect(git(path, ['rev-parse', 'HEAD'])).toBe(head);
+    });
+
+    it.each(['pullBranchFastForward', 'pullBranchRebase'] as const)(
+      'refuses an untyped call to %s before Git runs',
+      async (helper) => {
+        const id = safeId(`hostile-${helper.length}`);
+        const path = hostileCheckout(id);
+        const head = git(path, ['rev-parse', 'HEAD']);
+        // An untyped caller: the helper's runtime check still refuses it.
+        const outcome: unknown = await Promise.resolve()
+          .then((): unknown =>
+            Reflect.apply(gitHelpers[helper], undefined, [path, hostile]),
+          )
+          .then(
+            () => 'pulled',
+            (error: unknown) => error,
+          );
+        expect(existsSync(marker())).toBe(false);
+        expect(outcome).toMatchObject({
+          message: 'The branch name is not a valid branch name.',
+        });
+        expect(git(path, ['rev-parse', 'HEAD'])).toBe(head);
+      },
+    );
+
+    it('refuses to merge it into a local base before Git runs', async () => {
+      const id = safeId('hostile-merge');
+      hostileCheckout(id);
+      const mainTip = git(repo, ['rev-parse', 'refs/heads/main']);
+      const outcome: unknown = await gitHelpers
+        .mergeBranchIntoLocalBase(repo, hostile, 'main')
+        .then(
+          () => 'merged',
+          (error: unknown) => error,
+        );
+      expect(existsSync(marker())).toBe(false);
+      expect(outcome).toMatchObject({
+        message: 'The branch name is not a valid branch name.',
+      });
+      expect(git(repo, ['rev-parse', 'refs/heads/main'])).toBe(mainTip);
+    });
+  },
+);
+
+// CAN-7169: a branch named like an option never reaches `git reset` as one.
+// Before, `reset --hard --hard` parsed the name as the option. `reset` can't
+// take `--end-of-options` on Git before 2.43, so the name is refused first.
+it('refuses to reset to a branch named --hard before Git runs', async () => {
+  const path = singleWorktree('hostile-reset');
+  const older = git(path, ['rev-parse', 'HEAD']);
+  commit(path, 'hostile-reset-local.txt');
+  const head = git(path, ['rev-parse', 'HEAD']);
+  git(path, ['update-ref', 'refs/heads/--hard', older]);
+  try {
+    await expect(gitHelpers.resetHardTo(path, '--hard')).rejects.toThrow(
+      'The revision is not a valid revision.',
+    );
+    expect(git(path, ['rev-parse', 'HEAD'])).toBe(head);
+  } finally {
+    git(path, ['update-ref', '-d', 'refs/heads/--hard']);
+  }
 });
 
 describe('github:pull (multi-repository)', () => {

@@ -35,7 +35,8 @@ import type {
   PipelineLedgerAttemptOutcome,
 } from '@canopy/execution-engine/node/pipelines/executor/types';
 import { getCodexGatewayProxyService } from '../agents/codex-gateway-proxy-service';
-import { createTrackedPlan, updateTrackedPlan } from '../lib/plan-persistence';
+import type { ExecutionPlanPersistenceHooks } from '@canopy/execution-engine/node/pipelines/executor/types';
+import { pipelineOwnerPlanWriter } from '../canopy-runtime/plan-host-writers';
 import {
   resolveClaudeModAdmissionContext,
   resolveClaudeModConfigDirectory,
@@ -265,6 +266,9 @@ export class PipelineOwnerRunContext {
   constructor(
     private readonly run: PipelineOwnerRun,
     mcpDeps: PipelineOwnerMcpDeps = DESKTOP_MCP_DEPS,
+    private readonly planWriter: ExecutionPlanPersistenceHooks = pipelineOwnerPlanWriter(
+      run.executionId,
+    ),
   ) {
     this.mcp = new PipelineOwnerMcpCredentials(mcpDeps);
   }
@@ -708,7 +712,7 @@ export class PipelineOwnerRunContext {
         const kept = this.plans.values().next();
         if (action.initial === true && !kept.done)
           return settled({ kind: 'plan.create', planId: kept.value });
-        const plan = await createTrackedPlan({
+        const plan = await this.planWriter.createTrackedPlan({
           projectId,
           worktreeId,
           source: 'pipeline',
@@ -728,7 +732,7 @@ export class PipelineOwnerRunContext {
           return failed(FOREIGN_PLAN);
         // As the in-process upsert writes it: a link while the run runs, an
         // approval with any changed content once it ends.
-        await updateTrackedPlan({
+        await this.planWriter.updateTrackedPlan({
           projectId,
           worktreeId,
           planId: action.planId,

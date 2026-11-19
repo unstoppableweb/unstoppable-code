@@ -684,6 +684,7 @@ export async function pushCheckedCommit(input: {
     await git(repoPath, [
       'branch',
       `--set-upstream-to=origin/${target.branch}`,
+      '--',
       target.branch,
     ]).catch(() => undefined);
 }

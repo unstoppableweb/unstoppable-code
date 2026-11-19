@@ -171,6 +171,41 @@ describe('restoring an unsaved queued edit (CAN-6801)', () => {
     expect(restoreButton()).not.toBeNull();
   });
 
+  // CAN-7196 (SWAN Q3): an edit whose save's answer never came may have
+  // saved, so its card says it couldn't confirm it, never that it is unsaved,
+  // and keeps the same text and actions.
+  it('labels an edit that may have saved "Couldn\'t confirm this edit", with the same text and actions', () => {
+    act(() => {
+      root.render(
+        <ChatWithKeptEdit
+          chatId="chat-a"
+          drafts={[
+            { id: 'q-1', text: 'Draft the launch plan', unconfirmed: true },
+            { id: 'q-2', text: 'Book the room' },
+          ]}
+          composers={['chat-a']}
+        />,
+      );
+    });
+    const cards = [
+      ...container.querySelectorAll<HTMLElement>(
+        '[data-testid="queued-message-unsaved-edit"]',
+      ),
+    ];
+    expect(cards).toHaveLength(2);
+    const [unconfirmed, unsaved] = cards;
+    expect(unconfirmed?.textContent).toContain("Couldn't confirm this edit");
+    expect(unconfirmed?.textContent).not.toContain('Unsaved edit');
+    expect(unconfirmed?.textContent).toContain('Draft the launch plan');
+    expect(unsaved?.textContent).toContain('Unsaved edit');
+    for (const card of cards)
+      expect(
+        [...card.querySelectorAll('button')].map(
+          (button) => button.textContent,
+        ),
+      ).toEqual(expect.arrayContaining(['Copy', 'Restore', 'Dismiss']));
+  });
+
   it('adds a later edit after the draft, a blank line apart', () => {
     act(() => {
       root.render(

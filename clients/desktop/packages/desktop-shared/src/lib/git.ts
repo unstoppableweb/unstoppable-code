@@ -1,4 +1,10 @@
 import {
+  assertGitRefName,
+  parseGitBranchName,
+  parseRemoteDefaultBranch,
+  type GitRefName,
+} from '@canopy/core-runtime/node/git';
+import {
   assertWorkingDirectoryAvailable,
   workingDirectoryLaunchError,
 } from '../node/lib/working-directory';
@@ -24,7 +30,7 @@ const REMOTE_DEFAULT_BRANCH_TIMEOUT_MS = 30_000;
 const REMOTE_DEFAULT_BRANCH_CACHE_TTL_MS = 60_000;
 
 interface RemoteDefaultBranchCacheEntry {
-  value: string;
+  value: GitRefName;
   expiresAt: number;
 }
 
@@ -32,7 +38,10 @@ const remoteDefaultBranchCache = new Map<
   string,
   RemoteDefaultBranchCacheEntry
 >();
-const remoteDefaultBranchInFlight = new Map<string, Promise<string | null>>();
+const remoteDefaultBranchInFlight = new Map<
+  string,
+  Promise<GitRefName | null>
+>();
 
 export type GitExecutableResolver = () => Promise<string>;
 
@@ -56,9 +65,9 @@ export function resetRemoteDefaultBranchCacheForTests(): void {
 }
 
 function awaitRemoteDefaultBranchResolution(
-  resolution: Promise<string | null>,
+  resolution: Promise<GitRefName | null>,
   options: { signal?: AbortSignal; timeoutMs?: number },
-): Promise<string | null> {
+): Promise<GitRefName | null> {
   if (options.signal?.aborted === true) {
     return Promise.reject(
       new DOMException('The operation was aborted', 'AbortError'),
@@ -155,7 +164,7 @@ async function getGitPath(repoPath: string, gitPath: string): Promise<string> {
 export async function getRemoteHeadBranch(
   repoPath: string,
   options: { signal?: AbortSignal; timeoutMs?: number } = {},
-): Promise<string | null> {
+): Promise<GitRefName | null> {
   const output = await runGit(
     ['ls-remote', '--symref', 'origin', 'HEAD'],
     repoPath,
@@ -164,15 +173,28 @@ export async function getRemoteHeadBranch(
       timeoutMs: options.timeoutMs ?? REMOTE_DEFAULT_BRANCH_TIMEOUT_MS,
     },
   );
-  return (
-    output.match(/^ref: refs\/heads\/([^\t\r\n]+)\tHEAD\r?$/m)?.[1] ?? null
-  );
+  return parseRemoteHeadOutput(output);
+}
+
+// CAN-7169: the remote names its HEAD, so only a valid branch name is a
+// default; anything else counts as no remote default.
+function parseRemoteHeadOutput(output: string): GitRefName | null {
+  const name = output.match(/^ref: refs\/heads\/([^\t\r\n]+)\tHEAD\r?$/m)?.[1];
+  return name === undefined
+    ? null
+    : parseRemoteDefaultBranch(name, 'remote-head');
+}
+
+// Local origin/HEAD comes from a clone or set-head, so it is remote-derived too.
+function parseOriginHeadRef(ref: string): GitRefName | null {
+  const name = ref.replace(/\r?\n$/, '').replace('refs/remotes/origin/', '');
+  return name === '' ? null : parseRemoteDefaultBranch(name, 'origin-head');
 }
 
 export async function getLocalRemoteHeadBranch(
   repoPath: string,
   options: { signal?: AbortSignal; timeoutMs?: number } = {},
-): Promise<string | null> {
+): Promise<GitRefName | null> {
   try {
     const ref = await runGit(
       ['symbolic-ref', 'refs/remotes/origin/HEAD'],
@@ -183,21 +205,23 @@ export async function getLocalRemoteHeadBranch(
         preserveWhitespace: true,
       },
     );
-    const branch = ref
-      .replace(/\r?\n$/, '')
-      .replace('refs/remotes/origin/', '');
-    return branch || null;
+    return parseOriginHeadRef(ref);
   } catch (error) {
     if (options.signal?.aborted === true) throw error;
     return null;
   }
 }
 
+/**
+ * Points the local origin/HEAD at a validated branch the remote reported,
+ * passed after `--` (CAN-7169).
+ */
 export async function setLocalRemoteHeadBranch(
   repoPath: string,
-  branch: string,
+  branch: GitRefName,
 ): Promise<void> {
-  await runGit(['remote', 'set-head', 'origin', branch], repoPath);
+  assertGitRefName(branch);
+  await runGit(['remote', 'set-head', 'origin', '--', branch], repoPath);
 }
 
 export async function getRemoteDefaultBranch(
@@ -208,7 +232,7 @@ export async function getRemoteDefaultBranch(
     allowNetwork?: boolean;
     preferRemote?: boolean;
   } = {},
-): Promise<string | null> {
+): Promise<GitRefName | null> {
   const gitOptions = {
     signal: options.signal,
     timeoutMs: options.timeoutMs ?? REMOTE_DEFAULT_BRANCH_TIMEOUT_MS,
@@ -280,7 +304,7 @@ async function resolveRemoteDefaultBranch(
     preferRemote?: boolean;
   },
   gitOptions: { signal?: AbortSignal; timeoutMs: number },
-): Promise<string | null> {
+): Promise<GitRefName | null> {
   if (options.allowNetwork !== false && options.preferRemote === true) {
     try {
       const remoteHead = await getRemoteHeadBranch(repoPath, gitOptions);
@@ -297,9 +321,7 @@ async function resolveRemoteDefaultBranch(
       repoPath,
       { ...gitOptions, preserveWhitespace: true },
     );
-    const branch = ref
-      .replace(/\r?\n$/, '')
-      .replace('refs/remotes/origin/', '');
+    const branch = parseOriginHeadRef(ref);
     if (branch) return branch;
   } catch (error) {
     if (options.signal?.aborted === true) throw error;
@@ -313,17 +335,17 @@ async function resolveRemoteDefaultBranch(
         repoPath,
         gitOptions,
       );
-      const headMatch = output.match(
-        /^ref: refs\/heads\/([^\t\r\n]+)\tHEAD\r?$/m,
-      );
-      if (headMatch?.[1]) return headMatch[1];
+      const remoteHead = parseRemoteHeadOutput(output);
+      if (remoteHead) return remoteHead;
     } catch (error) {
       if (options.signal?.aborted === true) throw error;
       // Remote HEAD could not be queried; try conventional local refs.
     }
   }
 
-  for (const candidate of ['main', 'master', 'develop']) {
+  for (const name of ['main', 'master', 'develop']) {
+    const candidate = parseGitBranchName(name);
+    if (!candidate) continue;
     try {
       await runGit(
         ['rev-parse', '--verify', `refs/remotes/origin/${candidate}`],

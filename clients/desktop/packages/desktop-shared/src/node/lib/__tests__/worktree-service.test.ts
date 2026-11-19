@@ -332,7 +332,8 @@ describe('desktop-shared node worktree service', () => {
       jest.spyOn(cliReads, 'runGit').mockImplementation(async (args, cwd) => {
         const output = await actual(args, cwd);
         if (args[0] === 'worktree' && args[1] === 'add') {
-          attemptedPath = args[4] ?? '';
+          // `worktree add -b <branch> -- <path> <start>` (CAN-7169).
+          attemptedPath = args[5] ?? '';
           throw primary;
         }
         return output;

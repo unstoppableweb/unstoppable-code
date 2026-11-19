@@ -10,6 +10,7 @@
  * runs as it always did. Agent writes never come through here.
  */
 import { isDeepStrictEqual } from 'node:util';
+import { isInstalledSharedDefinition } from '@canopy/desktop-shared/lib/automation-install';
 import {
   ownedPipelineToChatAction,
   type ChatAutomationAction,
@@ -26,7 +27,10 @@ import type { PipelineAgentAuthor } from '@canopy/execution-engine/types/pipelin
 import type { WorkspaceContext } from '@canopy/protocol/workspace-context';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import { isCoworkWorkspace } from '../lib/workspace-registry';
-import { readPipelineLocalMetadata } from '../pipelines/pipeline-local-metadata-store';
+import {
+  readPipelineLocalMetadata,
+  setUserPipelineOwnerAutomation,
+} from '../pipelines/pipeline-local-metadata-store';
 import { getStoredPipelineBySource } from '../pipelines/pipeline-service';
 import {
   convertsToOwnedChatPipeline,
@@ -346,12 +350,24 @@ export async function updateAutomationFromForm(
   const loaded =
     owned === undefined ? undefined : getStoredPipelineBySource('user', owned);
   const current = loaded?.success ? loaded.data : undefined;
+  // CAN-7285: a shared update that replaces a definition the share itself
+  // installed. It isn't a stale form, and it never regenerates that
+  // definition in place: a chat action converts back below into a new
+  // pipeline and the installed one stays, unowned, as a failed update's
+  // rollback expects. A pipeline converted here from a chat action keeps
+  // the stale-form refusal, so a hand edit is never lost.
+  const replacesInstalled =
+    stored !== undefined &&
+    owned !== undefined &&
+    appliesSharedUpdate(request, stored) &&
+    isInstalledSharedDefinition(stored.installedFrom, owned);
   // The form sends the chat action it loaded. When the workflow has been
   // changed by hand since, saving it would overwrite or delete that work:
   // refuse, and send the windows a fresh snapshot to reopen.
   if (
     stored &&
     owned !== undefined &&
+    !replacesInstalled &&
     request.action !== undefined &&
     request.action.type !== 'worktree_pipeline' &&
     !ownedPipelineMatchesChat(stored, current)
@@ -363,6 +379,7 @@ export async function updateAutomationFromForm(
     stored &&
     owned !== undefined &&
     current !== undefined &&
+    !replacesInstalled &&
     request.action !== undefined
   ) {
     const regenerated = await regenerateOwned(
@@ -393,12 +410,18 @@ export async function updateAutomationFromForm(
   if (!updated.ok || !updated.activity) return updated;
   // Converted back, or pointed at another pipeline: it no longer owns this one.
   // Delete the revision checked above; a write since then keeps the pipeline.
+  // CAN-7285: a shared update that drops a definition the share installed
+  // keeps it, unowned, as the package update contract keeps a dropped
+  // definition, so an update that fails later can still restore it. A
+  // pipeline converted here from a chat action goes as before.
   if (
     stored &&
     owned !== undefined &&
     ownedPipelineId(updated.activity) !== owned
-  )
-    await deleteOwnedPipeline(stored, current?.info.revision ?? null);
+  ) {
+    if (replacesInstalled) setUserPipelineOwnerAutomation(owned, null);
+    else await deleteOwnedPipeline(stored, current?.info.revision ?? null);
+  }
   // Only an edit of the action converts; switching it on or off doesn't.
   if (
     request.action !== undefined &&

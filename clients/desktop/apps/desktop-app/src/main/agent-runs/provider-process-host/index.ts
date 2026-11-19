@@ -1,6 +1,6 @@
 import type { ProviderProcessSpawner } from '@canopy/desktop-shared/node/provider-process/spawn';
 import { getExecutionHostPort } from '../../execution-host/utility-process-host';
-import { createProviderProcessHostClient } from './runner';
+import { createProviderProcessHostClient } from '@canopy/execution-engine/node/agent-host/process/provider-process-host/runner';
 
 /*
  * Electron main's provider spawner (CAN-4118): every provider CLI child is a

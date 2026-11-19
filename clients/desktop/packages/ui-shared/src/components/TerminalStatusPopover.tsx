@@ -4,6 +4,7 @@ import { BADGE_HOVER_CARD_SURFACE } from './ChatPreviewPopover';
 import { RichHoverCard } from './RichHoverTooltip';
 import { Stack } from './Stack';
 import type { WorktreeTerminalStatus } from './WorktreeRow';
+import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 
 function terminalStatusDisplayLabel(status: WorktreeTerminalStatus): string {
   switch (status) {
@@ -68,7 +69,10 @@ export function TerminalStatusPopover({
               >
                 <div className="flex items-center gap-1.5 text-xs">
                   <Dot tone={row.dotTone} />
-                  <span className="truncate fg-primary">{row.label}</span>
+                  {/* The label can be a user-assigned terminal or group name. */}
+                  <span className={`truncate fg-primary ${REPLAY_MASK_CLASS}`}>
+                    {row.label}
+                  </span>
                   <span className={`ml-auto shrink-0 ${row.statusClass}`}>
                     {row.statusText}
                   </span>

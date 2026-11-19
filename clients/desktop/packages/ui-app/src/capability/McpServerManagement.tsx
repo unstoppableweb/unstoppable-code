@@ -206,8 +206,9 @@ function McpServerHealthSectionForTarget({
   label = 'Health',
 }: McpServerHealthSectionProps): JSX.Element {
   const reasonId = useId();
-  // New Customize: auth states as a colored icon and plain text.
-  const neutralStatusText = useItemStateMarks();
+  // New Customize: auth states as a colored icon and plain text, and the
+  // Health row on one or two lines.
+  const newCustomize = useItemStateMarks();
   const badge = resolveMcpConnectionBadge(status, accountConnectionStatus);
   const lastCheckedAt = validTimestamp(status?.lastCheckedAt);
   const testable = configs.filter(
@@ -311,7 +312,14 @@ function McpServerHealthSectionForTarget({
     />
   );
   const lastCheckedNode = (
-    <p data-testid="mcp-health-last-checked" className="text-xs fg-tertiary">
+    <p
+      data-testid="mcp-health-last-checked"
+      className={
+        newCustomize
+          ? 'whitespace-nowrap text-xs fg-tertiary'
+          : 'text-xs fg-tertiary'
+      }
+    >
       {lastCheckedAt !== undefined
         ? `Last checked ${formatTimestamp(lastCheckedAt)}`
         : 'No recorded check'}
@@ -327,7 +335,7 @@ function McpServerHealthSectionForTarget({
             className="flex items-center gap-2 text-xs fg-secondary"
           >
             <span className="min-w-0 truncate">{config.name}</span>
-            {neutralStatusText ? (
+            {newCustomize ? (
               <StatusToneText
                 tone={mcpAuthStatusBadgeTone(
                   config.authStatus,
@@ -409,10 +417,27 @@ function McpServerHealthSectionForTarget({
       >
         <DetailFactList>
           <DetailFact label="Health">
-            {badgeNode}
-            {lastCheckedNode}
-            {testConnection !== undefined && (
-              <span className="ml-auto">{testButtons}</span>
+            {newCustomize ? (
+              // One or two lines: the status and check time together, the
+              // test button on the trailing edge, wrapping under on a narrow
+              // page.
+              <span className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1.5">
+                <span className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5">
+                  {badgeNode}
+                  {lastCheckedNode}
+                </span>
+                {testConnection !== undefined && (
+                  <span className="ml-auto">{testButtons}</span>
+                )}
+              </span>
+            ) : (
+              <>
+                {badgeNode}
+                {lastCheckedNode}
+                {testConnection !== undefined && (
+                  <span className="ml-auto">{testButtons}</span>
+                )}
+              </>
             )}
           </DetailFact>
         </DetailFactList>

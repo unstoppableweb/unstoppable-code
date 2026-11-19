@@ -451,6 +451,131 @@ describe('web core authority on the canopy-core:relay channel (CAN-4185 PR-C)', 
     advisor.dispose();
   });
 
+  it("a cloud project's description, default model and Trash retention reach only the web core, from the main window, narrowed to those fields (CAN-7053)", async () => {
+    const binding = jest.fn<
+      ReturnType<RelayBindingProvider>,
+      Parameters<RelayBindingProvider>
+    >(unreachable);
+    const relay = webCoreRelay(binding);
+    const advisor = webCoreRelay(binding, 'app-advisor');
+    const local = {
+      invoke: jest.fn(() =>
+        Promise.resolve({ ok: true as const, value: { from: 'local' } }),
+      ),
+    };
+    const targets = { local, webCore: relay };
+    const method = 'core.workspace.cowork.update';
+    const send = (
+      params: Record<string, unknown>,
+    ): ReturnType<typeof routeRendererRelayRequest> =>
+      routeRendererRelayRequest(targets, rendererEvent(), {
+        kind: 'request',
+        method,
+        params,
+        authority: 'web-core',
+      });
+    const cowork = (
+      settings: unknown,
+      extra: Record<string, unknown> = {},
+    ): Record<string, unknown> => ({
+      workspaceId: 'ws-1',
+      expectedRevision: 4,
+      settings,
+      ...extra,
+      _meta: { idempotencyKey: 'key-c' },
+    });
+
+    expect(WEB_CORE_RELAY_OPERATIONS.has(method)).toBe(true);
+    // App Advisor's surface can't reach it.
+    await expect(
+      advisor.invoke(rendererEvent(), {
+        kind: 'request',
+        method,
+        params: {},
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'capability_unavailable' },
+    });
+    // Remote Control's contract doesn't name it, so a phone can't send it.
+    const contract = JSON.stringify(
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      require('../../../remote-control/remote-protocol-contract.json'),
+    );
+    expect(contract).not.toContain(method);
+
+    // Every other Cowork setting, another field, an empty or malformed
+    // settings, a wrongly typed field, or a schema revision other than 2 is
+    // refused before it leaves main.
+    for (const params of [
+      cowork({ startPage: null }),
+      cowork({
+        startPage: { kind: 'url', url: 'https://example.com' },
+      }),
+      cowork({ description: 'Notes', starterPrompts: [] }),
+      cowork({ presets: [] }),
+      cowork({ defaultPresetId: 'preset-1' }),
+      cowork({ archiveRetentionDays: 7 }),
+      cowork({ autoArchiveDays: 7 }),
+      cowork({ description: 'Notes', name: 'Renamed' }),
+      cowork({}),
+      cowork('description'),
+      cowork(['description']),
+      // Each field takes only its own value shape: a description is text, a
+      // default model is an id or null, and the retention is a whole number.
+      // The web core decides lengths, models and ranges.
+      cowork({ description: 5 }),
+      cowork({ description: true }),
+      cowork({ description: null }),
+      cowork({ description: ['Notes'] }),
+      cowork({ description: { text: 'Notes' } }),
+      cowork({ defaultModel: 7 }),
+      cowork({ defaultModel: false }),
+      cowork({ defaultModel: ['model-a'] }),
+      cowork({ defaultModel: { id: 'model-a' } }),
+      cowork({ deletionRetentionDays: '30' }, { revision: 2 }),
+      cowork({ deletionRetentionDays: true }, { revision: 2 }),
+      cowork({ deletionRetentionDays: null }, { revision: 2 }),
+      cowork({ deletionRetentionDays: 1.5 }, { revision: 2 }),
+      cowork({ deletionRetentionDays: [30] }, { revision: 2 }),
+      cowork({ deletionRetentionDays: { days: 30 } }, { revision: 2 }),
+      cowork({ description: 'Notes' }, { patch: { name: 'Renamed' } }),
+      cowork({ deletionRetentionDays: 30 }, { revision: 3 }),
+    ]) {
+      await expect(send(params)).resolves.toMatchObject({
+        ok: false,
+        error: { kind: 'invalid_argument' },
+      });
+    }
+    expect(binding).not.toHaveBeenCalled();
+
+    // The three fields pass to the web core binding, and never to the local
+    // relay.
+    for (const params of [
+      cowork({ description: 'Notes for the team' }),
+      cowork({ description: '', defaultModel: 'model-a' }),
+      cowork({ defaultModel: null }),
+      cowork(
+        { description: 'Notes', deletionRetentionDays: 30 },
+        { revision: 2 },
+      ),
+      {
+        workspaceId: 'ws-1',
+        settings: { description: 'Notes' },
+        _meta: { idempotencyKey: 'key-d' },
+      },
+    ]) {
+      await expect(send(params)).resolves.toMatchObject({
+        ok: false,
+        error: { kind: 'unavailable' },
+      });
+    }
+    expect(binding).toHaveBeenCalledTimes(5);
+    expect(local.invoke).not.toHaveBeenCalled();
+    relay.dispose();
+    advisor.dispose();
+  });
+
   it("a cloud project's egress hosts and host settings reach only the web core, from the main window, valid and canonical (CAN-7053)", async () => {
     const binding = jest.fn<
       ReturnType<RelayBindingProvider>,

@@ -2334,7 +2334,7 @@ export class CodexProvider implements AgentProvider {
             );
           },
           sessionKey: key,
-          getWindow,
+          interfacePort,
           currentOptions: () => ({
             ...sessionOpts,
             model: currentModel,

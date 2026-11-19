@@ -179,12 +179,12 @@ const mockCreateTrackedPlan = jest.fn<Promise<{ id: string }>, unknown[]>(() =>
 const mockUpdateTrackedPlan = jest.fn<Promise<unknown>, unknown[]>(() =>
   Promise.resolve(null),
 );
-jest.mock('../../lib/plan-persistence', () => ({
-  createTrackedPlan: (...args: unknown[]): Promise<unknown> =>
+const planWriter = {
+  createTrackedPlan: (...args: unknown[]): Promise<{ id: string }> =>
     mockCreateTrackedPlan(...args),
   updateTrackedPlan: (...args: unknown[]): Promise<unknown> =>
     mockUpdateTrackedPlan(...args),
-}));
+};
 // CAN-6168: the installed plugins this app reads, and the reads around them.
 const mockMarketplaces: { current: unknown[] } = { current: [] };
 jest.mock('../../plugins/plugin-service', () => ({
@@ -973,7 +973,7 @@ describe('PipelineOwnerRunContext', () => {
   });
 
   it("keeps a run's plan writes as tracked plans of its own worktree, and only its own (CAN-6327)", async () => {
-    const context = new PipelineOwnerRunContext(run());
+    const context = new PipelineOwnerRunContext(run(), undefined, planWriter);
     const created = await context.apply(
       ownerRequest({ action: 'owner.plan.create', content: '# Plan\n' }),
       signal,

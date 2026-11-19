@@ -290,6 +290,7 @@ describe('Antigravity plan proposals', () => {
     const port: AgentInterfacePort = {
       publishPromptSuggestion: (): void => undefined,
       publishIngestionLag: (): void => undefined,
+      publishDelegationLive: (): void => undefined,
       presentPlanExit: (event): void => void presented.push(event),
       legacyWindow: () => null,
     };

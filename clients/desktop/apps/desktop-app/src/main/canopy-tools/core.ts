@@ -233,6 +233,12 @@ export interface CanopyInjectedToolRuntime {
    */
   settingsWindow?: () => SendableBrowserWindow | null;
   /**
+   * App Advisor only: the window its approval cards show in, for a port that
+   * asks the person itself (CAN-7262). Worktree chats use their action
+   * runtime's window instead.
+   */
+  approvalWindow?: () => SendableBrowserWindow | null;
+  /**
    * App Advisor only: the window its pipeline runs report to. Worktree chats
    * use their action runtime's window instead.
    */

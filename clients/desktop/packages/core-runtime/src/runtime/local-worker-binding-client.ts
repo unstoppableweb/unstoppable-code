@@ -54,7 +54,7 @@ import {
 // to any other target must drop or refuse it.
 type ForwardedContext = Pick<
   CanopyHandlerContext,
-  'metadata' | 'signal' | 'execution'
+  'metadata' | 'signal' | 'execution' | 'workerSettlement'
 >;
 type ForwardedCall = (
   params: unknown,
@@ -98,6 +98,13 @@ export interface ConnectLocalWorkerBindingOptions {
   readonly caller: CanopyCallerDescriptor;
   /** The core end of the binding. */
   readonly connection: WorkerBindingConnection;
+  /**
+   * Resolves once the worker process has exited. A stopped binding proves
+   * nothing about a handler still running in the worker, so a keyed
+   * instruction whose receipt can no longer be read counts as settled only
+   * once this resolves; without it, never.
+   */
+  readonly workerExited?: Promise<unknown>;
 }
 
 type EnvelopeSchema = CanopyOperationEnvelopes['request'];
@@ -117,6 +124,8 @@ interface CallOptions {
   metadata?: CanopyRequestMetadata;
   signal?: AbortSignal;
   execution?: CanopyHostExecution;
+  /** Handed a promise that resolves once the worker itself settles the call. */
+  workerSettlement?: (settled: Promise<void>) => void;
 }
 
 const EndOutcomeSchema = CanopyStreamEndSchema.pick({
@@ -133,6 +142,7 @@ export function connectLocalWorkerBinding({
   definitions,
   caller: callerInput,
   connection,
+  workerExited,
 }: ConnectLocalWorkerBindingOptions): LocalWorkerBindingClient {
   const caller = CanopyCallerDescriptorSchema.parse(callerInput);
   Object.freeze(caller.grants);
@@ -244,6 +254,39 @@ export function connectLocalWorkerBinding({
       throw capacityError('Worker request capacity exceeded.');
     return { id, request, operation, deadlineAt };
   };
+  /**
+   * Resolves once the worker's handler has settled. A result reply means it
+   * did; an error reply may be the worker dispatcher's own cancel or
+   * deadline cutting the reply short, so a keyed instruction's executor
+   * receipt is awaited, which waits while the handler still runs.
+   */
+  const workerSettled = async (
+    name: string,
+    { metadata }: CallOptions,
+    workerReplied: Promise<boolean>,
+  ): Promise<void> => {
+    const succeeded = await workerReplied;
+    const key =
+      metadata && 'idempotencyKey' in metadata
+        ? metadata.idempotencyKey
+        : undefined;
+    if (succeeded || key === undefined) return;
+    // A refused lookup, such as one over capacity, proves nothing: ask again.
+    for (let delayMs = 25; ; delayMs = Math.min(delayMs * 2, 1_000)) {
+      const answered = await receipt(name, key).then(
+        () => true,
+        () => false,
+      );
+      if (answered) return;
+      if (closed) {
+        // The worker can say no more, but its handler may still be running:
+        // only the worker's exit proves it has stopped.
+        await (workerExited ?? new Promise<never>(() => undefined));
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  };
   const call = async (
     kind: 'query' | 'instruction',
     name: string,
@@ -274,9 +317,19 @@ export function connectLocalWorkerBinding({
         sendCancel(id);
       };
       const cancel = (): void => fail(canopyCancelledError());
+      // The pending ID is consumed once: by the worker's reply, even a late
+      // one after a cancel or deadline rejected the call, or by a stop.
+      let replied: (succeeded: boolean) => void = () => undefined;
+      const workerReplied = new Promise<boolean>((resolveReplied) => {
+        replied = resolveReplied;
+      });
       pending.set(id, {
-        fail,
+        fail: (error): void => {
+          replied(false);
+          fail(error);
+        },
         reply: (message): void => {
+          replied('result' in message);
           if (!finish()) return;
           try {
             const parsed = CanopyJsonRpcMessageSchema.parse(
@@ -293,6 +346,8 @@ export function connectLocalWorkerBinding({
       });
       // Sent first: a cancel must never reach the worker ahead of its request.
       transmit(request);
+      if (options.workerSettlement)
+        options.workerSettlement(workerSettled(name, options, workerReplied));
       signal?.addEventListener('abort', cancel, { once: true });
       if (deadlineAt !== undefined) {
         const schedule = (): void => {
@@ -507,9 +562,14 @@ export function connectLocalWorkerBinding({
   for (const name of Object.keys(definitions.instructions))
     instructions[name] = (
       params,
-      { metadata, signal, execution },
+      { metadata, signal, execution, workerSettlement },
     ): Promise<unknown> =>
-      call('instruction', name, params, { metadata, signal, execution });
+      call('instruction', name, params, {
+        metadata,
+        signal,
+        execution,
+        workerSettlement,
+      });
   for (const name of Object.keys(definitions.streams))
     streams[name] = async (
       params,

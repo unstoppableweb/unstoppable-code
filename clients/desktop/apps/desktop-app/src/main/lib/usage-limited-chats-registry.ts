@@ -226,31 +226,99 @@ export async function recordUsageLimitedChat(
   });
 }
 
-/** Shutdown must await durable recovery writes; preserve existing usage/auth reasons. */
+/**
+ * A record of an interrupted chat. `turnStartedAt`, when known, is when the
+ * interrupted turn started. It is never stored.
+ */
+export type InterruptedChatRecord = UsageLimitedChatEntry & {
+  turnStartedAt?: number;
+};
+
+function storedEntry(record: InterruptedChatRecord): UsageLimitedChatEntry {
+  const entry = { ...record };
+  delete entry.turnStartedAt;
+  return entry;
+}
+
+/**
+ * A later shutdown record for a stored shutdown entry's chat that knows a
+ * turn other than the entry's own.
+ */
+function laterShutdownTurn(
+  existing: UsageLimitedChatEntry,
+  incoming: InterruptedChatRecord[],
+): InterruptedChatRecord | undefined {
+  if (existing.resumeReason !== 'app_shutdown') return undefined;
+  return incoming.find(
+    (entry) =>
+      entry.resumeReason === 'app_shutdown' &&
+      entry.interruptedUserMessageId &&
+      entry.interruptedUserMessageId !== existing.interruptedUserMessageId &&
+      sameTarget(existing, entry),
+  );
+}
+
+function startedAfter(
+  record: InterruptedChatRecord,
+  detectedAt: number,
+): boolean {
+  return (
+    record.turnStartedAt !== undefined && record.turnStartedAt > detectedAt
+  );
+}
+
+/**
+ * Shutdown must await durable recovery writes; preserve existing usage/auth
+ * reasons. A later shutdown record whose turn is known to have started after
+ * a stored shutdown entry belongs to a later interruption: the entry gives way
+ * to it, even when the entry has its own turn. Otherwise a stored shutdown
+ * entry without its turn takes the record's turn, and one with a turn keeps
+ * it. Other reasons never take another record's turn: it could belong to a
+ * later interruption.
+ */
 export async function recordInterruptedChats(
-  entries: UsageLimitedChatEntry[],
+  entries: InterruptedChatRecord[],
 ): Promise<void> {
   const uniqueEntries = Array.from(
     new Map(entries.map((entry) => [targetKey(entry), entry])).values(),
   );
-  await enqueueWrite(
-    (current) => [
-      ...current.filter(
-        (existing) =>
-          !uniqueEntries.some(
-            (entry) =>
-              entry.resumeReason === 'provider_sign_in' &&
-              sameTarget(existing, entry),
-          ),
-      ),
-      ...uniqueEntries.filter(
-        (entry) =>
-          entry.resumeReason === 'provider_sign_in' ||
-          !current.some((existing) => sameTarget(existing, entry)),
-      ),
-    ],
-    true,
-  );
+  await enqueueWrite((current) => {
+    const kept: UsageLimitedChatEntry[] = [];
+    const superseded = new Set<UsageLimitedChatEntry>();
+    for (const existing of current) {
+      if (
+        uniqueEntries.some(
+          (entry) =>
+            entry.resumeReason === 'provider_sign_in' &&
+            sameTarget(existing, entry),
+        )
+      )
+        continue;
+      const turn = laterShutdownTurn(existing, uniqueEntries);
+      if (!turn) kept.push(existing);
+      else if (startedAfter(turn, existing.detectedAt))
+        superseded.add(existing);
+      else if (existing.interruptedUserMessageId) kept.push(existing);
+      else
+        kept.push({
+          ...existing,
+          interruptedUserMessageId: turn.interruptedUserMessageId,
+        });
+    }
+    return [
+      ...kept,
+      ...uniqueEntries
+        .filter(
+          (entry) =>
+            entry.resumeReason === 'provider_sign_in' ||
+            !current.some(
+              (existing) =>
+                !superseded.has(existing) && sameTarget(existing, entry),
+            ),
+        )
+        .map(storedEntry),
+    ];
+  }, true);
 }
 
 /** Dismissing queue history must not revive an explicitly stopped auto-resume. */

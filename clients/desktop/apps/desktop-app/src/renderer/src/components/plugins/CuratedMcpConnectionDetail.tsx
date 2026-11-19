@@ -977,12 +977,17 @@ function AppMcpConnectionDetail({
           form,
         );
         if (curatedRequiresProviderAuth(entry) || setupError) {
+          // New Customize names the configuration button Edit.
           setGuidance(
-            'Choose Advanced configuration to complete this service’s connection setup.',
+            discoveryEnabled
+              ? 'Choose Edit to complete this service’s connection setup.'
+              : 'Choose Advanced configuration to complete this service’s connection setup.',
           );
           setError(
             setupError ??
-              'This service requires a provider-managed connection. Choose Advanced configuration to set it up.',
+              (discoveryEnabled
+                ? 'This service requires a provider-managed connection. Choose Edit to set it up.'
+                : 'This service requires a provider-managed connection. Choose Advanced configuration to set it up.'),
           );
           return;
         }
@@ -1005,14 +1010,18 @@ function AppMcpConnectionDetail({
         current.definition.httpAuthHandler === 'account'
       ) {
         setError(
-          'This connection is managed by another account. Choose Advanced configuration to change it.',
+          discoveryEnabled
+            ? 'This connection is managed by another account. Choose Edit to change it.'
+            : 'This connection is managed by another account. Choose Advanced configuration to change it.',
         );
         return;
       }
       const config = current.configs.find((item) => item.enabled);
       if (!config)
         throw new Error(
-          'Enable a configuration in Advanced configuration to connect.',
+          discoveryEnabled
+            ? 'Choose Edit and enable a configuration to connect.'
+            : 'Enable a configuration in Advanced configuration to connect.',
         );
       serverRef.current = current;
       setServer(current);
@@ -1065,6 +1074,7 @@ function AppMcpConnectionDetail({
     clearErrors,
     connectAccount,
     desktopOnly,
+    discoveryEnabled,
     entry,
     installFoldedPlugin,
     installForSetUpHarnesses,
@@ -1298,7 +1308,8 @@ function AppMcpConnectionDetail({
   return (
     <>
       {/* Page actions join the detail's action bar at the top right:
-          [Advanced configuration] [Install skills only] [Share] [Add]. */}
+          [Advanced configuration, Edit under New Customize]
+          [Install skills only] [Share] [Add]. */}
       <DetailPageActions
         secondary={
           <>
@@ -1368,7 +1379,12 @@ function AppMcpConnectionDetail({
           renderAccounts={renderAccounts}
           // Where the server is installed describes the server, not the
           // account, so it stays on the page under an accounts list.
-          availability={<PluginHarnessStatus installed={installed} />}
+          availability={
+            // New Customize's Works with table already says it.
+            identity?.worksWith === undefined ? (
+              <PluginHarnessStatus installed={installed} />
+            ) : undefined
+          }
           renderManagement={
             server || accountConnection
               ? (): ReactNode => (
@@ -1514,7 +1530,10 @@ function AppMcpConnectionDetail({
                       }
                       guidance={
                         guidance ??
-                        (error.includes('Advanced configuration')
+                        // Either name, so copy set before a Labs change
+                        // still reads as guidance.
+                        (error.includes('Advanced configuration') ||
+                        error.includes('Choose Edit')
                           ? error
                           : undefined)
                       }

@@ -8,7 +8,7 @@ import {
 import type {
   ExecutionHostPort,
   ExecutionHostProcess,
-} from '@canopy/desktop-shared/node/execution-host/port';
+} from '@canopy/core-platform/execution-host/port';
 import { hostPlatformOperatingSystem } from '@canopy/core-platform';
 import {
   isProviderProcessOwner,
@@ -22,7 +22,7 @@ import {
   type ProviderProcessStdin,
   type ProviderProcessCleanup,
   type ProviderProcessStopOptions,
-} from '@canopy/desktop-shared/node/provider-process/spawn';
+} from '@canopy/execution-engine/node/provider-process/spawn';
 import {
   isProviderProcessHostResponse,
   PROVIDER_PROCESS_HOST_ENTRY,

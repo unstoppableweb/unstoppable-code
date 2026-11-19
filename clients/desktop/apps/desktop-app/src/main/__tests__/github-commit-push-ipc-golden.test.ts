@@ -88,6 +88,7 @@ import {
   acquireSplitLock,
   releaseSplitLock,
 } from '../services/split-lock-service';
+import { useFakeSplitLockKeys } from './split-lock-key-fixture';
 
 jest.mock('../lib/github-pr', () => ({
   fetchPrStatusForWorktree: jest.fn(() => Promise.resolve(null)),
@@ -534,6 +535,7 @@ beforeAll(() => {
     resolveCaller: (): CanopyCallerDescriptor => caller,
   });
 });
+useFakeSplitLockKeys();
 beforeEach(() => {
   sent.length = 0;
   onProgress = undefined;
@@ -1021,7 +1023,7 @@ for (const shipping of [true, false]) {
       const path = checkout(name);
       const before = git(path, ['rev-parse', 'HEAD']);
       writeFileSync(join(path, 'dirty.txt'), 'dirty\n');
-      acquireSplitLock(WORKSPACE, name);
+      await acquireSplitLock(WORKSPACE, name);
       try {
         await expect(run(name)).rejects.toMatchObject({
           message:

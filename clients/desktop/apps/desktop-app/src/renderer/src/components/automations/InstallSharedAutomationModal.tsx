@@ -41,6 +41,7 @@ import {
   buildInstallAutomationRequest,
   planAutomationPipelineUpdate,
   shareApprovedRunCondition,
+  sharedUpdateRollbackAction,
   type InstallSharedAutomationBindings,
 } from '@canopy/desktop-shared/lib/automation-install';
 import { automationActionUsesIfCommandOutput } from '@canopy/desktop-shared/lib/automation-sharing';
@@ -58,6 +59,7 @@ import { ShareInstallDialog } from '@canopy/ui-shared/components/ShareInstallDia
 import { markdownDescriptionToPlainText } from '@canopy/ui-shared/lib/markdown-plain-text';
 import {
   shareInstallDefaultDescription,
+  shareInstallEntityNoun,
   shareInstallTypeLabel,
 } from '@canopy/ui-app/sharing/share-install-copy';
 import { Button } from '@canopy/ui-shared';
@@ -105,14 +107,15 @@ import {
 } from '@/lib/automationTargets';
 import { useWorkspaceContextStore } from '@/stores/workspaceContextStore';
 
+// The review presents the automation as a workflow (`scheduled workflow`).
+const ITEM_NOUN = shareInstallEntityNoun('automation');
 // A fresh install is the one required click: it creates the copy and turns
 // it on (CAN-3651).
 const INSTALL_LABEL = 'Install and enable';
 const UPDATE_LABEL = 'Apply update';
-const ENABLE_FAILED_MESSAGE =
-  "The automation couldn't be turned on, so it wasn't installed. Try again.";
+const ENABLE_FAILED_MESSAGE = `The ${ITEM_NOUN} couldn't be turned on, so it wasn't installed. Try again.`;
 // Follows main's refusal sentence when turning the new copy on is refused.
-const ENABLE_REFUSED_SUFFIX = "The automation wasn't installed.";
+const ENABLE_REFUSED_SUFFIX = `The ${ITEM_NOUN} wasn't installed.`;
 const SUBMIT_REASON_PROJECT = 'Choose a project to continue';
 const SUBMIT_REASON_COWORK_PROJECT = `Choose a ${CHAT_LABEL} project to continue`;
 const SUBMIT_REASON_PIPELINE = 'Choose a workflow to continue';
@@ -121,30 +124,24 @@ const SUBMIT_REASON_RUN_CONDITION_EMPTY =
   'Enter a command or turn the run condition off';
 const SUBMIT_REASON_RUN_CONDITION_TOO_LONG = `Shorten the command to ${MAX_AUTOMATION_IF_COMMAND_CHARS.toLocaleString('en-US')} characters or turn the run condition off`;
 const COPY_PICKER_LABEL = 'Installed copy to update';
-const COPY_PICKER_NOTE =
-  'Several installed copies of this automation are out of date. Each copy is updated separately.';
+const COPY_PICKER_NOTE = `Several installed copies of this ${ITEM_NOUN} are out of date. Each copy is updated separately.`;
 const WORKSPACE_LABEL = 'Project';
 const WORKSPACE_PLACEHOLDER = 'Choose a project…';
 const COWORK_WORKSPACE_LABEL = `${CHAT_LABEL} project`;
 const COWORK_WORKSPACE_PLACEHOLDER = `Choose a ${CHAT_LABEL} project…`;
-const COWORK_WORKSPACE_NOTE = `The author's ${CHAT_LABEL} project stays on their machine. Pick one of yours for this automation to post into.`;
-const NO_CODE_PROJECTS_NOTE =
-  'You have no code projects yet. Add one, then install this automation.';
-const NO_COWORK_PROJECTS_NOTE = `You have no ${CHAT_LABEL} projects yet. Add one, then install this automation.`;
-const NO_PROJECTS_NOTE =
-  'You have no projects yet. Add one, then install this automation.';
+const COWORK_WORKSPACE_NOTE = `The author's ${CHAT_LABEL} project stays on their machine. Pick one of yours for this ${ITEM_NOUN} to post into.`;
+const NO_CODE_PROJECTS_NOTE = `You have no code projects yet. Add one, then install this ${ITEM_NOUN}.`;
+const NO_COWORK_PROJECTS_NOTE = `You have no ${CHAT_LABEL} projects yet. Add one, then install this ${ITEM_NOUN}.`;
+const NO_PROJECTS_NOTE = `You have no projects yet. Add one, then install this ${ITEM_NOUN}.`;
 const PIPELINE_LABEL = 'Workflow';
 const PIPELINE_PLACEHOLDER = 'Choose a workflow…';
-const PIPELINE_NOTE =
-  'This automation runs a workflow that only exists on the author’s machine. Pick one of your own workflows to run instead.';
+const PIPELINE_NOTE = `This ${ITEM_NOUN} runs a workflow that only exists on the author’s machine. Pick one of your own workflows to run instead.`;
 const PIPELINE_LOADING_LABEL = 'Loading your workflows…';
-const PIPELINE_EMPTY_LABEL =
-  'You have no workflows yet. Create one, then install this automation.';
+const PIPELINE_EMPTY_LABEL = `You have no workflows yet. Create one, then install this ${ITEM_NOUN}.`;
 const PIN_VERIFYING_LABEL = 'Checking the pinned workflow version…';
 const BUNDLED_PIPELINE_MISMATCH =
   'The bundled workflow definition does not match the version the author pinned. Ask them to share it again.';
-const PUBLIC_SHARED_PIPELINE_BLOCKED =
-  'This automation points at a workflow hosted on the author’s server, which a public link cannot reach. Ask them to share it again from an updated app.';
+const PUBLIC_SHARED_PIPELINE_BLOCKED = `This ${ITEM_NOUN} points at a workflow hosted on the author’s server, which a public link cannot reach. Ask them to share it again from an updated app.`;
 const TARGET_CHECKING_LABEL = 'Checking where this workflow can run…';
 const PIPELINE_STAGE_RUNNING_LABEL = 'Preparing the workflows in this share…';
 const PIPELINE_STAGE_FAILED =
@@ -153,12 +150,10 @@ const PACKAGED_PIPELINES_HEADING = 'Workflows';
 const PACKAGED_PIPELINES_NOTE =
   'Each workflow is saved as your own copy. The prompt points at your copies.';
 const PACKAGED_PIPELINE_REVIEW_LABEL = 'Review the updated workflow';
-const TARGET_UNCHECKABLE_LABEL =
-  'This workflow can’t be checked here, so this automation can’t be installed with it. Choose one of your saved workflows instead.';
+const TARGET_UNCHECKABLE_LABEL = `This workflow can’t be checked here, so this ${ITEM_NOUN} can’t be installed with it. Choose one of your saved workflows instead.`;
 const TARGET_CHOOSE_PIPELINE_LABEL =
   'Choose a workflow to see which projects it can run in.';
-const PACKAGE_INVALID_LABEL =
-  'This automation’s packaged dependencies could not be verified. Ask the author to share it again.';
+const PACKAGE_INVALID_LABEL = `This ${ITEM_NOUN}’s packaged dependencies could not be verified. Ask the author to share it again.`;
 const REVISION_CHANGED_LABEL =
   'This share changed while you created the project. Check your choices before installing.';
 const SHARED_PIPELINE_CHANGED =
@@ -1956,7 +1951,7 @@ function InstallSharedAutomationForm({
             id: existingActivity.id,
             name: existingActivity.name,
             schedule: existingActivity.schedule,
-            action: existingActivity.action,
+            action: sharedUpdateRollbackAction(existingActivity),
             enabled: existingActivity.enabled,
             // An approved gate replaced the local one, or a dropped shared
             // gate cleared it, so restore it; an empty string clears a gate
@@ -1994,7 +1989,7 @@ function InstallSharedAutomationForm({
             rollbackError instanceof Error
               ? rollbackError.message
               : 'Unknown rollback error.';
-          errorMessage = `${errorMessage} The previous automation could not be restored: ${rollbackMessage}`;
+          errorMessage = `${errorMessage} The previous ${ITEM_NOUN} could not be restored: ${rollbackMessage}`;
         }
       }
       setError(errorMessage);
@@ -2052,7 +2047,7 @@ function InstallSharedAutomationForm({
     if (pluginsBlocked && !pluginResolution.ok) {
       return (
         <span data-testid="install-automation-plugins-blocked">
-          {`Install these before continuing: ${pluginResolution.missing.join(', ')}. This automation references plugins that are not available on this machine.`}
+          {`Install these before continuing: ${pluginResolution.missing.join(', ')}. This ${ITEM_NOUN} references plugins that are not available on this machine.`}
         </span>
       );
     }
@@ -2123,7 +2118,7 @@ function InstallSharedAutomationForm({
           className="text-s fg-secondary"
           data-testid="install-automation-target-empty"
         >
-          {`This automation runs in ${formatAutomationTargetContexts(allowedContexts)}. ${onCreateProject ? (creationChecked ? (creationContexts.length > 0 ? 'Create a compatible project to continue.' : 'Choose a context that supports compatible project creation.') : 'Checking project creation availability…') : 'Create a compatible project from the sidebar, then open this installation again.'}`}
+          {`This ${ITEM_NOUN} runs in ${formatAutomationTargetContexts(allowedContexts)}. ${onCreateProject ? (creationChecked ? (creationContexts.length > 0 ? 'Create a compatible project to continue.' : 'Choose a context that supports compatible project creation.') : 'Checking project creation availability…') : 'Create a compatible project from the sidebar, then open this installation again.'}`}
         </p>
       )}
 

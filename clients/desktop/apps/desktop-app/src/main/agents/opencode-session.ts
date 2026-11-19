@@ -303,7 +303,7 @@ export class OpenCodeProvider implements AgentProvider {
         ).createManagedDelegationSession({
           harness: 'opencode',
           sessionKey: key,
-          getWindow,
+          interfacePort,
           currentTurn: () => currentTurn,
           currentOptions: () => ({
             ...opts,
@@ -1421,7 +1421,8 @@ export class OpenCodeProvider implements AgentProvider {
                 plan: proposedPlan,
                 userMessageId: sendOptions?.userMessageId,
                 isCurrent,
-                getWindow,
+                presentPlanExit: (event) =>
+                  interfacePort.presentPlanExit(event),
               });
             }
             return result;

@@ -149,6 +149,9 @@ export const READ_ONLY_TOOLS = [
   'Glob',
   'Grep',
   'NotebookRead',
+  // Omitting discovery makes Claude inline every connected MCP schema.
+  // This grants discovery only; MCP execution still needs its own approval.
+  'ToolSearch',
 ] as const;
 const DEFAULT_SETTING_SOURCES: SettingSource[] = ['user', 'project', 'local'];
 const PLAN_PROMPT_REQUIREMENT =

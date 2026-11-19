@@ -293,7 +293,7 @@ export class AntigravityProvider implements AgentProvider {
           const created = await createManagedDelegationSession({
             harness: 'antigravity',
             sessionKey: key,
-            getWindow,
+            interfacePort,
             currentTurn: (): string | undefined => currentTurn,
             currentMessage: (): string | undefined => currentMessage,
             currentOptions: () => ({

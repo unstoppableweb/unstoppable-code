@@ -199,6 +199,7 @@ import {
 } from '@/stores/navigationStore';
 import { sharedResourceInstallLink } from '@/lib/sharedResourceInstallLink';
 import { InstalledEntryStatusSection } from './InstalledEntryStatusSection';
+import { PluginLiveWorksWith } from './PluginHarnessStatus';
 
 /**
  * Unified entry detail surface for the Plugins discovery page (API-2153,
@@ -960,16 +961,6 @@ function PluginEntryDetailContent({
   const selectedAccountConnection = accountConnections.find(
     (connection) => connection.id === selectedAccountConnectionId,
   );
-  // Add another account, Rename and Make default (CAN-6226): offered once the
-  // person holds an account connection to this curated key.
-  const accountControls = useDesktopMcpAccountActions({
-    serverKey:
-      ref.type === 'curated-mcp' && accountConnections.length > 0
-        ? ref.key
-        : null,
-    refresh: onServersChanged,
-  });
-
   // Account rows carry no device file, so only a device-backed row (or a
   // device copy nested under an account row) may be loaded by the local
   // connection detail. Account-only rows continue to open account details.
@@ -992,6 +983,30 @@ function PluginEntryDetailContent({
     ref.type === 'curated-mcp' &&
     curatedEntry !== undefined &&
     curatedMcpDesktopOnly(curatedEntry);
+  // Only a device copy, while the person's cloud accounts were read (the
+  // shared-account flag is on and they are signed in): the first account is
+  // added beside it, since the card's Add stays on the device server. Any
+  // account row closes it: an unfinished first account is listed, and its
+  // own Reconnect finishes it. A desktop-only connector never has a cloud
+  // account.
+  const firstCloudAccountBesideDevice =
+    ref.type === 'curated-mcp' &&
+    accountConnectionsAvailable === true &&
+    installedCurated.deviceId !== null &&
+    accountConnections.length === 0 &&
+    !curatedDesktopOnly;
+  // Add another account, Rename and Make default (CAN-6226): offered once the
+  // person holds an account connection to this curated key, or a device copy
+  // with no account yet.
+  const accountControls = useDesktopMcpAccountActions({
+    serverKey:
+      ref.type === 'curated-mcp' &&
+      (accountConnections.length > 0 || firstCloudAccountBesideDevice)
+        ? ref.key
+        : null,
+    firstOpen: firstCloudAccountBesideDevice,
+    refresh: onServersChanged,
+  });
   const accountServerId =
     localServer?.scope === 'account'
       ? localServer.id
@@ -2318,9 +2333,11 @@ function PluginEntryDetailContent({
         <CuratedMcpConnectionDetail
           // A desktop-only server's accounts bind nothing (REG-3035): the card
           // stays on its device server and offers only the leftover cloud
-          // connection's Disconnect, so it lists no accounts.
+          // connection's Disconnect, so it lists no accounts. A device copy
+          // with no account lists its own row and offers the first cloud one.
           renderAccounts={
-            accountConnections.length > 0 && !curatedDesktopOnly
+            (accountConnections.length > 0 || firstCloudAccountBesideDevice) &&
+            !curatedDesktopOnly
               ? (accountDetails): ReactNode => (
                   <>
                     {/* The device copy is one more row of the accounts list:
@@ -2338,6 +2355,7 @@ function PluginEntryDetailContent({
                       details={accountDetails}
                       device={installedCuratedServerId !== null}
                       deviceEffects={deviceAccountEffects}
+                      deviceCopy={firstCloudAccountBesideDevice}
                       disabled={
                         curatedDetailBusy ||
                         accountControls.signIn.setupOpen ||
@@ -2378,7 +2396,8 @@ function PluginEntryDetailContent({
                     />
                   ),
                   publisher: <CustomizePublisher entry={shownLogo} />,
-                  worksWith: <CustomizeEntryWorksWith entry={shownLogo} />,
+                  // The one Works with table, with the app's live harnesses.
+                  worksWith: <PluginLiveWorksWith entry={shownLogo} />,
                 },
               }
             : {})}

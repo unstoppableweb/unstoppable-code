@@ -39,6 +39,7 @@ import {
   type CoreCoworkInvoker,
   type CoreCoworkStream,
 } from './invoker';
+import { isUnknownKeyedWriteOutcome } from './keyed-write-outcome';
 
 /** The chat's queue as the web core snapshot read it (CAN-6509). */
 export interface CloudChatQueue {
@@ -433,6 +434,17 @@ export class CloudChatSendRejectedError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'CloudChatSendRejectedError';
+  }
+}
+
+/**
+ * A send whose answer never came, and that no receipt names: it may have
+ * landed, so nothing sends it again on its own (CAN-7196).
+ */
+export class CloudChatSendUnknownError extends Error {
+  constructor() {
+    super('Your message may have sent.');
+    this.name = 'CloudChatSendUnknownError';
   }
 }
 
@@ -1856,26 +1868,30 @@ export function bindCloudChatThread(
   async function sendOnce(params: Record<string, unknown>): Promise<unknown> {
     const reply = await invoker.request('core.chat.message.send', params);
     if (reply.ok) return reply.value;
-    const { retry } = reply.error;
-    if (retry.kind !== 'same_idempotency_key' && retry.kind !== 'same_request')
+    // A lost reply, unavailable and never retried, may have landed too.
+    if (
+      !isUnknownKeyedWriteOutcome(reply.error) &&
+      reply.error.retry.kind !== 'same_request'
+    )
       throw new CoreCoworkRequestError(reply.error);
-    // The send may have landed: ask for its receipt before any resend, and
-    // resend only under the same command id and key.
+    // The send may have landed: its receipt says so if it did. Without one
+    // it is never sent again on its own (CAN-7196).
+    const read = await invoker
+      .request('core.chat.send.receipt', {
+        scope: { ...scope, chatId: target.chatId },
+        commandId: params.commandId,
+      })
+      .catch(() => null);
     const receipt = CoreChatSendReceiptResultSchema.safeParse(
-      unwrap(
-        await invoker.request('core.chat.send.receipt', {
-          scope: { ...scope, chatId: target.chatId },
-          commandId: params.commandId,
-        }),
-      ),
+      read?.ok === true ? read.value : undefined,
     );
-    if (!receipt.success) throw invalid('send receipt');
+    if (!receipt.success) throw new CloudChatSendUnknownError();
     if (receipt.data.outcome === 'matched') return receipt.data.receipt;
     if (receipt.data.outcome === 'conflict')
       throw new CloudChatSendRejectedError(
         'This send conflicts with an earlier one.',
       );
-    return unwrap(await invoker.request('core.chat.message.send', params));
+    throw new CloudChatSendUnknownError();
   }
 
   async function send(input: CloudChatSendInput): Promise<void> {
@@ -1940,7 +1956,10 @@ export function bindCloudChatThread(
         if (queuedMessageIds.includes(canonicalId)) publish(false);
       }
     } catch (error) {
-      if (input.optimisticLocalId !== undefined)
+      // A send that may have landed keeps its row: the transcript shows it if
+      // it did, and the notice says it may have sent, never that it failed.
+      const unknown = error instanceof CloudChatSendUnknownError;
+      if (input.optimisticLocalId !== undefined && !unknown)
         chatStore.getState().rollbackOptimisticSend(target.key, {
           localId: input.optimisticLocalId,
         });
@@ -1949,8 +1968,9 @@ export function bindCloudChatThread(
         chatStore.getState().hydrate(target.key, [], {
           // A turn that is still running keeps running: only add the notice.
           ...statusOptions(),
-          error:
-            error instanceof Error
+          error: unknown
+            ? error.message
+            : error instanceof Error
               ? `Your message wasn't sent: ${error.message}`
               : "Your message wasn't sent.",
         });

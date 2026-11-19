@@ -51,6 +51,17 @@ export interface WorkEntryAutoDeleteArm {
   };
   /** Branches reported unmerged while `state` is awaiting confirmation. */
   readonly unmergedBranches?: readonly string[];
+  /** Checked-out branches observed when the user was asked for a branch answer. */
+  /** Branches observed at the explicit force arm. Legacy arms ask on unmerged branches. */
+  readonly forceBranchPins?: readonly {
+    repoId: string;
+    branchName: string | null;
+  }[];
+  readonly confirmationId?: string;
+  readonly branchConfirmation?: readonly {
+    repoId: string;
+    branchName: string | null;
+  }[];
   /** Explicit user branch answer; persisted so a restart does not ask again. */
   readonly branchAnswer?: 'delete-branch' | 'keep-branch';
 }
@@ -63,6 +74,7 @@ export interface WorkEntryAutoDeleteRowState {
   readonly armedByChatTitle?: string;
   /** Human-readable busy reasons, e.g. "1 agent, 1 workflow". */
   readonly waitingFor?: string;
+  readonly confirmationId?: string;
   readonly unmergedBranches?: readonly string[];
   /**
    * Removal has started and the item is about to leave the sidebar; a host
@@ -88,6 +100,7 @@ export interface WorkEntryAutoDeleteResolveBranchRequest {
   readonly workspaceId: string;
   readonly targetId: string;
   readonly answer: WorkEntryAutoDeleteBranchAnswer;
+  readonly confirmationId?: string;
 }
 
 /** Sentence-case label for a busy-reason count list ("1 agent, 2 workflows"). */

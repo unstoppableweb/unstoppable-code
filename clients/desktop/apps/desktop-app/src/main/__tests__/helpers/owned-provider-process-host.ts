@@ -9,11 +9,11 @@ import type {
   ExecutionHostPort,
   ExecutionHostProcess,
 } from '@canopy/desktop-shared/node/execution-host/port';
-import { PROVIDER_PROCESS_HOST_ENTRY } from '../../agent-runs/provider-process-host/protocol';
+import { PROVIDER_PROCESS_HOST_ENTRY } from '@canopy/execution-engine/node/agent-host/process/provider-process-host/protocol';
 import {
   createProviderProcessHostClient,
   type ProviderProcessHostClient,
-} from '../../agent-runs/provider-process-host/runner';
+} from '@canopy/execution-engine/node/agent-host/process/provider-process-host/runner';
 
 // The production provider process host, bundled as the desktop bundles it and
 // launched over the owned-process port (the daemon's) under plain Node. No

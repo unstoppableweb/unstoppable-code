@@ -5,6 +5,11 @@ export {
   type CoreCoworkStream,
 } from './invoker';
 export {
+  CoreCoworkOutcomeUnknownError,
+  isQueueRetryExpired,
+  isUnknownWriteError,
+} from './unknown-outcome';
+export {
   createCoreCoworkStore,
   RECONNECT_DELAYS_MS,
   type CoreCoworkArchivedTask,
@@ -24,26 +29,32 @@ export {
   type CoreCoworkSidebarRowsOptions,
 } from './sidebar-rows';
 export {
+  CATALOG_CHANGE_UNKNOWN,
   cloudChatModels,
   cloudChatPickerModels,
   createCloudChatCatalog,
-  readCloudProjectPluginCatalog,
+  readCloudProjectCatalog,
   type CloudChatCatalog,
   type CloudChatCatalogScope,
   type CloudChatCatalogState,
   type CloudChatCatalogStatus,
+  type CloudProjectCatalog,
+  type CloudProjectModelOption,
 } from './cloud-chat-catalog';
 export {
   readCloudProjectSandboxRoutes,
   readCloudProjectSettings,
+  saveCloudProjectCoworkSettings,
   saveCloudProjectDefaultPlugins,
   saveCloudProjectInstructions,
+  type CloudProjectCoworkEdit,
   type CloudProjectSandboxRoutes,
   type CloudProjectSettings,
 } from './cloud-project-settings';
 export {
   bindCloudChatThread,
   CloudChatSendRejectedError,
+  CloudChatSendUnknownError,
   CloudChatStopUnavailableError,
   type BindCloudChatThreadOptions,
   type CloudChatAgentWork,
@@ -99,3 +110,13 @@ export {
   type CloudManagedDelegationStore,
   type CloudManagedDelegationsView,
 } from './cloud-managed-delegations';
+export {
+  createKeyedWriteHistory,
+  isRebuildAdmissionRefusal,
+  isUnknownKeyedWriteOutcome,
+  KEYED_WRITE_OUTCOME_SHAPES,
+  NOT_APPLIED_MARKS,
+  type KeyedWriteHistory,
+  type KeyedWriteOutcomeShape,
+  type NotAppliedMark,
+} from './keyed-write-outcome';

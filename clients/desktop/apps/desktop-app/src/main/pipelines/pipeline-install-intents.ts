@@ -32,7 +32,6 @@ import {
   rename,
   rm,
   rmdir,
-  symlink,
 } from 'node:fs/promises';
 import * as path from 'node:path';
 import { isSafeCapabilityRelativePath } from '@canopy/protocol/capability-files';
@@ -123,6 +122,12 @@ interface IntentAssets {
   files: IntentAssetFile[];
   createdDirectories: string[];
   manifest: { previous: string | null; next: string };
+  /**
+   * The `.install-<uuid>` folder name the install stages its files in
+   * (CAN-7058). Absent in a record written before it was recorded; such a
+   * record leaves any staging folders as they are.
+   */
+  staging?: string;
 }
 
 interface IntentDefinition {
@@ -226,17 +231,36 @@ function parseIntentAssets(value: unknown): IntentAssets | null {
     if (!isAssetRelativePath(folder)) return null;
     createdDirectories.push(folder);
   }
-  return {
+  const assets: IntentAssets = {
     files,
     createdDirectories,
     manifest: { previous: value.manifest.previous, next: value.manifest.next },
   };
+  if (value.staging !== undefined) {
+    if (
+      typeof value.staging !== 'string' ||
+      !INSTALL_STAGING.test(value.staging)
+    )
+      return null;
+    assets.staging = value.staging;
+  }
+  return assets;
 }
+
+/**
+ * The ids the definitions store accepts (its `isSafePipelineId`). The shape
+ * has no dot, separator or NUL, so it is already one plain folder name on
+ * every system.
+ */
+const STORED_PIPELINE_ID = /^[A-Za-z0-9_-]+$/;
 
 function parseDefinition(value: unknown): IntentDefinition | null {
   if (
     !isRecord(value) ||
     typeof value.definitionId !== 'string' ||
+    // A record naming any other id is unreadable, so it is set aside rather
+    // than rolled back under a path the store would never write (CAN-7058).
+    !STORED_PIPELINE_ID.test(value.definitionId) ||
     typeof value.contentHash !== 'string' ||
     (value.change !== 'created' &&
       value.change !== 'replaced' &&
@@ -412,6 +436,87 @@ function assetPath(definitionId: string, relativePath: string): string {
     : path.join(root, ...relativePath.split('/'));
 }
 
+/**
+ * What a rollback found on the way to a path: `real` when the pipeline's
+ * data folder and every folder down to and including `folder` are real
+ * folders, `missing` when one of them is not there, `refused` when one is a
+ * link or not a folder, or `folder` is outside the pipeline's data folder.
+ */
+type FolderChain = 'real' | 'missing' | 'refused';
+
+/**
+ * Checks the path down to `folder` as an install does before it writes
+ * (CAN-7058): a rollback writes and removes only through real folders, so a
+ * folder swapped for a link never sends a write or removal elsewhere.
+ */
+async function folderChain(
+  definitionId: string,
+  folder: string,
+): Promise<FolderChain> {
+  const top = path.dirname(getPipelineAssetsDir(definitionId));
+  const relative = path.relative(top, folder);
+  if (
+    relative === '..' ||
+    relative.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relative)
+  )
+    return 'refused';
+  let current = top;
+  for (const segment of ['', ...relative.split(path.sep).filter(Boolean)]) {
+    if (segment) current = path.join(current, segment);
+    let stats: Awaited<ReturnType<typeof lstat>>;
+    try {
+      stats = await lstat(current);
+    } catch (error) {
+      if (isRecord(error) && error.code === 'ENOENT') return 'missing';
+      throw error;
+    }
+    if (stats.isSymbolicLink() || !stats.isDirectory()) return 'refused';
+  }
+  return 'real';
+}
+
+/** Why a rollback left something as it was (CAN-7058). */
+type RollbackLeftReason =
+  | 'link_restore_retired'
+  | 'asset_path_link'
+  | 'staging_cleanup_failed';
+
+const ROLLBACK_LEFT_MESSAGES: Record<RollbackLeftReason, string> = {
+  link_restore_retired:
+    '[pipeline-install] Left an installed file where a link used to be',
+  asset_path_link:
+    '[pipeline-install] Left a supporting file whose folder is a link or not a folder',
+  staging_cleanup_failed:
+    '[pipeline-install] Could not remove an install staging folder',
+};
+
+/**
+ * Logs what a rollback left and why. Each is handled, not a failure: the
+ * rest of the rollback goes on, and the record completes and releases what
+ * it claimed, so it never blocks a reinstall.
+ */
+function logRollbackLeft(
+  reason: RollbackLeftReason,
+  details: { definitionId: string; target?: string; error?: unknown },
+): void {
+  logMainProcessWarn(ROLLBACK_LEFT_MESSAGES[reason], { reason, ...details });
+}
+
+/**
+ * True when a rollback may write or remove inside `folder`. A refusal is
+ * logged with the definition id only, never a path; a missing folder holds
+ * nothing to undo.
+ */
+async function mayChange(
+  definitionId: string,
+  folder: string,
+): Promise<boolean> {
+  const chain = await folderChain(definitionId, folder);
+  if (chain === 'refused') logRollbackLeft('asset_path_link', { definitionId });
+  return chain === 'real';
+}
+
 type AssetFileState =
   | { kind: 'absent' }
   | { kind: 'file'; sha256: string; mode: number; bytes: Buffer }
@@ -451,6 +556,7 @@ function holdsPrevious(
 /** Puts back what a supporting file held before the install wrote it. */
 async function restoreAssetFile(
   intentId: string,
+  definitionId: string,
   target: string,
   previous: PreviousAssetFile | null,
 ): Promise<void> {
@@ -470,13 +576,11 @@ async function restoreAssetFile(
     });
     return;
   }
-  const temporary = `${target}.${randomUUID()}.tmp`;
-  try {
-    await symlink(previous.target, temporary);
-    await rename(temporary, target);
-  } finally {
-    await rm(temporary, { force: true });
-  }
+  // A link is never recreated in the asset dir (CAN-7058): installs refuse
+  // to write through or over one, so only an older record can hold one. The
+  // installed file stays and the rest of the install rolls back. An older
+  // record that kept a link still parses; it is only never acted on.
+  logRollbackLeft('link_restore_retired', { definitionId, target });
 }
 
 const INSTALL_TEMPORARY = /^(.+)\.[0-9a-f-]{36}\.tmp$/;
@@ -487,6 +591,7 @@ const DURABLE_INSTALL_TEMPORARY = /^\.(.+)\.[0-9]+\.[0-9a-f-]{36}\.tmp$/;
  * files written before renaming over `targets`: an exit leaves one behind.
  */
 async function removeInstallTemporaries(
+  definitionId: string,
   targets: readonly string[],
 ): Promise<void> {
   const names = new Map<string, Set<string>>();
@@ -497,6 +602,7 @@ async function removeInstallTemporaries(
     names.set(folder, inFolder);
   }
   for (const [folder, inFolder] of names) {
+    if (!(await mayChange(definitionId, folder))) continue;
     let entries: string[];
     try {
       entries = await readdir(folder);
@@ -516,17 +622,63 @@ async function removeInstallTemporaries(
   }
 }
 
-async function flushFolderIfPresent(folder: string): Promise<void> {
-  try {
-    await lstat(folder);
-  } catch (error) {
-    if (isRecord(error) && error.code === 'ENOENT') return;
-    throw error;
+/** The fresh folder an asset install stages a file in, beside it (CAN-7058). */
+const INSTALL_STAGING =
+  /^\.install-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/**
+ * Removes the staging folders an exit left: only the folder named `staging`,
+ * the name this install recorded, only in the folders the record's own files
+ * live in, only through real folders, and only when it is a real folder. A
+ * staging-shaped folder of another name is never this install's. `rm`
+ * removes a link inside one as a link, never what it points to. A failure is
+ * logged and the rollback goes on: a staging folder holds nothing the
+ * install placed.
+ */
+async function removeInstallStaging(
+  definitionId: string,
+  files: readonly string[],
+  staging: string,
+): Promise<void> {
+  const folders = new Set(files.map((file) => path.dirname(file)));
+  for (const folder of folders) {
+    try {
+      if (!(await mayChange(definitionId, folder))) continue;
+      const target = path.join(folder, staging);
+      let stats: Awaited<ReturnType<typeof lstat>>;
+      try {
+        stats = await lstat(target);
+      } catch (error) {
+        if (isRecord(error) && error.code === 'ENOENT') continue;
+        throw error;
+      }
+      if (stats.isSymbolicLink() || !stats.isDirectory()) continue;
+      await rm(target, { recursive: true, force: true });
+      await syncDirectory(folder);
+    } catch (error) {
+      logRollbackLeft('staging_cleanup_failed', {
+        definitionId,
+        target: folder,
+        error,
+      });
+    }
   }
-  await syncDirectory(folder);
 }
 
-async function removeEmptyFolder(folder: string): Promise<void> {
+/** Flushes a folder the rollback changed, when it is there and real. */
+async function flushFolder(
+  definitionId: string,
+  folder: string,
+): Promise<void> {
+  if ((await folderChain(definitionId, folder)) === 'real')
+    await syncDirectory(folder);
+}
+
+async function removeEmptyFolder(
+  definitionId: string,
+  folder: string,
+): Promise<void> {
+  if (!(await mayChange(definitionId, folder))) return;
   try {
     await rmdir(folder);
   } catch (error) {
@@ -547,7 +699,8 @@ async function removeEmptyFolder(folder: string): Promise<void> {
  * Undoes the supporting files an install changed in a definition that
  * stays: a file is put back only while it holds what the install wrote,
  * `assets.json` likewise, and a folder the install created goes only while
- * it is empty. A later edit stays.
+ * it is empty. A later edit stays. Nothing is written or removed through a
+ * folder that is a link or not a folder (CAN-7058).
  */
 async function undoAssetFiles(
   intentId: string,
@@ -556,6 +709,15 @@ async function undoAssetFiles(
   const assets = definition.assetFiles;
   if (!assets) return;
   const id = definition.definitionId;
+  // Staging folders are the install's own, whatever happened to the rest.
+  // They go here, before the record does, so an exit between the two leaves
+  // a record the next start finishes.
+  if (assets.staging !== undefined)
+    await removeInstallStaging(
+      id,
+      assets.files.map((file) => assetPath(id, file.path)),
+      assets.staging,
+    );
   // A linked document is never rewritten: only while it still holds the YAML
   // the install linked are its files the install's. An edited one keeps them.
   if (
@@ -564,12 +726,15 @@ async function undoAssetFiles(
   )
     return;
   const manifestPath = getPipelineAssetsManifestPath(id);
-  await removeInstallTemporaries([
+  // Every path below is inside the pipeline's data folder.
+  if (!(await mayChange(id, path.dirname(manifestPath)))) return;
+  await removeInstallTemporaries(id, [
     ...assets.files.map((file) => assetPath(id, file.path)),
     manifestPath,
   ]);
   for (const file of [...assets.files].reverse()) {
     const target = assetPath(id, file.path);
+    if (!(await mayChange(id, path.dirname(target)))) continue;
     const current = await readAssetFile(target);
     if (holdsPrevious(current, file.previous)) {
       // Rewritten with the same bytes, the file may still have changed mode.
@@ -586,7 +751,7 @@ async function undoAssetFiles(
       continue;
     }
     if (current.kind !== 'file' || current.sha256 !== file.next) continue;
-    await restoreAssetFile(intentId, target, file.previous);
+    await restoreAssetFile(intentId, id, target, file.previous);
   }
   const manifest = await readAssetFile(manifestPath);
   if (manifest.kind === 'file' && manifest.sha256 === assets.manifest.next) {
@@ -598,7 +763,7 @@ async function undoAssetFiles(
       });
   }
   for (const folder of [...assets.createdDirectories].reverse())
-    await removeEmptyFolder(assetPath(id, folder));
+    await removeEmptyFolder(id, assetPath(id, folder));
   // A removal, rename or folder removal persists only with its folder, so
   // each is flushed before the record and its kept copies can go.
   const folders = new Set<string>([path.dirname(manifestPath)]);
@@ -606,7 +771,7 @@ async function undoAssetFiles(
     folders.add(path.dirname(assetPath(id, file.path)));
   for (const folder of assets.createdDirectories)
     folders.add(path.dirname(assetPath(id, folder)));
-  for (const folder of folders) await flushFolderIfPresent(folder);
+  for (const folder of folders) await flushFolder(id, folder);
 }
 
 function storedHash(definitionId: string): string | undefined {
@@ -661,11 +826,15 @@ async function removeCreatedAssets(
 ): Promise<void> {
   if (!definition.assets) return;
   const id = definition.definitionId;
+  const folder = path.dirname(getPipelineAssetsManifestPath(id));
+  // Only through a real data folder (CAN-7058); `rm` removes an asset dir
+  // that is a link as a link.
+  if (!(await mayChange(id, folder))) return;
   await rm(getPipelineAssetsDir(id), { recursive: true, force: true });
   await rm(getPipelineAssetsManifestPath(id), { force: true });
   // Flushed before the record goes, so power loss cannot bring them back
   // with nothing left to remove them (CAN-5678).
-  await flushFolderIfPresent(path.dirname(getPipelineAssetsManifestPath(id)));
+  await flushFolder(id, folder);
 }
 
 /**
@@ -840,8 +1009,14 @@ async function pruneSetAsideRecords(): Promise<void> {
  * `.unreadable-<ms>`, with its kept files, so it is never read as an install
  * again; only the newest five set-aside records are kept. One install's
  * failure does not stop the others; it stays for the next start.
+ *
+ * Every record is read before any is rolled back, so a run start learns
+ * which definitions are being restored ({@link whenPipelineDefinitionRecovered})
+ * without waiting for an unrelated rollback. `onListed` runs once they are.
  */
-export async function recoverInterruptedPipelineInstalls(): Promise<void> {
+export async function recoverInterruptedPipelineInstalls(
+  options: { onListed?: () => void } = {},
+): Promise<void> {
   let names: string[];
   try {
     names = await readdir(getPipelineInstallIntentsDir());
@@ -849,6 +1024,7 @@ export async function recoverInterruptedPipelineInstalls(): Promise<void> {
     if (isRecord(error) && error.code === 'ENOENT') return;
     throw error;
   }
+  const pending: Array<{ intent: IntentFileV1; settle: SettleRecovery }> = [];
   for (const name of names.sort()) {
     if (!INTENT_FILE.test(name)) continue;
     const id = name.slice(0, -'.json'.length);
@@ -877,16 +1053,37 @@ export async function recoverInterruptedPipelineInstalls(): Promise<void> {
         );
         continue;
       }
-      try {
-        await rollBackIntent(parsed.intent);
-        releaseClaims(parsed.intent.id);
-      } catch (error) {
-        // Its record stays for the next start; until then no install of this
-        // process may take over what it covers.
-        claimDefinitions(parsed.intent);
-        throw error;
-      }
+      pending.push({
+        intent: parsed.intent,
+        settle: noteDefinitionsRecovering(parsed.intent),
+      });
     } catch (error) {
+      logMainProcessWarn(
+        '[pipeline-install] Could not recover an interrupted install',
+        error,
+      );
+    }
+  }
+  options.onListed?.();
+  for (const { intent, settle } of pending) {
+    try {
+      await rollBackIntent(intent);
+      releaseClaims(intent.id);
+      // A definition the install created is gone once undone; a run must not
+      // fall back to a caller's copy of it.
+      const removed = new Set<string>();
+      for (const { definitionId } of intent.definitions)
+        if (inspectStoredPipelineDocument(definitionId).kind === 'absent') {
+          removed.add(definitionId);
+          removedByRecovery.add(definitionId);
+        }
+      settle('ready', removed);
+    } catch (error) {
+      // Its record stays for the next start; until then no install of this
+      // process may take over what it covers, and no run starts against it.
+      claimDefinitions(intent);
+      failedRollbacks.add(intent.id);
+      settle('unconfirmed', new Set());
       logMainProcessWarn(
         '[pipeline-install] Could not recover an interrupted install',
         error,
@@ -934,20 +1131,191 @@ export function isPipelineDefinitionClaimed(definitionId: string): boolean {
   return claimedDefinitions.has(definitionId);
 }
 
+/**
+ * Intents whose rollback failed in this process. Their record stays for the
+ * next start, so what they cover is only partly restored until then.
+ */
+const failedRollbacks = new Set<string>();
+
+/**
+ * Definitions a successful rollback in this process removed, because the
+ * interrupted install had created them. Cleared once the store holds the
+ * definition again.
+ */
+const removedByRecovery = new Set<string>();
+
+/** Where a run of a definition stands against install recovery. */
+export type PipelineDefinitionRecovery =
+  | 'ready'
+  | 'restoring'
+  | 'unconfirmed'
+  | 'removed';
+
+type SettledRecovery = 'ready' | 'unconfirmed' | 'removed';
+
+type SettleRecovery = (
+  outcome: 'ready' | 'unconfirmed',
+  removed: ReadonlySet<string>,
+) => void;
+
+/** Each definition a record being rolled back covers, until it settles. */
+const recoveringDefinitions = new Map<string, Promise<SettledRecovery>>();
+
+function noteDefinitionsRecovering(intent: IntentFileV1): SettleRecovery {
+  let settle: SettleRecovery = () => undefined;
+  const settled = new Promise<{
+    outcome: 'ready' | 'unconfirmed';
+    removed: ReadonlySet<string>;
+  }>((resolve) => {
+    settle = (outcome, removed): void => resolve({ outcome, removed });
+  });
+  for (const { definitionId } of intent.definitions) {
+    const own: Promise<SettledRecovery> = settled.then(
+      ({ outcome, removed }) =>
+        outcome === 'unconfirmed'
+          ? 'unconfirmed'
+          : removed.has(definitionId)
+            ? 'removed'
+            : 'ready',
+    );
+    const earlier = recoveringDefinitions.get(definitionId);
+    // A definition two records cover settles once both have; the later
+    // record's rollback decides, unless either failed.
+    const outcome = earlier
+      ? Promise.all([earlier, own]).then(([first, last]) =>
+          first === 'unconfirmed' ? 'unconfirmed' : last,
+        )
+      : own;
+    recoveringDefinitions.set(definitionId, outcome);
+    void outcome.then(() => {
+      if (recoveringDefinitions.get(definitionId) === outcome)
+        recoveringDefinitions.delete(definitionId);
+    });
+  }
+  return settle;
+}
+
 let recovery: Promise<void> | undefined;
+let listed: Promise<void> = Promise.resolve();
 
 /**
  * Startup recovery, run once per process. Every install waits for it, so a
  * reinstall never runs beside the rollback of the attempt it repeats.
  */
 export function whenPipelineInstallsRecovered(): Promise<void> {
-  recovery ??= recoverInterruptedPipelineInstalls().catch((error: unknown) => {
-    logMainProcessWarn(
-      '[pipeline-install] Install recovery did not finish',
-      error,
-    );
+  if (recovery) return recovery;
+  let markListed: () => void = () => undefined;
+  listed = new Promise<void>((resolve) => {
+    markListed = resolve;
   });
+  recovery = recoverInterruptedPipelineInstalls({ onListed: markListed })
+    .catch((error: unknown) => {
+      logMainProcessWarn(
+        '[pipeline-install] Install recovery did not finish',
+        error,
+      );
+    })
+    .finally(markListed);
   return recovery;
+}
+
+/** How long a run start waits for its definition's rollback (CAN-7308). */
+export const RUN_START_RECOVERY_WAIT_MS = 60_000;
+
+// Shown under "Couldn't start <workflow>". The rollback is still running, so
+// starting again shortly can work.
+export const PIPELINE_DEFINITION_RESTORING_MESSAGE =
+  "An update to this workflow didn't finish and is still being undone. Try again in a moment.";
+// The rollback failed; its record stays, and the next start retries it.
+// There's no Try again: starting again before a restart can't fix it.
+export const PIPELINE_DEFINITION_UNCONFIRMED_MESSAGE =
+  "An update to this workflow didn't finish and couldn't be undone. Restart the app to try again.";
+// The rollback removed a workflow the interrupted install had added. Reuses
+// the existing not-found copy (automations, Remote Control).
+export const PIPELINE_DEFINITION_REMOVED_MESSAGE = 'Workflow not found.';
+
+async function definitionRecovery(
+  definitionId: string,
+): Promise<SettledRecovery> {
+  await listed;
+  const pending = recoveringDefinitions.get(definitionId);
+  if (pending) {
+    logMainProcessWarn(
+      '[pipeline-install] A run is waiting for an interrupted update to be undone',
+      { definitionId },
+    );
+    return pending;
+  }
+  if (removedByRecovery.has(definitionId)) {
+    if (inspectStoredPipelineDocument(definitionId).kind === 'absent')
+      return 'removed';
+    removedByRecovery.delete(definitionId);
+  }
+  const owner = claimedDefinitions.get(definitionId);
+  return owner !== undefined && failedRollbacks.has(owner)
+    ? 'unconfirmed'
+    : 'ready';
+}
+
+/**
+ * Whether a run may start against `definitionId`. It starts install recovery
+ * if nothing has yet, then waits for the definition's rollback, up to
+ * `waitMs`. A definition no record covers is `ready` once the records are
+ * read. `restoring` means its rollback is still running; `unconfirmed` that
+ * it failed in this process and the definition is only partly restored;
+ * `removed` that the rollback removed a definition the install had created.
+ */
+export function whenPipelineDefinitionRecovered(
+  definitionId: string,
+  waitMs: number = RUN_START_RECOVERY_WAIT_MS,
+): Promise<PipelineDefinitionRecovery> {
+  void whenPipelineInstallsRecovered();
+  return new Promise<PipelineDefinitionRecovery>((resolve) => {
+    const timer = setTimeout(() => resolve('restoring'), waitMs);
+    timer.unref();
+    void definitionRecovery(definitionId).then((outcome) => {
+      clearTimeout(timer);
+      resolve(outcome);
+    });
+  });
+}
+
+export interface PipelineDefinitionRecoveryRefusal {
+  error: string;
+  errorCode:
+    | 'pipeline_definition_restoring'
+    | 'pipeline_definition_unconfirmed'
+    | 'pipeline_definition_removed';
+}
+
+/**
+ * Every run start's wait for its definition (CAN-7308): `null` once a run
+ * may read it, else why it can't start. Callers that read the definition
+ * before starting the run wait here before that read.
+ */
+export async function pipelineDefinitionRecoveryRefusal(
+  definitionId: string,
+): Promise<PipelineDefinitionRecoveryRefusal | null> {
+  const outcome = await whenPipelineDefinitionRecovered(definitionId);
+  switch (outcome) {
+    case 'ready':
+      return null;
+    case 'restoring':
+      return {
+        error: PIPELINE_DEFINITION_RESTORING_MESSAGE,
+        errorCode: 'pipeline_definition_restoring',
+      };
+    case 'unconfirmed':
+      return {
+        error: PIPELINE_DEFINITION_UNCONFIRMED_MESSAGE,
+        errorCode: 'pipeline_definition_unconfirmed',
+      };
+    case 'removed':
+      return {
+        error: PIPELINE_DEFINITION_REMOVED_MESSAGE,
+        errorCode: 'pipeline_definition_removed',
+      };
+  }
 }
 
 export interface PipelineInstallIntent {
@@ -1072,6 +1440,10 @@ export async function beginPipelineInstallIntent(
         throw new Error(
           `Install intent already noted files of ${definitionId}`,
         );
+      if (!INSTALL_STAGING.test(plan.stagingName))
+        throw new Error(
+          `Install intent got a staging folder name that is not an install's: ${plan.stagingName}`,
+        );
       const kept = snapshotsDir(intent.id);
       let keptDirReady = false;
       const files: IntentAssetFile[] = [];
@@ -1082,7 +1454,9 @@ export async function beginPipelineInstallIntent(
         let previous: PreviousAssetFile | null;
         if (current.kind === 'absent') previous = null;
         else if (current.kind === 'symlink')
-          previous = { kind: 'symlink', target: current.target };
+          throw new Error(
+            `The workflow file ${write.path} is a link, so the update cannot replace it.`,
+          );
         else if (current.kind === 'file') {
           if (!keptDirReady) {
             await mkdir(kept, { recursive: true, mode: 0o700 });
@@ -1115,6 +1489,7 @@ export async function beginPipelineInstallIntent(
         );
       definition.assetFiles = {
         files,
+        staging: plan.stagingName,
         createdDirectories: [...plan.createdDirectories],
         manifest: {
           previous:
@@ -1153,8 +1528,13 @@ export async function beginPipelineInstallIntent(
     finish: settle,
     async rollBack(): Promise<void> {
       // A rollback that fails leaves the record for startup recovery, so what
-      // it covers stays claimed for the rest of this process.
-      if (written) await rollBackIntent(intent);
+      // it covers stays claimed for the rest of this process, and no run
+      // starts against it.
+      if (written)
+        await rollBackIntent(intent).catch((error: unknown) => {
+          failedRollbacks.add(intent.id);
+          throw error;
+        });
       written = false;
       release();
     },

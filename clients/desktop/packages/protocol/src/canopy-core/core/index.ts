@@ -73,6 +73,7 @@ export * from './client/tools';
 export * from './events/events';
 
 export * from './vaultMigration/registry';
+export * from './mutationFence/registry';
 export * from './workspaceRecords/registry';
 
 export * from './workspace/shared-multi-repo';

@@ -206,12 +206,6 @@ export async function approveOpenCodePlanReview(request: {
   return plan !== null;
 }
 
-export function updateTrackedPlanData(
-  request: UpdateTrackedPlanRequest,
-): Promise<TrackedPlanData | null> {
-  return desktopPlanOperations.update(request);
-}
-
 export async function saveTrackedPlanCommentsData(
   request: SaveTrackedPlanCommentsRequest,
 ): Promise<TrackedPlanData | null> {

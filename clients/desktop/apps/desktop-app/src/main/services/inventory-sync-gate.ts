@@ -8,11 +8,17 @@
  *
  * Allow incoming off pauses uploads and keeps the server documents. Only the
  * confirmed switch deletes them (see `DesktopInventorySyncService.optOut`).
+ *
+ * The gate also reports a three-state upload status (CAN-7262), so the
+ * service can tell the web a computer is paused: `off` (switch off),
+ * `paused` (switch on, Allow incoming off) or `syncing` (both on). It is
+ * never a boolean, so "switch off" is never read as "unpaused".
  */
 import type { RemoteInventorySyncChange } from '../remote-control/remote-control-service';
 import type {
   DesktopInventoryDeleteHooks,
   DesktopInventoryDeleteStatus,
+  DesktopInventoryUploadStatus,
 } from './desktop-inventory-sync-service';
 
 export interface InventorySyncGateInputs {
@@ -22,6 +28,14 @@ export interface InventorySyncGateInputs {
 
 interface InventorySyncGatedService {
   setGateOpen(open: boolean): void;
+  setUploadStatus(status: DesktopInventoryUploadStatus): void;
+}
+
+export function inventoryUploadStatus(
+  inputs: InventorySyncGateInputs,
+): DesktopInventoryUploadStatus {
+  if (!inputs.inventorySyncEnabled) return 'off';
+  return inputs.allowIncoming ? 'syncing' : 'paused';
 }
 
 export function applyInventorySyncGate(
@@ -29,6 +43,7 @@ export function applyInventorySyncGate(
   service: InventorySyncGatedService,
 ): void {
   service.setGateOpen(inputs.allowIncoming && inputs.inventorySyncEnabled);
+  service.setUploadStatus(inventoryUploadStatus(inputs));
 }
 
 /** The Remote Control side of the opt-out delete, as main wires it. */

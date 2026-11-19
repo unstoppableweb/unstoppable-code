@@ -9,6 +9,7 @@ import {
   MEMORY_GRANTS,
   WORKER_GIT_GRANTS,
   PIPELINE_GRANTS,
+  PLAN_GRANTS,
   REVIEW_GRANTS,
   WORKER_CODE_GRAPH_GRANTS,
   WORKER_SCRIPT_GRANTS,
@@ -100,6 +101,14 @@ export const AGENT_CORE_TOOL_OPERATIONS = {
   },
   autoArchive: {
     'core.chat.update': ['core.chat.write'],
+  },
+  planMode: {
+    'core.plan.create': [PLAN_GRANTS.write],
+    'core.plan.update': [PLAN_GRANTS.write],
+  },
+  pipelinePlans: {
+    'core.plan.create': [PLAN_GRANTS.write],
+    'core.plan.update': [PLAN_GRANTS.write],
   },
 } as const satisfies Record<string, Record<string, readonly string[]>>;
 

@@ -116,8 +116,9 @@ const plan = {
   placement: 'core-only',
 } as const;
 
-// Spec-first (CAN-4165 PR 2): no registry composes these yet. PR 3 composes
-// them with the in-process handler; until then every binding answers
+// Served by the desktop dispatcher only (CAN-4165): list, get, create, update
+// and delete, in process over the plan engine. No binding serves import, the
+// detected-plan operations or core.plan.events yet; they answer
 // `capability_unavailable`.
 export const CORE_PLAN_QUERY_DEFINITIONS = defineCanopyQueryRegistry('core', {
   'core.plan.list': defineCanopyQuery({

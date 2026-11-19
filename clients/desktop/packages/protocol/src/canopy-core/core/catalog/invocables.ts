@@ -86,3 +86,8 @@ export const CORE_CATALOG_INVOCABLE_QUERY_DEFINITIONS =
       error: CatalogInvocablesListErrorSchema,
     }),
   });
+
+export type CatalogInvocablesListParams = z.infer<
+  typeof CatalogInvocablesListParamsSchema
+>;
+export type CatalogInvocableRow = z.infer<typeof CatalogInvocableRowSchema>;

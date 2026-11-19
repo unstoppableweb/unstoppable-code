@@ -14,6 +14,8 @@
  * from where it was drawn to where the new layout puts it.
  */
 
+import { REPLAY_MASK_CLASS } from '../../lib/replay-privacy';
+
 /** One tab's place in its strip before the drag: viewport left and width. */
 export interface TabSlot {
   readonly left: number;
@@ -111,6 +113,8 @@ export interface LiveTabReorderOptions {
   readonly grabClientX: number;
   /** Shown on the chip that follows the pointer outside the row. */
   readonly title: string;
+  /** Replay-masks the chip, for a user-authored title. */
+  readonly maskTitle?: boolean;
 }
 
 const SETTLE_DURATION_MS = 200;
@@ -419,6 +423,8 @@ export class LiveTabReorder {
       const ownerDocument = this.options.bar.ownerDocument;
       this.chip = ownerDocument.createElement('div');
       this.chip.className = 'canopy-panel-tab-drag-chip';
+      if (this.options.maskTitle === true)
+        this.chip.classList.add(REPLAY_MASK_CLASS);
       this.chip.setAttribute('aria-hidden', 'true');
       this.chip.textContent = this.options.title;
       ownerDocument.body.appendChild(this.chip);

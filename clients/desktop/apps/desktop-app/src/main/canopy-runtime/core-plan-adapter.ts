@@ -27,8 +27,8 @@ import {
  * dispatcher (CAN-4165 PR 3b-2): list, get, create, update and delete over
  * the plan engine behind plan-persistence. The `tracked-plans:*` IPC
  * handlers, and Remote Control through them, reach plans only through these
- * operations. Import and detected plans join in PR 5, and the event stream
- * with the Portal publication in PR 3b-3.
+ * operations. Import and detected plans join in PR 5; the event stream has
+ * no binding yet.
  */
 
 type PlanQueryName = 'core.plan.list' | 'core.plan.get';

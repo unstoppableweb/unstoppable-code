@@ -16,6 +16,7 @@ import type {
   SubagentMessageResult,
   SubagentNativeInterruptResult,
 } from '@canopy/ui-app/subagents';
+import { stopCloudDelegation } from '@/cloud-chats/cloud-delegation-stop';
 import { extractIpcErrorMessage } from '@/lib/errors';
 import type { SubagentHostScope } from './subagent-scope';
 import { isWebCoreScope } from '@/lib/chat-authority';
@@ -23,6 +24,14 @@ import { isWebCoreScope } from '@/lib/chat-authority';
 /** Shown when a command names a subagent kind the host cannot act on. */
 export const SUBAGENT_COMMAND_UNSUPPORTED_ERROR =
   "This subagent doesn't support that.";
+
+/**
+ * A cloud scope's delegates don't run on this computer, so main can't act on
+ * them: its ids never reach main (CAN-7133).
+ */
+function isCloudScope(scope: SubagentHostScope): boolean {
+  return isWebCoreScope(scope.projectId) || isWebCoreScope(scope.worktreeId);
+}
 
 /** Stops the provider task backing one Claude Code workflow run. */
 export async function stopWorkflowRun(
@@ -63,6 +72,15 @@ export async function stopSubagent(
   if (node.kind !== 'managed') {
     return { ok: false, error: SUBAGENT_COMMAND_UNSUPPORTED_ERROR };
   }
+  // A cloud delegate stops through the web core, and only from its root
+  // chat's own card (CAN-7245).
+  if (isCloudScope(scope)) {
+    const result = await stopCloudDelegation(
+      { ...scope, chatId: rootChatId },
+      node.id,
+    );
+    return result.ok ? { ok: true } : { ok: false, error: result.error };
+  }
   try {
     const result = await window.api.managedDelegation.stop({
       projectId: scope.projectId,
@@ -83,6 +101,12 @@ export async function messageManagedSubagent(
   delegationId: string,
   request: SubagentMessageRequest,
 ): Promise<SubagentMessageResult> {
+  if (isCloudScope(scope))
+    return {
+      ok: false,
+      code: 'failed',
+      error: SUBAGENT_COMMAND_UNSUPPORTED_ERROR,
+    };
   try {
     const result = await window.api.managedDelegation.message({
       projectId: scope.projectId,
@@ -112,6 +136,7 @@ export async function interruptNativeSubagent(
   node: Pick<SubagentNode, 'id' | 'kind'>,
 ): Promise<SubagentNativeInterruptResult> {
   if (
+    isCloudScope(scope) ||
     !isNativeSubagentKind(node.kind) ||
     !nativeSubagentInterruptSupported(node.kind)
   ) {
@@ -180,6 +205,8 @@ export async function readSubagentWorktreeSummary(
   delegationId: string,
   revision: string,
 ): Promise<SubagentWorktreeSummaryReadResult> {
+  if (isCloudScope(scope))
+    return { ok: false, error: SUBAGENT_COMMAND_UNSUPPORTED_ERROR };
   try {
     const result = await window.api.managedDelegation.worktreeSummary({
       projectId: scope.projectId,

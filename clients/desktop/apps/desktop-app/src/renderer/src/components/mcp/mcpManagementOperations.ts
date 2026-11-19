@@ -1,4 +1,5 @@
 import { requestMcpRemovalRepair } from '@canopy/ui-app/capability';
+import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import type {
   AccountMcpConnection,
   AccountMcpConnectionSummary,
@@ -13,6 +14,10 @@ import {
   isStoredSecretValue,
   type SecretValueInput,
 } from '@canopy/execution-engine/types/stored-secrets';
+import type {
+  InstalledItemMutationResult,
+  InstalledItemUninstallTarget,
+} from '@canopy/protocol/installed-items';
 import {
   MAX_MCP_EXTRA_HEADERS,
   mcpExtraHeadersProblem,
@@ -355,28 +360,81 @@ export async function requireCapturedMcpAccount(
   }
 }
 
+/** Develop's device removal: a failure opens repair and rethrows. */
+async function deleteDeviceMcpServer(serverId: string): Promise<void> {
+  try {
+    await window.mcpServers.deleteServer(serverId);
+  } catch (error) {
+    requestMcpRemovalRepair(serverId);
+    throw error;
+  }
+}
+
+/**
+ * Removes the device server through the installed-item uninstall: the same
+ * server removal as `deleteServer`, plus pruning its saved selections and
+ * finishing a pending uninstall receipt. An uninstall that never reached the
+ * server (it rejected, say on an unrelated inventory read, or confirmed
+ * nothing without a failure) falls back to `deleteServer`, which skips the
+ * prune. An incomplete removal reports the uninstall's failure and opens repair.
+ */
+async function uninstallDeviceMcpServer(serverId: string): Promise<void> {
+  const target: InstalledItemUninstallTarget = { kind: 'mcp-server', serverId };
+  let result: InstalledItemMutationResult;
+  try {
+    result = await window.installedItems.uninstall({ target });
+  } catch (error) {
+    // Recorded, not shown: develop's delete still removes the server.
+    reportClientAppError(error);
+    await deleteDeviceMcpServer(serverId);
+    return;
+  }
+  if (
+    result.removed.some(
+      (removed) =>
+        removed.kind === 'mcp-server' && removed.serverId === serverId,
+    )
+  )
+    return;
+  // An incomplete removal stays with its receipt and repair; ordinary delete
+  // must not bypass a saved custody recovery.
+  if (!result.errors.some((error) => error.code === 'uninstall_incomplete')) {
+    await deleteDeviceMcpServer(serverId);
+    return;
+  }
+  requestMcpRemovalRepair(serverId);
+  const message = result.errors
+    .map((error) => error.message)
+    .filter((text) => text.length > 0)
+    .join(' ');
+  throw new Error(
+    message.length > 0 ? message : 'Could not delete this server. Try again.',
+  );
+}
+
 /** Existing deletion order and partial-cloud-removal notices, shared by both entry points. */
 export async function deleteDesktopMcpTarget({
   serverId,
   connection,
   expectedAccountId,
+  uninstallDeviceServer = false,
 }: {
   serverId?: string;
   connection?: AccountMcpConnectionSummary;
   expectedAccountId?: string;
+  /**
+   * New Customize's Delete stands in for the hidden Uninstall, so it removes
+   * the device server the way Uninstall does. Account removal is unchanged.
+   */
+  uninstallDeviceServer?: boolean;
 }): Promise<void> {
   if (!serverId && !connection)
     throw new Error('This server is no longer available.');
   if (connection && expectedAccountId)
     await requireCapturedMcpAccount(expectedAccountId);
-  if (serverId) {
-    try {
-      await window.mcpServers.deleteServer(serverId);
-    } catch (error) {
-      requestMcpRemovalRepair(serverId);
-      throw error;
-    }
-  }
+  if (serverId && uninstallDeviceServer)
+    await uninstallDeviceMcpServer(serverId);
+  else if (serverId) await deleteDeviceMcpServer(serverId);
   if (!connection) return;
   if (!serverId) {
     const { removed } = await window.mcpServers.removeAccountConnection(

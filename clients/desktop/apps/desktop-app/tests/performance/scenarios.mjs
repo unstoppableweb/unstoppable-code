@@ -104,10 +104,7 @@ import {
   closePanelTab,
   expandDefaultActivityRail,
 } from '../electron/canopyApp.mjs';
-import {
-  selectModelOnHarness,
-  selectModelOption,
-} from '../electron/model-selection-fixture.mjs';
+import { selectModelOption } from '../electron/model-selection-fixture.mjs';
 import {
   commitArchiveSiblingProviderMarker,
   deleteArchiveActivityWorktree,
@@ -5997,7 +5994,9 @@ async function prepareLargeTranscriptFixture(
 
   if (concurrent) {
     seedPerformancePipeline(userDataDir, config);
-    await registerPerformanceChatScenarios(config);
+    await registerPerformanceChatScenarios(config, {
+      replyStaggerMs: releaseLike ? RELEASE_LIKE_LTC_REPLY_STAGGER_MS : 0,
+    });
   }
 
   return {
@@ -8805,7 +8804,60 @@ async function checkProjectsReloadRetention({ page, counters, fixture }) {
   }
 }
 
-async function registerPerformanceChatScenarios(config) {
+/**
+ * Extra initial-reply window per later chat in release-like
+ * large-transcript-concurrency (CAN-7028). Release-like chat starts are
+ * slower, so chat 1's reply must outlast the ramp to chat 8 with at least
+ * 10 s of conservative margin; 3 s per chat gives 51 s down to 30 s in the
+ * baseline profile. Derivation:
+ * docs/planning/2026-11-17-can-7028-release-like-ltc-turn-window/README.md,
+ * "Revision 3: the reply window".
+ */
+export const RELEASE_LIKE_LTC_REPLY_STAGGER_MS = 3_000;
+
+/** Initial reply window for chat `index` (0-based): flat without a stagger. */
+export function performanceChatReplyStreamMs(config, index, staggerMs = 0) {
+  return config.chatStreamMs + (config.concurrentChats - 1 - index) * staggerMs;
+}
+
+/**
+ * The initial reply window registered for chat `index` (0-based), from a
+ * `GET /__mock/state/<marker>` response. Throws unless the tagged initial
+ * step and the first step both carry the same positive window.
+ */
+export function parseRegisteredInitialReplyStreamMs(state, marker, index) {
+  const llm = state?.scenario?.llm;
+  const tagged = llm?.stepsByRequestTag?.[`initial-${index + 1}`]?.streamMs;
+  const first = llm?.steps?.[0]?.streamMs;
+  const valid = (value) =>
+    typeof value === 'number' && Number.isFinite(value) && value > 0;
+  if (!valid(tagged) || !valid(first) || tagged !== first) {
+    throw new Error(
+      `Mock scenario ${marker} has no registered initial reply window for initial-${index + 1} (tagged ${String(tagged)}, first step ${String(first)})`,
+    );
+  }
+  return tagged;
+}
+
+async function readRegisteredInitialReplyStreamMs(marker, index) {
+  const url = `${PERFORMANCE_MOCK_BASE_URL}/__mock/state/${encodeURIComponent(marker)}`;
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(
+      `Mock scenario ${marker}: ${url} responded ${response.status}: ${await response.text()}`,
+    );
+  }
+  return parseRegisteredInitialReplyStreamMs(
+    await response.json(),
+    marker,
+    index,
+  );
+}
+
+async function registerPerformanceChatScenarios(
+  config,
+  { replyStaggerMs = 0 } = {},
+) {
   for (let index = 0; index < config.concurrentChats; index += 1) {
     const marker = `Canopy-CPERF${index + 1}`;
     const text = `Streaming performance reply ${index + 1}. `
@@ -8814,7 +8866,7 @@ async function registerPerformanceChatScenarios(config) {
     const initialStep = {
       text,
       stopReason: 'end_turn',
-      streamMs: config.chatStreamMs,
+      streamMs: performanceChatReplyStreamMs(config, index, replyStaggerMs),
       chunkChars: 16,
     };
     const laterStep = {
@@ -13232,13 +13284,27 @@ export function releaseLikePinForProvider(providerType) {
 }
 
 let packageModelCatalogs;
-function packageGatewayId(catalog, modelId) {
+function packageModel(catalog, modelId) {
   packageModelCatalogs ??= JSON.parse(
     readFileSync(new URL('../../../../package.json', import.meta.url), 'utf8'),
   );
-  const gatewayId = packageModelCatalogs[catalog]?.models?.find(
+  return packageModelCatalogs[catalog]?.models?.find(
     (model) => model.id === modelId,
-  )?.gatewayId;
+  );
+}
+
+function packageModelLabel(catalog, modelId) {
+  const label = packageModel(catalog, modelId)?.label;
+  if (typeof label !== 'string' || label.length === 0) {
+    throw new Error(
+      `package.json ${catalog} model ${modelId} has no label for the release-like pin`,
+    );
+  }
+  return label;
+}
+
+function packageGatewayId(catalog, modelId) {
+  const gatewayId = packageModel(catalog, modelId)?.gatewayId;
   if (typeof gatewayId !== 'string' || gatewayId.length === 0) {
     throw new Error(
       `package.json ${catalog} model ${modelId} has no gateway id for the release-like pin`,
@@ -13381,40 +13447,79 @@ async function assertReleaseLikeRequestRoute({
   return releaseLikeRouteEvidence({ pin, activity });
 }
 
+async function storedReleaseLikeTab(page, chatId) {
+  return page.evaluate(
+    async ({ projectId, worktreeId, chatId: targetChatId }) => {
+      const snapshot = await window.api.chat.getState({
+        projectId,
+        worktreeId,
+      });
+      const tab = snapshot.tabsFile.tabs.find(
+        (candidate) => candidate.id === targetChatId,
+      );
+      return tab
+        ? {
+            model: tab.model ?? null,
+            modelExplicitlyChosen: tab.modelExplicitlyChosen === true,
+          }
+        : null;
+    },
+    { projectId: WORKSPACE_ID, worktreeId: WORKTREE_ID, chatId },
+  );
+}
+
 /**
- * Pin a chat tab created through the UI to the release-like Claude model,
- * through the composer's own picker. Runs outside every measured task.
+ * Pin a chat tab created through the UI to the release-like Claude model
+ * through the model-change IPC the composer's picker uses. Runs outside every
+ * measured task.
  */
 async function pinReleaseLikeTabModel(page, panel, chatId) {
   const pin = RELEASE_LIKE_CLAUDE_PIN;
   try {
-    await panel.getByTestId('chat-model-picker').click();
-    await selectModelOnHarness(page, pin, 'claude');
+    // Main treats a model change for a chat it does not hold yet as success
+    // and stores nothing, so wait for the tab first, as the picker does.
+    await waitUntil(
+      async () => (await storedReleaseLikeTab(page, chatId)) !== null,
+      {
+        timeoutMs: 30_000,
+        label: `release-like chat ${chatId} to exist canonically`,
+      },
+    );
+    const accepted = await page.evaluate(
+      async ({ projectId, worktreeId, chatId: targetChatId, model }) =>
+        window.api.chat.changeModel({
+          projectId,
+          worktreeId,
+          chatId: targetChatId,
+          model,
+        }),
+      { projectId: WORKSPACE_ID, worktreeId: WORKTREE_ID, chatId, model: pin },
+    );
+    if (accepted !== true) {
+      throw new Error(
+        `Release-like chat ${chatId} could not pin ${pin}: chat:model-change refused it`,
+      );
+    }
     await waitUntil(
       async () => {
-        const model = await page.evaluate(
-          async ({ projectId, worktreeId, chatId: targetChatId }) => {
-            const snapshot = await window.api.chat.getState({
-              projectId,
-              worktreeId,
-            });
-            return (
-              snapshot.tabsFile.tabs.find((tab) => tab.id === targetChatId)
-                ?.model ?? null
-            );
-          },
-          { projectId: WORKSPACE_ID, worktreeId: WORKTREE_ID, chatId },
-        );
-        return model === pin;
+        const tab = await storedReleaseLikeTab(page, chatId);
+        return tab?.model === pin && tab.modelExplicitlyChosen;
       },
       {
         timeoutMs: 30_000,
         label: `release-like chat ${chatId} to store ${pin}`,
       },
     );
+    const label = packageModelLabel(RELEASE_LIKE_PIN_ROUTES[pin].catalog, pin);
+    await expect
+      .poll(
+        () => panel.getByTestId('chat-model-picker').getAttribute('aria-label'),
+        { timeout: 30_000 },
+      )
+      .toContain(label);
   } catch (error) {
     throw new Error(
-      `Release-like chat ${chatId} could not pin ${pin} (S1 connectivity: the picker needs the gateway catalog from the cloud origin): ${error instanceof Error ? error.message : String(error)}`,
+      `Release-like chat ${chatId} could not pin ${pin} through chat:model-change (S1 connectivity: the model change needs the gateway catalog from the cloud origin): ${error instanceof Error ? error.message : String(error)}`,
       { cause: error },
     );
   }
@@ -13510,6 +13615,17 @@ async function startConcurrentChats({
   let peakConcurrentTurns = 0;
   const tabIds = [];
   const providerRequests = [];
+  // Read every chat's registered reply window before chat 1 starts, so the
+  // reads add nothing to the ramp. The tasks record what the mock holds.
+  const replyStreamMs = [];
+  for (let index = 0; index < config.concurrentChats; index += 1) {
+    replyStreamMs.push(
+      await readRegisteredInitialReplyStreamMs(
+        `Canopy-CPERF${index + 1}`,
+        index,
+      ),
+    );
+  }
 
   for (let index = 0; index < config.concurrentChats; index += 1) {
     const expectedTurns = index + 1;
@@ -13556,7 +13672,10 @@ async function startConcurrentChats({
         requestTag,
       }),
     );
-    Object.assign(tasks.at(-1), { turnActiveMs });
+    Object.assign(tasks.at(-1), {
+      turnActiveMs,
+      mockReply: { streamMs: replyStreamMs[index], source: 'mock-state' },
+    });
     const providerRequest = {
       chat: index + 1,
       marker,

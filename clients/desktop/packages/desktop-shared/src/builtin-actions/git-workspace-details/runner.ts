@@ -357,7 +357,11 @@ async function resolveMergeBase(
 
   for (const candidate of [`origin/${baseBranch}`, baseBranch]) {
     try {
-      const mergeBase = await runGit(['merge-base', candidate, 'HEAD'], cwd);
+      // CAN-7169: the base can be the remote's HEAD name; never an option.
+      const mergeBase = await runGit(
+        ['merge-base', '--end-of-options', candidate, 'HEAD'],
+        cwd,
+      );
       if (mergeBase) {
         return mergeBase;
       }

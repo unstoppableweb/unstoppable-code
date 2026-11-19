@@ -348,6 +348,159 @@ export function markSharedWorkflowPage(
     markUserPipelineWorkflowPage(pipelineId);
 }
 
+/**
+ * CAN-7285: an installed automation owns the bundled pipeline its install
+ * saved for it (`installedFrom.bundledPipelineLocalId`), as a converted chat
+ * automation owns its own: the Library shows the two as one row, and
+ * deleting the automation deletes the pipeline. A pipeline a live record
+ * already owns, one kept as a workflow page, and one another record also
+ * runs are left alone. Returns whether this call recorded the marker.
+ */
+export function claimInstalledPipeline(
+  activities: readonly ScheduledActivity[],
+  activity: ScheduledActivity,
+): boolean {
+  const { action } = activity;
+  // Only a `global` schedule opens on its Workflow page (CAN-5782); one bound
+  // to a project or task keeps its workflow listed on its own until that
+  // page has a per-schedule Where it runs.
+  if (
+    action.type !== 'worktree_pipeline' ||
+    action.pipelineSource !== 'user' ||
+    action.target?.kind !== 'global' ||
+    activity.installedFrom?.bundledPipelineLocalId !== action.pipelineId
+  )
+    return false;
+  const pipelineId = action.pipelineId;
+  const metadata = userPipelineMetadata(pipelineId);
+  if (
+    metadata.ownerAutomationId === activity.id ||
+    metadata.workflowPage === true ||
+    metadata.agentHidden === true ||
+    pipelineOwnerRecord(activities, pipelineId, metadata) !== undefined ||
+    // Any other record that may run it, including one with no
+    // `pipelineSource`, which runs the stored pipeline of its id.
+    activities.some(
+      (other) =>
+        other.id !== activity.id &&
+        other.action.type === 'worktree_pipeline' &&
+        other.action.pipelineId === pipelineId &&
+        (other.action.pipelineSource === undefined ||
+          other.action.pipelineSource === 'user'),
+    ) ||
+    !getStoredPipelineBySource('user', pipelineId).success
+  )
+    return false;
+  setUserPipelineOwnerAutomation(pipelineId, activity.id);
+  return userPipelineMetadata(pipelineId).ownerAutomationId === activity.id;
+}
+
+/**
+ * CAN-7285: whether a workflow reads input `key` only inside its steps'
+ * `run` scripts, as text such as a tracker key. Any other reference (a
+ * step's `with` or `target`, a job's own fields, the workflow's `env`), or
+ * none at all, is not text only, so where it runs is still checked.
+ */
+export function usesInputOnlyInRunScripts(
+  pipeline: unknown,
+  key: string,
+): boolean {
+  // Dot or bracket access, as the executor resolves both.
+  const reference = new RegExp(
+    `\\$\\{\\{[^}]*\\binputs(?:\\.${key}\\b|\\[\\s*['"]${key}['"]\\s*\\])[^}]*\\}\\}`,
+  );
+  const references = (value: unknown): boolean => {
+    if (typeof value === 'string') return reference.test(value);
+    if (Array.isArray(value)) return value.some(references);
+    if (isRecord(value)) return Object.values(value).some(references);
+    return false;
+  };
+  if (!isRecord(pipeline)) return false;
+  let inRun = false;
+  for (const [field, value] of Object.entries(pipeline)) {
+    if (field !== 'jobs') {
+      if (references(value)) return false;
+      continue;
+    }
+    if (!isRecord(value)) return false;
+    for (const job of Object.values(value)) {
+      if (!isRecord(job)) continue;
+      for (const [jobField, jobValue] of Object.entries(job)) {
+        if (jobField !== 'steps') {
+          if (references(jobValue)) return false;
+          continue;
+        }
+        if (!Array.isArray(jobValue)) continue;
+        for (const step of jobValue) {
+          if (!isRecord(step)) continue;
+          for (const [stepField, stepValue] of Object.entries(step)) {
+            if (stepField === 'run') inRun ||= references(stepValue);
+            else if (references(stepValue)) return false;
+          }
+        }
+      }
+    }
+  }
+  return inRun;
+}
+
+/**
+ * CAN-7285: brings an installed automation's owner marker in line with
+ * {@link claimInstalledPipeline}. It claims the bundled pipeline when the
+ * install qualifies; when the install owns it but its target is no longer
+ * `global`, it clears the marker and keeps the pipeline, so the workflow
+ * shows its own row again. A pipeline another record also runs is left as
+ * it is. Returns whether the marker changed.
+ */
+export function reconcileInstalledPipelineOwner(
+  activities: readonly ScheduledActivity[],
+  activity: ScheduledActivity,
+): boolean {
+  if (claimInstalledPipeline(activities, activity)) return true;
+  const { action } = activity;
+  if (
+    action.type !== 'worktree_pipeline' ||
+    action.pipelineSource !== 'user' ||
+    action.target?.kind === 'global' ||
+    activity.installedFrom?.bundledPipelineLocalId !== action.pipelineId ||
+    userPipelineMetadata(action.pipelineId).ownerAutomationId !== activity.id ||
+    isSharedByOtherSchedules(activities, activity, action.pipelineId)
+  )
+    return false;
+  setUserPipelineOwnerAutomation(action.pipelineId, null);
+  return (
+    userPipelineMetadata(action.pipelineId).ownerAutomationId === undefined
+  );
+}
+
+/**
+ * The record whose install supplies the bundled pipeline package a run of
+ * `activity` applies: the record itself when its install saved the pipeline
+ * it runs, else (CAN-6065, CAN-7285) the installed owner of the workflow
+ * page it runs, when it runs as the owner's author and the owner's install
+ * saved that pipeline.
+ */
+export function bundledPackageHolder(
+  activities: readonly ScheduledActivity[],
+  activity: ScheduledActivity,
+): ScheduledActivity | undefined {
+  const { action } = activity;
+  if (action.type !== 'worktree_pipeline') return undefined;
+  if (
+    action.pipelineSource === 'user' &&
+    activity.installedFrom?.bundledPipelineLocalId === action.pipelineId
+  )
+    return activity;
+  const pipelineId = scheduledUserPipelineId(activity);
+  const holder = scheduleInstall(activities, activity)?.holder;
+  return pipelineId !== undefined &&
+    holder !== undefined &&
+    holder.id !== activity.id &&
+    holder.installedFrom?.bundledPipelineLocalId === pipelineId
+    ? holder
+    : undefined;
+}
+
 /** Whether another record than `owner` runs the pipeline it owns. */
 export function isSharedByOtherSchedules(
   activities: readonly ScheduledActivity[],

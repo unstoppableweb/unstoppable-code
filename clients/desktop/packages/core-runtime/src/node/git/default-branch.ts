@@ -1,4 +1,10 @@
 import type { WorkerGitDefaultBranchSource } from '@canopy/protocol/canopy-core';
+import {
+  parseGitBranchName,
+  parseRemoteDefaultBranch,
+  type GitRefName,
+  type InvalidRemoteDefaultSource,
+} from './ref-name';
 
 /** Recorded remote knowledge counts as fresh for this long. */
 export const GIT_DEFAULT_BRANCH_HINT_TTL_MS = 5 * 60_000;
@@ -25,7 +31,8 @@ export interface GitDefaultBranchFacts {
 }
 
 export interface GitDefaultBranchSelection {
-  defaultBranch: string | null;
+  /** Only a valid branch name; an invalid reported name counts as no answer. */
+  defaultBranch: GitRefName | null;
   source: WorkerGitDefaultBranchSource | null;
 }
 
@@ -44,6 +51,16 @@ export function isGitDefaultBranchHintFresh(
 const orNull = <Value>(read: Promise<Value | null>): Promise<Value | null> =>
   read.catch(() => null);
 
+// CAN-7169: every source is remote-derived or recorded from one, so a name Git
+// would not accept as a branch is no answer, never an argument.
+const branchOrNull = async (
+  read: Promise<string | null>,
+  source: InvalidRemoteDefaultSource,
+): Promise<GitRefName | null> => {
+  const name = await orNull(read);
+  return name === null ? null : parseRemoteDefaultBranch(name, source);
+};
+
 /**
  * Selects the default branch without side effects. Fresh recorded knowledge
  * wins; otherwise the live remote HEAD, the local origin/HEAD, older recorded
@@ -55,21 +72,35 @@ export async function selectGitDefaultBranch(
   options: { now: number; allowRemoteLookup?: boolean },
 ): Promise<GitDefaultBranchSelection> {
   const hint = await orNull(facts.readHint());
-  const fresh = hint !== null && isGitDefaultBranchHintFresh(hint, options.now);
-  if (hint && (options.allowRemoteLookup === false || fresh))
+  const hintBranch = hint
+    ? parseRemoteDefaultBranch(hint.defaultBranch, 'recorded-hint')
+    : null;
+  const fresh =
+    hint !== null &&
+    hintBranch !== null &&
+    isGitDefaultBranchHintFresh(hint, options.now);
+  if (hintBranch && (options.allowRemoteLookup === false || fresh))
     return {
-      defaultBranch: hint.defaultBranch,
+      defaultBranch: hintBranch,
       source: fresh ? 'hint' : 'stale-hint',
     };
   if (options.allowRemoteLookup !== false) {
-    const remoteHead = await orNull(facts.readRemoteHead());
+    const remoteHead = await branchOrNull(
+      facts.readRemoteHead(),
+      'remote-head',
+    );
     if (remoteHead) return { defaultBranch: remoteHead, source: 'remote' };
   }
-  const localOriginHead = await orNull(facts.readLocalOriginHead());
+  const localOriginHead = await branchOrNull(
+    facts.readLocalOriginHead(),
+    'origin-head',
+  );
   if (localOriginHead)
     return { defaultBranch: localOriginHead, source: 'local-origin-head' };
-  if (hint) return { defaultBranch: hint.defaultBranch, source: 'stale-hint' };
-  const conventional = await orNull(facts.readConventional());
+  if (hintBranch) return { defaultBranch: hintBranch, source: 'stale-hint' };
+  const conventionalName = await orNull(facts.readConventional());
+  const conventional =
+    conventionalName === null ? null : parseGitBranchName(conventionalName);
   return conventional
     ? { defaultBranch: conventional, source: 'conventional' }
     : { defaultBranch: null, source: null };

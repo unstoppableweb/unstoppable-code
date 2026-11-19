@@ -1,17 +1,21 @@
 import { useEffect, useId, useMemo, useRef, useState, type JSX } from 'react';
 import {
   CoreCoworkRequestError,
-  readCloudProjectPluginCatalog,
+  readCloudProjectCatalog,
   readCloudProjectSandboxRoutes,
   readCloudProjectSettings,
+  saveCloudProjectCoworkSettings,
   saveCloudProjectDefaultPlugins,
   saveCloudProjectInstructions,
+  type CloudProjectCoworkEdit,
+  type CloudProjectModelOption,
   type CloudProjectSandboxRoutes,
   type CloudProjectSettings,
   type CoreCoworkInvoker,
   type CoreCoworkProjectPatch,
   type CoreCoworkProjectSaved,
 } from '@canopy/app-state/core-cowork';
+import { DEFAULT_ARCHIVE_RETENTION_DAYS } from '@canopy/protocol/archive-retention';
 import {
   parseEgressAllowedHosts,
   parseHostPortsInput,
@@ -64,6 +68,7 @@ const RELOAD_FAILED_DETAILS =
   'Save again to retry the reload. Nothing is sent until the Network and Host tabs show what is stored.';
 const SYNC_DETAILS =
   "Your changes were saved. Save again to retry what the cloud couldn't apply.";
+const MODELS_FAILED = "Couldn't load models. Reopen settings to retry.";
 
 /**
  * What a dialog's Save stores: none, or the defaults with no picks, is null.
@@ -122,6 +127,27 @@ function detailsOf(error: unknown): string | undefined {
   return error instanceof Error ? error.message : undefined;
 }
 
+const SAVE_REFUSED_DETAILS = 'The cloud refused the save.';
+
+/**
+ * A refused save step's details, which `Copy details` hands to support: the
+ * web core's words, unless they repeat a description or default model this
+ * Save sent; then only the refusal's kind and code (CAN-7053). A plain
+ * substring check on the values exactly as sent; matching too much only
+ * hides more.
+ */
+function detailsWithout(
+  error: unknown,
+  sent: readonly string[],
+): string | undefined {
+  const details = detailsOf(error);
+  if (details === undefined || !sent.some((value) => details.includes(value)))
+    return details;
+  if (!(error instanceof CoreCoworkRequestError)) return SAVE_REFUSED_DETAILS;
+  const { kind, code } = error.payload;
+  return `${SAVE_REFUSED_DETAILS} (${code === undefined ? kind : `${kind}, ${code}`})`;
+}
+
 export interface CloudProjectSettingsDialogProps {
   /** The project's sidebar id (`web-core:` scoped). */
   readonly projectId: string;
@@ -155,13 +181,14 @@ export interface CloudProjectSettingsDialogProps {
  * CloudWorkspaceSettingsDialog offers them over the web core: General (name
  * and colour), Instructions, Network (the hosts its sandbox may reach),
  * Plugins (the defaults its chats start with), Host (forwarded ports and
- * their live URLs) and Danger. It is the shared settings dialog with the
- * shared tabs and plugins picker. Description, default model and retention
- * come with a later change.
+ * their live URLs) and Danger. General also carries the project's
+ * description, default model and Trash retention. It is the shared settings
+ * dialog with the shared tabs and plugins picker.
  *
- * Save runs the web's order: default plugins, then the project fields (name,
- * colour, egress hosts, host mode and ports) in one update guarded by the
- * listed revision, then instructions. A save refused because the project
+ * Save runs the web's order: the description, default model and retention,
+ * then default plugins, then the project fields (name, colour, egress hosts,
+ * host mode and ports) in one update, both guarded by the dialog's read
+ * revision, then instructions. A save refused because the project
  * changed elsewhere reloads the stored Network and Host settings before a
  * retry, so it never overwrites that change. Each step is sent only when its fields changed, and a
  * refusal stops the steps after it. What landed becomes the new baseline,
@@ -191,6 +218,10 @@ export function CloudProjectSettingsDialog({
   const [catalog, setCatalog] = useState<RemoteControlPluginCatalog | null>(
     null,
   );
+  // The default model picker's options; null when they couldn't be read.
+  const [models, setModels] = useState<
+    readonly CloudProjectModelOption[] | null
+  >(null);
   const [pluginSelections, setPluginSelections] =
     useState<RemoteControlChatTabPluginSelections>(EMPTY_SELECTIONS);
   const [loadError, setLoadError] = useState<{
@@ -207,6 +238,9 @@ export function CloudProjectSettingsDialog({
     project: false,
     instructions: false,
   });
+  // The Cowork fields of the last save answered with warnings, resent with
+  // the next Save's.
+  const unsyncedCowork = useRef<CloudProjectCoworkEdit | null>(null);
   const egressHostsId = useId();
   const hostPortsId = useId();
   const [egressHostsText, setEgressHostsText] = useState('');
@@ -239,9 +273,9 @@ export function CloudProjectSettingsDialog({
     }
     void readCloudProjectSettings(invoker, workspaceId).then(
       async (read): Promise<void> => {
-        // The picker's options; a failed catalog leaves the defaults
+        // The pickers' options; a failed catalog leaves the defaults
         // readable, as the web's settings do.
-        const options = await readCloudProjectPluginCatalog(
+        const options = await readCloudProjectCatalog(
           invoker,
           workspaceId,
           read.defaultPluginSelections,
@@ -252,7 +286,8 @@ export function CloudProjectSettingsDialog({
         if (!current) return;
         projectRevision.current = read.revision;
         setSettings(read);
-        setCatalog(options);
+        setCatalog(options?.plugins ?? null);
+        setModels(options?.models ?? null);
         setPluginSelections(read.defaultPluginSelections ?? EMPTY_SELECTIONS);
         setEgressHostsText(read.egressAllowedHosts.join('\n'));
         setHostModeEnabled(read.hostModeEnabled);
@@ -378,6 +413,31 @@ export function CloudProjectSettingsDialog({
   };
 
   /**
+   * The description, default model and retention Save would send, as the
+   * web's buildPatch reads them, with the fields of a warned save resent.
+   */
+  const coworkEdit = (
+    values: WorkspaceSettingsValues,
+  ): CloudProjectCoworkEdit => {
+    // The web stores the description trimmed.
+    const description = (values.description ?? '').trim();
+    const retention =
+      settings.deletionRetentionDays ?? DEFAULT_ARCHIVE_RETENTION_DAYS;
+    return {
+      ...unsyncedCowork.current,
+      ...(description === settings.description ? {} : { description }),
+      ...(values.defaultModelDefinitionId === undefined ||
+      values.defaultModelDefinitionId === settings.defaultModelDefinitionId
+        ? {}
+        : { defaultModel: values.defaultModelDefinitionId }),
+      ...(values.deletionRetentionDays === undefined ||
+      values.deletionRetentionDays === retention
+        ? {}
+        : { deletionRetentionDays: values.deletionRetentionDays }),
+    };
+  };
+
+  /**
    * Shows what the web core stores, after a save it refused as stale.
    * Answers whether it did; until it does, Save sends nothing.
    */
@@ -428,14 +488,61 @@ export function CloudProjectSettingsDialog({
     const warnings: string[] = [];
     // A value the web core would refuse fails before anything is sent.
     const patch = projectPatch(values, unsynced.current.project);
+    const cowork = coworkEdit(values);
+    // The description and model this Save sends, kept out of its details.
+    const sent = [cowork.description, cowork.defaultModel].filter(
+      (value): value is string => typeof value === 'string' && value !== '',
+    );
     // A refused step is the dialog's failure, with the web core's words.
     const step = async <T,>(run: () => Promise<T>): Promise<T> => {
       try {
         return await run();
       } catch (error) {
-        throw new WorkspaceSettingsFailure(SAVE_FAILED, detailsOf(error));
+        throw new WorkspaceSettingsFailure(
+          SAVE_FAILED,
+          detailsWithout(error, sent),
+        );
       }
     };
+    // The Cowork fields first, as the web sends them: a refused model is the
+    // likeliest refusal, and it stops every step after it. They don't move
+    // the project revision, so the project save below still names it.
+    if (Object.keys(cowork).length > 0) {
+      let answered: readonly string[];
+      try {
+        answered = await saveCloudProjectCoworkSettings(
+          invoker,
+          workspaceId,
+          cowork,
+          projectRevision.current,
+        );
+      } catch (error) {
+        if (!isRevisionConflict(error))
+          throw new WorkspaceSettingsFailure(
+            SAVE_FAILED,
+            detailsWithout(error, sent),
+          );
+        throw staleFailure(await reloadSandboxSettings());
+      }
+      unsyncedCowork.current = answered.length > 0 ? cowork : null;
+      warnings.push(...answered);
+      setSettings((stored) =>
+        stored === null
+          ? stored
+          : {
+              ...stored,
+              ...(cowork.description === undefined
+                ? {}
+                : { description: cowork.description }),
+              ...(cowork.defaultModel === undefined
+                ? {}
+                : { defaultModelDefinitionId: cowork.defaultModel }),
+              ...(cowork.deletionRetentionDays === undefined
+                ? {}
+                : { deletionRetentionDays: cowork.deletionRetentionDays }),
+            },
+      );
+    }
     const selections = storedSelections(pluginSelections);
     if (
       unsynced.current.plugins ||
@@ -455,7 +562,10 @@ export function CloudProjectSettingsDialog({
         // defaults and their revision, keeping the draft, so the next Save
         // names the current one.
         await refreshPluginDefaults();
-        throw new WorkspaceSettingsFailure(SAVE_FAILED, detailsOf(error));
+        throw new WorkspaceSettingsFailure(
+          SAVE_FAILED,
+          detailsWithout(error, sent),
+        );
       }
       // The new defaults' revision is unknown until the next read, so the
       // next save of them goes unchecked, as the web's does.
@@ -481,7 +591,10 @@ export function CloudProjectSettingsDialog({
         );
       } catch (error) {
         if (!isRevisionConflict(error))
-          throw new WorkspaceSettingsFailure(SAVE_FAILED, detailsOf(error));
+          throw new WorkspaceSettingsFailure(
+            SAVE_FAILED,
+            detailsWithout(error, sent),
+          );
         throw staleFailure(await reloadSandboxSettings());
       }
       const answered = saved.warnings;
@@ -553,14 +666,21 @@ export function CloudProjectSettingsDialog({
         // The project's name is user-authored: replay masks it.
         <span className={POSTHOG_REPLAY_MASK_CLASS}>{name}</span>
       }
+      modelOptions={models ?? []}
+      {...(models === null ? { modelsError: MODELS_FAILED } : {})}
       initialValues={{
         name,
+        description: settings.description,
+        defaultModelDefinitionId: settings.defaultModelDefinitionId,
+        deletionRetentionDays:
+          settings.deletionRetentionDays ?? DEFAULT_ARCHIVE_RETENTION_DAYS,
         ...(color === undefined ? {} : { color }),
         content: settings.instructions,
         scripts: {},
       }}
       {...(initialTab === undefined ? {} : { initialTab })}
       tabs={['details', 'claude-md', 'danger']}
+      showDescription
       tabLabels={{ 'claude-md': 'Instructions' }}
       claudeMdCopy={{
         title: 'Instructions',
@@ -628,6 +748,9 @@ export function CloudProjectSettingsDialog({
       testIds={{
         dialog: 'cloud-project-settings-dialog',
         nameInput: 'cloud-project-settings-name',
+        descriptionInput: 'cloud-project-settings-description',
+        defaultModel: 'cloud-project-settings-default-model',
+        retentionInput: 'cloud-project-settings-retention',
         claudeMdTextarea: 'cloud-project-settings-instructions',
         save: 'cloud-project-settings-save',
         error: 'cloud-project-settings-error',

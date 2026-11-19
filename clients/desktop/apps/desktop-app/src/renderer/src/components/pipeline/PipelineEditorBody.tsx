@@ -29,7 +29,7 @@ import type {
 } from '@/stores/navigationStore';
 import { JobList } from './steps/JobList';
 import { JobDetailPanel } from './steps/JobDetailPanel';
-import { StepDetailPanel } from './steps/StepDetailPanel';
+import { StepDetailPanel, type StepSendAsField } from './steps/StepDetailPanel';
 import { PipelineFlowDiagram } from '@/components/pipeline/flow/PipelineFlowDiagram';
 import type { PipelineEditorSession } from './usePipelineEditorSession';
 
@@ -230,6 +230,11 @@ export interface PipelineEditorBodyProps {
    * schedule's (CAN-5782): a create step's sidebar group reads its project.
    */
   readonly inputValues?: Readonly<Record<string, string>>;
+  /** A send step's "Send as" (CAN-7186), on a workflow page. */
+  readonly stepSendAs?: (
+    jobId: string,
+    stepIndex: number,
+  ) => StepSendAsField | undefined;
 }
 
 /**
@@ -244,6 +249,7 @@ export function PipelineEditorBody({
   returnToPipeline,
   returnToMarketplace,
   inputValues,
+  stepSendAs,
 }: PipelineEditorBodyProps): JSX.Element {
   const { editor, flowSource, selectionIsValid } = session;
   const [detailPanelWidth, setDetailPanelWidth] =
@@ -525,6 +531,14 @@ export function PipelineEditorBody({
                       }
                       onClose={() => editor.setSelection({ type: 'none' })}
                       {...(inputValues ? { inputValues } : {})}
+                      {...(stepSendAs
+                        ? {
+                            sendAs: stepSendAs(
+                              editor.selection.jobId,
+                              editor.selection.stepIndex,
+                            ),
+                          }
+                        : {})}
                       readonly={editor.readonly}
                     />
                   )}

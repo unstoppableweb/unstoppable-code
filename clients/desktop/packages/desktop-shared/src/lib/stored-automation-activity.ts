@@ -20,12 +20,17 @@ export function storedAutomationActivity(
  * workflow it runs, except a validated chat projection that uses an Agent
  * or has an installed capability package (CAN-5479). Pipeline publication
  * strips local alias preferences; the chat carries its Agent model portably.
+ * CAN-7285: a workflow the install bundled always shares as the workflow
+ * it runs, as it did before its install owned it: its package is pinned to
+ * that workflow, not to a chat action.
  */
 export function sharedAutomationActivity(
   activity: ScheduledActivity,
 ): ScheduledActivity {
   const { ownedPipeline, ...shown } = activity;
   return ownedPipeline?.chatEditable === true &&
+    activity.installedFrom?.bundledPipelineLocalId !==
+      ownedPipeline.pipelineId &&
     (activity.installedFrom?.capabilityPackage !== undefined ||
       ('model' in activity.action &&
         activity.action.model?.startsWith(AGENT_MODEL_PREFIX) === true))

@@ -388,6 +388,9 @@ export function createCanopyDispatcher(
       metadata: metadata.data,
       signal: controller.signal,
       ...(execution === undefined ? {} : { execution }),
+      ...(callOptions.lease === undefined
+        ? {}
+        : { lease: Object.freeze({ leaseId: callOptions.lease.leaseId }) }),
     };
     return {
       params: parsedParams.data,

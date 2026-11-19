@@ -5374,12 +5374,13 @@ it.each(
     (['success', 'failure'] as const).map((outcome) => ({ shape, outcome })),
   ),
 )('redaction parity $shape on $outcome', async ({ shape, outcome }) => {
+  // qzx7w is outside hex, so it cannot occur inside randomUUID() ids on the wire.
   const secret =
     shape === 'escaped'
-      ? 'caller-"private"\\value\n12345'
-      : 'caller-private-value-12345';
+      ? 'caller-"private"\\value\nqzx7w'
+      : 'caller-private-value-qzx7w';
   const secrets =
-    shape === 'overlapping' ? [secret, 'value-12345-tail'] : [secret];
+    shape === 'overlapping' ? [secret, 'value-qzx7w-tail'] : [secret];
   const encoded = JSON.stringify(secret).slice(1, -1);
   const parts =
     shape === 'escaped'
@@ -5387,7 +5388,7 @@ it.each(
       : [
           'caller-private-',
           'value-',
-          shape === 'overlapping' ? '12345-tail' : '12345',
+          shape === 'overlapping' ? 'qzx7w-tail' : 'qzx7w',
         ];
   async function execute(selected: boolean): Promise<{
     blocks: unknown[];
@@ -5521,13 +5522,13 @@ it.each(
   expect(vault.text).toEqual(legacy.text);
   expect(JSON.stringify(legacy.blocks)).toContain('***');
   expect(JSON.stringify(vault.blocks)).not.toMatch(
-    /caller-private-|private|value-|12345|tail/,
+    /caller-private-|private|value-|qzx7w|tail/,
   );
   expect(vault.frames.join('')).not.toMatch(
-    /caller-private-|private|value-|12345|tail/,
+    /caller-private-|private|value-|qzx7w|tail/,
   );
   expect(vault.error ?? '').not.toMatch(
-    /caller-private-|private|value-|12345|tail/,
+    /caller-private-|private|value-|qzx7w|tail/,
   );
 });
 

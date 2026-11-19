@@ -180,6 +180,16 @@ export const APP_ERROR_CATALOG = {
     summary: 'Disk full',
     status: 'ENOSPC',
   },
+  'external.chat_history_link_outside': {
+    kind: 'external',
+    recovery: 'fix_first',
+    copy: {
+      title: "Couldn't delete this chat history.",
+      description:
+        "One of its files links outside the app's data folder. Remove the link, then try again.",
+    },
+    summary: 'Chat history file links outside the data folder',
+  },
 } as const satisfies Record<string, AppErrorDefinition>;
 
 for (const definition of Object.values(APP_ERROR_CATALOG)) {

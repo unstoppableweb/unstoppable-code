@@ -61,7 +61,8 @@ let daemonCommitHookIds: string[] = [];
  * through core once the desktop runtime exists, still before any pipeline
  * can start (`sweepInterruptedPipelinesAtStartup`). Pipeline installs an
  * exit interrupted are rolled back alongside; installs wait for that
- * themselves. Each item is retryable.
+ * themselves, and startup recovery does not (CAN-7302). Each item is
+ * retryable.
  */
 export async function recoverInterruptedWorkAtStartup(): Promise<void> {
   // Recovered queued chats wait for the core to accept turns (CAN-4112);
@@ -80,7 +81,7 @@ export async function recoverInterruptedWorkAtStartup(): Promise<void> {
   // identity resolves in the background, and runs that start first record
   // only their PID.
   configureDesktopPipelineOwnerFence().catch(() => undefined);
-  const installs = whenPipelineInstallsRecovered();
+  void whenPipelineInstallsRecovered();
   const found = await scan(runtime.executionsDir);
   interruptedPipelineIds = found.pipelineIds;
   daemonCommitHookIds = found.daemonCommitHookIds;
@@ -94,7 +95,6 @@ export async function recoverInterruptedWorkAtStartup(): Promise<void> {
       );
     }
   }
-  await installs;
   if (errors.length) throw new Error(errors.join('\n'));
 }
 

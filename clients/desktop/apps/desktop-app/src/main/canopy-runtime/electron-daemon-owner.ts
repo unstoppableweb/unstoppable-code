@@ -2,8 +2,10 @@ import { app } from 'electron';
 import { CanopyClientError, type CanopyClient } from '@canopy/core-client';
 import { probeCanopyDaemon } from '@canopy/core-client/node';
 import {
+  CORE_MUTATION_FENCE_INSTRUCTION_DEFINITIONS,
   CORE_TRANSPORT_INSTRUCTION_DEFINITIONS,
   CORE_TRANSPORT_QUERY_DEFINITIONS,
+  MUTATION_FENCE_GRANTS,
   WORKER_PIPELINE_GRANTS,
   WORKER_PIPELINE_INSTRUCTION_DEFINITIONS,
   WORKER_PIPELINE_STREAM_DEFINITIONS,
@@ -15,6 +17,7 @@ import {
 import {
   createElectronDaemonConnectionService,
   type ElectronDaemonConnectionService,
+  type ElectronDaemonSession,
 } from './electron-daemon-connection';
 
 /*
@@ -27,11 +30,15 @@ import {
 export const DAEMON_PIPELINE_OWNER_CLIENT_INSTANCE_ID =
   'electron-main:pipeline-owner';
 
-/** What the owner session calls on the daemon: the lease, runtime reads and the host request channel. */
+/**
+ * What the owner session calls on the daemon: the lease, runtime reads, the
+ * host request channel and its split-lock fences (CAN-4730 E2-G).
+ */
 export const ELECTRON_DAEMON_OWNER_DEFINITIONS = {
   queries: { ...CORE_TRANSPORT_QUERY_DEFINITIONS },
   instructions: {
     ...CORE_TRANSPORT_INSTRUCTION_DEFINITIONS,
+    ...CORE_MUTATION_FENCE_INSTRUCTION_DEFINITIONS,
     'worker.pipeline.hostRequest.respond':
       WORKER_PIPELINE_INSTRUCTION_DEFINITIONS[
         'worker.pipeline.hostRequest.respond'
@@ -137,18 +144,32 @@ export function isDaemonPipelineOwnerPossible(): boolean {
  * for which `isDaemonOwnerUnavailable` is true when it did not.
  */
 export async function getDaemonPipelineOwnerClient(): Promise<ElectronDaemonOwnerClient> {
+  return (await getDaemonOwnerSession()).client;
+}
+
+/** The owner session itself, for observers of its lease (split-lock fences). */
+export async function getDaemonOwnerSession(): Promise<
+  ElectronDaemonSession<ElectronDaemonOwnerClient>
+> {
   const { authorityId } = await getElectronDaemonHost();
-  const session = await ownerService().get(
+  return await ownerService().get(
     {
       principalId: 'electron-main',
       clientInstanceId: DAEMON_PIPELINE_OWNER_CLIENT_INSTANCE_ID,
       authorityId,
       interfaceKind: 'desktop',
-      grants: [WORKER_PIPELINE_GRANTS.host],
+      grants: [WORKER_PIPELINE_GRANTS.host, MUTATION_FENCE_GRANTS.publish],
     },
     owner.signal,
   );
-  return session.client;
+}
+
+/**
+ * Aborts once the owner is disposed at quit, so anything watching the owner
+ * session stops with it (CAN-4730 E2-G's split-lock fence publisher).
+ */
+export function daemonOwnerLifetime(): AbortSignal {
+  return owner.signal;
 }
 
 /** Closes the owner session; quit and tests. */

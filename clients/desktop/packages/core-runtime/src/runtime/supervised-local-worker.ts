@@ -30,6 +30,8 @@ export interface SupervisedLocalWorker {
   attach(client: LocalWorkerBindingClient): void;
   /** Whether a worker is attached and its binding has not stopped. */
   attached(): boolean;
+  /** How many worker processes this route has attached: 1 for the first. */
+  incarnation(): number;
 }
 
 /**
@@ -69,6 +71,7 @@ export function createSupervisedLocalWorker(options: {
 }): SupervisedLocalWorker {
   const { definitions } = options;
   let current: Attached | null = null;
+  let attaches = 0;
   /** Keyed instructions sent to a worker that has stopped. */
   const lost: SentKeys = { keys: new Set(), evicted: false };
   const retire = (attached: Attached): void => {
@@ -189,11 +192,13 @@ export function createSupervisedLocalWorker(options: {
         client,
         sent: { keys: new Set(), evicted: false },
       };
+      attaches += 1;
       current = attached;
       const onStop = (): void => retire(attached);
       if (client.signal.aborted) onStop();
       else client.signal.addEventListener('abort', onStop, { once: true });
     },
     attached: (): boolean => live() !== null,
+    incarnation: (): number => attaches,
   };
 }

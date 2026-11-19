@@ -2,6 +2,7 @@ import { z, type ZodType } from 'zod';
 
 import {
   CanopyQueryRequestMetadataSchema,
+  CanopyUnkeyedInstructionRequestMetadataSchema,
   CanopyRequestMetadataSchema,
   CanopyWorkspaceScopeSchema,
 } from './common';
@@ -377,7 +378,12 @@ export interface CanopyOperationEnvelopes {
   readonly notification?: ZodType;
 }
 
-function withRequestMetadata(params: ZodType, keyed: boolean): ZodType {
+type RequestMetadataKind = 'keyed' | 'instruction' | 'read';
+
+function withRequestMetadata(
+  params: ZodType,
+  kind: RequestMetadataKind,
+): ZodType {
   // A union of objects (for example create-or-replace) gets `_meta` per branch.
   if (
     params instanceof z.ZodUnion &&
@@ -386,15 +392,18 @@ function withRequestMetadata(params: ZodType, keyed: boolean): ZodType {
     return params.clone({
       ...params.def,
       options: params.options.map((option) =>
-        withRequestMetadata(option, keyed),
+        withRequestMetadata(option, kind),
       ),
     });
   if (!(params instanceof z.ZodObject) || '_meta' in params.shape)
     return params;
   return params.extend({
-    _meta: keyed
-      ? CanopyRequestMetadataSchema.required({ idempotencyKey: true })
-      : CanopyQueryRequestMetadataSchema.optional(),
+    _meta:
+      kind === 'keyed'
+        ? CanopyRequestMetadataSchema.required({ idempotencyKey: true })
+        : kind === 'instruction'
+          ? CanopyUnkeyedInstructionRequestMetadataSchema.optional()
+          : CanopyQueryRequestMetadataSchema.optional(),
   });
 }
 
@@ -459,11 +468,15 @@ export function composeCanopyOperationEnvelopes(
     | CanopyInstructionDefinition
     | CanopyStreamDefinition,
 ): CanopyOperationEnvelopes {
-  const keyed =
-    definition.kind === 'instruction' && definition.idempotency === 'keyed';
+  const metadata: RequestMetadataKind =
+    definition.kind !== 'instruction'
+      ? 'read'
+      : definition.idempotency === 'keyed'
+        ? 'keyed'
+        : 'instruction';
   const params = withHostExecution(
     name,
-    withRequestMetadata(definition.params, keyed),
+    withRequestMetadata(definition.params, metadata),
   );
   if (definition.kind !== 'stream')
     return requestResponseEnvelopes(

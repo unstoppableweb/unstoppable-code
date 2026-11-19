@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState, type JSX } from 'react';
+import { useEffect, useMemo, useState, type JSX } from 'react';
 import type { AppError } from '@canopy/protocol/app-errors';
 import {
   toFeedbackReportError,
@@ -12,6 +12,7 @@ import { useOptionalCanopyClient } from '@canopy/app-state';
 import { Button, type ButtonSize } from '@canopy/ui-shared/components';
 import { FeedbackReportDialog } from './FeedbackReportDialogEntry';
 import { ReportActionBoundary } from './ReportActionBoundary';
+import { recordReportUnavailable } from '@canopy/ui-shared/lib';
 
 export { ReportActionBoundary };
 
@@ -30,7 +31,10 @@ export interface ReportThisActionProps {
  */
 export function ReportThisAction(props: ReportThisActionProps): JSX.Element {
   return (
-    <ReportActionBoundary key={props.error.referenceId}>
+    <ReportActionBoundary
+      key={props.error.referenceId}
+      referenceId={props.error.referenceId}
+    >
       <ReportThisButton {...props} />
     </ReportActionBoundary>
   );
@@ -43,13 +47,19 @@ function useReportAvailability(error: AppError): {
   readonly diagnosticsSupported: boolean;
 } | null {
   const client = useOptionalCanopyClient();
-  const reportError = useMemo(() => {
+  const { reportError, threw } = useMemo(() => {
     try {
-      return toFeedbackReportError(error);
+      return { reportError: toFeedbackReportError(error), threw: false };
     } catch {
-      return null;
+      return { reportError: null, threw: true };
     }
   }, [error]);
+  // Only a defect offers Report this, so only a defect's throw takes it away.
+  const unreportable = threw && error.kind === 'defect';
+  const { referenceId } = error;
+  useEffect(() => {
+    if (unreportable) recordReportUnavailable(referenceId);
+  }, [unreportable, referenceId]);
   const feedback =
     client?.capabilities.feedbackReports === true ? client.feedback : undefined;
   if (error.kind !== 'defect' || !feedback || !reportError) return null;

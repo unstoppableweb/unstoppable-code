@@ -7,7 +7,10 @@ import { logMainProcessError } from './main-process-logging';
 import { withGitReadPath } from './worktree-read-availability';
 import {
   GIT_DEFAULT_BRANCH_HINT_TTL_MS,
+  parseRemoteDefaultBranch,
   selectGitDefaultBranch,
+  setInvalidRemoteDefaultSink,
+  type InvalidRemoteDefaultSource,
   type GitDefaultBranchFacts,
   type GitDefaultBranchHint,
   type GitDefaultBranchSelection,
@@ -25,6 +28,23 @@ import {
   recordGitDefaultBranch,
   type GitDefaultBranchFreshnessIdentity,
 } from './git-default-branch-freshness';
+// CAN-7169: kept apart from the error import above.
+import { logMainProcessWarn } from './main-process-logging';
+
+/**
+ * CAN-7169: the diagnostic for a remote default branch suppressed as invalid.
+ * It logs the source only, never the name, so support can tell an invalid
+ * default from no default without the remote's text reaching a log.
+ */
+export function logInvalidRemoteDefault(
+  source: InvalidRemoteDefaultSource,
+): void {
+  logMainProcessWarn(
+    'Suppressed a remote default branch that is not a valid branch name',
+    { source },
+  );
+}
+setInvalidRemoteDefaultSink(logInvalidRemoteDefault);
 
 export const DEFAULT_BRANCH_FRESHNESS_TTL_MS = GIT_DEFAULT_BRANCH_HINT_TTL_MS;
 
@@ -87,12 +107,22 @@ export function createDesktopDefaultBranchFacts(
  */
 export async function applyDefaultBranchEffects(
   repoPath: string,
-  selection: GitDefaultBranchSelection,
+  // The reported selection: the in-process result or the daemon's wire value,
+  // parsed here so both paths refuse exactly the same names.
+  selection: {
+    readonly defaultBranch: string | null;
+    readonly source: GitDefaultBranchSelection['source'];
+  },
   observation: DefaultBranchObservation,
   resolvedAt: number,
 ): Promise<void> {
-  const remoteHead = selection.defaultBranch;
-  if (selection.source !== 'remote' || !remoteHead) return;
+  if (selection.source !== 'remote' || !selection.defaultBranch) return;
+  // CAN-7169: never record or apply a name Git would not accept as a branch.
+  const remoteHead = parseRemoteDefaultBranch(
+    selection.defaultBranch,
+    'reported-default',
+  );
+  if (!remoteHead) return;
   const identity = observation.identity ?? (await resolveIdentity(repoPath));
   if (identity) {
     await recordGitDefaultBranch({

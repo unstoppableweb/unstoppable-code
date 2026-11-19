@@ -320,7 +320,7 @@ it('preserves create/remove/prune effects, branch reuse and hook suppression', a
       ],
       cwd: source,
     },
-    { args: ['worktree', 'remove', '--force', target], cwd: source },
+    { args: ['worktree', 'remove', '--force', '--', target], cwd: source },
     { args: ['worktree', 'prune'], cwd: source },
     {
       args: [
@@ -333,7 +333,7 @@ it('preserves create/remove/prune effects, branch reuse and hook suppression', a
       ],
       cwd: source,
     },
-    { args: ['worktree', 'remove', '--force', target], cwd: source },
+    { args: ['worktree', 'remove', '--force', '--', target], cwd: source },
   ]);
   for (const { env } of writes) {
     expect(env?.GIT_CONFIG_GLOBAL).toBe('/dev/null');

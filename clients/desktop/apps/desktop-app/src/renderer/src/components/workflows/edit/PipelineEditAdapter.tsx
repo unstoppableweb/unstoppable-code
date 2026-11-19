@@ -69,6 +69,8 @@ import {
 import { replaceSavedDraft } from './replaceSavedDraft';
 import { useWorkflowEditGuard } from './useWorkflowEditGuard';
 import { useWorkflowSchedules } from './useWorkflowSchedules';
+import { useWorkflowSendAs } from './useWorkflowSendAs';
+import { SEND_AGENT_MESSAGE_USES } from '@/lib/pipelineStepSendAs';
 import { usePipelineAssistantDraft } from '@/components/pipeline/pipelineAssistantDraft';
 import { WorkflowEditNotFound } from './WorkflowEditNotFound';
 
@@ -210,6 +212,7 @@ export function PipelineEditAdapter({
     [target.cwd, targetKey],
   );
 
+  const saveCommandRef = useRef<() => void>(() => undefined);
   const session = usePipelineEditorSession(
     {
       pipelineId: target.pipelineId,
@@ -233,6 +236,9 @@ export function PipelineEditAdapter({
         runWithoutNavigationGuard(navigate);
       },
       onSaved: handleSaved,
+      // CAN-7186: the pipeline.save command saves through the page's Save,
+      // with its "Send as" check and preference write.
+      saveCommand: (): void => saveCommandRef.current(),
     },
   );
 
@@ -285,6 +291,33 @@ export function PipelineEditAdapter({
       : {}),
   });
 
+  // CAN-7186: "Send as" on the send steps, read over the first schedule's
+  // run values as edited, which Save stores. A schedule that keeps its own
+  // preferences for a collection runs with those instead.
+  const sendAs = useWorkflowSendAs({
+    editor: session.editor,
+    pipeline: session.pipeline,
+    info: session.pipelineInfo,
+    ...(schedules.editedFirstScheduleInputs
+      ? { inputValues: schedules.editedFirstScheduleInputs }
+      : {}),
+    scheduleOverrides: schedules.editedCollectionOverrides,
+    agentGranted: schedules.agentGranted,
+    active: !session.readOnly,
+  });
+  // The schedule target Send as was checked against, and the one now: a
+  // target edited while Save writes is checked before schedules are stored.
+  const sendAsTargetKey = JSON.stringify(
+    schedules.editedFirstScheduleInputs ?? null,
+  );
+  const latestSendAsTargetKey = useRef(sendAsTargetKey);
+  useEffect(() => {
+    latestSendAsTargetKey.current = sendAsTargetKey;
+  }, [sendAsTargetKey]);
+  const sendAsUnchosen = sendAs.unchosenSteps;
+  const sendAsChecking = sendAs.checking;
+  const sendAsBlocked = sendAsUnchosen.length > 0 || sendAsChecking;
+
   // CAN-5782: a save that writes an agent-granted workflow's pipeline voids
   // its grant, so it asks first. Schedule-only saves don't write it.
   const [grantChoice, setGrantChoice] = useState<
@@ -309,56 +342,114 @@ export function PipelineEditAdapter({
   const sessionDirty = session.isDirty;
   const sessionDuplicate = session.duplicate;
   const { agentGranted, saveAll: saveSchedules } = schedules;
-  const save = useCallback(async (): Promise<UnsavedChangesSaveResult> => {
-    setSaveFailure(null);
-    if (sessionDirty) {
-      if (agentGranted) {
-        const choice = await askGrant();
-        if (choice === 'duplicate') sessionDuplicate();
-        if (choice !== 'save') return { ok: false };
+  const { save: saveSendAs } = sendAs;
+  const sessionInfo = session.pipelineInfo;
+  const { isRawMode, rawYamlText, setMainView } = session;
+  // `schedules: false` is the pipeline.save command's save (CAN-7186): the
+  // definition and its "Send as" choices, never schedule edits, which an
+  // agent may change only through the automation update policy.
+  const save = useCallback(
+    async ({
+      schedules: withSchedules = true,
+    }: { schedules?: boolean } = {}): Promise<UnsavedChangesSaveResult> => {
+      setSaveFailure(null);
+      // Raw text is read only when saved, so a send step typed there is
+      // applied first and checked for "Send as" before the next Save.
+      if (isRawMode && rawYamlText.includes(SEND_AGENT_MESSAGE_USES)) {
+        setMainView('flowchart');
+        const message =
+          'Check “Send as” on the send steps, then save this workflow.';
+        setSaveFailure(message);
+        return { ok: false, message };
       }
-      const result = await sessionSave();
-      if (!result.ok) {
-        if (result.message !== undefined) {
-          setSaveFailure(result.message);
-          const shown = useNavigationStore.getState().workflowEdit;
-          if (shown !== undefined && workflowEditKey(shown) === targetKey) {
-            setSection('definition');
-          }
+      // A run nobody watches never picks an account, so Save waits for one,
+      // and for the check of what the send steps use to finish. Raw text with
+      // no send step left is saved as written: the check read the definition
+      // before the text, which may have removed the step it waits on.
+      if (sendAsBlocked && !isRawMode) {
+        const message = sendAsChecking
+          ? 'Checking which accounts the send steps use. Try saving again in a moment.'
+          : sendAsBlockedMessage(sendAsUnchosen);
+        setSaveFailure(message);
+        return { ok: false, message };
+      }
+      if (sessionDirty) {
+        if (agentGranted) {
+          const choice = await askGrant();
+          if (choice === 'duplicate') sessionDuplicate();
+          if (choice !== 'save') return { ok: false };
         }
-        return result;
+        const result = await sessionSave();
+        if (!result.ok) {
+          if (result.message !== undefined) {
+            setSaveFailure(result.message);
+            const shown = useNavigationStore.getState().workflowEdit;
+            if (shown !== undefined && workflowEditKey(shown) === targetKey) {
+              setSection('definition');
+            }
+          }
+          return result;
+        }
       }
-    }
-    // The pipeline first, then each changed schedule, under the name the
-    // pipeline save stored.
-    const scheduled = await saveSchedules(
-      sessionDirty ? savedInfoRef.current?.name : undefined,
-    );
-    if (!scheduled.ok && scheduled.message !== undefined) {
-      setSaveFailure(scheduled.message);
-      const shown = useNavigationStore.getState().workflowEdit;
-      if (shown !== undefined && workflowEditKey(shown) === targetKey) {
-        setSection('trigger');
+      // The pipeline first, then its send steps' accounts on this machine,
+      // which need its saved identity, then each changed schedule, under the
+      // name the pipeline save stored.
+      const sentAs = await saveSendAs(savedInfoRef.current ?? sessionInfo);
+      if (!sentAs.ok) {
+        setSaveFailure(sentAs.message);
+        return sentAs;
       }
-    }
-    return scheduled;
-  }, [
-    agentGranted,
-    askGrant,
-    saveSchedules,
-    sessionDirty,
-    sessionDuplicate,
-    sessionSave,
-    targetKey,
-  ]);
+      if (!withSchedules) return { ok: true };
+      if (latestSendAsTargetKey.current !== sendAsTargetKey) {
+        const message =
+          'A schedule’s target changed while saving. Check “Send as” on the send steps, then save again.';
+        setSaveFailure(message);
+        return { ok: false, message };
+      }
+      const scheduled = await saveSchedules(
+        sessionDirty ? savedInfoRef.current?.name : undefined,
+      );
+      if (!scheduled.ok && scheduled.message !== undefined) {
+        setSaveFailure(scheduled.message);
+        const shown = useNavigationStore.getState().workflowEdit;
+        if (shown !== undefined && workflowEditKey(shown) === targetKey) {
+          setSection('trigger');
+        }
+      }
+      return scheduled;
+    },
+    [
+      agentGranted,
+      askGrant,
+      saveSchedules,
+      isRawMode,
+      rawYamlText,
+      saveSendAs,
+      sendAsBlocked,
+      sendAsChecking,
+      sendAsTargetKey,
+      sendAsUnchosen,
+      sessionDirty,
+      setMainView,
+      sessionDuplicate,
+      sessionInfo,
+      sessionSave,
+      targetKey,
+    ],
+  );
   const requestSave = useCallback((): void => {
     void save();
+  }, [save]);
+  useEffect(() => {
+    saveCommandRef.current = (): void => {
+      void save({ schedules: false });
+    };
   }, [save]);
 
   // A related row (similar pipelines, its skills and plugins) leaves the
   // page: it saves the way Save does, the grant question and the schedules
   // included, before it goes.
-  const schedulesDirty = schedules.dirty;
+  const schedulesDirty = schedules.dirty || sendAs.dirty;
   const pipelineInfoRef = useRef(session.pipelineInfo);
   pipelineInfoRef.current = session.pipelineInfo;
   const relatedNavigate = useCallback(
@@ -385,7 +476,7 @@ export function PipelineEditAdapter({
   const assistantDraft = usePipelineAssistantDraft();
   // With only the draft unsaved, Save keeps the draft and writes nothing: a
   // clean pipeline has nothing to save.
-  const sessionIsDirty = session.isDirty || schedules.dirty;
+  const sessionIsDirty = session.isDirty || schedules.dirty || sendAs.dirty;
   const guardSave = useCallback(
     (): Promise<UnsavedChangesSaveResult> =>
       sessionIsDirty ? save() : Promise.resolve({ ok: true }),
@@ -394,11 +485,13 @@ export function PipelineEditAdapter({
   const sessionDiscard = session.discard;
   const discardAssistantDraft = assistantDraft.discard;
   const discardSchedules = schedules.discard;
+  const discardSendAs = sendAs.discard;
   const discard = useCallback((): void => {
     sessionDiscard();
     discardSchedules();
+    discardSendAs();
     discardAssistantDraft();
-  }, [sessionDiscard, discardSchedules, discardAssistantDraft]);
+  }, [sessionDiscard, discardSchedules, discardSendAs, discardAssistantDraft]);
   const guard = useWorkflowEditGuard({
     isDirty: sessionIsDirty || (!session.readOnly && assistantDraft.present),
     save: guardSave,
@@ -431,7 +524,10 @@ export function PipelineEditAdapter({
     saving: session.saving || schedules.saving || deleting,
     draft,
     // A schedule-only change saves without the pipeline's own checks.
-    canSubmit: session.canSave || (!session.isDirty && schedules.dirty),
+    canSubmit:
+      (!sendAsBlocked || session.isRawMode) &&
+      (session.canSave ||
+        (!session.isDirty && (schedules.dirty || sendAs.dirty))),
     userOwned: session.isUserOwned,
     // A saved pipeline runs once its info has loaded; a draft keeps Run in
     // place, disabled until its first save. The run picker lists only
@@ -668,6 +764,7 @@ export function PipelineEditAdapter({
                 {...(schedules.firstScheduleInputs
                   ? { inputValues: schedules.firstScheduleInputs }
                   : {})}
+                stepSendAs={sendAs.step}
               />
             </Surface>
           </PipelineEditorNotices>
@@ -753,6 +850,10 @@ export function PipelineEditAdapter({
             >
               {saveFailure}
             </Notice>
+          ) : sendAsUnchosen.length > 0 ? (
+            <Notice data-testid="workflow-send-as-needed">
+              {sendAsBlockedMessage(sendAsUnchosen)}
+            </Notice>
           ) : undefined
         }
         onSave={requestSave}
@@ -803,4 +904,10 @@ export function PipelineEditAdapter({
       {dispatchPipelineModal}
     </>
   );
+}
+
+/** Why Save waits: the send steps that still need a "Send as" account. */
+function sendAsBlockedMessage(steps: readonly string[]): string {
+  const named = steps.map((step) => `“${step}”`).join(', ');
+  return `Choose which account ${named} sends as in its step settings to save this workflow.`;
 }

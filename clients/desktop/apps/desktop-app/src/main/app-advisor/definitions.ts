@@ -56,6 +56,10 @@ import {
   experimentDispatchJsonSchema,
   type ExperimentAction,
   EXPERIMENT_ACTION_TYPES,
+  inventorySyncActionSchema,
+  inventorySyncDispatchJsonSchema,
+  type InventorySyncAction,
+  INVENTORY_SYNC_ACTION_TYPES,
   settingsActionSchema,
   aiGatewayActionSchema,
   type AiGatewayAction,
@@ -362,6 +366,7 @@ export const searchActionsSchema = z.object({
       appAdvisorActionTypeSchema,
       z.enum(INSTALLED_ITEM_ACTION_TYPES),
       z.enum(EXPERIMENT_ACTION_TYPES),
+      z.enum(INVENTORY_SYNC_ACTION_TYPES),
       z.enum(SETTINGS_ACTION_TYPES),
       z.enum(PIPELINES_ACTION_TYPES),
     ])
@@ -379,6 +384,7 @@ export const searchActionsToolShape = {
       z.enum(CHAT_HISTORY_ACTION_TYPES),
       z.enum(INSTALLED_ITEM_ACTION_TYPES),
       z.enum(EXPERIMENT_ACTION_TYPES),
+      z.enum(INVENTORY_SYNC_ACTION_TYPES),
       z.enum(SETTINGS_ACTION_TYPES),
     ])
     .optional(),
@@ -2852,6 +2858,7 @@ const appAdvisorDispatchPayloadSchema: z.ZodType<
   | AppAdvisorDispatchAction
   | InstalledItemAction
   | ExperimentAction
+  | InventorySyncAction
   | SettingsAction
   | AiGatewayAction
   | AppAdvisorPipelineRunAction
@@ -2861,6 +2868,7 @@ const appAdvisorDispatchPayloadSchema: z.ZodType<
   chatHistoryActionSchema,
   installedItemActionSchema,
   experimentActionSchema,
+  inventorySyncActionSchema,
   settingsActionSchema,
   aiGatewayActionSchema,
   appAdvisorPipelineRunActionSchema,
@@ -2973,6 +2981,7 @@ export const searchActionsJsonSchema: JsonValue = {
         ...CHAT_HISTORY_ACTION_TYPES,
         ...INSTALLED_ITEM_ACTION_TYPES,
         ...EXPERIMENT_ACTION_TYPES,
+        ...INVENTORY_SYNC_ACTION_TYPES,
         ...SETTINGS_ACTION_TYPES,
         ...PIPELINES_ACTION_TYPES,
       ],
@@ -3023,6 +3032,7 @@ export const dispatchActionJsonSchema: JsonValue = {
         },
         ...installedItemFieldJsonSchemas,
         ...experimentDispatchJsonSchema.properties,
+        ...inventorySyncDispatchJsonSchema.properties,
         ...settingsDispatchJsonSchema.properties,
         ...pipelinesDispatchProperties,
         ...scriptPreferencesDispatchJsonSchema.properties,

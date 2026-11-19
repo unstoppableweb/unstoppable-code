@@ -86,7 +86,13 @@ export function sharedWorkflowInputKinds(
       ? parseRaw(rawPipeline)
       : null;
   for (const step of declaredSteps(pipeline)) {
-    const projectInput = referencedInput(step.with.project_id);
+    // `builtin/create-worktree` takes the project as `workspace_id` too; on
+    // other steps `workspace_id` is the step's own input.
+    const projectInput =
+      referencedInput(step.with.project_id) ??
+      (step.uses === 'builtin/create-worktree'
+        ? referencedInput(step.with.workspace_id)
+        : null);
     if (projectInput !== null) {
       const kinds = projectKinds.get(projectInput) ?? new Set();
       const created =

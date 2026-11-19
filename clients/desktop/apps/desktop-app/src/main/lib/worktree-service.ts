@@ -1,4 +1,9 @@
 import {
+  autoArchiveBranchesMatch,
+  readAutoArchiveBranches,
+  type AutoArchiveBranchPin,
+} from './auto-archive-branches';
+import {
   withArchiveFailureTelemetry,
   setArchiveFailurePhase,
   type ArchiveTrigger,
@@ -1269,6 +1274,7 @@ async function deleteArchivedBranchesWithWorker(args: {
     repositoryIdentity: string;
     branchName: string;
     expectedTip: string;
+    mode?: ArchivedContainerBranchDeletionMode;
   }[];
   mode: ArchivedContainerBranchDeletionMode;
 }): Promise<void> {
@@ -1289,7 +1295,7 @@ async function deleteArchivedBranchesWithWorker(args: {
         expectedRepositoryIdentity: branch.repositoryIdentity,
         branchName: branch.branchName,
         expectedTip: branch.expectedTip,
-        mode: args.mode,
+        mode: branch.mode ?? args.mode,
       })),
     },
   });
@@ -4990,6 +4996,23 @@ async function cleanupLiveStateIfNeeded(
   );
 }
 
+// Check before recording quarantine intent, so a mismatch still admits
+// Keep worktree. Snapshot verification checks again after the move.
+async function assertAutoArchiveBranchesBeforeQuarantine(
+  worktreePath: string,
+  repositories: ArchivedContainerManifestV2['gitState']['repositories'],
+): Promise<void> {
+  for (const repository of repositories) {
+    const checkoutBranch = await getCurrentBranch(
+      join(worktreePath, repository.relativePath),
+    );
+    if (checkoutBranch !== (repository.branchName ?? 'HEAD'))
+      throw new Error(
+        'Cannot safely archive the worktree because its branch changed after deletion was confirmed.',
+      );
+  }
+}
+
 async function prepareWorktreeArchiveContainer(options: {
   workspaceId: string;
   worktreeId: string;
@@ -4999,6 +5022,8 @@ async function prepareWorktreeArchiveContainer(options: {
   retainAsArchivedContainer: boolean;
   requireArchivedContainer?: boolean;
   captureWorkspaceRootFiles?: boolean;
+  expectedAutoArchiveBranches?: readonly AutoArchiveBranchPin[];
+  resumeRecordedBranchDeletion?: boolean;
   managedRepoIds?: readonly string[];
   restoreScope?: 'workspace-root-only';
   lockAfterArchive?: boolean;
@@ -5136,6 +5161,8 @@ async function prepareWorktreeArchiveContainer(options: {
               workspaceType: options.workspaceType,
               worktreePath: options.worktreePath,
               persistedWorktree: options.persistedWorktree,
+              verifyCapturedBranches:
+                options.expectedAutoArchiveBranches !== undefined,
               allowEmptyRepositories:
                 options.restoreScope === 'workspace-root-only',
             },
@@ -5146,6 +5173,33 @@ async function prepareWorktreeArchiveContainer(options: {
         acknowledgeArchiveCaptureRefusal();
         gitCaptureError = error;
       }
+    }
+    if (options.resumeRecordedBranchDeletion && !gitCapture) {
+      throw new Error('The recorded archive Git capture is unavailable.');
+    }
+    if (options.expectedAutoArchiveBranches) {
+      const actual =
+        gitCapture?.version === 2
+          ? gitCapture.gitState.repositories.map(({ repoId, branchName }) => ({
+              repoId,
+              branchName: branchName ?? null,
+            }))
+          : await readAutoArchiveBranches(
+              options.workspaceId,
+              options.worktreeId,
+              options.workspaceType,
+              persisted,
+            );
+      if (
+        !autoArchiveBranchesMatch(
+          options.expectedAutoArchiveBranches,
+          actual,
+          true,
+        )
+      )
+        throw new Error(
+          'Cannot safely archive the worktree because its branch changed after deletion was confirmed.',
+        );
     }
     if (!gitCapture) {
       try {
@@ -5801,6 +5855,9 @@ async function archiveSingleRepoWorktreeWithoutOperationLock(options: {
     deleteBranch?: boolean;
   }>;
   expectedBranchName?: string;
+  forceConfirmedBranches?: readonly AutoArchiveBranchPin[];
+  expectedAutoArchiveBranches?: readonly AutoArchiveBranchPin[];
+  resumeRecordedBranchDeletion?: boolean;
   deleteBranch?: boolean;
   remainingWorktreeOrder?: readonly string[];
   expectedRemainingWorktreeOrder?: readonly string[];
@@ -5867,7 +5924,11 @@ async function archiveSingleRepoWorktreeWithoutOperationLock(options: {
   let runtime: ExecutionRuntime;
   let worktreePath: string;
   let archiveContainer: PreparedWorktreeArchiveContainer | undefined;
-  let effectiveDeleteBranch = options.deleteBranch;
+  let effectiveDeleteBranch = options.expectedAutoArchiveBranches?.some(
+    ({ branchName }) => branchName === undefined,
+  )
+    ? false
+    : options.deleteBranch;
   let branchPreservationWarning: string | undefined;
   try {
     config = await readWorkspaceConfig(options.workspaceId);
@@ -5902,6 +5963,8 @@ async function archiveSingleRepoWorktreeWithoutOperationLock(options: {
       persistedWorktree,
       retainAsArchivedContainer: retentionDecision.retainAsArchivedContainer,
       requireArchivedContainer: options.requireArchivedContainer,
+      expectedAutoArchiveBranches: options.expectedAutoArchiveBranches,
+      resumeRecordedBranchDeletion: options.resumeRecordedBranchDeletion,
       lockAfterArchive: options.lockAfterArchive,
     });
     if (options.requireArchivedContainer && !archiveContainer) {
@@ -5971,6 +6034,11 @@ async function archiveSingleRepoWorktreeWithoutOperationLock(options: {
             `Cannot safely archive the worktree because its branch changed after deletion was confirmed for "${expectedBranchName}".`,
           );
         }
+        if (options.expectedAutoArchiveBranches)
+          await assertAutoArchiveBranchesBeforeQuarantine(
+            worktreePath,
+            archiveContainer.manifest.gitState.repositories,
+          );
         const teardown = await destructiveCall(
           'checkout-quarantine',
           prepareArchivedContainerTeardown,
@@ -5987,6 +6055,10 @@ async function archiveSingleRepoWorktreeWithoutOperationLock(options: {
                   ? true
                   : undefined,
             branchDeletionMode: requestedBranchDeletionMode,
+            forceConfirmedBranches: options.forceConfirmedBranches,
+            verifyCapturedBranches:
+              options.expectedAutoArchiveBranches !== undefined,
+            resumeRecordedBranchDeletion: options.resumeRecordedBranchDeletion,
           },
         );
         const pendingBranchDeletions = teardown.pendingBranchDeletions ?? [];
@@ -6025,7 +6097,11 @@ async function archiveSingleRepoWorktreeWithoutOperationLock(options: {
               path: teardown.quarantinePath,
             },
           );
-          if (target.branchName && pendingBranchDeletions.length === 0) {
+          if (
+            !options.resumeRecordedBranchDeletion &&
+            target.branchName &&
+            pendingBranchDeletions.length === 0
+          ) {
             const branchDeleter = resolveArchiveBranchDeleter(
               effectiveDeleteBranch,
               archivePrefs.deleteBranchOnArchive,
@@ -6816,6 +6892,9 @@ export async function archiveSingleRepoWorktree(
       deleteBranch?: boolean;
     }>;
     expectedBranchName?: string;
+    forceConfirmedBranches?: readonly AutoArchiveBranchPin[];
+    expectedAutoArchiveBranches?: readonly AutoArchiveBranchPin[];
+    resumeRecordedBranchDeletion?: boolean;
     deleteBranch?: boolean;
     remainingWorktreeOrder?: readonly string[];
     expectedRemainingWorktreeOrder?: readonly string[];
@@ -7137,6 +7216,9 @@ async function archiveMultiRepoWorktreeWithoutOperationLock(options: {
     deleteBranch?: boolean;
   }>;
   expectedBranchName?: string;
+  forceConfirmedBranches?: readonly AutoArchiveBranchPin[];
+  expectedAutoArchiveBranches?: readonly AutoArchiveBranchPin[];
+  resumeRecordedBranchDeletion?: boolean;
   deleteBranch?: boolean;
   remainingWorktreeOrder?: readonly string[];
   expectedRemainingWorktreeOrder?: readonly string[];
@@ -7234,7 +7316,10 @@ async function archiveMultiRepoWorktreeWithoutOperationLock(options: {
           options.deleteWithoutRetentionIfMissing,
       });
       const effectiveDeleteBranch =
-        retentionDecision.worktreeMissing && options.deleteBranch === true
+        options.expectedAutoArchiveBranches?.some(
+          ({ branchName }) => branchName === undefined,
+        ) ||
+        (retentionDecision.worktreeMissing && options.deleteBranch === true)
           ? false
           : options.deleteBranch;
       const branchPreservationWarning =
@@ -7258,6 +7343,8 @@ async function archiveMultiRepoWorktreeWithoutOperationLock(options: {
         persistedWorktree,
         retainAsArchivedContainer: retentionDecision.retainAsArchivedContainer,
         requireArchivedContainer: options.requireArchivedContainer,
+        expectedAutoArchiveBranches: options.expectedAutoArchiveBranches,
+        resumeRecordedBranchDeletion: options.resumeRecordedBranchDeletion,
         lockAfterArchive: options.lockAfterArchive,
         captureWorkspaceRootFiles: options.captureWorkspaceRootFiles,
         managedRepoIds: config.repos.map((repo) => repo.id),
@@ -7335,6 +7422,11 @@ async function archiveMultiRepoWorktreeWithoutOperationLock(options: {
                 `Cannot safely archive the worktree because its workspace-root branch changed after archive was confirmed for "${expectedBranchName}".`,
               );
             }
+            if (options.expectedAutoArchiveBranches)
+              await assertAutoArchiveBranchesBeforeQuarantine(
+                worktreePath,
+                archiveContainer.manifest.gitState.repositories,
+              );
             const teardown = await destructiveCall(
               'checkout-quarantine',
               prepareArchivedContainerTeardown,
@@ -7351,6 +7443,11 @@ async function archiveMultiRepoWorktreeWithoutOperationLock(options: {
                       ? true
                       : undefined,
                 branchDeletionMode: requestedBranchDeletionMode,
+                forceConfirmedBranches: options.forceConfirmedBranches,
+                verifyCapturedBranches:
+                  options.expectedAutoArchiveBranches !== undefined,
+                resumeRecordedBranchDeletion:
+                  options.resumeRecordedBranchDeletion,
                 ...((options.captureWorkspaceRootFiles ||
                   archiveContainer.manifest.restoreScope ===
                     'workspace-root-only') && {
@@ -7404,6 +7501,7 @@ async function archiveMultiRepoWorktreeWithoutOperationLock(options: {
                 )),
               );
               if (
+                !options.resumeRecordedBranchDeletion &&
                 target.branchName &&
                 branchDeleter &&
                 pendingBranchDeletions.length === 0 &&
@@ -7436,6 +7534,7 @@ async function archiveMultiRepoWorktreeWithoutOperationLock(options: {
                 )),
               );
               if (
+                !options.resumeRecordedBranchDeletion &&
                 rootTarget.branchName &&
                 branchDeleter &&
                 pendingBranchDeletions.length === 0 &&
@@ -7931,6 +8030,9 @@ export async function archiveMultiRepoWorktree(
       deleteBranch?: boolean;
     }>;
     expectedBranchName?: string;
+    forceConfirmedBranches?: readonly AutoArchiveBranchPin[];
+    expectedAutoArchiveBranches?: readonly AutoArchiveBranchPin[];
+    resumeRecordedBranchDeletion?: boolean;
     deleteBranch?: boolean;
     remainingWorktreeOrder?: readonly string[];
     expectedRemainingWorktreeOrder?: readonly string[];

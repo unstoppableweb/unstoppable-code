@@ -97,6 +97,7 @@ const classificationCodes: Record<AppErrorCode, true> = {
   'external.worktree_recovery_retryable': true,
   'external.worktree_recovery_cleanup': true,
   'external.worktree_recovery_unreadable': true,
+  'external.chat_history_link_outside': true,
 };
 
 function usableClassification(value: unknown): value is ErrorClassification {

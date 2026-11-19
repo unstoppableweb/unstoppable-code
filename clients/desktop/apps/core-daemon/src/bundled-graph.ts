@@ -10,6 +10,7 @@ import {
   defineRuntimeModule,
   type CanopyHandlerContext,
   type CanopyRuntimeIdentity,
+  type RuntimeInstructionGuard,
   type RuntimeModule,
   type RuntimePrincipal,
   type RuntimeProfileGraph,
@@ -76,6 +77,8 @@ import {
   WORKER_SCRIPT_GRANTS,
   WORKER_PIPELINE_GRANTS,
   WORKER_TERMINAL_GRANTS,
+  WORKER_OPERATION_RECEIPT_INSTRUCTION_DEFINITIONS,
+  WORKER_OPERATION_RECEIPT_QUERY_DEFINITIONS,
   type CanopyCallerDescriptor,
 } from '@canopy/protocol/canopy-core';
 import { createDaemonEntryMutationHost } from './filesystem-entry-host';
@@ -450,12 +453,24 @@ export const DAEMON_WORKER_MODULES: readonly SupervisedWorkerModule[] =
         instructions: DAEMON_GIT_INSTRUCTION_DEFINITIONS,
       },
     },
+    {
+      name: 'worker.operation.receipts',
+      definitions: {
+        ...NONE,
+        queries: WORKER_OPERATION_RECEIPT_QUERY_DEFINITIONS,
+        instructions: WORKER_OPERATION_RECEIPT_INSTRUCTION_DEFINITIONS,
+      },
+    },
   ]);
 
 interface DaemonCoreOptions {
   /** Daemon-only vault; never part of the Electron in-process graph. */
   readonly vault?: RuntimeModule;
   readonly credentials?: RuntimeModule;
+  /** The owner's mutation fence (CAN-4730 E2-G): its publish operation. */
+  readonly mutationFence?: RuntimeModule;
+  /** Runs on the core before any forwarded worker instruction. */
+  readonly instructionGuard?: RuntimeInstructionGuard;
   readonly identity: CanopyRuntimeIdentity;
   /** Extra core services; tests use one to drive health-change events. */
   readonly services?: readonly RuntimeService[];
@@ -536,6 +551,7 @@ function coreModules(options: DaemonCoreOptions): RuntimeModule[] {
     ...(options.w5?.modules ?? []),
     ...(options.vault ? [options.vault] : []),
     ...(options.credentials ? [options.credentials] : []),
+    ...(options.mutationFence ? [options.mutationFence] : []),
   ];
 }
 
@@ -579,6 +595,10 @@ export async function createCanopyDaemonGraph(
     workerBinding,
     peerScopedIdempotency: DAEMON_PEER_SCOPED_IDEMPOTENCY,
     replayedKeyedInstructions: DAEMON_REPLAYED_KEYED_INSTRUCTIONS,
+    ...(options.instructionGuard && {
+      instructionGuard: options.instructionGuard,
+    }),
+    operationReceipts: true,
     ...GRAPH_TIMING,
   });
 }
@@ -608,6 +628,10 @@ export function createCanopyDaemonSplitGraph(
     daemonEpoch: options.daemonEpoch,
     principalFor: daemonPrincipalFor,
     peerScopedIdempotency: DAEMON_PEER_SCOPED_IDEMPOTENCY,
+    ...(options.instructionGuard && {
+      instructionGuard: options.instructionGuard,
+    }),
+    operationReceipts: true,
     ...GRAPH_TIMING,
   });
 }
@@ -630,6 +654,7 @@ export function createCanopyDaemonWorkerGraph(
       createDaemonGitModule(options.git),
     ],
     replayedKeyedInstructions: DAEMON_REPLAYED_KEYED_INSTRUCTIONS,
+    operationReceipts: true,
     ...GRAPH_TIMING,
   });
 }

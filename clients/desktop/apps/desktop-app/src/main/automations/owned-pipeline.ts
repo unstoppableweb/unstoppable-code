@@ -5,11 +5,13 @@ import type {
   ScheduledActivity,
 } from '@canopy/desktop-shared/types';
 import type { PipelinePreferenceLocator } from '@canopy/execution-engine/types/pipeline';
+import { sharedWorkflowInputKinds } from '@canopy/desktop-shared/lib/shared-workflow-inputs';
 import { logMainProcessError } from '../lib/main-process-logging';
 import {
   readPipelineLocalMetadata,
   type PipelineLocalMetadata,
 } from '../pipelines/pipeline-local-metadata-store';
+import { getStoredPipelineBySource } from '../pipelines/pipeline-service';
 
 /**
  * The user pipeline an activity owns (CAN-4551): its action runs that
@@ -65,16 +67,33 @@ export function ownedChatPipelineState(
  * bot and no chat. A session prompt to an Orchestrator chat also names its
  * chat. Unlike projecting the pipeline back to its chat action, an edit to
  * the pipeline itself doesn't change the answer.
+ *
+ * CAN-7285: a workflow an install bundled and owns is the Orchestrator's
+ * only when one of its steps takes `bot_id` as its bot; a `bot_id` it uses
+ * only as text is not. One whose YAML can't be read stays the
+ * Orchestrator's, so it fails closed.
  */
 export function ownsOrchestratorPromptPipeline(
-  activity: Pick<ScheduledActivity, 'id' | 'action'>,
+  activity: Pick<ScheduledActivity, 'id' | 'action'> &
+    Partial<Pick<ScheduledActivity, 'installedFrom'>>,
 ): boolean {
   const { action } = activity;
+  if (
+    action.type !== 'worktree_pipeline' ||
+    action.inputs?.bot_id === undefined ||
+    action.inputs.chat_id !== undefined
+  )
+    return false;
+  const pipelineId = ownedPipelineId(activity);
+  if (pipelineId === undefined) return false;
+  if (activity.installedFrom?.bundledPipelineLocalId !== pipelineId)
+    return true;
+  const rawPipeline = getStoredPipelineBySource('user', pipelineId).data
+    ?.rawContent;
   return (
-    action.type === 'worktree_pipeline' &&
-    action.inputs?.bot_id !== undefined &&
-    action.inputs.chat_id === undefined &&
-    ownedPipelineId(activity) !== undefined
+    rawPipeline === undefined ||
+    sharedWorkflowInputKinds(rawPipeline, ['bot_id']).bot_id?.kind ===
+      'orchestrator'
   );
 }
 

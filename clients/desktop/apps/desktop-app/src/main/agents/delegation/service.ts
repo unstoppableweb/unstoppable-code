@@ -196,6 +196,10 @@ import { getWorktreeDataDir } from '../../lib/paths';
 import { validateId } from '../../lib/validation';
 import { logMainProcessWarn } from '../../lib/main-process-logging';
 import { sendToWindow } from '../../lib/window-send';
+import {
+  windowAgentInterfacePort,
+  type AgentInterfacePort,
+} from '../agent-interface-port';
 import { wakeLockHolder, wakeLockHolderKey } from '@canopy/core-runtime';
 import { getWakeLockService } from '../../power/wake-lock-service';
 import { createClaudeDelegationRunner } from './claude-runner';
@@ -462,8 +466,8 @@ interface Actor {
   readonly surface: ManagedDelegationSurface;
   notices: DelegationNoticeDelivery;
   noticeStore: DelegationNoticeAckStore;
-  /** The latest attached session's window lookup; sessions may come and go. */
-  window: { current: () => BrowserWindow | null };
+  /** The latest attached session's interfaces; sessions may come and go. */
+  interfaces: { current: AgentInterfacePort };
 }
 
 /** A root chat whose delegation tree a user or host addresses by identity. */
@@ -1095,7 +1099,7 @@ async function actorFor(
     AgentSessionOptions,
     'projectId' | 'worktreeId' | 'cwd' | 'managedDelegationLifetimeLimit'
   >,
-  getWindow: () => BrowserWindow | null,
+  interfacePort: AgentInterfacePort,
   surface: ManagedDelegationSurface,
 ): Promise<Actor> {
   const directory = delegationDirectory(options);
@@ -1117,7 +1121,7 @@ async function actorFor(
     break;
   }
   const pending = (async (): Promise<Actor> => {
-    const windowRef = { current: getWindow };
+    const interfacesRef = { current: interfacePort };
     const self: { actor?: Actor } = {};
     /** The chat root that owns `parent`'s tree in this actor, if still live. */
     const rootFor = (
@@ -1139,7 +1143,8 @@ async function actorFor(
     const brokerRef: { current?: AgentDelegationBroker } = {};
     const runtime = new DelegationRouteRuntime({
       directory,
-      getWindow: (): BrowserWindow | null => windowRef.current(),
+      getWindow: (): BrowserWindow | null =>
+        interfacesRef.current.legacyWindow(),
       admissionCurrent: (signal, harness): boolean =>
         brokerRef.current?.admissionCurrent(signal, harness) ?? false,
       authGeneration: (provider): number =>
@@ -1475,7 +1480,8 @@ async function actorFor(
                 }
               : undefined;
           },
-          getWindow: (): BrowserWindow | null => windowRef.current(),
+          getWindow: (): BrowserWindow | null =>
+            interfacesRef.current.legacyWindow(),
         }),
       rollbackWorkspaceApply: async (
         record,
@@ -1878,7 +1884,7 @@ async function actorFor(
       surface,
       notices,
       noticeStore,
-      window: windowRef,
+      interfaces: interfacesRef,
     };
     self.actor = actor;
     // Queue dispatch can initialize a provider session and reenter actorFor.
@@ -2215,19 +2221,14 @@ class ManagedDelegationChatRoot {
       },
       canopy_turn_user_message_id: transcript.parentTurnId,
     });
-    sendToWindow(this.actor.window.current(), IPC_CHANNELS.chatEvent, {
-      projectId: this.target.projectId,
-      worktreeId: this.target.worktreeId,
-      chatId: this.target.chatId,
-      data: {
-        ...event(
-          options?.keyframe === true
-            ? this.liveFrames.keyframe(transcript)
-            : this.liveFrames.frame(transcript),
-        ),
-        delivery: 'live',
-        liveClass,
-      },
+    this.actor.interfaces.current.publishDelegationLive(this.target, {
+      ...event(
+        options?.keyframe === true
+          ? this.liveFrames.keyframe(transcript)
+          : this.liveFrames.frame(transcript),
+      ),
+      delivery: 'live',
+      liveClass,
     });
   }
 
@@ -2369,12 +2370,16 @@ class ManagedDelegationChatRoot {
       mutationId: `managed-delegation:${transcript.delegationId}:${String(transcript.runGeneration)}:${String(transcript.sequence)}:${randomUUID()}`,
     });
     if (outcome === 'not-applied') return false;
-    sendToWindow(this.actor.window.current(), IPC_CHANNELS.chatEvent, {
-      projectId: this.target.projectId,
-      worktreeId: this.target.worktreeId,
-      chatId: this.target.chatId,
-      data,
-    });
+    sendToWindow(
+      this.actor.interfaces.current.legacyWindow(),
+      IPC_CHANNELS.chatEvent,
+      {
+        projectId: this.target.projectId,
+        worktreeId: this.target.worktreeId,
+        chatId: this.target.chatId,
+        data,
+      },
+    );
     return outcome === 'applied';
   }
 
@@ -3182,7 +3187,7 @@ export async function extendManagedDelegationLifetimeLimit(scope: {
         managedDelegationLifetimeLimit:
           preferences.managedDelegationLifetimeLimit,
       },
-      () => null,
+      windowAgentInterfacePort(() => null),
       'worktree-chat',
     );
     return await actor.lifetime.extendLifetimeLimit();
@@ -3213,7 +3218,7 @@ export async function createManagedDelegationSession(options: {
   currentTurn: () => string | undefined;
   /** Transcript message that anchors delegate cards; see DelegationParent. */
   currentMessage?: () => string | undefined;
-  getWindow: () => BrowserWindow | null;
+  interfacePort: AgentInterfacePort;
   onActivityChange?: (count: number) => void;
   onTranscript?: (
     delegation: AgentDelegationTranscript,
@@ -3239,7 +3244,7 @@ export async function createManagedDelegationSession(options: {
   if (shuttingDown) throw new Error('Delegation service is closing');
   const actor = await actorFor(
     options.currentOptions(),
-    options.getWindow,
+    options.interfacePort,
     surface,
   );
   if (
@@ -3247,7 +3252,7 @@ export async function createManagedDelegationSession(options: {
     closingScopes.has(delegationDirectory(options.currentOptions()))
   )
     throw new Error('Delegation service is closing');
-  actor.window.current = options.getWindow;
+  actor.interfaces.current = options.interfacePort;
   const session = new ManagedDelegationSession(
     chatRootFor(actor, options.currentOptions(), options.sessionKey, surface),
     options.harness,
@@ -4739,7 +4744,7 @@ async function actorForSessionEndSweep(scope: {
         managedDelegationLifetimeLimit:
           preferences.managedDelegationLifetimeLimit,
       },
-      () => null,
+      windowAgentInterfacePort(() => null),
       'worktree-chat',
     );
   } catch {

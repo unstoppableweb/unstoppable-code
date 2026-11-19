@@ -33,19 +33,26 @@ export interface AutomationSendAsProps {
   readonly connectors: readonly AutomationSendAsConnector[];
   readonly onChange: (serverKey: string, configId: string) => void;
   readonly disabled?: boolean;
+  /**
+   * What acts as the account: an automation's prompt (the default), or a
+   * workflow's send step (CAN-7186), which a person can also run by hand.
+   */
+  readonly subject?: 'automation' | 'step';
 }
 
 /**
- * "Send as" for a scheduled run (CAN-6233): one select per connector the
- * automation uses that the person holds several accounts of. A run nobody
- * watches never picks between accounts, so each must name one; the host
- * keeps Save unavailable until it does. Renders nothing when no connector
- * needs a choice. Account names are blocked from session replay.
+ * "Send as" for a scheduled run (CAN-6233) or a workflow's send step
+ * (CAN-7186): one select per connector it uses that the person holds several
+ * accounts of. A run nobody watches never picks between accounts, so each
+ * must name one; the host keeps Save unavailable until it does. Renders
+ * nothing when no connector needs a choice. Account names are blocked from
+ * session replay.
  */
 export function AutomationSendAs({
   connectors,
   onChange,
   disabled = false,
+  subject = 'automation',
 }: AutomationSendAsProps): JSX.Element | null {
   if (connectors.length === 0) return null;
   return (
@@ -57,7 +64,9 @@ export function AutomationSendAs({
           labelMeta={connector.connector}
           description={
             connector.value === null
-              ? `Choose the ${connector.connector} account this automation acts as. A run never picks one for you.`
+              ? subject === 'step'
+                ? `Choose the ${connector.connector} account this step sends as. A scheduled run never picks one for you.`
+                : `Choose the ${connector.connector} account this automation acts as. A run never picks one for you.`
               : `Runs act as this ${connector.connector} account and stop if it's gone`
           }
           dataTestId={`automation-send-as-${connector.serverKey}`}
@@ -128,12 +137,15 @@ export function automationSendAsConnectors(input: {
   for (const key of keys) {
     const rows = curated.filter((row) => row.serverKey === key);
     if (rows.length < 2) continue;
-    const named = (refs: readonly McpServerRef[] | undefined): string | null =>
-      rows.find((row) =>
-        (refs ?? []).some(
-          (ref) => ref.serverId === key && ref.configId === row.configId,
-        ),
-      )?.configId ?? null;
+    const namedIds = (refs: readonly McpServerRef[] | undefined): string[] =>
+      rows
+        .filter((row) =>
+          (refs ?? []).some(
+            (ref) => ref.serverId === key && ref.configId === row.configId,
+          ),
+        )
+        .map((row) => row.configId);
+    const ownNamed = namedIds(input.ownRefs);
     connectors.push({
       serverKey: key,
       connector: rows[0]?.displayName ?? key,
@@ -142,26 +154,34 @@ export function automationSendAsConnectors(input: {
         name: accountMcpAccountName(row),
         isDefault: isDefaultAccountMcpConnection(row),
       })),
-      value: input.ownRefs.some(
-        (ref) =>
-          ref.serverId === key &&
-          isAccountMcpInstanceConfigId(ref.configId) &&
-          !rows.some((row) => row.configId === ref.configId),
-      )
-        ? null
-        : (named(input.ownRefs) ??
-          // Inherited and collection refs settle it only when they name one
-          // account between them: two would load side by side, which a run
-          // refuses for a plugin's server, so the person must pick.
-          single(
-            [...(input.inheritedRefs ?? []), ...(input.collectionRefs ?? [])]
-              .filter(
-                (ref) =>
-                  ref.serverId === key &&
-                  rows.some((row) => row.configId === ref.configId),
-              )
-              .map((ref) => ref.configId),
-          )),
+      // Own refs that name two accounts settle nothing: the run can't act as
+      // one of them, so the person must pick (CAN-7186).
+      value:
+        ownNamed.length > 1 ||
+        // An own pick that no longer names an account (an added account,
+        // or the original `default` one, that was removed) reads as unchosen,
+        // never as an inherited account, since the run stops on it.
+        input.ownRefs.some(
+          (ref) =>
+            ref.serverId === key &&
+            (isAccountMcpInstanceConfigId(ref.configId) ||
+              ref.configId === 'default') &&
+            !rows.some((row) => row.configId === ref.configId),
+        )
+          ? null
+          : (ownNamed[0] ??
+            // Inherited and collection refs settle it only when they name one
+            // account between them: two would load side by side, which a run
+            // refuses for a plugin's server, so the person must pick.
+            single(
+              [...(input.inheritedRefs ?? []), ...(input.collectionRefs ?? [])]
+                .filter(
+                  (ref) =>
+                    ref.serverId === key &&
+                    rows.some((row) => row.configId === ref.configId),
+                )
+                .map((ref) => ref.configId),
+            )),
     });
   }
   return connectors;

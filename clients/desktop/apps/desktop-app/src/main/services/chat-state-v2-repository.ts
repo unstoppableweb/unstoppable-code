@@ -357,6 +357,8 @@ interface ScopeEntry {
   journalIdleTimer?: ReturnType<typeof setTimeout>;
   journalCheckpointQueued?: boolean;
   formatReconcileQueued?: boolean;
+  /** This residency found no legacy file left to remove. */
+  legacyCleanupSettled?: boolean;
 }
 
 function hasVisualOwner(
@@ -863,8 +865,11 @@ export class ChatStateV2Repository {
       }
   }
 
-  private async tryPromote(entry: ScopeEntry): Promise<void> {
-    if (!this.promotable(entry.scope)) return;
+  private async tryPromote(
+    entry: ScopeEntry,
+    { includeViewer = false }: { includeViewer?: boolean } = {},
+  ): Promise<void> {
+    if (!includeViewer && !this.promotable(entry.scope)) return;
     // Re-entering a checkpointed format 4 journal is handling, not promotion,
     // so it never waits on the option.
     if (!entry.backend.isDeltaJournal()) {
@@ -897,15 +902,33 @@ export class ChatStateV2Repository {
       noteReviewNamespaceEffect(entry.scope, 'promotion');
       await entry.backend.promoteToFormat4();
     }
+    await this.completeLegacyCleanup(entry);
+  }
+
+  /**
+   * Remove a format 4 scope's legacy files once this residency has read its
+   * copy back. Failure only leaves them for the next load to try again.
+   */
+  private async completeLegacyCleanup(entry: ScopeEntry): Promise<void> {
+    if (entry.legacyCleanupSettled) return;
+    try {
+      const { format4, refused } = await entry.store.completeLegacyCleanup();
+      if (format4) entry.legacyCleanupSettled = refused === 0;
+    } catch {
+      // The files stay; authority never reads them again.
+    }
   }
 
   /** Promote a writable scope between operations, under its scope lease. */
-  private async reconcileFormat(entry: ScopeEntry): Promise<void> {
+  private async reconcileFormat(
+    entry: ScopeEntry,
+    { includeViewer = false }: { includeViewer?: boolean } = {},
+  ): Promise<void> {
     entry.formatReconcileQueued = false;
     if (entry.lifecycle !== 'ready' || entry.deleting || !this.accepting)
       return;
     try {
-      await this.tryPromote(entry);
+      await this.tryPromote(entry, { includeViewer });
     } catch (cause) {
       // A promotion fault is recoverable only if the backend reopened the
       // selected authority. Failed reopen/recovery is a load error, including
@@ -1794,7 +1817,11 @@ export class ChatStateV2Repository {
           }
           const migration = ['v3', 'v4'].includes(await entry.store.format())
             ? undefined
-            : await migrateLegacyChatScope(entry.store, entry.paths);
+            : await migrateLegacyChatScope(entry.store, entry.paths, {
+                // With the format 4 switch on, keep the legacy files until
+                // the format 4 copy reads back.
+                retainLegacy: entry.backend.allowsFormat4Promotion(),
+              });
           if (migration?.revisionGapRecovery)
             this.recordStorageDiagnostic(entry, {
               kind: 'legacy_chat_revision_gap_recovered',
@@ -3973,6 +4000,9 @@ export class ChatStateV2Repository {
         throw new Error(
           'Chat scope must be semantically empty before deleting sidecars',
         );
+      // Legacy files go before authority, so a deleted scope never reopens
+      // from them; a file that can't go safely keeps the scope.
+      await entry.store.removeLegacyFilesForDeletion();
       this.cancelArtifactMaintenance(entry);
       this.clearJournalIdleTimer(entry);
       await this.closePreviewReaders(entry);
@@ -4124,9 +4154,12 @@ export class ChatStateV2Repository {
    * legacy migration and promotion. It then lets the cleanup that load
    * queued finish and unloads the scope only as the idle unload would: a
    * window, turn or operation that attached meanwhile keeps it loaded.
+   * `admit` is asked again under the lease, just before the load, so a
+   * condition the sweep checked earlier still holds when the load begins.
    */
   public async sweepFormat4(
     scope: ChatScopeKey,
+    { admit }: { admit?: () => boolean } = {},
   ): Promise<
     | { readonly outcome: 'promoted' }
     | { readonly outcome: 'already_format4' }
@@ -4135,7 +4168,9 @@ export class ChatStateV2Repository {
     | { readonly outcome: 'failed'; readonly cause?: unknown }
   > {
     const held = { outcome: 'held' } as const;
-    if (!this.accepting || !this.promotable(scope)) return held;
+    // The sweep alone promotes a viewer scope; an open never does.
+    const viewer = scope.projectId === SHARED_CONTAINER_VIEWER_PROJECT_ID;
+    if (!this.accepting || (!viewer && !this.promotable(scope))) return held;
     const directory = ChatStorageV2.fromLegacyPaths(
       this.resolve(scope),
     ).directory;
@@ -4176,10 +4211,12 @@ export class ChatStateV2Repository {
         return { outcome: 'failed', cause } as const;
       }
       if (before === 'v4') return { outcome: 'already_format4' } as const;
-      if (entry.inFlightTurns !== 1) return held;
+      if (entry.inFlightTurns !== 1 || admit?.() === false) return held;
       loadedHere = true;
       try {
         await this.load(scope, entry);
+        // A failed reopen becomes a load error here, as it does for an open.
+        if (viewer) await this.reconcileFormat(entry, { includeViewer: true });
       } catch (cause) {
         return { outcome: 'failed', cause } as const;
       }

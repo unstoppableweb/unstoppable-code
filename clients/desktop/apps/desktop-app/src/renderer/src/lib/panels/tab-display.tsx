@@ -38,7 +38,7 @@
  */
 /* eslint-disable react-refresh/only-export-components */
 import { Dot } from '@canopy/ui-shared/components/Badge';
-import { useEffect, useState, type JSX, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type JSX, type ReactNode } from 'react';
 import type { PanelTabModel } from '@canopy/ui-shared/panels';
 import {
   PANEL_TAB_BUSY_ATTRIBUTE,
@@ -85,6 +85,7 @@ import { hasPendingQuestionForChat } from '@/stores/chat/pending-questions';
 import { useDesktopFileTabDirty } from '@/lib/file-viewer/desktop-file-session-controller';
 import { useBrowserLoading, useBrowserStore } from '@/stores/browserStore';
 import { useTerminalActivityStore } from '@/stores/terminalActivityStore';
+import { useTerminalStore } from '@/stores/terminalStore';
 import { useWorktreeChatSelection } from '@/components/chat/useWorktreeChatSurfaceState';
 import { ThinkingSpinner } from '@/components/shared/loading/spinners/ThinkingSpinner';
 import { FileTypeIcon } from '@canopy/ui-shared/icons';
@@ -153,7 +154,10 @@ function browserDisplayLabel(
  * full title; titles/favicons are live presentation and are never persisted
  * as panel-title overrides.
  */
-export function panelTabDisplayTitle(tab: PanelTabModel): string {
+export function panelTabDisplayTitle(
+  tab: PanelTabModel,
+  terminalNames = useTerminalStore.getState().terminalCustomNames,
+): string {
   // Chat/file tabs resolve the same LIVE title the visible label renders
   // (`BoundChatTabLabel`); the panel view-model's own `title` is the stored
   // panel title, which for chat panels stays the "New Chat" default and
@@ -172,6 +176,8 @@ export function panelTabDisplayTitle(tab: PanelTabModel): string {
       }
     }
   }
+  const terminalName = terminalCustomName(tab, terminalNames);
+  if (terminalName !== undefined) return terminalName;
   if (tab.kind === 'browser') {
     const browserId = tab.instance?.browserId;
     if (browserId !== undefined && browserId.length > 0) {
@@ -588,6 +594,57 @@ export function useBrowserLabel(browserId: string): string {
   );
 }
 
+/**
+ * Whether {@link panelTabDisplayTitle} returns a user-assigned terminal name,
+ * so the tab bar replay-masks the attributes and tooltips that carry it.
+ */
+export function isPanelTabTitlePrivate(
+  tab: PanelTabModel,
+  terminalNames = useTerminalStore.getState().terminalCustomNames,
+): boolean {
+  return terminalCustomName(tab, terminalNames) !== undefined;
+}
+
+/**
+ * The tab bars' `getTabTitle` and `isTabTitlePrivate`. They change identity
+ * on a terminal rename, so memoized tab bars refresh accessible names too.
+ */
+export function usePanelTabTitleResolvers(): {
+  getTabTitle: (tab: PanelTabModel) => string;
+  isTabTitlePrivate: (tab: PanelTabModel) => boolean;
+} {
+  const terminalNames = useTerminalStore((state) => state.terminalCustomNames);
+  return useMemo(
+    () => ({
+      getTabTitle: (tab) => panelTabDisplayTitle(tab, terminalNames),
+      isTabTitlePrivate: (tab) => isPanelTabTitlePrivate(tab, terminalNames),
+    }),
+    [terminalNames],
+  );
+}
+
+/** A terminal tab's user-assigned name, when it has one. */
+function terminalCustomName(
+  tab: PanelTabModel,
+  names: Readonly<Record<string, string>>,
+): string | undefined {
+  const terminalId =
+    tab.kind === 'terminal' ? tab.instance?.terminalId : undefined;
+  return terminalId ? names[terminalId] : undefined;
+}
+
+/** Live terminal tab label: follows renames from the tab menu (CAN-6616). */
+function TerminalPanelTabLabel({ tab }: { tab: PanelTabModel }): JSX.Element {
+  const name = useTerminalStore((state) =>
+    terminalCustomName(tab, state.terminalCustomNames),
+  );
+  return name === undefined ? (
+    <>{panelTabDisplayTitle(tab)}</>
+  ) : (
+    <span className={POSTHOG_REPLAY_MASK_CLASS}>{name}</span>
+  );
+}
+
 function BrowserPanelTabLabel({
   browserId,
 }: {
@@ -788,6 +845,9 @@ export function renderPanelTabLabel(tab: PanelTabModel): ReactNode {
         fallbackTitle={sessionBreakdownStoredTitle(tab)}
       />
     );
+  }
+  if (tab.kind === 'terminal' && tab.instance?.terminalId) {
+    return <TerminalPanelTabLabel tab={tab} />;
   }
   const browserId = boundBrowserId(tab);
   if (browserId !== null) {

@@ -1,6 +1,6 @@
 'use client';
 
-import { Component, Suspense, useState, type JSX, type ReactNode } from 'react';
+import { Suspense, useState, type JSX, type ReactNode } from 'react';
 import {
   settingsRouteKey,
   useSettingsPage,
@@ -13,7 +13,14 @@ import {
   type SettingsPageData,
   type SettingsRoute,
 } from '@canopy/protocol/settings';
-import { useRetry } from '@canopy/ui-shared/components/useRetry';
+import {
+  TRY_AGAIN_LABEL,
+  useRetry,
+} from '@canopy/ui-shared/components/useRetry';
+import {
+  AppErrorBoundary,
+  type AppErrorBoundaryHost,
+} from '../../feedback/AppErrorBoundary';
 import { AccountSettingsFrame } from '../account/AccountSettingsFrame';
 import { SettingsPageColumn } from '../layout/SettingsPageColumn';
 import { OrganizationListHeader } from '../organization/organization-list-header';
@@ -22,6 +29,7 @@ import {
   organizationTabForRoute,
 } from '../organization/organization-header';
 import {
+  HOSTED_SETTINGS_COPY,
   HostedSettingsErrorState,
   type HostedSettingsErrorStateProps,
 } from './HostedSettingsStates';
@@ -31,50 +39,6 @@ import {
 } from './loading-skeletons';
 import { HOSTED_SETTINGS_PAGES } from './registry';
 import { useStalePage } from './use-stale-page';
-
-interface ChunkBoundaryProps {
-  readonly resetKey: string;
-  readonly onRetry: () => void;
-  readonly children: ReactNode;
-}
-
-interface ChunkBoundaryState {
-  readonly failed: boolean;
-}
-
-/**
- * Contains a hosted page that failed to load its chunk or threw while
- * rendering, so the host's local settings panels keep working.
- */
-class HostedSettingsChunkBoundary extends Component<
-  ChunkBoundaryProps,
-  ChunkBoundaryState
-> {
-  override state: ChunkBoundaryState = { failed: false };
-
-  static getDerivedStateFromError(): ChunkBoundaryState {
-    return { failed: true };
-  }
-
-  override componentDidUpdate(previous: ChunkBoundaryProps): void {
-    // New page data (another route, or a refetch) gets a fresh attempt.
-    if (this.state.failed && previous.resetKey !== this.props.resetKey)
-      this.setState({ failed: false });
-  }
-
-  override render(): ReactNode {
-    if (!this.state.failed) return this.props.children;
-    return (
-      <HostedSettingsErrorState
-        code="failed"
-        onRetry={() => {
-          this.setState({ failed: false });
-          this.props.onRetry();
-        }}
-      />
-    );
-  }
-}
 
 /** Renders the registry entry for the page's kind; the switch keeps the
  * component and its data correlated without widening either. */
@@ -215,6 +179,8 @@ function RenderHostedPage({
 
 export interface HostedSettingsPageContentProps {
   readonly route: SettingsRoute;
+  /** Records a page chunk that failed to load or threw while rendering. */
+  readonly errorBoundaryHost: AppErrorBoundaryHost;
   /** Recovery actions the host offers around a failed page. */
   readonly recovery?: Omit<HostedSettingsErrorStateProps, 'code' | 'onRetry'>;
   /**
@@ -315,6 +281,7 @@ export function HostedSettingsRouteLoading({
  */
 export function HostedSettingsPageContent({
   route,
+  errorBoundaryHost,
   recovery,
   renderFrame = renderBare,
 }: HostedSettingsPageContentProps): JSX.Element {
@@ -394,13 +361,24 @@ export function HostedSettingsPageContent({
             // Always this wrapper, held or not, so a page that becomes held
             // keeps its instance. `contents` adds no box to the layout.
             <div className="contents" inert={view.held}>
-              <HostedSettingsChunkBoundary resetKey={resetKey} onRetry={retry}>
+              <AppErrorBoundary
+                host={errorBoundaryHost}
+                resetKey={resetKey}
+                layout="inline"
+                message={HOSTED_SETTINGS_COPY.offline}
+                recoveryLabel={TRY_AGAIN_LABEL}
+                testId="hosted-settings-failed"
+                onRecover={retry}
+                renderFrame={(fallback) => (
+                  <SettingsPageColumn>{fallback}</SettingsPageColumn>
+                )}
+              >
                 <Suspense
                   fallback={<HostedSettingsRouteLoading route={view.route} />}
                 >
                   <RenderHostedPage route={view.route} page={view.data} />
                 </Suspense>
-              </HostedSettingsChunkBoundary>
+              </AppErrorBoundary>
             </div>,
           )}
         </>
@@ -421,6 +399,7 @@ export interface HostedSettingsPageProps extends HostedSettingsPageContentProps 
  */
 export function HostedSettingsPage({
   route,
+  errorBoundaryHost,
   recovery,
   renderFrame,
   accountFrameAfter,
@@ -428,6 +407,7 @@ export function HostedSettingsPage({
   const content = (
     <HostedSettingsPageContent
       route={route}
+      errorBoundaryHost={errorBoundaryHost}
       recovery={recovery}
       renderFrame={renderFrame}
     />

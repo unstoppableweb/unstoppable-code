@@ -44,6 +44,7 @@ import {
   startPanelTabDrag,
 } from './panel-dnd';
 import { PanelTabLiveReorderContext } from './panel-tab-live-reorder-context';
+import { REPLAY_MASK_CLASS } from '../../lib/replay-privacy';
 
 /**
  * The optional add-tab affordance of a group's tab bar. The shared layer is
@@ -185,6 +186,12 @@ export interface PanelTabBarProps {
    * view-model `tab.title` (which falls back to the panel kind id).
    */
   getTabTitle?: (tab: PanelTabModel) => string;
+  /**
+   * Whether {@link getTabTitle} returns user-authored text for this tab. The
+   * bar then replay-masks every attribute and tooltip that carries it, and a
+   * pinned tab takes its accessible name from a masked label instead.
+   */
+  isTabTitlePrivate?: (tab: PanelTabModel) => boolean;
   /**
    * Optional per-tab RICH tooltip renderer. A non-null result REPLACES the
    * native `title` tooltip for that tab (rendered through the shared
@@ -564,6 +571,7 @@ function PanelTabBarComponent({
   renderTabAccessibleStatus,
   renderTabAttention,
   getTabTitle,
+  isTabTitlePrivate,
   renderTabTooltip,
   renderTabHoverCard,
   addTab,
@@ -571,6 +579,25 @@ function PanelTabBarComponent({
   onTabContextMenu,
 }: PanelTabBarProps): JSX.Element {
   const statusIdPrefix = useId();
+  const titleMask = (tab: PanelTabModel): string =>
+    isTabTitlePrivate?.(tab) === true ? ` ${REPLAY_MASK_CLASS}` : '';
+  // Click events copy attribute values past the replay mask, so a private
+  // title names the close button through a masked label, never `aria-label`.
+  const closeLabelId = (tab: PanelTabModel): string =>
+    `${statusIdPrefix}-${tab.panelId}-close`;
+  const closeLabelProps = (
+    tab: PanelTabModel,
+    title: string,
+  ): { 'aria-label': string } | { 'aria-labelledby': string } =>
+    isTabTitlePrivate?.(tab) === true
+      ? { 'aria-labelledby': closeLabelId(tab) }
+      : { 'aria-label': `Close ${title}` };
+  const closeLabel = (tab: PanelTabModel, title: string): ReactNode =>
+    isTabTitlePrivate?.(tab) === true ? (
+      <span className="sr-only" id={closeLabelId(tab)}>
+        Close {title}
+      </span>
+    ) : null;
   const fill = tabStyle === 'fill';
   const [focusedPanelId, setFocusedPanelId] = useState<string | null>(null);
   const tabElementsRef = useRef<Map<string, HTMLDivElement>>(new Map());
@@ -845,6 +872,7 @@ function PanelTabBarComponent({
     stripRef: dndSnapshotRef,
     setDropIndicatorIndex,
     getTabTitle,
+    isTabTitlePrivate,
   });
 
   // Reveal the active tab inside whichever overflowing strip renders it.
@@ -1097,12 +1125,14 @@ function PanelTabBarComponent({
     const closeControl =
       canCloseTab && !canCloseTab(tab) ? null : (
         <span className="canopy-panel-tab-close-probe">
-          <span className="canopy-panel-tab-close-slot inline-flex">
+          <span
+            className={`canopy-panel-tab-close-slot inline-flex${titleMask(tab)}`}
+          >
             <ControlButton
               type="button"
               presentation="panel-tab-close"
               data-testid={`panel-tab-close-${tab.panelId}`}
-              aria-label={`Close ${title}`}
+              {...closeLabelProps(tab, title)}
               tabIndex={-1}
               onClick={(event: ReactMouseEvent<HTMLButtonElement>): void => {
                 // Closing must not also select the tab. The remaining tabs
@@ -1114,6 +1144,7 @@ function PanelTabBarComponent({
             >
               <CloseGlyph />
             </ControlButton>
+            {closeLabel(tab, title)}
           </span>
         </span>
       );
@@ -1173,12 +1204,18 @@ function PanelTabBarComponent({
     const tabIsPinned = tab.pinned === true;
     const icon = renderTabIcon?.(tab);
     const title = getTabTitle?.(tab) ?? tab.title;
+    const privateTitle = isTabTitlePrivate?.(tab) === true;
+    const titleId = `${statusIdPrefix}-${tab.panelId}-title`;
     // Preview-capable strips coordinate label tooltips too: a native title
     // on the active tab cannot dismiss the previous tab's preview.
     const customTooltip =
       renderTabTooltip?.(tab) ??
-      (renderTabHoverCard && !tabIsPinned ? (
-        <span className="block max-w-80 break-words whitespace-normal">
+      // A private title gets this tooltip too: a native `title` attribute
+      // would carry it past the replay mask.
+      ((renderTabHoverCard || privateTitle) && !tabIsPinned ? (
+        <span
+          className={`block max-w-80 break-words whitespace-normal${titleMask(tab)}`}
+        >
           {renderTabLabel?.(tab) ?? title}
         </span>
       ) : null);
@@ -1233,7 +1270,8 @@ function PanelTabBarComponent({
         aria-selected={isActive}
         // Icon-only pinned tabs have no visible text, so the title has to come
         // through as an accessible name.
-        aria-label={tabIsPinned ? title : undefined}
+        aria-label={tabIsPinned && !privateTitle ? title : undefined}
+        aria-labelledby={tabIsPinned && privateTitle ? titleId : undefined}
         aria-describedby={
           tabIsPinned && renderTabAccessibleStatus
             ? `${statusIdPrefix}-${tab.panelId}`
@@ -1314,6 +1352,11 @@ function PanelTabBarComponent({
             {renderTabAttention(tab)}
           </span>
         ) : null}
+        {tabIsPinned && privateTitle ? (
+          <span className={`sr-only ${REPLAY_MASK_CLASS}`} id={titleId}>
+            {title}
+          </span>
+        ) : null}
         {tabIsPinned && renderTabAccessibleStatus ? (
           <span className="sr-only" id={`${statusIdPrefix}-${tab.panelId}`}>
             {renderTabAccessibleStatus(tab)}
@@ -1386,13 +1429,26 @@ function PanelTabBarComponent({
               // rich tooltip's trigger wrapper sits inside it, so the button
               // keeps its geometry while gaining an instant tooltip instead
               // of the laggy native `title`.
-              <span className="canopy-panel-tab-close-slot inline-flex">
-                <Tooltip label={`Close ${title}`} disabled={hoverCard !== null}>
+              <span
+                className={`canopy-panel-tab-close-slot inline-flex${titleMask(tab)}`}
+              >
+                <Tooltip
+                  label={
+                    privateTitle ? (
+                      <>
+                        Close <span className={REPLAY_MASK_CLASS}>{title}</span>
+                      </>
+                    ) : (
+                      `Close ${title}`
+                    )
+                  }
+                  disabled={hoverCard !== null}
+                >
                   <ControlButton
                     type="button"
                     presentation="panel-tab-close"
                     data-testid={`panel-tab-close-${tab.panelId}`}
-                    aria-label={`Close ${title}`}
+                    {...closeLabelProps(tab, title)}
                     tabIndex={-1}
                     onClick={(
                       event: ReactMouseEvent<HTMLButtonElement>,
@@ -1405,6 +1461,7 @@ function PanelTabBarComponent({
                     <CloseGlyph />
                   </ControlButton>
                 </Tooltip>
+                {closeLabel(tab, title)}
               </span>
             )}
           </>
@@ -1451,7 +1508,9 @@ function PanelTabBarComponent({
                   {renderTabIcon(tab)}
                 </span>
               ) : null}
-              <span>{renderTabLabel ? renderTabLabel(tab) : title}</span>
+              <span className={privateTitle ? REPLAY_MASK_CLASS : undefined}>
+                {renderTabLabel ? renderTabLabel(tab) : title}
+              </span>
             </span>
           )
         }
@@ -1608,6 +1667,9 @@ function PanelTabBarComponent({
               </>
             )}
             getTitle={(tab): string => getTabTitle?.(tab) ?? tab.title}
+            {...(isTabTitlePrivate
+              ? { isTitlePrivate: isTabTitlePrivate }
+              : {})}
           />
         ) : null}
       </div>

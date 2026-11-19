@@ -3,6 +3,7 @@ import type {
   PipelinePackageResource,
   PipelinePackageSummary,
 } from '@canopy/protocol/pipelines';
+import { SCHEDULED_WORKFLOW_ITEM_LABEL } from './workflow-labels';
 
 /**
  * Pure display helpers for self-contained pipeline packages, shared by the
@@ -29,7 +30,7 @@ export const PIPELINE_PACKAGE_EMPTY_DEPENDENCIES =
  * without a capability package installs the schedule and the prompt only.
  */
 export const AUTOMATION_PACKAGE_DEFINITION_ONLY_WARNING =
-  'This share contains the automation definition only. Required dependencies are not included.';
+  'This share contains the scheduled workflow definition only. Required dependencies are not included.';
 /**
  * Bundling disclosure for a `worktree_pipeline` automation whose pipeline
  * definition rides along inside the share.
@@ -64,7 +65,7 @@ const KIND_LABELS: Record<PipelinePackageResource['kind'], string> = {
   automation_pipeline: 'Workflow',
   file_asset: 'Files',
   pipeline_definition: 'Workflow',
-  automation_definition: 'Automation',
+  automation_definition: SCHEDULED_WORKFLOW_ITEM_LABEL,
   agent_definition: 'Agent',
   hook_definition: 'Hook',
 };

@@ -374,6 +374,8 @@ function fenceLeasedCall(
   connectionId: string,
   retry: CanopyErrorPayload['retry'],
 ): {
+  /** The lease this call was admitted under. */
+  readonly leaseId: string;
   readonly signal: AbortSignal;
   refusal(): CanopyOperationError | null;
   dispose(): void;
@@ -394,6 +396,7 @@ function fenceLeasedCall(
     if (leases.holder(leaseId) !== connectionId) end('moved');
   });
   return {
+    leaseId,
     signal: controller.signal,
     refusal: (): CanopyOperationError | null => {
       // `holder` evicts an expired lease on access, which records the end first.
@@ -809,6 +812,8 @@ function serveControlConnection(
         signal: fence
           ? AbortSignal.any([connection.signal, fence.signal])
           : connection.signal,
+        // The admitting lease, for handlers that bind state to it (E2-G).
+        ...(fence && { lease: { leaseId: fence.leaseId } }),
         // Same-host input for this request only; the dispatcher refuses it
         // on operations that do not accept it (CAN-5496).
         ...hostExecutionOption(execution),

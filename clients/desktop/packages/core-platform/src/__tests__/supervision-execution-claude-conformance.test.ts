@@ -26,7 +26,7 @@ import { OWNED_CHILD_FILE } from '../supervision/owned-child';
 
 const PROTOCOL = path.resolve(
   __dirname,
-  '../../../../apps/desktop-app/src/main/agents/claude-process-host-protocol.ts',
+  '../../../execution-engine/src/node/agent-host/process/claude-process-host-protocol.ts',
 );
 const STDOUT_WINDOW_BYTES = 64 * 1024;
 

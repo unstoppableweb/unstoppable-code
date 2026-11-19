@@ -256,7 +256,7 @@ import {
   getEnhancedEnv,
   getRtkManagedEnv,
 } from '../pipelines/config-paths';
-import { createTrackedPlan, updateTrackedPlan } from '../lib/plan-persistence';
+import { upsertPlanModeTrackedPlan } from './plan-mode-tracked-plan';
 import { buildPlanFileSystemInstruction } from '../lib/plan-system-instructions';
 import {
   readPromptSuggestionsEnabled,
@@ -265,7 +265,6 @@ import {
 import { noteChatSessionEvent } from '../lib/transient-error-retry-service';
 import { getAttentionTracker } from '../services/attention-tracker';
 import { commitPendingPlanExit } from '../services/chat-state-plan-exit';
-import { readChatTabsFile } from '../lib/chat-tabs-reader';
 import { isRecord } from '../lib/type-guards';
 import { getExecutionObservabilityIngest } from '../observability/ingest';
 import {
@@ -887,79 +886,6 @@ function withChildToolLivenessStamp(
   };
 }
 
-function extractPlanText(input: Record<string, unknown>): string {
-  return typeof input.plan === 'string'
-    ? input.plan
-    : JSON.stringify(input, null, 2);
-}
-
-async function upsertTrackedPlan(
-  sessionKey: string,
-  projectId: string,
-  worktreeId: string,
-  chatId: string,
-  source: 'claude' | 'ollama',
-  input: Record<string, unknown>,
-): Promise<TrackedPlanData> {
-  let existing = trackedPlansBySession.get(sessionKey);
-  // A restored pending review still names the plan being revised. Read through
-  // the canonical chat boundary; a new/approved/dismissed plan must not inherit
-  // that identity or its revision count (CAN-5431).
-  if (!existing) {
-    const file = await readChatTabsFile(projectId, worktreeId, { chatIds: [] });
-    const tab = file.tabs.find((entry) => entry.id === chatId);
-    if (
-      tab?.planMode === true &&
-      tab.trackedPlanSource === source &&
-      tab.trackedPlanReviewStatus === 'pending' &&
-      tab.trackedPlanId
-    ) {
-      existing = {
-        planId: tab.trackedPlanId,
-        revisionNumber: tab.latestRevisionNumber ?? 1,
-      };
-    }
-  }
-  const planText = extractPlanText(input);
-
-  if (existing) {
-    const updated = await updateTrackedPlan({
-      projectId,
-      worktreeId,
-      planId: existing.planId,
-      content: planText,
-      source,
-      reviewStatus: 'pending',
-      approvedAt: null,
-      dismissedAt: null,
-      chatId,
-      initiationSource: 'user',
-    });
-    if (updated) {
-      trackedPlansBySession.set(sessionKey, {
-        planId: updated.id,
-        revisionNumber: updated.latestRevisionNumber,
-      });
-      return updated;
-    }
-  }
-
-  const created = await createTrackedPlan({
-    projectId,
-    worktreeId,
-    source,
-    content: planText,
-    reviewStatus: 'pending',
-    chatId,
-    initiationSource: 'user',
-  });
-  trackedPlansBySession.set(sessionKey, {
-    planId: created.id,
-    revisionNumber: created.latestRevisionNumber,
-  });
-  return created;
-}
-
 /**
  * Stop a specific task within a Claude session. Called from session-manager.
  */
@@ -1121,7 +1047,6 @@ export class ClaudeCodeProvider implements AgentProvider {
     interfacePort: AgentInterfacePort,
   ): AgentSession {
     assertAgentWorkerContext('ClaudeCodeProvider.createSession');
-    const getWindow = (): BrowserWindow | null => interfacePort.legacyWindow();
     const prepareInvocation = this.prepareInvocationImpl;
     const key = buildSessionKey(opts.projectId, opts.worktreeId, opts.chatId);
     const sessionOwner = Symbol();
@@ -2670,7 +2595,7 @@ export class ClaudeCodeProvider implements AgentProvider {
             );
           },
           sessionKey: key,
-          getWindow,
+          interfacePort,
           currentOptions: () => ({
             ...sessionOpts,
             model: currentModel,
@@ -4405,7 +4330,8 @@ export class ClaudeCodeProvider implements AgentProvider {
         let trackedPlan: TrackedPlanData | null = null;
         if (!isCoworkWorkspace(opts.projectId)) {
           try {
-            trackedPlan = await upsertTrackedPlan(
+            trackedPlan = await upsertPlanModeTrackedPlan(
+              trackedPlansBySession,
               key,
               opts.projectId,
               opts.worktreeId,

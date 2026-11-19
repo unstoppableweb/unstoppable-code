@@ -89,6 +89,7 @@ const LIMITED_ACTION_TYPES: ReadonlySet<string> = new Set([
   'installed_items.set_status',
   'installed_items.uninstall',
   'experiments.set_enabled',
+  'inventory_sync.set_enabled',
 ]);
 
 const TURN_UNAVAILABLE_MESSAGE =
@@ -129,6 +130,7 @@ export async function desktopAgentActionCall(
     ((typeof action.type === 'string' &&
       action.type.startsWith('settings.ai_gateway.')) ||
       action.type === 'experiments.set_enabled' ||
+      action.type === 'inventory_sync.set_enabled' ||
       action.type === 'pipeline.run' ||
       (typeof action.type === 'string' &&
         action.type.startsWith('installed_items.')));

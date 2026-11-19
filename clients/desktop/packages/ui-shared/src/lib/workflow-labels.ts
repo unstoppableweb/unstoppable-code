@@ -23,6 +23,13 @@ export const WORKFLOW_KIND_LABELS: Readonly<Record<WorkflowKind, string>> = {
 };
 
 /**
+ * The item noun for one automation where it stands alone, such as a shared
+ * item's install review: a workflow named by how it starts, so it stays
+ * distinguishable from an on-demand workflow.
+ */
+export const SCHEDULED_WORKFLOW_ITEM_LABEL = `${WORKFLOW_KIND_LABELS.automation} ${WORKFLOW_ITEM_LABEL.toLowerCase()}`;
+
+/**
  * The list name for each browsable kind: Marketplace and Customize type tabs,
  * browse sections, and command palette groups.
  */

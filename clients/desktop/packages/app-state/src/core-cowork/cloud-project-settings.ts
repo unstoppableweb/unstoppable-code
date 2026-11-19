@@ -1,4 +1,5 @@
 import {
+  CORE_WORKSPACE_COWORK_UPDATE_SCHEMA_REVISION,
   CORE_WORKSPACE_GET_SCHEMA_REVISION,
   CORE_WORKSPACE_INSTRUCTIONS_UPDATE_SCHEMA_REVISION,
   CORE_WORKSPACE_SANDBOX_QUERY_DEFINITIONS,
@@ -18,11 +19,18 @@ import {
 
 /**
  * A cloud project's settings as its settings dialog edits them on desktop
- * (CAN-7053): its instructions, default plugins, egress hosts and host
- * settings, read from the web core's `core.workspace.get` revision 2
- * `cloudSettings`, as the web reads them.
+ * (CAN-7053): its instructions, default plugins, egress hosts, host
+ * settings, description, default model and Trash retention, read from the
+ * web core's `core.workspace.get` revision 2 `cloudSettings`, as the web
+ * reads them.
  */
 export interface CloudProjectSettings {
+  /** The project's description; empty when it has none. */
+  readonly description: string;
+  /** The project's default model, or null for the account's default. */
+  readonly defaultModelDefinitionId: string | null;
+  /** How many days the project's Trash keeps items; undefined when unset. */
+  readonly deletionRetentionDays: number | undefined;
   /** Whether the project's sandbox forwards its declared ports. */
   readonly hostModeEnabled: boolean;
   /** The ports the project declares, as stored. */
@@ -114,6 +122,17 @@ export async function readCloudProjectSettings(
       typeof settings.defaultAgentInstructions === 'string'
         ? settings.defaultAgentInstructions
         : '',
+    description:
+      typeof settings.description === 'string' ? settings.description : '',
+    defaultModelDefinitionId:
+      typeof settings.defaultModelDefinitionId === 'string'
+        ? settings.defaultModelDefinitionId
+        : null,
+    deletionRetentionDays:
+      typeof settings.deletionRetentionDays === 'number' &&
+      Number.isInteger(settings.deletionRetentionDays)
+        ? settings.deletionRetentionDays
+        : undefined,
     defaultPluginSelections: pluginSelectionsOf(
       settings.defaultPluginSelections,
     ),
@@ -189,6 +208,52 @@ export async function saveCloudProjectDefaultPlugins(
           ...(expectedRevision === undefined
             ? {}
             : { expectedDefaultPluginSelectionsRevision: expectedRevision }),
+        },
+        _meta: { idempotencyKey },
+      }),
+    ),
+  );
+}
+
+/** The Cowork settings a cloud project's dialog saves on the web core. */
+export interface CloudProjectCoworkEdit {
+  readonly description?: string;
+  /** Null clears it, so the account's default applies. */
+  readonly defaultModel?: string | null;
+  readonly deletionRetentionDays?: number;
+}
+
+/**
+ * Saves a project's description, default model and Trash retention in one
+ * keyed `core.workspace.cowork.update`, guarded by the revision the dialog
+ * read. The retention is revision 2's field, so only a save that carries it
+ * sends that revision. Answers the save's warnings.
+ */
+export async function saveCloudProjectCoworkSettings(
+  invoker: CoreCoworkInvoker,
+  workspaceId: string,
+  edit: CloudProjectCoworkEdit,
+  expectedRevision: number | undefined,
+): Promise<readonly string[]> {
+  const idempotencyKey = globalThis.crypto.randomUUID();
+  return warningsOf(
+    unwrap(
+      await invoker.request('core.workspace.cowork.update', {
+        workspaceId,
+        ...(expectedRevision === undefined ? {} : { expectedRevision }),
+        ...(edit.deletionRetentionDays === undefined
+          ? {}
+          : { revision: CORE_WORKSPACE_COWORK_UPDATE_SCHEMA_REVISION }),
+        settings: {
+          ...(edit.description === undefined
+            ? {}
+            : { description: edit.description }),
+          ...(edit.defaultModel === undefined
+            ? {}
+            : { defaultModel: edit.defaultModel }),
+          ...(edit.deletionRetentionDays === undefined
+            ? {}
+            : { deletionRetentionDays: edit.deletionRetentionDays }),
         },
         _meta: { idempotencyKey },
       }),

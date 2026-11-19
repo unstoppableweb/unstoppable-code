@@ -554,14 +554,15 @@ describe('core.catalog collection publish contract (CAN-4170)', () => {
 
   it('keeps skill and plugin publish and unpublish byte-identical', async () => {
     // The hashes were taken on develop before kind collection joined.
+    // #9761 (CAN-4733): params carry the optional _meta.dispatchId every keyed instruction does.
     expect(await sha256(CatalogEntryPublishParamsSchema, 'input')).toBe(
-      'f73987161073a5b65c66197be4e012943c820e5e37fd8e3c34c815ae881755cf',
+      'ef7ad2e40a32af3ffb8c06eba1dff0495f012e108e7610bfb585e99f302aae5e',
     );
     expect(await sha256(CatalogEntryPublishResultSchema, 'output')).toBe(
       '711735d88dea663c3bc776ea9bf22476637045674f73e1687dfe3119cd69ff58',
     );
     expect(await sha256(CatalogEntryUnpublishParamsSchema, 'input')).toBe(
-      '9c8074b29afdc8d06cf9beac03989aa11171ed0dfc03f5c77dcbabae4439dab0',
+      '8a3a3cc38d20639a7277d8fc51305e538f328f4f739196b1a4d5d99251c9a7f9',
     );
     expect(await sha256(CatalogEntryUnpublishResultSchema, 'output')).toBe(
       '5304416126e561d39381eb09cbce52b4d2c4e841644b320d074269156ac88eff',

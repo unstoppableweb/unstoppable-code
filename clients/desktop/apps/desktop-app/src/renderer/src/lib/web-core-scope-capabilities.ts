@@ -42,6 +42,13 @@ export interface WebCoreScopeOptions {
    * reads as off.
    */
   readonly delegationStop?: boolean;
+  /**
+   * A cloud scope serves the Subagents and subagent chat panels from what
+   * its chats hold (CAN-7133): each root chat's own delegate cards and
+   * transcript, its delegates' pages and their live state. Off until it is
+   * switched on for review; unset reads as off.
+   */
+  readonly cloudSubagentPanels?: boolean;
 }
 
 /**
@@ -160,6 +167,7 @@ function buildWebCoreScopeCapabilities(
     // Stop and Stop all for the chat's own delegates, over the web core
     // (CAN-7245). Load changes stays off: no retained worktree is here.
     ...(options.delegationStop === true ? { delegationStop: true } : {}),
+    ...(options.cloudSubagentPanels === true ? { subagentPanels: true } : {}),
     // Unset would mean "every section the workspace type shows" and "the
     // whole worktree's diff". A cloud scope shows the sections the web core
     // feeds: its agent tasks and background processes, which the web core
@@ -199,7 +207,7 @@ export function webCoreScopeCapabilities(
     entry = new Map();
     cache.set(host, entry);
   }
-  const key = `${String(options.durableTerminals)}:${String(options.costInsights === true)}:${String(options.sessionBreakdown === true)}:${String(options.taskFork === true)}:${String(options.delegationTranscriptReads === true)}:${String(options.delegationStop === true)}`;
+  const key = `${String(options.durableTerminals)}:${String(options.costInsights === true)}:${String(options.sessionBreakdown === true)}:${String(options.taskFork === true)}:${String(options.delegationTranscriptReads === true)}:${String(options.delegationStop === true)}:${String(options.cloudSubagentPanels === true)}`;
   let capabilities = entry.get(key);
   if (capabilities === undefined) {
     capabilities = buildWebCoreScopeCapabilities(host, options);

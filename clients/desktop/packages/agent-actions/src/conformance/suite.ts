@@ -20,6 +20,10 @@ import {
   experimentActionCatalog,
 } from '../families/experiments';
 import {
+  INVENTORY_SYNC_ACTION_TYPES,
+  inventorySyncActionCatalog,
+} from '../families/inventory-sync';
+import {
   SETTINGS_ACTION_TYPES,
   settingsActionCatalog,
 } from '../families/settings';
@@ -563,6 +567,7 @@ function sharedActionOffer(
     ...TRANSCRIPT_READ_ACTION_TYPES,
     ...CHAT_HISTORY_ACTION_TYPES,
     ...EXPERIMENT_ACTION_TYPES,
+    ...INVENTORY_SYNC_ACTION_TYPES,
     ...SETTINGS_ACTION_TYPES.filter(
       (type) => aiGateway || !type.startsWith('settings.ai_gateway.'),
     ),
@@ -579,6 +584,7 @@ function sharedActionOffer(
       ...transcriptReadActionCatalog(),
       ...chatHistoryActionCatalog,
       ...experimentActionCatalog(),
+      ...inventorySyncActionCatalog(),
       ...settingsActionCatalog(),
       ...(aiGateway ? aiGatewayActionCatalog : []),
       ...pullRequestActionCatalog(),
@@ -1012,6 +1018,68 @@ export function runAgentActionConformance<H>(
           replay.json,
           first.json,
           'receipt describes the historical commit after a later opt-out',
+        );
+      },
+    );
+  });
+
+  t.describe('inventory sync contract', () => {
+    t.it(
+      'reads the switch, refuses malformed writes, and treats the current state as a no-op',
+      async () => {
+        const current = await session();
+        if (
+          !current.supports('inventory_sync.get_state') ||
+          !current.supports('inventory_sync.set_enabled')
+        ) {
+          // Only a desktop syncs inventory; other hosts don't register the family.
+          return;
+        }
+        const read = await current.dispatch({
+          type: 'inventory_sync.get_state',
+        });
+        check(at(read.json, 'ok') === true, 'inventory sync state reads');
+        for (const field of [
+          'enabled',
+          'allowIncoming',
+          'signedIn',
+          'syncing',
+        ]) {
+          check(
+            typeof at(read.json, 'result', field) === 'boolean',
+            `inventory sync ${field} is explicit`,
+          );
+        }
+        const enabled = at(read.json, 'result', 'enabled');
+        for (const invalid of [
+          { type: 'inventory_sync.set_enabled' },
+          { type: 'inventory_sync.set_enabled', enabled: 'false' },
+          {
+            type: 'inventory_sync.set_enabled',
+            enabled: true,
+            clientDeviceId: 'other',
+          },
+        ]) {
+          const rejected = await current.dispatch(invalid);
+          check(
+            rejected.result.isError === true &&
+              rejected.result.text.includes('Invalid arguments'),
+            'invalid inventory sync payload is refused before dispatch',
+          );
+        }
+        const noop = await current.dispatch(
+          { type: 'inventory_sync.set_enabled', enabled },
+          {
+            toolUseId: 'inventory-sync-noop',
+            turnKey: 'inventory-sync-turn',
+            actorKey: 'inventory-sync-actor',
+          },
+        );
+        check(at(noop.json, 'ok') === true, 'inventory sync no-op succeeds');
+        checkEqual(
+          at(noop.json, 'result', 'changed'),
+          false,
+          'writing the current state changes nothing',
         );
       },
     );

@@ -35,6 +35,10 @@ import {
 } from './arguments';
 import { consumeDaemonHandoff } from './claim-handoff';
 import { startCanopyDaemon } from './daemon';
+import {
+  setInvalidRemoteDefaultSink,
+  type InvalidRemoteDefaultSource,
+} from '@canopy/core-runtime/node/git';
 import { prepareDaemonMigration } from './migration';
 import {
   nodeDaemonLifetimeHost,
@@ -77,7 +81,16 @@ function shutdownOutcome(report: ShutdownReport): DaemonOutcome {
  * `--profile worker`: a split core's supervised worker (CAN-5073). It runs
  * until its core's binding ends or a stop signal, and never publishes.
  */
+// CAN-7169: a suppressed remote default branch is reported by source only;
+// the remote's text never reaches stderr.
+function reportInvalidRemoteDefault(source: InvalidRemoteDefaultSource): void {
+  process.stderr.write(
+    `Suppressed a remote default branch that is not a valid branch name (${source}).\n`,
+  );
+}
+
 async function runWorker(dataRoot: string): Promise<DaemonOutcome> {
+  setInvalidRemoteDefaultSink(reportInvalidRemoteDefault);
   const stops = listenForStopSignals(process);
   const handoff = await readDaemonWorkerHandoff(process.stdin);
   const worker = await startCanopyDaemonWorker({
@@ -106,6 +119,7 @@ async function runWorker(dataRoot: string): Promise<DaemonOutcome> {
 
 // Only fixed text reaches stderr; never print stacks, causes, or paths.
 async function main(lifetime: DaemonLifetime): Promise<DaemonOutcome> {
+  setInvalidRemoteDefaultSink(reportInvalidRemoteDefault);
   let parsed;
   try {
     parsed = parseCanopyDaemonArguments(process.argv.slice(2));

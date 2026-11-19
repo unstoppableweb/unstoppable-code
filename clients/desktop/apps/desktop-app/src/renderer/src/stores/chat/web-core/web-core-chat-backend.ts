@@ -10,13 +10,24 @@ import {
 } from '@canopy/protocol/canopy-core';
 import {
   CoreCoworkRequestError,
+  createKeyedWriteHistory,
   type CanopyCoreRelayLikeReply,
   type CoreCoworkInvoker,
   type CoreCoworkStream,
 } from '@canopy/app-state/core-cowork';
 import { formatAskUserAnswers } from '@canopy/desktop-shared/lib/ask-user-answers';
 import { createPersistedFileTab } from '@canopy/desktop-shared/persisted-chat-state';
-import { sendFailure, WebCoreSendRefusedError } from './send-refusal';
+import {
+  sendFailure,
+  WebCoreSendRefusedError,
+  WebCoreSendUnknownError,
+} from './send-refusal';
+import {
+  isQueueCommandUnsettled,
+  QUEUE_REREAD_MS,
+  queueRereadDelayMs,
+  WebCoreQueueCommandUnsettledError,
+} from './queue-unconfirmed';
 import type {
   AgentProviderType,
   ArchivedChatSummary,
@@ -555,6 +566,12 @@ const EDIT_HOLD_RENEW_MS = 20_000;
  * Send again or Discard reports it couldn't tell (CAN-6856).
  */
 const SUPERSEDE_ATTEMPTS = 3;
+/** The connection and scope a queued prompt's command was sent on (CAN-7196). */
+interface QueueRereadFence {
+  readonly generation: number;
+  readonly followed: boolean;
+}
+
 const SUPERSEDE_BACKOFF_MS = 250;
 const SUPERSEDE_MAX_DELAY_MS = 2_000;
 
@@ -594,6 +611,8 @@ export interface WebCoreChatBackendOptions {
   readonly newId?: () => string;
   /** Delay before reopening a scope's event stream after it ends. */
   readonly reopenDelayMs?: number;
+  /** The backoff of a failed queue re-read after an unconfirmed command. */
+  readonly queueRereadMs?: { readonly base: number; readonly max: number };
   /** Publishes a shown chat's live replies; an empty list clears them. */
   readonly publishLive?: (key: string, chat: LiveChatState) => void;
   /**
@@ -932,6 +951,7 @@ export function createWebCoreChatBackendCore(
 ): WebCoreChatBackendCore {
   const newId = options.newId ?? defaultId;
   const reopenDelayMs = options.reopenDelayMs ?? 1_000;
+  const queueRereadMs = options.queueRereadMs ?? QUEUE_REREAD_MS;
   const echoWaitMs = options.echoWaitMs ?? ECHO_WAIT_MS;
   const listeners = new Set<(event: ChatStateChangedEvent) => void>();
   const queueListeners = new Set<(event: ChatQueueUpdatedEvent) => void>();
@@ -942,10 +962,34 @@ export function createWebCoreChatBackendCore(
   >();
   /** Each chat's queued prompt ids as its runtime last named them. */
   const queuedIds = new Map<string, string>();
-  /** Each chat's queue read in flight, and whether another must follow it. */
+  /**
+   * Each chat's queue read in flight, whether another must follow it, and
+   * whether the reads were all in.
+   */
   const queueReads = new Map<
     string,
-    { again: boolean; readonly done: Promise<void> }
+    { again: boolean; report: boolean; readonly done: Promise<boolean> }
+  >();
+  /**
+   * Moves on each closeAll, so a queue re-read stops with the connection.
+   * A queue command takes it, with whether its scope is followed, before it
+   * is sent (`QueueRereadFence`).
+   */
+  let queueRereadGeneration = 0;
+  /** Snapshot reads sent so far; each read's answer is stamped with its count. */
+  let snapshotReadsStarted = 0;
+  const snapshotReadStarts = new WeakMap<object, number>();
+  /**
+   * Each chat's queue re-reads still waiting for a read, and the count of
+   * reads sent when each began: only a read sent after that ends one.
+   */
+  const queueRereadWaits = new Map<
+    string,
+    Set<{
+      readonly since: number;
+      readonly land: () => void;
+      readonly close: () => void;
+    }>
   >();
   /** Each chat's queued rows as last taken, for the store's queue reads. */
   const queueRows = new Map<string, ChatQueueUpdatedEvent>();
@@ -1371,6 +1415,10 @@ export function createWebCoreChatBackendCore(
    * is the send that posts first, whichever reached this backend first.
    */
   const claims = new Map<string, SendClaim[]>();
+  // Sends and forks whose answer never came, by key: Try again goes under the
+  // same command or claim, so an answered refusal of the retry leaves it
+  // unknown (CAN-7196).
+  const unknownWrites = createKeyedWriteHistory();
   /**
    * Each chat's Stops in flight, by what they stop: a press at the same turn
    * or the same send joins one, never adds a cancel; a press at another turn
@@ -1915,7 +1963,12 @@ export function createWebCoreChatBackendCore(
     method: string,
     params: Record<string, unknown>,
   ): Promise<unknown> {
-    return unwrap(await invoker().request(method, params));
+    const started =
+      method === 'core.chat.snapshot.get' ? (snapshotReadsStarted += 1) : 0;
+    const value = unwrap(await invoker().request(method, params));
+    if (started > 0 && typeof value === 'object' && value !== null)
+      snapshotReadStarts.set(value, started);
+    return value;
   }
 
   function requestPage(
@@ -3899,6 +3952,7 @@ export function createWebCoreChatBackendCore(
     const reply = await invoker().request('core.chat.message.send', params);
     if (reply.ok) {
       uncertain.landed = false;
+      unknownWrites.settle(target.commandId);
       return reply.value;
     }
     const { retry, details } = reply.error;
@@ -3941,8 +3995,8 @@ export function createWebCoreChatBackendCore(
       return sendOnce(target, params, uncertain, rebuildWaitUntil);
     }
     if (
-      retry.kind !== 'same_idempotency_key' &&
-      retry.kind !== 'same_request'
+      retry.kind !== 'same_request' &&
+      !unknownWrites.unknown(target.commandId, reply.error)
     ) {
       uncertain.landed = false;
       throw sendFailure(reply.error);
@@ -3960,11 +4014,13 @@ export function createWebCoreChatBackendCore(
       throw new Error('The web core returned an invalid send receipt.');
     if (receipt.data.outcome === 'matched') {
       uncertain.landed = false;
+      unknownWrites.settle(target.commandId);
       return receipt.data.receipt;
     }
     if (receipt.data.outcome === 'conflict')
       throw new Error('This send conflicts with an earlier one.');
-    throw new CoreCoworkRequestError(reply.error);
+    unknownWrites.markUnknown(target.commandId);
+    throw new WebCoreSendUnknownError(reply.error);
   }
 
   async function uploadAttachment(
@@ -4093,20 +4149,30 @@ export function createWebCoreChatBackendCore(
         _meta: { idempotencyKey: claimId },
       });
     } catch (error) {
+      // Refused only when the shared check says the answer came before any
+      // write and no earlier attempt under the claim ended unknown: a
+      // same-key answer may have landed, and Try again must keep the claim
+      // (CAN-7196).
       if (
         error instanceof CoreCoworkRequestError &&
-        !UNSETTLED_ERROR_KINDS.has(error.payload.kind)
+        !UNSETTLED_ERROR_KINDS.has(error.payload.kind) &&
+        !unknownWrites.unknown(claimId, error.payload)
       )
         return {
           kind: 'refused',
           reason: error.payload.code ?? error.payload.kind,
         };
       reportClientAppError(error);
+      unknownWrites.markUnknown(claimId);
       return { kind: 'unknown' };
     }
     const receipt = CoreChatCommandReceiptSchema.safeParse(reply);
-    if (!receipt.success) return { kind: 'unknown' };
+    if (!receipt.success) {
+      unknownWrites.markUnknown(claimId);
+      return { kind: 'unknown' };
+    }
     const { outcome, entityId } = receipt.data;
+    unknownWrites.settle(claimId);
     if (
       (outcome === 'applied' || outcome === 'already_applied') &&
       entityId !== undefined
@@ -4290,6 +4356,17 @@ export function createWebCoreChatBackendCore(
         // Stop stays, failing closed, until the turn's fate is known; the
         // send is never resent (CAN-6273).
         markUncertain(turns, chatId);
+        // A receipt that couldn't be read leaves it as unknown as a lost reply.
+        if (!(error instanceof WebCoreSendUnknownError))
+          throw new WebCoreSendUnknownError(
+            error instanceof CoreCoworkRequestError
+              ? error.payload
+              : {
+                  kind: 'unavailable',
+                  message: 'The send may have landed.',
+                  retry: { kind: 'never' },
+                },
+          );
       }
       throw error;
     } finally {
@@ -4592,6 +4669,11 @@ export function createWebCoreChatBackendCore(
     // No hold outlives the window's cloud chats: each stops renewing and is
     // handed back where the connection still allows (CAN-6651).
     editHoldGeneration += 1;
+    // A queue re-read after an unconfirmed command stops with the connection.
+    queueRereadGeneration += 1;
+    for (const waits of queueRereadWaits.values())
+      for (const wait of waits) wait.close();
+    queueRereadWaits.clear();
     editRevisions.clear();
     editSaves.clear();
     for (const [key, hold] of editHolds) {
@@ -4706,6 +4788,22 @@ export function createWebCoreChatBackendCore(
   ): ChatQueueUpdatedEvent[] {
     const parsed = CoreChatSnapshotGetResultSchema.safeParse(value);
     if (!parsed.success) return [];
+    // Any read sent after a queue re-read began, whatever sent it, ends it
+    // for the chats it covers (CAN-7196).
+    const started =
+      typeof value === 'object' && value !== null
+        ? (snapshotReadStarts.get(value) ?? 0)
+        : 0;
+    for (const coreChatId of [
+      parsed.data.tabs.activeTabId,
+      ...Object.keys(parsed.data.runtimeByChatId),
+    ])
+      for (const wait of [
+        ...(queueRereadWaits.get(
+          queueKey(scope, ids.chatToStore(coreChatId)),
+        ) ?? []),
+      ])
+        if (wait.since < started) wait.land();
     // The read's sandbox is its opened chat's (CAN-6766); every read of a
     // snapshot comes through here.
     const opened = parsed.data.tabs.activeTabId;
@@ -4797,26 +4895,32 @@ export function createWebCoreChatBackendCore(
   /**
    * Reads a chat's queue again and tells the store when its rows changed
    * (CAN-6644). Reads of one chat in a row coalesce into one more after the
-   * one in flight.
+   * one in flight. True once the reads are in, false when one failed. A
+   * failed read is reported unless every caller waiting on it asked for
+   * `quiet`, as a queue re-read's retries do (CAN-7196).
    */
   async function refreshQueue(
     scope: Scope,
     storeChatId: string,
-  ): Promise<void> {
+    quiet = false,
+  ): Promise<boolean> {
     const key = queueKey(scope, storeChatId);
     const inFlight = queueReads.get(key);
     if (inFlight !== undefined) {
       inFlight.again = true;
+      if (!quiet) inFlight.report = true;
       return inFlight.done;
     }
-    let settled = (): void => undefined;
+    let settled: (read: boolean) => void = () => undefined;
     const state = {
       again: true,
-      done: new Promise<void>((resolve) => {
+      report: !quiet,
+      done: new Promise<boolean>((resolve) => {
         settled = resolve;
       }),
     };
     queueReads.set(key, state);
+    let read = false;
     try {
       while (state.again) {
         state.again = false;
@@ -4824,15 +4928,93 @@ export function createWebCoreChatBackendCore(
         for (const event of takeSnapshotQueues(scope, value))
           for (const listener of queueListeners) listener(event);
       }
+      read = true;
     } catch (error) {
       // Forget the prompts the event named, so the next event that names
       // them reads the queue again.
       queuedIds.delete(key);
-      reportClientAppError(error);
+      if (state.report) reportClientAppError(error);
     } finally {
       queueReads.delete(key);
-      settled();
+      settled(read);
     }
+    return read;
+  }
+
+  /**
+   * Reads a chat's queue again after a queued prompt's command that may have
+   * landed, until a read is in: `first` is whether the first read was, and
+   * `shown` settles once one is. Any read of the chat sent after this began
+   * counts, whatever sent it. A failed read is tried again after 250 ms,
+   * doubling to 8 s and then every 8 s (`queueRereadMs`), with no last try:
+   * the reads stop, and `shown` never settles, only once the backend closes
+   * or stops following the scope. Nothing is sent again (CAN-7196).
+   */
+  function rereadQueue(
+    scope: Scope,
+    storeChatId: string,
+    { generation, followed }: QueueRereadFence,
+  ): { readonly first: Promise<boolean>; readonly shown: Promise<void> } {
+    const followedKey = scopeKey(scope);
+    const closed = (): boolean =>
+      generation !== queueRereadGeneration ||
+      (followed && !streams.has(followedKey));
+    const key = queueKey(scope, storeChatId);
+    let done = false;
+    let markShown = (): void => undefined;
+    const shown = new Promise<void>((resolve) => {
+      markShown = resolve;
+    });
+    let wake = (): void => undefined;
+    const wait = {
+      since: snapshotReadsStarted,
+      land: (): void => {
+        if (done || closed()) return;
+        done = true;
+        markShown();
+        wake();
+      },
+      close: (): void => wake(),
+    };
+    const waits = queueRereadWaits.get(key) ?? new Set();
+    waits.add(wait);
+    queueRereadWaits.set(key, waits);
+    const stop = (): void => {
+      waits.delete(wait);
+      if (waits.size === 0 && queueRereadWaits.get(key) === waits)
+        queueRereadWaits.delete(key);
+    };
+    // Only the loop's first failed read is reported, not one every 8 s.
+    let reported = false;
+    const readOnce = async (): Promise<boolean> => {
+      if (!done && !closed()) {
+        const read = await refreshQueue(scope, storeChatId, reported);
+        if (!read) reported = true;
+      }
+      return done;
+    };
+    const first = readOnce();
+    void (async (): Promise<void> => {
+      try {
+        if (await first) return;
+        for (let failed = 1; !done && !closed(); failed += 1) {
+          await new Promise<void>((resolve) => {
+            const timer = setTimeout(
+              resolve,
+              queueRereadDelayMs(failed, queueRereadMs),
+            );
+            wake = (): void => {
+              clearTimeout(timer);
+              resolve();
+            };
+          });
+          if (await readOnce()) return;
+        }
+      } finally {
+        stop();
+      }
+    })();
+    return { first, shown };
   }
 
   /**
@@ -4900,15 +5082,27 @@ export function createWebCoreChatBackendCore(
    * Sends a queued entry's command, and reads the chat's queue again so its
    * row shows the entry as it is now: after any change, and after any
    * refusal. A hold changes no row, so only its refusal reads again.
+   *
+   * A Cancel, Run now or edit that can't tell what happened answers only
+   * after that read, so what it says of the queue is true: its error carries
+   * whether the read was in, and when it wasn't, waits on the next one, read
+   * on a backoff until one is in (CAN-7196).
    */
   async function queueCommand(
     req: ChatQueueEntryRequest,
     method: string,
-    action: string,
+    action: 'cancel' | 'run' | 'edit' | 'hold' | 'release',
     extra: Record<string, unknown> = {},
     changesRow = true,
   ): Promise<Record<string, unknown>> {
     let refused = true;
+    let reread = false;
+    // Taken before the command is sent: a close while its reply is out
+    // fences the re-read too, so nothing reads into the next session.
+    const fence: QueueRereadFence = {
+      generation: queueRereadGeneration,
+      followed: streams.has(scopeKey(req)),
+    };
     try {
       const receipt = appliedQueueReceipt(
         await request(method, { ...queueEntryCommand(req), ...extra }),
@@ -4916,8 +5110,23 @@ export function createWebCoreChatBackendCore(
       );
       refused = false;
       return receipt;
+    } catch (error) {
+      if (
+        action !== 'hold' &&
+        action !== 'release' &&
+        isQueueCommandUnsettled(error)
+      ) {
+        reread = true;
+        const read = rereadQueue(req, req.chatId, fence);
+        throw new WebCoreQueueCommandUnsettledError(error.payload, {
+          installed: await read.first,
+          shown: read.shown,
+        });
+      }
+      throw error;
     } finally {
-      if (changesRow || refused) void refreshQueue(req, req.chatId);
+      if (!reread && (changesRow || refused))
+        void refreshQueue(req, req.chatId);
     }
   }
 

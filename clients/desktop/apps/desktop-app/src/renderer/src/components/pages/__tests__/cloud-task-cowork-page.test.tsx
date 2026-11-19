@@ -52,12 +52,24 @@ import {
   panelKindsUnavailableFor,
 } from '@/lib/panels/scope-panel-kinds';
 import { listAddablePanels } from '@/lib/panels/registry';
+import { openSubagentChatPanel } from '@/lib/panels/subagent-panel-open';
+import { getSubagentTreeSnapshot } from '@/components/subagents/subagent-tree-store';
+import { stopSubagent } from '@/components/subagents/subagent-commands';
+import { evictChatTabTranscript } from '@/stores/chat/transcript-residency';
 import { webCoreScopeCapabilities } from '@/lib/web-core-scope-capabilities';
 import { clearWebCoreModelCatalog } from '@/stores/chat/web-core/model-catalog';
 import { refreshChatScopeRevisioned } from '@/stores/chat/slices/revisioned';
 import { closeWebCoreChatBackend } from '@/stores/chat/web-core';
 import { resetWebCoreSendBinding } from '@/stores/chat/web-core/send-binding';
 import { resetCloudSendOrder } from '@/stores/chat/web-core/send-order';
+import { WEB_CORE_SEND_UNKNOWN_NOTICE } from '@/stores/chat/web-core/send-refusal';
+import { refreshInAppNotificationPrefs } from '@/lib/osNotifications';
+import {
+  resetToastStack,
+  toastStack,
+  useToastStore,
+} from '@/stores/toastStore';
+import { useGitHubStore } from '@/stores/githubStore';
 import { trackSelectionSave } from '@/stores/chat/web-core/selection-saves';
 import { useCloudSandboxStateStore } from '@/stores/chat/web-core/sandbox-states';
 import { useWebCoreStartingTurnStore } from '@/stores/chat/web-core/starting-turns';
@@ -102,6 +114,8 @@ import {
 } from '@/stores/chat/web-core/cloud-forks';
 import { UsagePanel } from '@/components/panels/usage/UsagePanel';
 import { usePanelLayoutStore } from '@/stores/panelLayoutStore';
+import { resetSubagentTreeStoreForTests } from '@/components/subagents/subagent-tree-store';
+import { useSubagentViewStateStore } from '@canopy/ui-app/subagents';
 import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
 import { StandaloneChatPage } from '../StandaloneChatPage';
 import { DesktopCostCurrencyProvider } from '../../activity/cost/DesktopCostCurrencyProvider';
@@ -281,7 +295,10 @@ function recordingBridge(path: string): unknown {
               reason: 'rejected',
               message: 'Attachment storage is full.',
             })
-          : held(uploadGate).then(() => uploadReply(args[0], args[1]));
+          : Reflect.get(Object(args[1]), 'name') === 'lost.md'
+            ? // As main answers an upload whose answer never came (CAN-7196).
+              Promise.resolve({ ok: false, reason: 'unknown' })
+            : held(uploadGate).then(() => uploadReply(args[0], args[1]));
     const answer = caseReplies.get(path);
     if (answer !== undefined) return answer(...args);
     return reply(REPLIES[path], path in REPLIES);
@@ -346,6 +363,12 @@ function lockedRowNamed(label: string): HTMLElement | undefined {
  * would.
  */
 let mockDelegationStop = false;
+/**
+ * Whether a cloud scope serves the Subagents and subagent chat panels
+ * (CAN-7133). The desktop ships it off; a case turns it on as its switch-on
+ * would.
+ */
+let mockCloudSubagentPanels = false;
 jest.mock('@/lib/web-core-scope-capabilities', () => {
   const actual = jest.requireActual<typeof WebCoreScopeCapabilitiesModule>(
     '@/lib/web-core-scope-capabilities',
@@ -358,6 +381,7 @@ jest.mock('@/lib/web-core-scope-capabilities', () => {
       actual.webCoreScopeCapabilities(host, {
         ...(options ?? { durableTerminals: false }),
         ...(mockDelegationStop ? { delegationStop: true } : {}),
+        ...(mockCloudSubagentPanels ? { cloudSubagentPanels: true } : {}),
       }),
   };
 });
@@ -618,6 +642,13 @@ const uncreated = (id: unknown): boolean =>
  */
 let loseCreateReply = false;
 /**
+ * Whether a create whose reply is lost reached the web core, and how its
+ * lost reply reads: a same-key retry, or S7c's unavailable and never
+ * retried (CAN-7196).
+ */
+let lostCreateLands = true;
+let lostCreateRetry: 'same_idempotency_key' | 'never' = 'same_idempotency_key';
+/**
  * How the stub answers the next core.chat.fork (CAN-7007): apply it, refuse
  * it, or apply it and lose the reply.
  */
@@ -656,6 +687,8 @@ let asleepAs: { cloudCode: string; wakeAllowed: boolean } = {
 };
 /** The task's own chat's running turn, as its snapshot reports it. */
 let runningTurn: string | null = null;
+/** The second chat's running turn, when a case runs one (CAN-7133). */
+let secondChatTurn: string | null = null;
 /**
  * Main's answer to a Files wake (CAN-6724). Refused unless a case says
  * otherwise, so a case about something else never wakes the sandbox.
@@ -1395,7 +1428,14 @@ Object.defineProperty(window, 'canopyCore', {
                         (each) => each.messageId,
                       ),
                     }),
-              'chat-2': { status: 'idle', queuedMessageIds: [] },
+              'chat-2':
+                secondChatTurn === null
+                  ? { status: 'idle', queuedMessageIds: [] }
+                  : {
+                      status: 'streaming',
+                      activeTurnId: secondChatTurn,
+                      queuedMessageIds: [],
+                    },
             },
             queue:
               startingSend === null && queuedSends.length === 0
@@ -1431,10 +1471,16 @@ Object.defineProperty(window, 'canopyCore', {
             'kind' in target &&
             target.kind === 'delegation'
           ) {
+            // A run's own rows when a case gives them (`<id>#<run>`), else
+            // the delegate's (CAN-7133).
             const rows =
               'delegationId' in target &&
               typeof target.delegationId === 'string'
-                ? delegateTranscripts.get(target.delegationId)
+                ? (delegateTranscripts.get(
+                    `${target.delegationId}#${String(
+                      'runGeneration' in target ? target.runGeneration : '',
+                    )}`,
+                  ) ?? delegateTranscripts.get(target.delegationId))
                 : undefined;
             return rows === undefined
               ? Promise.resolve({
@@ -1596,13 +1642,13 @@ Object.defineProperty(window, 'canopyCore', {
           startedTasks.add(tabId);
           if (loseCreateReply) {
             loseCreateReply = false;
-            createdTasks.add(tabId);
+            if (lostCreateLands) createdTasks.add(tabId);
             return held(createGate).then(() => ({
               ok: false,
               error: {
                 kind: 'unavailable',
                 message: 'The reply was lost.',
-                retry: { kind: 'same_idempotency_key' },
+                retry: { kind: lostCreateRetry },
               },
             }));
           }
@@ -1749,14 +1795,14 @@ Object.defineProperty(window, 'canopyCore', {
             (unknownOutcomeSendText !== null &&
               request.params?.text === unknownOutcomeSendText)
           )
-            return Promise.resolve({
+            return held(sendGate).then(() => ({
               ok: false,
               error: {
                 kind: 'unavailable',
                 message: 'The web core did not answer in time.',
                 retry: { kind: 'same_idempotency_key' },
               },
-            });
+            }));
           if (refusal !== null)
             return held(sendGate).then(() => ({
               ok: false,
@@ -2319,6 +2365,8 @@ beforeEach(() => {
   coreRequestLog.length = 0;
   createGate = null;
   createRefusal = null;
+  lostCreateLands = true;
+  lostCreateRetry = 'same_idempotency_key';
   sendRefusal = null;
   servedPrincipal = 'u-1';
   advertisesSendBinding = false;
@@ -2404,6 +2452,11 @@ beforeEach(() => {
   delegationSnapshots.clear();
   delegationStopAnswer = 'accept';
   mockDelegationStop = false;
+  mockCloudSubagentPanels = false;
+  resetSubagentTreeStoreForTests();
+  useSubagentViewStateStore.setState(
+    useSubagentViewStateStore.getInitialState(),
+  );
   attachmentBytes.clear();
   artifactReads.length = 0;
   deletedPaths.clear();
@@ -3007,6 +3060,12 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
     // is not attached (CAN-6369).
     await pick([new File(['# Full'], 'full.md', { type: 'text/markdown' })]);
     expect(problems()).toContain('full.md: Attachment storage is full.');
+    // One whose answer never came may be stored: it says so, never that it
+    // failed, and is not attached (CAN-7196).
+    await pick([new File(['# Lost'], 'lost.md', { type: 'text/markdown' })]);
+    expect(problems()).toContain(
+      "lost.md: Couldn't confirm the file uploaded. Attach it again to be sure",
+    );
     expect(
       Array.from(
         container.querySelectorAll('[data-testid="attachment-pill"]'),
@@ -3040,8 +3099,9 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
     release();
     uploadGate = null;
     await settle();
-    // Eight that uploaded, and full.md, which reached main and was refused.
-    expect(uploads()).toHaveLength(9);
+    // Eight that uploaded, full.md, which reached main and was refused, and
+    // lost.md, whose answer never came.
+    expect(uploads()).toHaveLength(10);
     expect(send()?.disabled).toBe(false);
     expect(problems()).toContain('Attach up to eight files per message');
     expect(problems()).toContain('tool.exe: Attachment type is not supported');
@@ -5506,8 +5566,8 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
       expect(coreRequests).toContain('core.runtime.manifest.get');
       const capabilities = cloudScopeCapabilitiesNow();
       expect(capabilities.delegationTranscriptReads === true).toBe(reads);
-      // Their hosts read this computer's delegation service only (CAN-7133),
-      // so the add menu and the layout refuse both kinds either way.
+      // Without cloudSubagentPanels, which nothing passes yet (CAN-7133),
+      // the add menu and the layout refuse both kinds either way.
       expect(
         panelKindsUnavailableFor(capabilities).filter(
           (kind) => kind === 'subagents' || kind === 'subagent-chat',
@@ -5520,6 +5580,920 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
       ).toEqual([false, false]);
     });
   }
+
+  /** A cloud chat's local id, as the chat store keys its tab. */
+  const cloudChat = (chatId: string): string => `web-core:${chatId}`;
+  const CLOUD_SCOPE = {
+    projectId: 'web-core:ws-1',
+    worktreeId: 'web-core:wt-1',
+  } as const;
+  const CLOUD_SCOPE_KEY = 'web-core:ws-1/web-core:wt-1';
+
+  /**
+   * The cloud task's two chats, each with its own running delegate card
+   * (CAN-7133): the task's chat ("Brief") starts delegate a and a Claude Task
+   * agent, the second chat ("Notes") starts delegate b. A's card recorded it
+   * done; the web core says it runs again. The web core's list
+   * answers every chat's delegates alike here, so a chat's store also holds
+   * the other chat's snapshot: only its own cards may put one in its tree.
+   */
+  function seedTwoRoots(): void {
+    const at = Date.now();
+    transcripts['wt-1'] = [
+      {
+        id: 'brief-u',
+        role: 'user',
+        blocks: [{ type: 'text', text: 'Review a' }],
+        timestamp: at,
+      },
+      {
+        id: 'brief-a',
+        role: 'assistant',
+        blocks: [
+          { ...runningDelegateCard('a'), status: 'completed' },
+          {
+            type: 'tool_use',
+            toolUseId: 'native-task-a',
+            toolName: 'Task',
+            input: JSON.stringify({
+              description: 'Scan the files',
+              prompt: 'Scan the files.',
+              subagent_type: 'general-purpose',
+            }),
+          },
+        ],
+        timestamp: at,
+      },
+    ];
+    transcripts['chat-2'] = [
+      {
+        id: 'notes-u',
+        role: 'user',
+        blocks: [{ type: 'text', text: 'Review b' }],
+        timestamp: at,
+      },
+      {
+        id: 'notes-a',
+        role: 'assistant',
+        blocks: [runningDelegateCard('b')],
+        timestamp: at,
+      },
+    ];
+    delegationSnapshots.set('cloud-delegate-a', liveDelegateSnapshot('a'));
+    delegationSnapshots.set('cloud-delegate-b', liveDelegateSnapshot('b'));
+  }
+
+  /**
+   * Adds a Subagents tab to the task's layout, if it serves one and has none.
+   * An earlier case may leave the task's minimal layout, whose chat group
+   * takes only chats: the extras group takes any panel.
+   */
+  function addSubagentsTab(): void {
+    const groups =
+      usePanelLayoutStore.getState().layouts[CLOUD_SCOPE_KEY]?.groups ?? {};
+    const groupId =
+      'group-extras' in groups ? 'group-extras' : Object.keys(groups)[0];
+    act(() => {
+      usePanelLayoutStore
+        .getState()
+        .addTab(CLOUD_SCOPE_KEY, groupId ?? '', 'subagents');
+    });
+  }
+
+  /** Opens the task, then a Subagents panel in its layout, if it serves one. */
+  async function openSubagentsPanel(): Promise<void> {
+    // The layout store keeps a task's panels across cases, and each kind
+    // opens once: close them as the case ends.
+    onCaseEnd(() => {
+      const layouts = usePanelLayoutStore.getState();
+      for (const [groupId, group] of Object.entries(
+        layouts.layouts[CLOUD_SCOPE_KEY]?.groups ?? {},
+      ))
+        layouts.closeTabs(
+          CLOUD_SCOPE_KEY,
+          groupId,
+          group.tabs
+            .filter(
+              (tab) => tab.kind === 'subagents' || tab.kind === 'subagent-chat',
+            )
+            .map((tab) => tab.panelId),
+        );
+    });
+    await openTaskChat();
+    await rereadTranscript();
+    // The second chat's transcript, as opening its tab reads it.
+    act(() => {
+      useChatStore.getState().switchTab(cloudChat('chat-2'), CLOUD_SCOPE);
+    });
+    await settle();
+    act(() => {
+      useChatStore.getState().switchTab(cloudChat('wt-1'), CLOUD_SCOPE);
+    });
+    await settle();
+    addSubagentsTab();
+    await settle();
+    await settle();
+  }
+
+  async function selectSubagentRoot(chatId: string): Promise<void> {
+    act(() => {
+      const viewState = useSubagentViewStateStore.getState();
+      // The list view: the tree view draws a lazy canvas jsdom can't.
+      viewState.setView(CLOUD_SCOPE_KEY, 'list');
+      viewState.setSelectedRoot(CLOUD_SCOPE_KEY, cloudChat(chatId));
+    });
+    await settle();
+    await settle();
+  }
+
+  /** The Subagents panel's rows, by subagent id. */
+  const subagentRows = (): string[] =>
+    Array.from(
+      container.querySelectorAll('[data-testid^="subagents-list-row-"]'),
+      (row) =>
+        (row.getAttribute('data-testid') ?? '').replace(
+          'subagents-list-row-',
+          '',
+        ),
+    ).sort();
+
+  /** The root picker's options, by chat id. */
+  async function subagentRootOptions(): Promise<string[]> {
+    act(() => {
+      container
+        .querySelector<HTMLElement>('[data-testid="subagents-root-picker"]')
+        ?.click();
+    });
+    await settle();
+    const options = Array.from(
+      document.querySelectorAll('[data-testid^="subagents-root-option-"]'),
+      (row) =>
+        (row.getAttribute('data-testid') ?? '').replace(
+          'subagents-root-option-',
+          '',
+        ),
+    ).sort();
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+      );
+    });
+    await settle();
+    return options;
+  }
+
+  /** Main's subagent reads and commands: none may carry a cloud id. */
+  const SUBAGENT_IPC = [
+    'api.managedDelegation.tree',
+    'api.managedDelegation.roots',
+    'api.managedDelegation.transcriptPage',
+    'api.managedDelegation.stop',
+    'api.managedDelegation.message',
+    'api.managedDelegation.worktreeSummary',
+    'api.managedDelegation.changes',
+    'api.chat.readToolOutput',
+    'api.activity.stopBgProcess',
+    'api.activity.readWorkflowRun',
+    'api.nativeSubagents.interrupt',
+  ];
+  const subagentIpc = (): string[] =>
+    calls
+      .filter((call) => SUBAGENT_IPC.includes(call.path))
+      .map((call) => call.path);
+
+  it("sends main no cloud id from the Subagents panels' reads or commands while they're off (CAN-7133)", async () => {
+    transcriptPageDetails = ['delegation'];
+    mockDelegationStop = true;
+    seedTwoRoots();
+    await openSubagentsPanel();
+    expect(cloudScopeCapabilitiesNow().subagentPanels).toBeUndefined();
+    expect(layoutScopeServesPanelKind(CLOUD_SCOPE_KEY, 'subagents')).toBe(
+      false,
+    );
+    expect(shown('subagents-panel')).toBe(false);
+    expect(subagentIpc()).toEqual([]);
+    expect(callsCarryingWebCoreIds()).toEqual([]);
+  });
+
+  it("lists a cloud task's root chats, and each root's own delegates and native subagents, from what the desktop already holds (CAN-7133)", async () => {
+    transcriptPageDetails = ['delegation'];
+    mockDelegationStop = true;
+    mockCloudSubagentPanels = true;
+    seedTwoRoots();
+    await openSubagentsPanel();
+    expect(shown('subagents-panel')).toBe(true);
+    // Both of the task's chats are roots: each holds its own delegate card.
+    expect(await subagentRootOptions()).toEqual([
+      cloudChat('chat-2'),
+      cloudChat('wt-1'),
+    ]);
+
+    await selectSubagentRoot('wt-1');
+    expect(subagentRows()).toEqual(['cloud-delegate-a', 'native-task-a']);
+    // A's card keeps its first state; the tree reads the web core's.
+    expect(
+      getSubagentTreeSnapshot(CLOUD_SCOPE, cloudChat('wt-1')).tree?.nodes.get(
+        'cloud-delegate-a',
+      )?.status,
+    ).toBe('running');
+
+    // Two roots in the same task: B's tree never shows A's delegates, though
+    // its chat's live read lists them.
+    await selectSubagentRoot('chat-2');
+    expect(subagentRows()).toEqual(['cloud-delegate-b']);
+    const treeB = getSubagentTreeSnapshot(CLOUD_SCOPE, cloudChat('chat-2'));
+    expect(treeB.tree?.nodes.has('cloud-delegate-a')).toBe(false);
+    expect(treeB.tree?.nodes.has('native-task-a')).toBe(false);
+    // ...and A's never shows B's.
+    expect(
+      getSubagentTreeSnapshot(CLOUD_SCOPE, cloudChat('wt-1')).tree?.nodes.has(
+        'cloud-delegate-b',
+      ),
+    ).toBe(false);
+    // Each chat's live state is read with that chat alone.
+    expect(
+      [
+        ...new Set(
+          delegationRequests('core.managedDelegation.list').map((params) =>
+            JSON.stringify(params),
+          ),
+        ),
+      ].sort(),
+    ).toEqual(
+      ['chat-2', 'wt-1'].map((chatId) =>
+        JSON.stringify({
+          scope: { workspaceId: 'ws-1', worktreeId: 'wt-1' },
+          chatId,
+        }),
+      ),
+    );
+    expect(subagentIpc()).toEqual([]);
+    expect(callsCarryingWebCoreIds()).toEqual([]);
+  });
+
+  /** Opens delegate `run`'s subagent chat under root chat `chatId`. */
+  async function openCloudSubagentChat(
+    chatId: string,
+    run: string,
+  ): Promise<void> {
+    await act(async () => {
+      await openSubagentChatPanel(CLOUD_SCOPE, {
+        rootChatId: cloudChat(chatId),
+        subagentId: `cloud-delegate-${run}`,
+        subagentKind: 'managed',
+        title: `Review ${run}`,
+      });
+    });
+    await settle();
+    await settle();
+  }
+
+  it("opens a cloud delegate's subagent chat and reads its pages from the web core, scoped to its own root chat (CAN-7133)", async () => {
+    transcriptPageDetails = ['delegation'];
+    mockDelegationStop = true;
+    mockCloudSubagentPanels = true;
+    seedTwoRoots();
+    delegateTranscripts.set('cloud-delegate-b', [
+      {
+        id: 'child-b-1',
+        role: 'assistant',
+        blocks: [{ type: 'text', text: 'B-CHILD-ROW-FROM-WEB-CORE' }],
+        timestamp: Date.now(),
+      },
+    ]);
+    await openSubagentsPanel();
+    await openCloudSubagentChat('chat-2', 'b');
+    expect(shown('subagent-chat-panel')).toBe(true);
+    expect(
+      container.querySelector('[data-testid="subagent-chat-panel"]')
+        ?.textContent,
+    ).toContain('B-CHILD-ROW-FROM-WEB-CORE');
+    // Only B's delegate, under B's own chat.
+    expect([
+      ...new Set(delegationReads().map((params) => JSON.stringify(params))),
+    ]).toEqual([
+      JSON.stringify({
+        scope: { workspaceId: 'ws-1', worktreeId: 'wt-1', chatId: 'chat-2' },
+        target: {
+          kind: 'delegation',
+          chatId: 'chat-2',
+          delegationId: 'cloud-delegate-b',
+          runGeneration: 1,
+        },
+      }),
+    ]);
+    // No legacy item pages and no tool output from main.
+    expect(subagentIpc()).toEqual([]);
+    expect(callsCarryingWebCoreIds()).toEqual([]);
+  });
+
+  it('offers a cloud subagent only the controls its scope serves (CAN-7133)', async () => {
+    transcriptPageDetails = ['delegation'];
+    mockDelegationStop = true;
+    mockCloudSubagentPanels = true;
+    seedTwoRoots();
+    await openSubagentsPanel();
+    await selectSubagentRoot('chat-2');
+    act(() => {
+      container
+        .querySelector<HTMLElement>(
+          '[data-testid="subagents-list-select-cloud-delegate-b"]',
+        )
+        ?.click();
+    });
+    await settle();
+    // Stop follows the scope's delegationStop, through the web core for B's
+    // own chat.
+    act(() => {
+      container
+        .querySelector<HTMLElement>('[data-testid="subagents-inspector-stop"]')
+        ?.click();
+    });
+    await settle();
+    expect(keyedRequests('core.managedDelegation.stop')).toEqual([
+      {
+        params: {
+          scope: { workspaceId: 'ws-1', worktreeId: 'wt-1' },
+          chatId: 'chat-2',
+          delegationId: 'cloud-delegate-b',
+        },
+        key: 'string',
+      },
+    ]);
+    // No worktree details, workflows or delegate messaging for a cloud scope.
+    expect(shown('subagents-inspector-show-changes')).toBe(false);
+    await openCloudSubagentChat('chat-2', 'b');
+    expect(shown('subagent-chat-details-worktree')).toBe(false);
+    expect(shown('subagent-chat-open-workflow')).toBe(false);
+    expect(subagentIpc()).toEqual([]);
+    expect(callsCarryingWebCoreIds()).toEqual([]);
+  });
+
+  it("offers no Stop on a cloud subagent while its scope doesn't stop delegates (CAN-7133)", async () => {
+    transcriptPageDetails = ['delegation'];
+    mockCloudSubagentPanels = true;
+    seedTwoRoots();
+    await openSubagentsPanel();
+    await selectSubagentRoot('chat-2');
+    // The panel lists B's running delegate...
+    expect(subagentRows()).toEqual(['cloud-delegate-b']);
+    act(() => {
+      container
+        .querySelector<HTMLElement>(
+          '[data-testid="subagents-list-select-cloud-delegate-b"]',
+        )
+        ?.click();
+    });
+    await settle();
+    // ...and offers no Stop for it.
+    expect(shown('subagents-inspector-stop')).toBe(false);
+    // Nor are live states read: the card's first state shows.
+    expect(delegationRequests('core.managedDelegation.list')).toEqual([]);
+    expect(subagentIpc()).toEqual([]);
+    expect(callsCarryingWebCoreIds()).toEqual([]);
+  });
+
+  it("refuses a delegate that isn't on its root chat's cards, with no request (CAN-7133)", async () => {
+    transcriptPageDetails = ['delegation'];
+    mockDelegationStop = true;
+    mockCloudSubagentPanels = true;
+    seedTwoRoots();
+    delegateTranscripts.set('cloud-delegate-b', [
+      {
+        id: 'child-b-1',
+        role: 'assistant',
+        blocks: [{ type: 'text', text: 'B-CHILD-ROW-FROM-WEB-CORE' }],
+        timestamp: Date.now(),
+      },
+    ]);
+    await openSubagentsPanel();
+    // B's delegate asked for under A's chat: not on A's cards.
+    await openCloudSubagentChat('wt-1', 'b');
+    expect(shown('subagent-chat-unavailable')).toBe(true);
+    expect(container.textContent).not.toContain('B-CHILD-ROW-FROM-WEB-CORE');
+    expect(delegationReads()).toEqual([]);
+    // Nor does a Stop for it under A's chat reach anything.
+    let result: { ok: boolean } = { ok: true };
+    await act(async () => {
+      result = await stopSubagent(CLOUD_SCOPE, cloudChat('wt-1'), {
+        id: 'cloud-delegate-b',
+        kind: 'managed',
+      });
+    });
+    expect(result.ok).toBe(false);
+    expect(delegationRequests('core.managedDelegation.stop')).toEqual([]);
+    expect(subagentIpc()).toEqual([]);
+    expect(callsCarryingWebCoreIds()).toEqual([]);
+  });
+
+  /** A chat's recorded rows: a prompt, then the given delegate cards. */
+  function chatWithCards(
+    id: string,
+    cards: readonly Record<string, unknown>[],
+  ): unknown[] {
+    const at = Date.now();
+    return [
+      {
+        id: `${id}-u`,
+        role: 'user',
+        blocks: [{ type: 'text', text: 'Review it' }],
+        timestamp: at,
+      },
+      { id: `${id}-a`, role: 'assistant', blocks: cards, timestamp: at },
+    ];
+  }
+
+  /** One delegate's child row, as the web core pages it for any run. */
+  function delegatePage(run: string): void {
+    delegateTranscripts.set(`cloud-delegate-${run}`, [
+      {
+        id: `child-${run}-1`,
+        role: 'assistant',
+        blocks: [{ type: 'text', text: `${run.toUpperCase()}-CHILD-ROW` }],
+        timestamp: Date.now(),
+      },
+    ]);
+  }
+
+  /** Each delegate page read, once, as its chat, delegate and run. */
+  const pageReads = (): string[] =>
+    [
+      ...new Set(
+        delegationReads().map((params) => {
+          const target: unknown = params.target;
+          const field = (name: string): string =>
+            typeof target === 'object' && target !== null
+              ? String(Reflect.get(target, name))
+              : '';
+          return `${field('chatId')}/${field('delegationId')}/${field('runGeneration')}`;
+        }),
+      ),
+    ].sort();
+
+  /** The recorded card of `delegationId` in local chat `chatId`. */
+  function recordedCard(
+    chatId: string,
+    delegationId: string,
+  ): Record<string, unknown> | undefined {
+    const tab = useChatStore
+      .getState()
+      .worktreeChats[
+        CLOUD_SCOPE_KEY
+      ]?.tabs.find((entry) => entry.id === cloudChat(chatId));
+    for (const message of tab?.messages ?? [])
+      for (const block of message.blocks)
+        if (
+          block.type === 'delegated_agent_call' &&
+          block.delegationId === delegationId
+        )
+          return {
+            agentBlockId: block.agentBlockId,
+            runGeneration: block.runGeneration,
+            status: block.status,
+          };
+    return undefined;
+  }
+
+  /** One run's child rows, as the web core pages that run alone. */
+  function delegateRunPage(
+    run: string,
+    runGeneration: number,
+    texts: readonly string[],
+  ): void {
+    delegateTranscripts.set(
+      `cloud-delegate-${run}#${String(runGeneration)}`,
+      texts.map((text, index) => ({
+        id: `child-${run}-${String(runGeneration)}-${String(index)}`,
+        role: 'assistant',
+        blocks: [{ type: 'text', text }],
+        timestamp: Date.now() + index,
+      })),
+    );
+  }
+
+  /** The subagent chat's text for one run. */
+  const runText = (runGeneration: number): string =>
+    container.querySelector(
+      `[data-testid="cloud-subagent-run"][data-run-generation="${String(runGeneration)}"]`,
+    )?.textContent ?? '';
+
+  const occurrences = (text: string, needle: string): number =>
+    text.split(needle).length - 1;
+
+  /** Waits out one live delegation poll. */
+  async function onePoll(): Promise<void> {
+    await act(
+      () =>
+        new Promise((resolve) =>
+          setTimeout(resolve, LIVE_DELEGATION_POLL_MS + 500),
+        ),
+    );
+    await settle();
+  }
+
+  it("keeps reading a cloud root's settled delegates in the Subagents panel while the root's turn runs, and stops once it ends (CAN-7133)", async () => {
+    transcriptPageDetails = ['delegation'];
+    mockDelegationStop = true;
+    mockCloudSubagentPanels = true;
+    // The second chat runs a turn; its delegate b has settled. The task's
+    // chat is the one opened, so only the panel watches the second chat.
+    secondChatTurn = 'notes-turn';
+    onCaseEnd(() => {
+      secondChatTurn = null;
+    });
+    transcripts['wt-1'] = chatWithCards('brief', [runningDelegateCard('a')]);
+    transcripts['chat-2'] = chatWithCards('notes', [
+      { ...runningDelegateCard('b'), status: 'completed' },
+    ]);
+    // No live delegate but b: the fake web core lists every chat's open
+    // delegates for each chat, and a live one keeps a chat's reads going.
+    delegationSnapshots.set('cloud-delegate-b', {
+      ...liveDelegateSnapshot('b'),
+      status: 'completed',
+      phase: 'idle',
+    });
+    await openSubagentsPanel();
+    // The store keeps tabs across cases: an earlier send can leave the
+    // second chat a pending turn, which reads as dispatching.
+    act(() => {
+      useChatStore.setState((state) => {
+        const chats = state.worktreeChats[CLOUD_SCOPE_KEY];
+        if (chats === undefined) return {};
+        return {
+          worktreeChats: {
+            ...state.worktreeChats,
+            [CLOUD_SCOPE_KEY]: {
+              ...chats,
+              tabs: chats.tabs.map((tab) => {
+                if (tab.id !== cloudChat('chat-2')) return tab;
+                const next = { ...tab };
+                delete next.pendingTurn;
+                return next;
+              }),
+            },
+          },
+        };
+      });
+    });
+    await settle();
+    await selectSubagentRoot('chat-2');
+    expect(shown('subagents-panel')).toBe(true);
+    const statusOfB = (): string | undefined =>
+      getSubagentTreeSnapshot(CLOUD_SCOPE, cloudChat('chat-2')).tree?.nodes.get(
+        'cloud-delegate-b',
+      )?.status;
+    expect(statusOfB()).toBe('completed');
+
+    // The root's agent starts b again, with no new message in the root.
+    delegationSnapshots.set('cloud-delegate-b', liveDelegateSnapshot('b'));
+    await onePoll();
+    expect(statusOfB()).toBe('running');
+    act(() => {
+      container
+        .querySelector<HTMLElement>(
+          '[data-testid="subagents-list-select-cloud-delegate-b"]',
+        )
+        ?.click();
+    });
+    await settle();
+    expect(shown('subagents-inspector-stop')).toBe(true);
+
+    // b settles; then the turn ends, and the panel lets the chat go.
+    delegationSnapshots.set('cloud-delegate-b', {
+      ...liveDelegateSnapshot('b'),
+      status: 'completed',
+      phase: 'idle',
+    });
+    await onePoll();
+    expect(statusOfB()).toBe('completed');
+    secondChatTurn = null;
+    snapshotRevision += 1;
+    act(() => {
+      refreshChatScopeRevisioned(CLOUD_SCOPE.projectId, CLOUD_SCOPE.worktreeId);
+    });
+    await settle();
+    // The second chat's turn reads ended, as its chat view would read it.
+    const secondTab = useChatStore
+      .getState()
+      .worktreeChats[
+        CLOUD_SCOPE_KEY
+      ]?.tabs.find((tab) => tab.id === cloudChat('chat-2'));
+    expect([secondTab?.status, secondTab?.pendingTurn]).toEqual([
+      'idle',
+      undefined,
+    ]);
+    const listsForRoot = (): number =>
+      delegationRequests('core.managedDelegation.list').filter(
+        (params) => params.chatId === 'chat-2',
+      ).length;
+    // At most the poll it had already scheduled reads once more; then none.
+    const afterTurn = listsForRoot();
+    await onePoll();
+    const settledReads = listsForRoot();
+    expect(settledReads - afterTurn).toBeLessThanOrEqual(1);
+    await onePoll();
+    await onePoll();
+    expect(listsForRoot()).toBe(settledReads);
+    expect(subagentIpc()).toEqual([]);
+    expect(callsCarryingWebCoreIds()).toEqual([]);
+    // Five live polls run on real time.
+  }, 60_000);
+
+  it("shows a cloud delegate's final answer once in its subagent chat when its pages repeat it (CAN-7133)", async () => {
+    transcriptPageDetails = ['delegation'];
+    mockDelegationStop = true;
+    mockCloudSubagentPanels = true;
+    transcripts['wt-1'] = chatWithCards('brief', [runningDelegateCard('a')]);
+    transcripts['chat-2'] = chatWithCards('notes', [
+      {
+        ...runningDelegateCard('b'),
+        status: 'completed',
+        finalText: 'B-FINAL-ANSWER',
+      },
+    ]);
+    delegateRunPage('b', 1, ['B-CHILD-ROW', 'B-FINAL-ANSWER']);
+    await openSubagentsPanel();
+    await openCloudSubagentChat('chat-2', 'b');
+    expect(runText(1)).toContain('B-CHILD-ROW');
+    expect(occurrences(runText(1), 'B-FINAL-ANSWER')).toBe(1);
+    expect(callsCarryingWebCoreIds()).toEqual([]);
+  });
+
+  it("shows a newer cloud run's own final text once, though it repeats the recorded run's answer (CAN-7133)", async () => {
+    transcriptPageDetails = ['delegation'];
+    mockDelegationStop = true;
+    mockCloudSubagentPanels = true;
+    // Both runs end the same way; run 2 has no card, so its view is drawn
+    // from run 1's.
+    transcripts['wt-1'] = chatWithCards('brief', [runningDelegateCard('a')]);
+    transcripts['chat-2'] = chatWithCards('notes', [
+      { ...runningDelegateCard('b'), status: 'completed', finalText: 'Done.' },
+    ]);
+    delegationSnapshots.set('cloud-delegate-b', {
+      ...liveDelegateSnapshot('b'),
+      runGeneration: 2,
+    });
+    delegateRunPage('b', 1, ['B-RUN-1-WORK', 'Done.']);
+    delegateRunPage('b', 2, ['B-RUN-2-WORK', 'Done.']);
+    await openSubagentsPanel();
+    await openCloudSubagentChat('chat-2', 'b');
+    // Run 2's own pages aren't filtered by run 1's answer: nothing drops.
+    expect(occurrences(runText(2), 'B-RUN-2-WORK')).toBe(1);
+    expect(occurrences(runText(2), 'Done.')).toBe(1);
+    expect(occurrences(runText(1), 'Done.')).toBe(1);
+    expect(callsCarryingWebCoreIds()).toEqual([]);
+  });
+
+  it("keeps a cloud delegate's earlier runs when the web core reports a newer one, and reads each run's pages only under its own root (CAN-7133)", async () => {
+    transcriptPageDetails = ['delegation'];
+    mockDelegationStop = true;
+    mockCloudSubagentPanels = true;
+    // B's chat recorded run 1, settled; the web core says run 2 now runs.
+    // A's chat has a delegate of its own and no card for B's.
+    transcripts['wt-1'] = chatWithCards('brief', [runningDelegateCard('a')]);
+    transcripts['chat-2'] = chatWithCards('notes', [
+      {
+        ...runningDelegateCard('b'),
+        status: 'completed',
+        finalText: 'B-RUN-1-ANSWER',
+      },
+    ]);
+    delegationSnapshots.set('cloud-delegate-a', liveDelegateSnapshot('a'));
+    delegationSnapshots.set('cloud-delegate-b', {
+      ...liveDelegateSnapshot('b'),
+      runGeneration: 2,
+    });
+    // Run 1's pages end in its answer; run 2's hold only its own work.
+    delegateRunPage('b', 1, ['B-CHILD-ROW', 'B-RUN-1-ANSWER']);
+    delegateRunPage('b', 2, ['B-RUN-2-WORK']);
+    await openSubagentsPanel();
+    await selectSubagentRoot('chat-2');
+
+    const nodeB = getSubagentTreeSnapshot(
+      CLOUD_SCOPE,
+      cloudChat('chat-2'),
+    ).tree?.nodes.get('cloud-delegate-b');
+    // Both runs, the live one beside the recorded one under its own id.
+    expect(nodeB?.runs).toEqual([
+      { runGeneration: 1, agentBlockId: 'delegated-agent-cloud-delegate-b' },
+      {
+        runGeneration: 2,
+        agentBlockId: 'delegated-agent-cloud-delegate-b-run-2',
+      },
+    ]);
+    expect(nodeB?.status).toBe('running');
+    // The recorded run-1 card keeps its own id and settled state.
+    expect(recordedCard('chat-2', 'cloud-delegate-b')).toEqual({
+      agentBlockId: 'delegated-agent-cloud-delegate-b',
+      runGeneration: 1,
+      status: 'completed',
+    });
+
+    // The other root has no card for B's delegate: its run 2 adds nothing
+    // there, and nothing is read for it under that root.
+    await selectSubagentRoot('wt-1');
+    expect(
+      getSubagentTreeSnapshot(CLOUD_SCOPE, cloudChat('wt-1')).tree?.nodes.has(
+        'cloud-delegate-b',
+      ),
+    ).toBe(false);
+    await openCloudSubagentChat('wt-1', 'b');
+    expect(shown('subagent-chat-unavailable')).toBe(true);
+    expect(pageReads()).toEqual([]);
+
+    // Under its own root, each run's pages are read by its own generation.
+    await openCloudSubagentChat('chat-2', 'b');
+    expect(
+      container.querySelector('[data-testid="subagent-chat-panel"]')
+        ?.textContent,
+    ).toContain('B-CHILD-ROW');
+    expect(pageReads()).toEqual([
+      'chat-2/cloud-delegate-b/1',
+      'chat-2/cloud-delegate-b/2',
+    ]);
+    // Run 1's answer shows once, in run 1; run 2's view, drawn from run 1's
+    // card, never shows it.
+    expect(occurrences(runText(1), 'B-RUN-1-ANSWER')).toBe(1);
+    expect(occurrences(runText(2), 'B-RUN-1-ANSWER')).toBe(0);
+    expect(occurrences(runText(2), 'B-RUN-2-WORK')).toBe(1);
+    expect(subagentIpc()).toEqual([]);
+    expect(callsCarryingWebCoreIds()).toEqual([]);
+  });
+
+  /** The root picker's line for one root chat, as the panel shows it. */
+  async function rootOptionText(chatId: string): Promise<string> {
+    act(() => {
+      container
+        .querySelector<HTMLElement>('[data-testid="subagents-root-picker"]')
+        ?.click();
+    });
+    await settle();
+    const text =
+      document.querySelector(
+        `[data-testid="subagents-root-option-${cloudChat(chatId)}"]`,
+      )?.textContent ?? '';
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+      );
+    });
+    await settle();
+    return text;
+  }
+
+  /** B's chat with one settled run-2 card for c, and c's live run. */
+  async function openRootWithLiveRun(liveRun: number): Promise<void> {
+    transcriptPageDetails = ['delegation'];
+    mockDelegationStop = true;
+    mockCloudSubagentPanels = true;
+    transcripts['wt-1'] = chatWithCards('brief', [runningDelegateCard('a')]);
+    transcripts['chat-2'] = chatWithCards('notes', [
+      {
+        ...runningDelegateCard('c'),
+        agentBlockId: 'delegated-agent-cloud-delegate-c-run-2',
+        runGeneration: 2,
+        status: 'completed',
+      },
+    ]);
+    delegationSnapshots.set('cloud-delegate-c', {
+      ...liveDelegateSnapshot('c'),
+      runGeneration: liveRun,
+    });
+    await openSubagentsPanel();
+    // The panel reads the selected root's live state.
+    await selectSubagentRoot('chat-2');
+  }
+
+  it("doesn't count a cloud root live by a live run older than its delegate's latest card (CAN-7133)", async () => {
+    await openRootWithLiveRun(1);
+    expect(
+      getSubagentTreeSnapshot(CLOUD_SCOPE, cloudChat('chat-2')).tree?.nodes.get(
+        'cloud-delegate-c',
+      )?.status,
+    ).toBe('completed');
+    // The root list agrees with the tree: nothing active.
+    const text = await rootOptionText('chat-2');
+    expect(text).toContain('1 subagent');
+    expect(text).not.toContain('active');
+    expect(callsCarryingWebCoreIds()).toEqual([]);
+  });
+
+  it("counts a cloud root live by a live run at its delegate's latest card (CAN-7133)", async () => {
+    await openRootWithLiveRun(2);
+    expect(
+      getSubagentTreeSnapshot(CLOUD_SCOPE, cloudChat('chat-2')).tree?.nodes.get(
+        'cloud-delegate-c',
+      )?.status,
+    ).toBe('running');
+    expect(await rootOptionText('chat-2')).toContain('1 active');
+    expect(callsCarryingWebCoreIds()).toEqual([]);
+  });
+
+  it('keeps a managed-only cloud root in the Subagents picker after its transcript is evicted, and reloads it when selected (CAN-7133)', async () => {
+    transcriptPageDetails = ['delegation'];
+    mockDelegationStop = true;
+    mockCloudSubagentPanels = true;
+    transcripts['wt-1'] = chatWithCards('brief', [runningDelegateCard('a')]);
+    // The second chat's only subagent is a managed delegate.
+    transcripts['chat-2'] = chatWithCards('notes', [
+      { ...runningDelegateCard('b'), status: 'completed' },
+    ]);
+    await openSubagentsPanel();
+    await selectSubagentRoot('wt-1');
+    expect(await rootOptionText('chat-2')).toContain('1 subagent');
+    // The residency sweep evicts the idle second chat's transcript.
+    act(() => {
+      useChatStore.setState((state) => {
+        const chats = state.worktreeChats[CLOUD_SCOPE_KEY];
+        if (chats === undefined) return {};
+        return {
+          worktreeChats: {
+            ...state.worktreeChats,
+            [CLOUD_SCOPE_KEY]: {
+              ...chats,
+              tabs: chats.tabs.map((tab) =>
+                tab.id === cloudChat('chat-2')
+                  ? evictChatTabTranscript(tab)
+                  : tab,
+              ),
+            },
+          },
+        };
+      });
+    });
+    await settle();
+    const evicted = useChatStore
+      .getState()
+      .worktreeChats[
+        CLOUD_SCOPE_KEY
+      ]?.tabs.find((tab) => tab.id === cloudChat('chat-2'));
+    expect([evicted?.transcriptLoaded, evicted?.messages.length]).toEqual([
+      false,
+      0,
+    ]);
+    // The root stays listed by its own card.
+    expect(await rootOptionText('chat-2')).toContain('1 subagent');
+    // The evicted summary holds only delegation ids and run numbers: no
+    // message text or card content.
+    expect(evicted?.evictedSubagentRoot?.ownDelegationRuns).toEqual({
+      'cloud-delegate-b': 1,
+    });
+    const kept = JSON.stringify(evicted?.evictedSubagentRoot);
+    for (const text of ['Review b', 'Review it', 'cloud-spawn-b'])
+      expect(kept).not.toContain(text);
+
+    // Selecting it reloads its transcript, and the delegate is back.
+    await selectSubagentRoot('chat-2');
+    await settle();
+    const reloaded = useChatStore
+      .getState()
+      .worktreeChats[
+        CLOUD_SCOPE_KEY
+      ]?.tabs.find((tab) => tab.id === cloudChat('chat-2'));
+    expect(reloaded?.transcriptLoaded).not.toBe(false);
+    expect(subagentRows()).toEqual(['cloud-delegate-b']);
+    // The kept runs and the reloaded card agree: still one, not two.
+    const after = await rootOptionText('chat-2');
+    expect(after).toContain('1 subagent');
+    expect(after).not.toContain('2 subagents');
+    expect(callsCarryingWebCoreIds()).toEqual([]);
+  });
+
+  it("ignores a cloud delegate's live state from a run older than its latest card (CAN-7133)", async () => {
+    transcriptPageDetails = ['delegation'];
+    mockDelegationStop = true;
+    mockCloudSubagentPanels = true;
+    // C's chat recorded run 2, settled; the web core still reports run 1.
+    transcripts['wt-1'] = chatWithCards('brief', [runningDelegateCard('a')]);
+    transcripts['chat-2'] = chatWithCards('notes', [
+      {
+        ...runningDelegateCard('c'),
+        agentBlockId: 'delegated-agent-cloud-delegate-c-run-2',
+        runGeneration: 2,
+        status: 'completed',
+      },
+    ]);
+    delegationSnapshots.set('cloud-delegate-c', liveDelegateSnapshot('c'));
+    delegatePage('c');
+    await openSubagentsPanel();
+    await selectSubagentRoot('chat-2');
+
+    const nodeC = getSubagentTreeSnapshot(
+      CLOUD_SCOPE,
+      cloudChat('chat-2'),
+    ).tree?.nodes.get('cloud-delegate-c');
+    expect(nodeC?.runs).toEqual([
+      {
+        runGeneration: 2,
+        agentBlockId: 'delegated-agent-cloud-delegate-c-run-2',
+      },
+    ]);
+    expect(nodeC?.status).toBe('completed');
+    await openCloudSubagentChat('chat-2', 'c');
+    expect(pageReads()).toEqual(['chat-2/cloud-delegate-c/2']);
+    expect(subagentIpc()).toEqual([]);
+    expect(callsCarryingWebCoreIds()).toEqual([]);
+  });
 
   /** Reads the task's transcript again: the store keeps tabs across cases. */
   async function rereadTranscript(): Promise<void> {
@@ -7235,6 +8209,69 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
     });
   });
 
+  it("a new cloud task whose create's answer never came says it couldn't confirm it was created, never that it wasn't, and Try again creates it once under the same id (CAN-7196)", async () => {
+    renderPage();
+    await connectCowork();
+    // S7c's shape for a lost reply; this create never reached the web core,
+    // so no listing holds it.
+    loseCreateReply = true;
+    lostCreateLands = false;
+    lostCreateRetry = 'never';
+    act(() => {
+      void createCloudSidebarTask('web-core:ws-1');
+    });
+    await settle();
+    const taskId = createdChatIds.at(-1) ?? '';
+    const lists = (): number =>
+      coreRequestLog.filter((entry) => entry.method === 'core.chat.task.list')
+        .length;
+    const listed = lists();
+    // The project is read again, and the task stays unknown, not refused.
+    await settleUntil(() => lists() > listed);
+    expect(newTaskRow(taskId)).toMatchObject({ creation: 'unknown' });
+    expect(newTaskRow(taskId)).not.toHaveProperty('creationError');
+    const unknown = container.querySelector(
+      '[data-testid="chat-input-cloud-task-creation-unknown"]',
+    );
+    expect(unknown?.textContent).toContain(
+      "Couldn't confirm this task was created",
+    );
+    expect(unknown?.textContent).toContain("It'll show in the list if it was.");
+    expect(
+      container.querySelector(
+        '[data-testid="chat-input-cloud-task-creation-failed"]',
+      ),
+    ).toBeNull();
+    // Nothing created it again on its own.
+    expect(createdChatIds.filter((id) => id === taskId)).toHaveLength(1);
+    // Try again creates it under the same id, and the notice leaves.
+    act(() => {
+      container
+        .querySelector<HTMLButtonElement>(
+          '[data-testid="chat-input-cloud-task-creation-retry"]',
+        )
+        ?.click();
+    });
+    await settleUntil(() => {
+      const row = cloudCoworkStore
+        .getState()
+        .tasksByProject[
+          'web-core:ws-1'
+        ]?.find((task) => task.worktreeId === taskId);
+      return row !== undefined && row.creation === undefined;
+    });
+    expect(newTaskRow(taskId)).not.toHaveProperty('creation');
+    expect(createdChatIds.filter((id) => id === taskId)).toHaveLength(2);
+    expect(
+      container.querySelector(
+        '[data-testid="chat-input-cloud-task-creation-unknown"]',
+      ),
+    ).toBeNull();
+    act(() => {
+      cloudCoworkStore.getState().disconnect('offline');
+    });
+  });
+
   it("never shows this computer's default model on a cloud chat the web core names none for (CAN-6365)", async () => {
     snapshotModel = undefined;
     // This computer runs its default model, so it can stamp it on a chat.
@@ -7442,21 +8479,109 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
       ),
     ).length;
 
-  it('keeps a cloud send whose outcome is unknown, rather than hand it back to be sent twice (CAN-6364)', async () => {
+  it('keeps a cloud send whose outcome is unknown and says it may have sent, never that it failed, rather than hand it back to be sent twice (CAN-7196)', async () => {
     sendOutcomeUnknown = true;
+    const addToast = jest.fn();
+    const shownToast = useGitHubStore.getState().addToast;
+    useGitHubStore.setState({ addToast });
+    onCaseEnd(() => {
+      useGitHubStore.setState({ addToast: shownToast });
+    });
     const sent = rootMessagesWith('Book Studio B.');
+    const sends = (): number =>
+      coreRequestLog.filter(
+        (entry) =>
+          entry.method === 'core.chat.message.send' &&
+          entry.params.text === 'Book Studio B.',
+      ).length;
     await sendFromCoworkPage();
     await settle();
-    // The send may have landed: it stays in the transcript, failed, and the
+    // The send may have landed: it stays in the transcript, and the
     // composer doesn't offer it again.
     expect(rootMessagesWith('Book Studio B.')).toBe(sent + 1);
-    expect(rootMessagesWith('did not answer in time')).toBe(1);
     expect(
       container.querySelector('[data-testid="chat-input-send-refused"]'),
     ).toBeNull();
     expect(useChatStore.getState().getTabDraft('web-core:wt-1') ?? []).toEqual(
       [],
     );
+    // It went once and is never sent again on its own.
+    expect(sends()).toBe(1);
+    // It isn't shown as failed: no error under it and none on the tab.
+    expect(rootMessagesWith('did not answer in time')).toBe(0);
+    const tab = useChatStore
+      .getState()
+      .worktreeChats[
+        'web-core:ws-1/web-core:wt-1'
+      ]?.tabs.find((entry) => entry.id === 'web-core:wt-1');
+    expect(tab?.status).not.toBe('error');
+    expect(tab?.error ?? null).toBeNull();
+    // It says the message may have sent, as a notice, not an error.
+    expect(
+      addToast.mock.calls.map(([message, type]: unknown[]) => [message, type]),
+    ).toEqual([[WEB_CORE_SEND_UNKNOWN_NOTICE, 'info']]);
+    expect(WEB_CORE_SEND_UNKNOWN_NOTICE).toBe(
+      "Your message may have sent. It'll show here if it did.",
+    );
+  });
+
+  // CAN-7196 (review round 4): the notice is the only word of a send whose
+  // outcome is unknown, so it shows in the app, and is kept in its history,
+  // even when in-app notifications are off.
+  it('shows a cloud send whose outcome is unknown as a notice even with in-app notifications off (CAN-7196)', async () => {
+    sendOutcomeUnknown = true;
+    refreshInAppNotificationPrefs({ enabled: false } as never);
+    resetToastStack();
+    useToastStore.setState({ notifications: [] });
+    onCaseEnd(() => {
+      refreshInAppNotificationPrefs(null as never);
+      resetToastStack();
+      useToastStore.setState({ notifications: [] });
+    });
+    await sendFromCoworkPage();
+    await settle();
+    expect(
+      toastStack
+        .getSnapshot()
+        .filter((toast) => toast.message === WEB_CORE_SEND_UNKNOWN_NOTICE),
+    ).toHaveLength(1);
+    expect(
+      useToastStore
+        .getState()
+        .notifications.filter(
+          (entry) => entry.message === WEB_CORE_SEND_UNKNOWN_NOTICE,
+        ),
+    ).toHaveLength(1);
+  });
+
+  it('shows nothing for a cloud send whose outcome turns out unknown after the cloud chat was cleared (CAN-7196)', async () => {
+    sendOutcomeUnknown = true;
+    let release: () => void = () => undefined;
+    sendGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const addToast = jest.fn();
+    const shownToast = useGitHubStore.getState().addToast;
+    useGitHubStore.setState({ addToast });
+    onCaseEnd(() => {
+      useGitHubStore.setState({ addToast: shownToast });
+    });
+    await sendFromCoworkPage();
+    await settle();
+    // The cloud chat is cleared while the send's answer is still out.
+    act(() => {
+      cloudCoworkStore.getState().disconnect('offline');
+    });
+    await settle();
+    expect(
+      Object.keys(useChatStore.getState().worktreeChats).filter((key) =>
+        key.startsWith('web-core:'),
+      ),
+    ).toEqual([]);
+    release();
+    await settle();
+    // Nothing of it shows after the chat is gone.
+    expect(addToast).not.toHaveBeenCalled();
   });
 
   it('keeps a refused cloud send in the transcript when the composer could not take it back (CAN-6364)', async () => {
@@ -8294,6 +9419,38 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
       'subagents',
       'subagent-chat',
     ]);
+  });
+
+  it('offers a cloud scope the Subagents and subagent chat panels only with cloudSubagentPanels on (CAN-7133)', () => {
+    const local = createDesktopCapabilities('darwin', {}, {});
+    const subagentKinds = (capabilities: CanopyCapabilities): string[] =>
+      panelKindsUnavailableFor(capabilities).filter(
+        (kind) => kind === 'subagents' || kind === 'subagent-chat',
+      );
+    const off = webCoreScopeCapabilities(local, {
+      durableTerminals: false,
+      delegationTranscriptReads: true,
+    });
+    expect(off.subagentPanels).toBeUndefined();
+    expect(subagentKinds(off)).toEqual(['subagents', 'subagent-chat']);
+    const on = webCoreScopeCapabilities(local, {
+      durableTerminals: false,
+      delegationTranscriptReads: true,
+      cloudSubagentPanels: true,
+    });
+    // Its delegates still don't run here: the hosts read the web core.
+    expect([on.subagentPanels, on.localExecution]).toEqual([true, false]);
+    expect(subagentKinds(on)).toEqual([]);
+    // The two are separate cached sets.
+    expect(
+      webCoreScopeCapabilities(local, {
+        durableTerminals: false,
+        delegationTranscriptReads: true,
+      }),
+    ).toBe(off);
+    // A local scope is unchanged and never carries it.
+    expect(local.subagentPanels).toBeUndefined();
+    expect(subagentKinds(local)).toEqual([]);
   });
 
   it('offers a local scope every panel kind a cloud scope lacks', () => {

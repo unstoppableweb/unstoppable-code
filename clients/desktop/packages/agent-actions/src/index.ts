@@ -458,6 +458,19 @@ export type {
 } from './port/experiments-port';
 
 export type { ExperimentAction } from './families/experiments/actions';
+export {
+  createInventorySyncActionFamily,
+  inventorySyncActionCatalog,
+  inventorySyncDispatchJsonSchema,
+  inventorySyncActionSchema,
+  INVENTORY_SYNC_ACTION_TYPES,
+} from './families/inventory-sync';
+export type {
+  AgentInventorySyncPort,
+  AgentInventorySyncState,
+  AgentInventorySyncWriteResult,
+} from './port/inventory-sync-port';
+export type { InventorySyncAction } from './families/inventory-sync/actions';
 
 export {
   BROWSER_ACTION_TYPES,

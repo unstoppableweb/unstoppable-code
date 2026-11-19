@@ -173,6 +173,7 @@ export const CLOUD_UPLOAD_FAILURE: Readonly<Record<string, string>> = {
   unauthenticated: 'Sign in again to attach files to cloud chats',
   disabled: "Attachments aren't available in this cloud chat",
   rejected: "Couldn't upload it",
+  unknown: "Couldn't confirm the file uploaded. Attach it again to be sure",
 };
 
 /** A picked file that moved or could no longer be read before it uploaded. */

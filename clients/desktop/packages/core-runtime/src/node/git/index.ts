@@ -4,6 +4,7 @@ export * from './branch-writes';
 export * from './change-set';
 export * from './change-set-patch';
 export * from './default-branch';
+export * from './ref-name';
 export * from './recorded-worker-git-hosts';
 export * from './recorded-worker-git-sync-host';
 export * from './repository-reads';

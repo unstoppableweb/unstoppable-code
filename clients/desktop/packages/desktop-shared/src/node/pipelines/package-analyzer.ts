@@ -50,9 +50,9 @@ import {
 } from '@canopy/execution-engine/pipelines/plugin-collections';
 import { getShareablePluginRefKey } from '@canopy/execution-engine/plugin-refs';
 import {
-  containsSecretMaterial,
-  SECRET_ASSIGNMENT_KEYS_SOURCE,
-} from '@canopy/execution-engine/lib/redaction';
+  findPackageFileCredentialRule,
+  findPackageTextCredentialRule,
+} from '@canopy/protocol/skills';
 import { hashPipelinePackageYaml } from '@canopy/execution-engine/node/pipelines/package-contract';
 import { assignStepIds } from '@canopy/execution-engine/pipelines/normalize-pipeline';
 import {
@@ -75,19 +75,14 @@ import { expandPipelineAssetPath } from './pipeline-assets';
 import {
   SHARED_CONTAINER_DEFINITION_DOCUMENT_PATH,
   parseSharedContainerDefinitionDocument,
+  sharedContainerCredentialErrorField,
+  sharedContainerCredentialErrorNextStep,
   type SharedContainerDefinitionKind,
 } from '@canopy/protocol/shared-containers';
 
 const ANALYSIS_TTL_MS = 15 * 60 * 1_000;
 const DENIED_BASENAME =
   /^(?:\.env(?:\..*)?|\.npmrc|\.pypirc|credentials.*|secrets.*|token.*|id_(?:rsa|dsa|ecdsa|ed25519)(?:\.pub)?|.*\.(?:pem|p12|pfx|key))$/i;
-// A pipeline expression such as `${{ secrets.API_TOKEN }}` names a value the
-// run supplies; it is not the value. The inner text is still scanned.
-const PIPELINE_EXPRESSION_PATTERN = /\$\{\{([\s\S]*?)\}\}/g;
-const SECRET_PLACEHOLDER_ASSIGNMENT_PATTERN = new RegExp(
-  `\\b(?:${SECRET_ASSIGNMENT_KEYS_SOURCE})\\s*(?:=|:)\\s*(?:<[^>\\r\\n]+>|\\{\\{?[^}\\r\\n]+\\}?\\}|\\$[A-Za-z_][A-Za-z0-9_]*|\\$\\{[A-Za-z_][A-Za-z0-9_]*\\})`,
-  'gi',
-);
 
 export interface PipelinePackageSourceDescriptor {
   sourceRoot: string;
@@ -771,17 +766,7 @@ function stripControlCharacters(value: string): string {
 }
 
 function containsPipelinePackageSecretMaterial(text: string): boolean {
-  const withoutExpressions = text.replace(
-    PIPELINE_EXPRESSION_PATTERN,
-    (expression, inner: string) =>
-      containsSecretMaterial(inner) ? expression : '""',
-  );
-  return containsSecretMaterial(
-    withoutExpressions.replace(
-      SECRET_PLACEHOLDER_ASSIGNMENT_PATTERN,
-      'placeholder=example',
-    ),
-  );
+  return findPackageTextCredentialRule(text) !== null;
 }
 
 function affectedStepsForIds(
@@ -1261,9 +1246,7 @@ async function collectMemberFiles(
     const sourceText = new TextDecoder('utf-8', { fatal: false }).decode(
       sourceBytes,
     );
-    if (
-      containsPipelinePackageSecretMaterial(stripControlCharacters(sourceText))
-    ) {
+    if (findPackageFileCredentialRule(sourceBytes) !== null) {
       // A cloud copy leaves it out like any member file, and the copy is
       // named from the plugin's key; a share still blocks.
       const withholdManifest = withholdFor(normalized);
@@ -1507,8 +1490,7 @@ async function collectMemberFiles(
       return;
     }
     const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
-    const normalizedSecretScan = stripControlCharacters(text);
-    if (containsPipelinePackageSecretMaterial(normalizedSecretScan)) {
+    if (findPackageFileCredentialRule(bytes) !== null) {
       if (withhold) {
         releaseFile(relativePath, stat.size);
         withhold({ relativePath, reason: 'suspected_secret' });
@@ -2222,7 +2204,24 @@ async function analyzeCapabilityPackageOnce(
       continue;
     }
     definitionIds.add(id);
-    const parsed = parseSharedContainerDefinitionDocument(candidate.document);
+    // Shared, so a real value in placeholder brackets is refused (CAN-7226).
+    const parsed = parseSharedContainerDefinitionDocument(candidate.document, {
+      placeholderContents: 'checked',
+    });
+    const credentialError = parsed.ok
+      ? undefined
+      : parsed.errors.find(
+          (error) => sharedContainerCredentialErrorField(error) !== null,
+        );
+    if (credentialError !== undefined) {
+      blockers.push({
+        code: 'SUSPECTED_SECRET',
+        message:
+          `${candidate.displayName} may contain a credential in ${sharedContainerCredentialErrorField(credentialError) ?? 'a field'}. ${sharedContainerCredentialErrorNextStep(credentialError) ?? ''}`.trimEnd(),
+        subject: candidate.identity,
+      });
+      continue;
+    }
     if (!parsed.ok || parsed.value.kind !== candidate.kind) {
       blockers.push({
         code: 'INVALID_PACKAGE',

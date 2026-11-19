@@ -35,6 +35,8 @@ import {
   INSTALLED_ITEM_ACTION_TYPES,
   installedItemDispatchJsonSchema,
   EXPERIMENT_ACTION_TYPES,
+  INVENTORY_SYNC_ACTION_TYPES,
+  inventorySyncDispatchJsonSchema,
   BOT_ACTION_TYPES,
   botDispatchJsonSchema,
   PROJECT_ACTION_TYPES,
@@ -1908,6 +1910,10 @@ function desktopDispatchActionJsonSchema(
         dispatchJsonSchema: experimentDispatchJsonSchema,
       },
       {
+        types: INVENTORY_SYNC_ACTION_TYPES,
+        dispatchJsonSchema: inventorySyncDispatchJsonSchema,
+      },
+      {
         types: SETTINGS_ACTION_TYPES,
         dispatchJsonSchema: settingsDispatchJsonSchema,
       },
@@ -1940,6 +1946,7 @@ function desktopDispatchActionJsonSchema(
       ...BOT_ACTION_TYPES,
       ...INSTALLED_ITEM_ACTION_TYPES,
       ...EXPERIMENT_ACTION_TYPES,
+      ...INVENTORY_SYNC_ACTION_TYPES,
       ...SETTINGS_ACTION_TYPES,
       ...CAPABILITY_PACKAGE_ACTION_TYPES,
       ...PIPELINES_ACTION_TYPES,

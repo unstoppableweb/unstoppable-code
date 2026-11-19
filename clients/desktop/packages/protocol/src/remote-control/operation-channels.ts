@@ -160,6 +160,8 @@ export const REMOTE_QUERY_CHANNELS = {
   'chat.history': { invoke: [C.chatGetTranscriptPage] },
   'plan.get': { invoke: [C.trackedPlansGet] },
   'chat.getTabSettings': { local: 'answer' },
+  // The cloud slash inventory (CAN-6111); a computer has none to serve.
+  'catalog.invocables.list': { local: 'unsupported' },
   'workspace.claudeMd.get': { invoke: [C.workspaceLoadClaudeMd] },
   'workspace.scripts.get': { invoke: [C.workspaceReadScripts] },
   // The settings Portal's Orchestrator settings get serves.
@@ -773,6 +775,8 @@ export const REMOTE_COMMAND_CHANNELS = {
   'watcher.delete': { invoke: [C.appAdvisorWatcherDelete] },
   // `upload.put` is a session method, not an IPC channel: the host port.
   'chat.attachments.upload': { requires: ['chatAttachments'], local: 'port' },
+  // The computer's stored copy expires on its own: nothing to delete.
+  'chat.attachments.delete': { local: 'answer' },
 } as const satisfies OperationTable;
 
 export const REMOTE_EVENT_CHANNELS = {

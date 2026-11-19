@@ -12,7 +12,7 @@ type Props = ComponentProps<typeof ReportThisAction>;
 /** Account eligibility belongs to the host; the report UI stays shared. */
 export function DesktopReportThisAction(props: Props): JSX.Element {
   return (
-    <ReportActionBoundary>
+    <ReportActionBoundary referenceId={props.error.referenceId}>
       <DesktopReportEligibility>
         {(eligible): ReactNode =>
           eligible ? <ReportThisAction {...props} /> : null

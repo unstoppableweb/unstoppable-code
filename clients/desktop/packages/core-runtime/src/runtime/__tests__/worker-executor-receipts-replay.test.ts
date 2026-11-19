@@ -193,7 +193,7 @@ describe('worker executor receipt replay (CAN-4733)', () => {
     expect(handler).toHaveBeenCalledTimes(3);
   });
 
-  it('stops a waiting repeat on its own abort and leaves the first request running', async () => {
+  it('stops a waiting repeat on its own abort as unavailable under the same key, since the first may still commit, and leaves the first request running (CAN-7196)', async () => {
     let finish: () => void = () => undefined;
     const handler = jest.fn(
       (): Promise<unknown> =>
@@ -208,7 +208,10 @@ describe('worker executor receipt replay (CAN-4733)', () => {
     await new Promise((resolve) => setImmediate(resolve));
     abort.abort();
     await expect(second).rejects.toMatchObject({
-      payload: { kind: 'cancelled', retry: { kind: 'same_idempotency_key' } },
+      payload: {
+        kind: 'unavailable',
+        retry: { kind: 'same_idempotency_key' },
+      },
     });
     finish();
     await expect(first).resolves.toEqual(RESULT);
@@ -225,5 +228,66 @@ describe('worker executor receipt replay (CAN-4733)', () => {
     await wrapped(params('a'), context('k'));
     await wrapped(params('b'), context('k'));
     expect(handler).toHaveBeenCalledTimes(2);
+  });
+
+  it('never reports an executed key absent once lapsed tombstones overflow', async () => {
+    const COPY = 'worker.filesystem.entry.copy';
+    const receipts = createWorkerExecutorReceipts(
+      WORKER_FILESYSTEM_ENTRY_INSTRUCTION_DEFINITIONS,
+      {
+        replay: keyedInstructionReplay(new Set([OPERATION])),
+        max: 1,
+        maxReplayedKeys: 1,
+      },
+    );
+    const copy = receipts.wrap({
+      [COPY]: (): Promise<unknown> =>
+        Promise.resolve({
+          fileRootId: 'root',
+          relativePath: 'b',
+          version: '0:0',
+        }),
+    })[COPY];
+    if (!copy) throw new Error('Missing wrapped handler');
+    for (const key of ['k1', 'k2', 'k3'])
+      await Promise.resolve(copy(params(key), context(key))).catch(
+        () => undefined,
+      );
+    for (const key of ['k1', 'k2'])
+      expect(
+        receipts.lookup(CALLER.principalId, COPY, { idempotencyKey: key }),
+      ).toEqual({ state: 'forgotten' });
+    expect(
+      receipts.lookup(CALLER.principalId, COPY, { idempotencyKey: 'unsent' }),
+    ).toEqual({ state: 'forgotten' });
+    expect(
+      receipts.lookup(CALLER.principalId, OPERATION, {
+        idempotencyKey: 'unsent',
+      }),
+    ).toEqual({ state: 'absent' });
+  });
+
+  it('replays one key sent under two dispatch tags, with one effect', async () => {
+    const handler = jest.fn((): Promise<unknown> => Promise.resolve(RESULT));
+    const receipts = createWorkerExecutorReceipts(
+      WORKER_FILESYSTEM_ENTRY_INSTRUCTION_DEFINITIONS,
+      { replay: keyedInstructionReplay(new Set([OPERATION])) },
+    );
+    const run = receipts.wrap({ [OPERATION]: handler })[OPERATION];
+    if (!run) throw new Error('Missing wrapped handler');
+    const tagged = (dispatchId: string): CanopyHandlerContext => ({
+      ...context('k'),
+      metadata: { idempotencyKey: 'k', dispatchId },
+    });
+    await expect(run(params('a'), tagged('t1'))).resolves.toEqual(RESULT);
+    await expect(run(params('a'), tagged('t2'))).resolves.toEqual(RESULT);
+    expect(handler).toHaveBeenCalledTimes(1);
+    for (const dispatchId of ['t1', 't2'])
+      expect(
+        receipts.lookup(CALLER.principalId, OPERATION, { dispatchId }),
+      ).toEqual({
+        state: 'settled',
+        outcome: { status: 'completed', result: RESULT },
+      });
   });
 });

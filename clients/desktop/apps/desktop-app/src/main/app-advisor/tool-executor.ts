@@ -7,6 +7,7 @@ import {
   searchAgentActionCatalog,
   installedItemActionCatalog,
   experimentActionCatalog,
+  inventorySyncActionCatalog,
   settingsActionCatalog,
   type AgentActionCatalogEntry,
   type AppAdvisorPipelineRunAction,
@@ -153,6 +154,7 @@ function sharedEngineActionCatalog(): readonly AgentActionCatalogEntry[] {
   return [
     ...installedItemActionCatalog(),
     ...experimentActionCatalog(),
+    ...inventorySyncActionCatalog(),
     ...settingsActionCatalog(),
     ...appAdvisorPipelinesActionCatalog(),
   ];

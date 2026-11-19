@@ -276,8 +276,9 @@ export interface RemoteControlApi {
   /**
    * This computer's inventory sync switch. Turning it off (after the user
    * confirms) deletes this computer's synced lists from the web for the
-   * signed-in account; turning it on re-syncs them. Local only: a controller
-   * never changes another computer's data sharing.
+   * signed-in account; turning it on re-syncs them. The IPC stays local
+   * only, but a paired controller can answer the approval card an agent's
+   * `inventory_sync.set_enabled` shows on this computer (CAN-7262).
    */
   setInventorySyncEnabled(enabled: boolean): Promise<RemoteControlState>;
   /** Opens, or replaces, the pairing link window. Needs Remote Control on. */

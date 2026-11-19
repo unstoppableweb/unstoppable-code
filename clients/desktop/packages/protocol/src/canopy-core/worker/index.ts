@@ -13,6 +13,7 @@ export * from './git';
 export * from './git-branch-writes';
 export * from './git-changes';
 export * from './git-executable';
+export * from './operation-receipts';
 export * from './git-sync-writes';
 export * from './git-worktree-health';
 export * from './pipeline';

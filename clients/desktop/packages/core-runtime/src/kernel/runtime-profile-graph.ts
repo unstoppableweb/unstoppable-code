@@ -27,7 +27,23 @@ import {
 } from './operation-registry';
 import { runtimeProfileInstalls } from './runtime-profile-manifest';
 import { scopeForwardedIdempotency } from './peer-scoped-idempotency';
-import { keyedInstructionReplay } from './keyed-instruction-fingerprint';
+import {
+  digestKeyedInstructionKey,
+  keyedInstructionReplay,
+} from './keyed-instruction-fingerprint';
+import {
+  OPERATION_RECEIPT_QUERY,
+  operationReceiptModule,
+  routeOperationReceiptLookups,
+  routeOperationReceiptSeals,
+  OPERATION_RECEIPT_SEAL,
+  scopeForwardedDispatchTags,
+  type OperationReceiptState,
+} from './operation-receipt-routing';
+import {
+  createWorkerOperationReceiptQuery,
+  createWorkerOperationReceiptSeal,
+} from '../runtime/worker-operation-receipts';
 import {
   createInProcessWorkerBinding,
   localWorkerTransportOf,
@@ -136,11 +152,58 @@ export interface CreateRuntimeProfileGraphOptions {
    */
   peerScopedIdempotency?: ReadonlySet<string>;
   /**
+   * Runs on the core before every forwarded worker instruction reaches a
+   * bundled or supervised worker, so a refusal it throws applies to every
+   * caller in both modes (CAN-4730 E2-G). The worker never sees a refused
+   * instruction.
+   */
+  instructionGuard?: RuntimeInstructionGuard;
+  /**
    * Keyed worker instructions whose repeated key replays the first
    * request's settlement instead of running again (CAN-4733). Applies to the
    * bundled worker and to a `worker` profile graph.
    */
   replayedKeyedInstructions?: ReadonlySet<string>;
+  /**
+   * Serve `worker.operation.receipt.get` and `.seal` over the worker's
+   * executor receipts (CAN-4733), with each forwarded dispatch tag scoped to
+   * its caller.
+   */
+  operationReceipts?: boolean;
+}
+
+/**
+ * The options with the receipt module where this composition hosts worker
+ * modules. A supervised worker's binding forwards only what its host
+ * declared, so that host must list the query and the seal among its modules.
+ */
+function withOperationReceipts(
+  options: CreateRuntimeProfileGraphOptions,
+  state: OperationReceiptState,
+): CreateRuntimeProfileGraphOptions {
+  if (!options.operationReceipts) return options;
+  const { supervisedWorker } = options;
+  if (supervisedWorker) {
+    const declares = (
+      kind: 'queries' | 'instructions',
+      name: string,
+    ): boolean =>
+      supervisedWorker.modules.some(({ definitions }) =>
+        Object.prototype.hasOwnProperty.call(definitions[kind], name),
+      );
+    if (
+      !declares('queries', OPERATION_RECEIPT_QUERY) ||
+      !declares('instructions', OPERATION_RECEIPT_SEAL)
+    )
+      throw new Error(
+        `A supervised worker serving receipts must declare ${OPERATION_RECEIPT_QUERY} and ${OPERATION_RECEIPT_SEAL}`,
+      );
+    state.workerIncarnation = (): number =>
+      supervisedWorker.worker.incarnation();
+    return options;
+  }
+  const module = operationReceiptModule(state);
+  return { ...options, modules: [...options.modules, module] };
 }
 
 function executorReceiptsFor(
@@ -148,14 +211,49 @@ function executorReceiptsFor(
   options: CreateRuntimeProfileGraphOptions,
 ): WorkerExecutorReceipts {
   const { replayedKeyedInstructions } = options;
+  const digest = digestKeyedInstructionKey;
   if (replayedKeyedInstructions === undefined)
-    return createWorkerExecutorReceipts(instructions);
+    return createWorkerExecutorReceipts(instructions, { digest });
   for (const name of replayedKeyedInstructions)
     if (instructions[name]?.idempotency !== 'keyed')
       throw new Error(`Replayed worker instruction ${name} must be keyed`);
   return createWorkerExecutorReceipts(instructions, {
     replay: keyedInstructionReplay(replayedKeyedInstructions),
+    digest,
   });
+}
+
+/** Lets the receipt module answer from this worker's receipts. */
+function serveOperationReceipts(
+  options: CreateRuntimeProfileGraphOptions,
+  state: OperationReceiptState,
+  receipts: WorkerExecutorReceipts,
+  instructions: CanopyInstructionDefinitionMap,
+): void {
+  if (!options.operationReceipts) return;
+  const served = {
+    receipts,
+    instructions,
+    // The core's forwarder answers with its own epoch; this is the worker's view.
+    daemonEpoch: (): string => state.daemonEpoch ?? 'worker',
+  };
+  state.query = createWorkerOperationReceiptQuery(served);
+  state.seal = createWorkerOperationReceiptSeal(served);
+}
+
+/**
+ * The worker's instruction handlers, each recording executor receipts except
+ * the seal, which reads and seals receipts instead of being one.
+ */
+function withExecutorReceipts(
+  receipts: WorkerExecutorReceipts,
+  instructions: RuntimeModuleHandlers['instructions'],
+): RuntimeModuleHandlers['instructions'] {
+  const { [OPERATION_RECEIPT_SEAL]: seal, ...recorded } = instructions;
+  return {
+    ...receipts.wrap(recorded),
+    ...(seal && { [OPERATION_RECEIPT_SEAL]: seal }),
+  };
 }
 
 /** A worker module served by a supervised worker process: its name and operations. */
@@ -260,18 +358,20 @@ function untilAborted(signal: AbortSignal): Promise<never> {
 function createWorkerRuntime(
   options: CreateRuntimeProfileGraphOptions,
   { definitions, handlers, owners, services }: ComposedModules,
+  state: OperationReceiptState,
 ): CanopyRuntime<CanopyDispatcher> & { executor: WorkerExecutor } {
   const profile = 'worker';
   const operations = createOperationRegistry({ profile, definitions, owners });
   const container = createServiceContainer({ profile, services });
   const { shutdownTimeoutMs } = options;
   const receipts = executorReceiptsFor(definitions.instructions, options);
+  serveOperationReceipts(options, state, receipts, definitions.instructions);
   const dispatcher = createCanopyDispatcher({
     profile,
     definitions,
     handlers: {
       ...handlers,
-      instructions: receipts.wrap(handlers.instructions),
+      instructions: withExecutorReceipts(receipts, handlers.instructions),
     },
     shutdownTimeoutMs,
   });
@@ -307,25 +407,110 @@ function createWorkerRuntime(
   };
 }
 
-/** A binding's forwarders with the opted-in instructions' keys scoped per caller. */
+/**
+ * Checks one forwarded instruction on the core; throws to refuse it. An
+ * admitted instruction may return a release, called once the worker itself
+ * has settled it, so the guard knows which admitted instructions are still
+ * running. A cancel or deadline that rejects the call early does not release
+ * it; the worker's own settlement, or the binding's stop, does.
+ */
+export type RuntimeInstructionGuard = (
+  operation: string,
+  params: unknown,
+  context: CanopyHandlerContext,
+) => void | (() => void) | Promise<void | (() => void)>;
+
+function guardedInstructions(
+  instructions: RuntimeModuleHandlers['instructions'],
+  guard: RuntimeInstructionGuard | undefined,
+): RuntimeModuleHandlers['instructions'] {
+  if (!guard) return instructions;
+  return Object.fromEntries(
+    Object.entries(instructions).map(([operation, forward]) => [
+      operation,
+      async (params: unknown, context: CanopyHandlerContext) => {
+        const release = await guard(operation, params, context);
+        if (!release) return forward(params, context);
+        const worker: { settled?: Promise<void> } = {};
+        try {
+          return await forward(params, {
+            ...context,
+            workerSettlement: (settled) => {
+              worker.settled = settled;
+            },
+          });
+        } finally {
+          // Never sent, so nothing runs: release now.
+          if (worker.settled) void worker.settled.then(release);
+          else release();
+        }
+      },
+    ]),
+  );
+}
+
+/**
+ * A binding's forwarders with the opted-in instructions' keys scoped per
+ * caller, and with dispatch tags and receipt lookups scoped the same way
+ * when the graph serves operation receipts (CAN-4733).
+ */
 function scopedForwarders(
   forwarders: RuntimeModuleHandlers,
   options: CreateRuntimeProfileGraphOptions,
+  receipts: {
+    state: OperationReceiptState;
+    instructions: CanopyInstructionDefinitionMap;
+  },
 ): RuntimeModuleHandlers {
+  const peerScopedIdempotency = options.peerScopedIdempotency ?? new Set();
+  const instructions = scopeForwardedIdempotency(
+    forwarders.instructions,
+    peerScopedIdempotency,
+  );
+  if (!options.operationReceipts)
+    return {
+      ...forwarders,
+      instructions: guardedInstructions(instructions, options.instructionGuard),
+    };
   return {
     ...forwarders,
-    instructions: scopeForwardedIdempotency(
-      forwarders.instructions,
-      options.peerScopedIdempotency ?? new Set(),
+    queries: routeOperationReceiptLookups(forwarders.queries, {
+      instructions: receipts.instructions,
+      peerScopedIdempotency,
+      state: receipts.state,
+    }),
+    instructions: guardedInstructions(
+      scopeForwardedDispatchTags(
+        routeOperationReceiptSeals(instructions, {
+          instructions: receipts.instructions,
+          peerScopedIdempotency,
+          state: receipts.state,
+        }),
+      ),
+      options.instructionGuard,
     ),
   };
+}
+
+/** Every instruction the supervised worker's modules declare. */
+function supervisedInstructions(
+  options: CreateRuntimeProfileGraphOptions,
+): CanopyInstructionDefinitionMap {
+  const instructions: Record<string, CanopyInstructionDefinitionMap[string]> =
+    {};
+  for (const { definitions } of options.supervisedWorker?.modules ?? [])
+    Object.assign(instructions, definitions.instructions);
+  return instructions;
 }
 
 /**
  * Bundled worker modules run on a worker dispatcher behind the binding; the
  * core dispatcher holds only the binding's forwarders for their operations.
  */
-function bindBundledWorker(options: CreateRuntimeProfileGraphOptions): {
+function bindBundledWorker(
+  options: CreateRuntimeProfileGraphOptions,
+  state: OperationReceiptState,
+): {
   handlers: RuntimeModuleHandlers;
   worker: CanopyDispatcher | null;
   transport: LocalWorkerTransport | null;
@@ -334,7 +519,10 @@ function bindBundledWorker(options: CreateRuntimeProfileGraphOptions): {
   const { supervisedWorker } = options;
   if (supervisedWorker)
     return {
-      handlers: scopedForwarders(supervisedWorker.worker.forwarders, options),
+      handlers: scopedForwarders(supervisedWorker.worker.forwarders, options, {
+        state,
+        instructions: supervisedInstructions(options),
+      }),
       worker: null,
       transport: supervisedWorker.worker.transport,
       close: () => undefined,
@@ -354,12 +542,13 @@ function bindBundledWorker(options: CreateRuntimeProfileGraphOptions): {
     throw new Error('Bundled worker modules require a workerBinding');
   // The executor half of shared idempotency (CAN-4132).
   const receipts = executorReceiptsFor(definitions.instructions, options);
+  serveOperationReceipts(options, state, receipts, definitions.instructions);
   const worker = createCanopyDispatcher({
     profile: 'worker',
     definitions,
     handlers: {
       ...handlers,
-      instructions: receipts.wrap(handlers.instructions),
+      instructions: withExecutorReceipts(receipts, handlers.instructions),
     },
     shutdownTimeoutMs: options.shutdownTimeoutMs,
   });
@@ -371,7 +560,10 @@ function bindBundledWorker(options: CreateRuntimeProfileGraphOptions): {
     receipts,
   });
   return {
-    handlers: scopedForwarders(binding.forwarders, options),
+    handlers: scopedForwarders(binding.forwarders, options, {
+      state,
+      instructions: definitions.instructions,
+    }),
     worker,
     transport: localWorkerTransportOf(binding, definitions.instructions),
     close: () => binding.close(),
@@ -384,6 +576,7 @@ function bindBundledWorker(options: CreateRuntimeProfileGraphOptions): {
  */
 function supervisedModules(
   options: CreateRuntimeProfileGraphOptions,
+  state: OperationReceiptState,
 ): RuntimeModule[] {
   const { supervisedWorker, profile } = options;
   if (supervisedWorker === undefined) return [];
@@ -394,6 +587,7 @@ function supervisedModules(
   const forwarders = scopedForwarders(
     supervisedWorker.worker.forwarders,
     options,
+    { state, instructions: supervisedInstructions(options) },
   );
   const routes = <T>(
     from: Readonly<Record<string, T>>,
@@ -437,15 +631,20 @@ export interface RuntimeProfileGraph extends CanopyRuntime<CanopyDispatcher> {
 
 /** Builds a `core`, `worker`, or bundled `core+worker` runtime from modules. */
 export function createRuntimeProfileGraph(
-  options: CreateRuntimeProfileGraphOptions,
+  input: CreateRuntimeProfileGraphOptions,
 ): RuntimeProfileGraph {
+  const state: OperationReceiptState = {};
+  const options = withOperationReceipts(input, state);
   const { profile, shutdownTimeoutMs } = options;
   const composed = composeModules(profile, [
     ...options.modules,
-    ...supervisedModules(options),
+    ...supervisedModules(options, state),
   ]);
   if (profile === 'worker')
-    return { ...createWorkerRuntime(options, composed), localWorker: null };
+    return {
+      ...createWorkerRuntime(options, composed, state),
+      localWorker: null,
+    };
   let localWorker: LocalWorkerTransport | null = null;
   const graph = createCanopyRuntime({
     profile,
@@ -458,6 +657,7 @@ export function createRuntimeProfileGraph(
     phaseDeadlineMs: options.phaseDeadlineMs,
     // Runs after the operation registry validated the whole graph.
     createDispatcher: (input) => {
+      state.daemonEpoch = input.daemonEpoch;
       const definitions: RuntimeModuleDefinitions = input.definitions;
       const runtime: RuntimeModuleHandlers = {
         ...input.runtimeHandlers,
@@ -468,7 +668,7 @@ export function createRuntimeProfileGraph(
         worker,
         transport,
         close: closeBinding,
-      } = bindBundledWorker(options);
+      } = bindBundledWorker(options, state);
       localWorker = transport;
       // Worker handlers never join this map, so a missing forwarder fails
       // dispatcher validation instead of reaching a worker handler directly.

@@ -48,6 +48,12 @@ export interface PipelineAssetInstallPlan {
   manifest: PipelineAssetsManifestV1;
   /** The `assets.json` it writes. */
   manifestText: string;
+  /**
+   * The fresh `.install-<uuid>` folder name each file is staged in, inside
+   * its own destination folder. An install journal records it, so a
+   * rollback removes only this install's staging folders.
+   */
+  stagingName: string;
 }
 
 /** How installing changes the files one packaged asset put on this computer. */
@@ -442,6 +448,7 @@ export function createPipelineAssetStore(
       createdDirectories,
       manifest,
       manifestText: `${JSON.stringify(manifest, null, 2)}\n`,
+      stagingName: `.install-${randomUUID()}`,
     };
   };
 
@@ -505,7 +512,7 @@ export function createPipelineAssetStore(
     // share every folder above them, so a folder swapped for a link after
     // staging takes the staged copy with it, and the rename fails instead of
     // writing through the link.
-    const token = `.install-${randomUUID()}`;
+    const token = installPlan.stagingName;
     const stagingOf = (folder: string): string =>
       folder === '.' ? token : `${folder}/${token}`;
     const stagedPathOf = (relativePath: string): string =>

@@ -63,7 +63,7 @@ describe('Git write commands (CAN-4108)', () => {
     ],
     [
       { kind: 'worktree-remove', path: '/target' },
-      ['worktree', 'remove', '--force', '/target'],
+      ['worktree', 'remove', '--force', '--', '/target'],
     ],
     [{ kind: 'worktree-prune' }, ['worktree', 'prune']],
   ])(
@@ -651,7 +651,7 @@ describe('Git local merge commands (CAN-5884)', () => {
     ],
     [
       { kind: 'merge-worktree-remove', path: '/tmp/merge' },
-      ['worktree', 'remove', '--force', '/tmp/merge'],
+      ['worktree', 'remove', '--force', '--', '/tmp/merge'],
     ],
     [
       { kind: 'merge-local', branch: 'feature' },

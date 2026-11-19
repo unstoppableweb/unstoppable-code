@@ -367,7 +367,7 @@ export function gitWriteCommandFor(
         path.includes('\0')
       )
         throw invalid();
-      args = ['worktree', 'remove', '--force', path];
+      args = ['worktree', 'remove', '--force', '--', path];
       break;
     }
     case 'worktree-prune':
@@ -384,7 +384,7 @@ export function gitWriteCommandFor(
       args =
         kind === 'merge-worktree-add'
           ? ['worktree', 'add', path, refValue(field('branch'))]
-          : ['worktree', 'remove', '--force', path];
+          : ['worktree', 'remove', '--force', '--', path];
       break;
     }
     case 'merge-local':

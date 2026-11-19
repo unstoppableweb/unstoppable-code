@@ -360,12 +360,28 @@ export async function copySkillInstallOrigin(
   }
 }
 
+const STORED_SKILL_FILTER_PASSES = 3;
+
 export async function filterStoredSkillContexts<
   T extends { sourceId: string; name: string },
 >(rows: T[]): Promise<T[]> {
   if (!skillResourceContextEnabled()) return rows;
-  const snapshot = await skillContextSnapshot();
-  const allowed = await Promise.all(
+  // A context change while the slow per-row filter runs only invalidates that
+  // pass; retry so the result still matches exactly one snapshot.
+  for (let pass = 1; ; pass++) {
+    const snapshot = await skillContextSnapshot();
+    const allowed = await filterRowsInContext(rows);
+    if (pass === STORED_SKILL_FILTER_PASSES)
+      await assertSkillContextSnapshot(snapshot);
+    else if (snapshot !== (await skillContextSnapshot())) continue;
+    return rows.filter((_row, index) => allowed[index]);
+  }
+}
+
+function filterRowsInContext<T extends { sourceId: string; name: string }>(
+  rows: T[],
+): Promise<boolean[]> {
+  return Promise.all(
     rows.map(async (row): Promise<boolean> => {
       try {
         await assertStoredSkillContext(`${row.sourceId}/${row.name}`);
@@ -375,8 +391,6 @@ export async function filterStoredSkillContexts<
       }
     }),
   );
-  await assertSkillContextSnapshot(snapshot);
-  return rows.filter((_row, index) => allowed[index]);
 }
 
 /** Context-independent Personal inventory used by desktop cloud sync. */

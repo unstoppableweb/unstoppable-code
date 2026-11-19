@@ -6,6 +6,15 @@ import {
 } from '@canopy/desktop-instrumentation/client';
 import { inlineFailure, type InlineFailure } from '@/lib/inline-app-error';
 import { getWorktreeChatContext } from '../context';
+import { getChatToastAttribution } from '../notifications';
+import { useGitHubStore } from '../../githubStore';
+import { isWebCoreScope } from '@/lib/chat-authority';
+import {
+  isUnconfirmedQueueWrite,
+  pendingQueueRead,
+  queueCommandNotice,
+  queueShownNotice,
+} from '../web-core/queue-unconfirmed';
 import { blockedPersistenceKeys } from '../persistence';
 import { isTerminalBackedInterfaceMode } from '@canopy/desktop-shared/types';
 import { useClaudeTerminalStore } from '@/stores/claudeTerminalStore';
@@ -135,6 +144,68 @@ function findQueuedRow(
     ?.queuedMessages.find((row) => row.hostQueueEntryId === entryId);
 }
 
+/** Whether the chat a queued message's command came from is still shown. */
+function chatStillShown(
+  state: Pick<ChatState, 'worktreeChats'>,
+  key: string,
+  chatId: string,
+): boolean {
+  return (
+    state.worktreeChats[key]?.tabs.some((tab) => tab.id === chatId) === true
+  );
+}
+
+/**
+ * Says what a cloud queued message's Cancel, Run now or edit left when it
+ * can't be confirmed (CAN-7196): a notice, never a failure. False for any
+ * other error. The web core backend read the queue again before answering;
+ * when that read failed, the notice says it is still checking, and once the
+ * backend's next read is in, says what the queue shows. A sign-out, account
+ * change or disconnect that cleared the chat while the command or its read
+ * was out leaves nothing of it in the next session.
+ */
+function noticeUnconfirmedQueueCommand(
+  sel: { readonly projectId: string; readonly worktreeId: string },
+  chatId: string,
+  error: unknown,
+  command: 'cancel' | 'force' | 'edit',
+  shown: () => boolean,
+): boolean {
+  if (!isWebCoreScope(sel.projectId)) return false;
+  const notice = queueCommandNotice(error, command);
+  if (notice === null) return false;
+  if (!shown()) return true;
+  const toast = (message: string): void => {
+    const { meta, onClick } = getChatToastAttribution({
+      projectId: sel.projectId,
+      worktreeId: sel.worktreeId,
+      chatId,
+    });
+    useGitHubStore.getState().addToast(message, 'info', onClick, meta);
+  };
+  toast(notice);
+  void pendingQueueRead(error)?.then(() => {
+    if (shown()) toast(queueShownNotice(error, command));
+  });
+  return true;
+}
+
+/**
+ * A cloud Cancel or Run now's failure handler: one that can't be confirmed
+ * says what the queue shows; any other is reported as before.
+ */
+function settleQueueCommandFailure(
+  sel: { readonly projectId: string; readonly worktreeId: string },
+  chatId: string,
+  command: 'cancel' | 'force',
+  shown: () => boolean,
+): (error: unknown) => void {
+  return (error) => {
+    if (!noticeUnconfirmedQueueCommand(sel, chatId, error, command, shown))
+      reportUnlessUnavailable(error);
+  };
+}
+
 export const createQueueSlice: StateCreator<
   ChatState,
   [],
@@ -259,7 +330,11 @@ export const createQueueSlice: StateCreator<
           chatId,
           entryId: targetMessage.hostQueueEntryId,
         })
-        .catch(reportUnlessUnavailable);
+        .catch(
+          settleQueueCommandFailure(sel, chatId, 'cancel', () =>
+            chatStillShown(get(), key, chatId),
+          ),
+        );
       return;
     }
 
@@ -336,7 +411,11 @@ export const createQueueSlice: StateCreator<
           chatId,
           entryId: targetMessage.hostQueueEntryId,
         })
-        .catch(reportUnlessUnavailable);
+        .catch(
+          settleQueueCommandFailure(sel, chatId, 'force', () =>
+            chatStillShown(get(), key, chatId),
+          ),
+        );
       return;
     }
 
@@ -676,11 +755,19 @@ export const createQueueSlice: StateCreator<
       : requestedIndex;
     const edited = activeTab?.queuedMessages[index];
     // Keeps the text the save didn't store (CAN-6799), unless it's unchanged.
-    const keepUnsaved = (row: QueuedChatMessage | undefined): void => {
+    const keepUnsaved = (
+      row: QueuedChatMessage | undefined,
+      unconfirmed = false,
+    ): void => {
       const id =
         row === undefined ? undefined : queuedMessageEditFailureKey(row);
       if (row === undefined || id === undefined || row.text === text) return;
-      get().keepUnsavedQueuedEdit({ ...scope, id, text });
+      get().keepUnsavedQueuedEdit({
+        ...scope,
+        id,
+        text,
+        ...(unconfirmed ? { unconfirmed: true as const } : {}),
+      });
     };
     // The edited row already left the queue: nothing is left to save to.
     if (index < 0 || !edited) {
@@ -728,8 +815,24 @@ export const createQueueSlice: StateCreator<
           ...(inputMode ? { inputMode } : {}),
         })
         .catch((error: unknown) => {
-          keepUnsaved(edited);
-          const appError = toAppError(resolveClientAppError(error));
+          // One that may have saved keeps its text as unconfirmed, never as
+          // unsaved (CAN-7196).
+          keepUnsaved(
+            edited,
+            isWebCoreScope(sel.projectId) && isUnconfirmedQueueWrite(error),
+          );
+          // One that may have saved, or that Core forgot, says what the
+          // queue now shows, never "Couldn't save" (CAN-7196).
+          const unconfirmed = noticeUnconfirmedQueueCommand(
+            sel,
+            chatId,
+            error,
+            'edit',
+            () => chatStillShown(get(), key, chatId),
+          );
+          const appError = unconfirmed
+            ? null
+            : toAppError(resolveClientAppError(error));
           if (appError)
             setQueuedEditFailure(
               set,

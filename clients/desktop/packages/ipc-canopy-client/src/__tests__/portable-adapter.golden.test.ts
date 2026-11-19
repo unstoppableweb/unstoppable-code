@@ -518,6 +518,12 @@ const COWORK_CHAT = {
 };
 const STANDALONE_SNAPSHOT = { standaloneChats: [COWORK_CHAT] };
 const COWORK_TARGET = { projectId: 'cowork', worktreeId: 'entry-1' };
+/** The standalone target a Cowork composer sends for its `/` menu. */
+const STANDALONE_INVOCABLE_TARGET = {
+  kind: 'standalone',
+  projectLocalId: COWORK_CHAT.projectLocalId,
+  chatId: COWORK_CHAT.localId,
+} as const;
 const MODEL_REGISTRY = {
   claude: [{ id: 'opus' }],
   codex: [{ id: 'gpt' }],
@@ -796,6 +802,27 @@ const SHELL_QUERY_SCENARIOS: ShellQueryScenarios = {
         expectAccepted(value, {
           commands: [{ name: 'review', section: 'discovered' }],
           stale: false,
+        }),
+    },
+    {
+      name: "reads a Cowork chat's menu rows through its standalone target",
+      args: {
+        payload: { target: STANDALONE_INVOCABLE_TARGET },
+        target: { workspaceLocalId: COWORK_CHAT.projectLocalId },
+      },
+      replies: {
+        [C.editorListInvocables]: () => ({
+          commands: [{ name: 'review', section: 'available' }],
+          stale: false,
+          rebuilding: false,
+        }),
+      },
+      calls: [
+        call(C.editorListInvocables, { target: STANDALONE_INVOCABLE_TARGET }),
+      ],
+      result: (value) =>
+        expectAccepted(value, {
+          commands: [{ name: 'review', section: 'available' }],
         }),
     },
   ],
@@ -2004,6 +2031,43 @@ const SHELL_COMMAND_SCENARIOS: ShellCommandScenarios = {
       channels: [C.editorResolveInvocable, C.chatCommand],
       result: (value) => expectRefused(value, /not applied/),
     },
+    {
+      name: "commits a Cowork row's enabling selections in its Work Entry",
+      args: {
+        payload: { target: STANDALONE_INVOCABLE_TARGET, entryId: 'e1' },
+        target: { workspaceLocalId: COWORK_CHAT.projectLocalId },
+      },
+      replies: {
+        [C.editorResolveInvocable]: () => ({
+          ...RESOLVED_INVOCABLE,
+          enable: {
+            ...COWORK_TARGET,
+            tabId: COWORK_CHAT.localId,
+            pluginSelections: { ...SELECTIONS, pluginRefs: ['review'] },
+            expectedPluginSelections: SELECTIONS,
+          },
+        }),
+      },
+      calls: [
+        call(C.editorResolveInvocable, {
+          target: STANDALONE_INVOCABLE_TARGET,
+          entryId: 'e1',
+        }),
+        chatEnvelope(COWORK_TARGET, {
+          type: 'chat.patch_tab_settings',
+          tabId: COWORK_CHAT.localId,
+          patch: {
+            pluginSelections: { ...SELECTIONS, pluginRefs: ['review'] },
+          },
+          expectedPluginSelections: SELECTIONS,
+        }),
+      ],
+      result: (value) =>
+        expectAccepted(value, {
+          ...RESOLVED_INVOCABLE,
+          pluginSelections: { ...SELECTIONS, pluginRefs: ['review'] },
+        }),
+    },
   ],
   'pipeline.resume': [
     {
@@ -2285,6 +2349,14 @@ const QUERY_SCENARIOS: QueryScenarios = {
             hasUnread: true,
           }),
         ]),
+    },
+  ],
+  'catalog.invocables.list': [
+    {
+      name: 'is refused: a computer lists its own slash rows',
+      args: { workspaceLocalId: 'project-1', params: { chatId: 'chat-1' } },
+      calls: [],
+      rejects: UnsupportedOperationError,
     },
   ],
   'worktree.baseBranches': passthroughQuery<'worktree.baseBranches'>(
@@ -2966,6 +3038,17 @@ const COMMAND_SCENARIOS: CommandScenarios = {
         expect(value).toEqual(UPLOADED_ATTACHMENT);
         expect(context.uploads).toEqual([['notes.txt', 5]]);
       },
+    },
+  ],
+  'chat.attachments.delete': [
+    {
+      name: 'is local: the stored copy expires on its own',
+      args: {
+        workspaceLocalId: 'project-1',
+        chatId: 'chat-1',
+        attachmentId: 'attachment-1',
+      },
+      calls: [],
     },
   ],
   'delegation.extendLifetimeLimit':

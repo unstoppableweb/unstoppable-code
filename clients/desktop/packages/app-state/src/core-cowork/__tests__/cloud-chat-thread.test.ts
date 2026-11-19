@@ -8,6 +8,7 @@ import {
 } from '../../chat/create-chat-store';
 import {
   bindCloudChatThread,
+  CloudChatSendUnknownError,
   CloudChatStopUnavailableError,
   type CloudChatThreadTarget,
 } from '../cloud-chat-thread';
@@ -1478,34 +1479,135 @@ describe('cloud chat thread binding (CAN-4185)', () => {
     expect(state.rollbackOptimisticSend).not.toHaveBeenCalled();
   });
 
-  it('resends a missing send once under the same command id and key', async () => {
+  // SWAN Q1 (CAN-7196): nothing resends a send on its own, anywhere. A lost
+  // reply reads as unavailable and never retried, or, on a flagged write, as
+  // a same-key retry, as the client's own deadline after dispatch does:
+  // either way the send may have landed.
+  const missingReceipt = (): CanopyCoreRelayLikeReply =>
+    ok({ outcome: 'missing' });
+  const unreadableReceipt = (): CanopyCoreRelayLikeReply => ({
+    ok: false,
+    error: {
+      kind: 'unavailable',
+      message: 'Lost.',
+      retry: { kind: 'same_request' },
+    },
+  });
+  it.each([
+    [
+      'unavailable, never',
+      'unavailable',
+      'never',
+      'names no send',
+      missingReceipt,
+    ],
+    [
+      'unavailable, never',
+      'unavailable',
+      'never',
+      'cannot be read',
+      unreadableReceipt,
+    ],
+    [
+      'a same-key retry',
+      'unavailable',
+      'same_idempotency_key',
+      'names no send',
+      missingReceipt,
+    ],
+    [
+      'a same-key retry',
+      'unavailable',
+      'same_idempotency_key',
+      'cannot be read',
+      unreadableReceipt,
+    ],
+    [
+      "the client's own deadline",
+      'deadline_exceeded',
+      'same_idempotency_key',
+      'names no send',
+      missingReceipt,
+    ],
+    [
+      "the client's own deadline",
+      'deadline_exceeded',
+      'same_idempotency_key',
+      'cannot be read',
+      unreadableReceipt,
+    ],
+  ] as const)(
+    'sends a lost send read as %s once when the receipt %s, keeps the row and says it may have sent (CAN-7196)',
+    async (_shape, lostKind, lostRetry, _case, receipt) => {
+      const sends: Record<string, unknown>[] = [];
+      const { thread, state } = harness({
+        'core.chat.snapshot.get': () => ok(snapshot('idle')),
+        'core.chat.transcript.page': () => ok(transcript()),
+        'core.chat.message.send': (params) => {
+          sends.push(params);
+          return {
+            ok: false,
+            error: {
+              kind: lostKind,
+              message: 'Lost.',
+              retry: { kind: lostRetry },
+            },
+          };
+        },
+        'core.chat.send.receipt': receipt,
+      });
+      await flush();
+      await expect(
+        thread.send({ text: 'Hi', optimisticLocalId: 'local-1' }),
+      ).rejects.toBeInstanceOf(CloudChatSendUnknownError);
+      await flush();
+      expect(sends).toHaveLength(1);
+      expect(state.rollbackOptimisticSend).not.toHaveBeenCalled();
+      const notices = state.hydrate.mock.calls
+        .map((call) => call[2]?.error)
+        .filter((error) => typeof error === 'string');
+      expect(notices).toEqual(['Your message may have sent.']);
+    },
+  );
+
+  // SWAN guardrail (CAN-7196, 12:16): the core's own deadline is a refusal:
+  // the send is sent once, its row goes, and it says it wasn't sent.
+  it("reads the core's own deadline on a send as a refusal, sent once (CAN-7196)", async () => {
     const sends: Record<string, unknown>[] = [];
-    const { thread } = harness({
+    const receipts: unknown[] = [];
+    const { thread, state } = harness({
       'core.chat.snapshot.get': () => ok(snapshot('idle')),
       'core.chat.transcript.page': () => ok(transcript()),
       'core.chat.message.send': (params) => {
         sends.push(params);
-        return sends.length === 1
-          ? {
-              ok: false,
-              error: {
-                kind: 'unavailable',
-                message: 'Lost.',
-                retry: { kind: 'same_idempotency_key' },
-              },
-            }
-          : ok({
-              commandId: params.commandId,
-              revision: 5,
-              outcome: 'applied',
-            });
+        return {
+          ok: false,
+          error: {
+            kind: 'deadline_exceeded',
+            message: 'The core ran out of time.',
+            retry: { kind: 'never' },
+          },
+        };
       },
-      'core.chat.send.receipt': () => ok({ outcome: 'missing' }),
+      'core.chat.send.receipt': (params) => {
+        receipts.push(params);
+        return ok({ outcome: 'missing' });
+      },
     });
     await flush();
-    await thread.send({ text: 'Hi' });
-    expect(sends).toHaveLength(2);
-    expect(sends[1]).toEqual(sends[0]);
+    await expect(
+      thread.send({ text: 'Hi', optimisticLocalId: 'local-1' }),
+    ).rejects.not.toBeInstanceOf(CloudChatSendUnknownError);
+    await flush();
+    expect(sends).toHaveLength(1);
+    expect(receipts).toHaveLength(0);
+    expect(state.rollbackOptimisticSend).toHaveBeenCalledTimes(1);
+    const notices = state.hydrate.mock.calls
+      .map((call) => call[2]?.error)
+      .filter((error) => typeof error === 'string');
+    expect(notices).toEqual([
+      "Your message wasn't sent: The core ran out of time.",
+    ]);
   });
 
   it('stop cancels the turn this client started from idle, not a follow-up queued behind it, before any runtime report', async () => {

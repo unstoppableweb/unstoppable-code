@@ -1,6 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import type { BrowserWindow } from 'electron';
-import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import type { PlanExitRequestEvent } from '@canopy/desktop-shared/types';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 
@@ -32,7 +30,8 @@ interface OpenCodePlanProposalRequest {
   plan: string;
   userMessageId?: string;
   isCurrent: () => boolean;
-  getWindow: () => BrowserWindow | null;
+  /** Shows the committed plan-exit request; the session's interface port. */
+  presentPlanExit: (event: PlanExitRequestEvent) => void;
 }
 
 /** Publish only after transcript drain and a checked canonical review commit. */
@@ -42,11 +41,10 @@ export async function publishOpenCodePlanProposal(
   if (!request.isCurrent()) return;
   const { isCoworkWorkspace } = await import('../lib/workspace-registry');
   if (isCoworkWorkspace(request.projectId)) return;
-  const { createTrackedPlanData, updateTrackedPlanData } =
-    await import('./plans-service');
+  const { planModeTrackedPlans } =
+    await import('../canopy-runtime/plan-host-writers');
   const { buildPlanFileSystemInstruction } =
     await import('../lib/plan-system-instructions');
-  const { sendToWindow } = await import('../lib/window-send');
   const { getAttentionTracker } = await import('./attention-tracker');
   const { getChatStateService } = await import('./chat-state-service');
   const service = getChatStateService();
@@ -85,14 +83,15 @@ export async function publishOpenCodePlanProposal(
   )
     return;
   const updated = existingPlanId
-    ? await updateTrackedPlanData({
+    ? await planModeTrackedPlans.updateTrackedPlan({
         ...planRequest,
         planId: existingPlanId,
         approvedAt: null,
         dismissedAt: null,
       })
     : null;
-  const plan = updated ?? (await createTrackedPlanData(planRequest));
+  const plan =
+    updated ?? (await planModeTrackedPlans.createTrackedPlan(planRequest));
   const instruction = await buildPlanFileSystemInstruction({
     ...scope,
     planId: plan.id,
@@ -115,7 +114,7 @@ export async function publishOpenCodePlanProposal(
     isCurrent: request.isCurrent,
   });
   if (!applied) return;
-  sendToWindow(request.getWindow(), IPC_CHANNELS.planExitRequest, event);
+  request.presentPlanExit(event);
   getAttentionTracker().mark({
     ...scope,
     chatId: request.chatId,

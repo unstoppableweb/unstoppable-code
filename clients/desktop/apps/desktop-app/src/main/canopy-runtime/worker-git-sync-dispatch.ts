@@ -1,3 +1,4 @@
+import { parseGitBranchName } from '@canopy/core-runtime/node/git';
 import {
   SINGLE_REPO_USAGE_REPO_ID,
   WORKSPACE_ROOT_REPO_ID,
@@ -175,9 +176,11 @@ export async function pullWorktreeRepository(
 ): Promise<void> {
   const scope = syncScope(request, entry);
   if (scope === null) {
+    const branch = parseGitBranchName(pull.branch);
+    if (!branch) throw new Error('The branch name is not a valid branch name.');
     await (pull.strategy === 'rebase'
-      ? pullBranchRebase(entry.repoPath, pull.branch)
-      : pullBranchFastForward(entry.repoPath, pull.branch));
+      ? pullBranchRebase(entry.repoPath, branch)
+      : pullBranchFastForward(entry.repoPath, branch));
     return;
   }
   try {

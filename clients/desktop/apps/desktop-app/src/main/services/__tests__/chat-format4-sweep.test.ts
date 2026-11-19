@@ -195,11 +195,15 @@ function recordingTarget(
       const store = resolveStore(scope);
       if ((await store.format()) === 'v4')
         return { outcome: 'already_format4' };
+      // As the repository load does: with promotion allowed, version 2
+      // validation keeps the legacy files for format 4 to verify first.
       await store
         .migrate(
           scopeSource([
             { id: 'chat', messages: [message('m1', 'Hello', 'user')] },
           ]),
+          undefined,
+          { retainLegacy: target.allowed },
         )
         .catch(() => undefined);
       if ((await store.format()) === 'v2') {
@@ -238,7 +242,7 @@ function sweep(
 }
 
 describe('the inventory', () => {
-  it('finds every stored scope below format 4 by its manifest alone, and leaves viewer and code-review scopes out of the offer', async () => {
+  it('finds every stored scope below format 4 by its manifest alone, code-review scopes included', async () => {
     await seedV3(WORKTREE);
     await seedV2(COWORK);
     await seedV3(ADVISOR);
@@ -254,17 +258,17 @@ describe('the inventory', () => {
     const formats = Object.fromEntries(
       inventory.candidates.map((item) => [
         `${item.scope.projectId}/${item.scope.worktreeId}`,
-        [item.format, item.excluded],
+        item.format,
       ]),
     );
     expect(formats).toEqual({
-      'project-a/worktree-1': ['v3', false],
-      'project-b/home': ['v2', false],
-      'app-advisor/entry-1': ['v3', false],
-      [`${PLAN_EXPLORE_CHAT_PROJECT_ID}/plan-1`]: ['v3', false],
-      [`${CODE_REVIEW_CHAT_PROJECT_ID}/review-1`]: ['v3', true],
-      'project-c/worktree-9': ['v4', false],
-      'project-d/old': ['v1', false],
+      'project-a/worktree-1': 'v3',
+      'project-b/home': 'v2',
+      'app-advisor/entry-1': 'v3',
+      [`${PLAN_EXPLORE_CHAT_PROJECT_ID}/plan-1`]: 'v3',
+      [`${CODE_REVIEW_CHAT_PROJECT_ID}/review-1`]: 'v3',
+      'project-c/worktree-9': 'v4',
+      'project-d/old': 'v1',
     });
     expect(inventory.unmapped).toBe(0);
   });
@@ -310,13 +314,12 @@ describe('a pass', () => {
     });
   });
 
-  it('never offers an excluded scope, and keeps the sweep incomplete while one is below format 4', async () => {
+  it('offers a code-review scope like any other; the target decides whether to admit it (chat-format4-sweep-code-review-scopes.test.ts)', async () => {
     await seedV3(REVIEW);
     const target = recordingTarget();
     const result = await sweep(target).runPass();
-    expect(target.calls).toEqual([]);
-    expect(result.status).toBe('remaining');
-    expect(await chatFormat4SweepComplete(dataDir)).toBe(false);
+    expect(target.calls).toEqual([`${CODE_REVIEW_CHAT_PROJECT_ID}/review-1`]);
+    expect(result.status).toBe('complete');
   });
 
   it('waits at least four times the last scope’s time, and never less than the minimum gap', async () => {
@@ -780,8 +783,8 @@ describe('legacy scopes the inventory keeps (review round 2)', () => {
   });
 });
 
-describe('archives are not swept (SWAN, 17 Nov)', () => {
-  it('counts a legacy scope with only its archived-tabs file but never offers it, and leaves that file byte-unchanged', async () => {
+describe('legacy scopes with no tabs file are swept (CAN-7178 follow-up 2)', () => {
+  it('offers a legacy scope with only its archived-tabs file, and it reaches format 4', async () => {
     const scope = { projectId: 'project-legacy', worktreeId: 'archived-only' };
     const { archives } = pathsFor(scope);
     await mkdir(join(archives, '..'), { recursive: true });
@@ -789,13 +792,14 @@ describe('archives are not swept (SWAN, 17 Nov)', () => {
     const before = await readFile(archives);
     const target = recordingTarget();
     const result = await sweep(target).runPass();
-    expect(target.calls).toEqual([]);
-    expect(result.status).toBe('remaining');
-    expect(await chatFormat4SweepComplete(dataDir)).toBe(false);
+    expect(target.calls).toEqual(['project-legacy/archived-only']);
+    expect(result.status).toBe('complete');
+    expect(await chatFormat4SweepComplete(dataDir)).toBe(true);
+    expect(await resolveStore(scope).format()).toBe('v4');
     expect(await readFile(archives)).toEqual(before);
   });
 
-  it('counts a legacy scope with only its tabs backup or only its journal, offers neither, and leaves both byte-unchanged (review round 3, SWAN 17 Nov)', async () => {
+  it('offers a legacy scope with only its tabs backup or only its journal, and each reaches format 4', async () => {
     const backupOnly = { projectId: 'project-legacy', worktreeId: 'bak-only' };
     const planBackupOnly = {
       projectId: PLAN_EXPLORE_CHAT_PROJECT_ID,
@@ -828,20 +832,24 @@ describe('archives are not swept (SWAN, 17 Nov)', () => {
       resolveStore,
     );
     expect(
-      inventory.candidates
-        .map((item) => `${item.scope.worktreeId}:${String(item.excluded)}`)
-        .sort(),
-    ).toEqual([
-      'bak-only:true',
-      'journal-only:true',
-      'plan-bak:true',
-      'plan-journal:true',
-    ]);
+      inventory.candidates.map((item) => item.scope.worktreeId).sort(),
+    ).toEqual(['bak-only', 'journal-only', 'plan-bak', 'plan-journal']);
     const target = recordingTarget();
     const result = await sweep(target).runPass();
-    expect(target.calls).toEqual([]);
-    expect(result).toMatchObject({ status: 'remaining', remaining: 4 });
-    expect(await chatFormat4SweepComplete(dataDir)).toBe(false);
+    expect(target.calls.sort()).toEqual(
+      [backupOnly, planBackupOnly, journalOnly, planJournalOnly]
+        .map((scope) => `${scope.projectId}/${scope.worktreeId}`)
+        .sort(),
+    );
+    expect(result.status).toBe('complete');
+    expect(await chatFormat4SweepComplete(dataDir)).toBe(true);
+    for (const scope of [
+      backupOnly,
+      planBackupOnly,
+      journalOnly,
+      planJournalOnly,
+    ])
+      expect(await resolveStore(scope).format()).toBe('v4');
     expect(await Promise.all(kept.map((path) => readFile(path)))).toEqual(
       before,
     );
@@ -849,7 +857,7 @@ describe('archives are not swept (SWAN, 17 Nov)', () => {
       await expect(stat(pathsFor(scope).tabs)).rejects.toThrow();
   });
 
-  it('with every other scope in format 4, one journal-only scope still keeps the sweep pending and never complete (SWAN, 17 Nov)', async () => {
+  it('with every other scope in format 4, a journal-only scope is offered too, and the sweep completes only once it reaches format 4', async () => {
     await seedV4(WORKTREE);
     await seedV4(COWORK);
     await seedV3(DONE);
@@ -861,13 +869,21 @@ describe('archives are not swept (SWAN, 17 Nov)', () => {
       chatFormat4SweepDonePath(dataDir),
       JSON.stringify({ stale: true }),
     );
+    const held = recordingTarget((scope) =>
+      scope.worktreeId === journalOnly.worktreeId
+        ? { outcome: 'held' }
+        : undefined,
+    );
+    const result = await sweep(held).runPass();
+    expect(result).toMatchObject({ status: 'remaining', remaining: 1 });
+    expect(await chatFormat4SweepComplete(dataDir)).toBe(false);
     const target = recordingTarget();
-    for (let pass = 0; pass < 3; pass += 1) {
-      const result = await sweep(target).runPass();
-      expect(result).toMatchObject({ status: 'remaining', remaining: 1 });
-      expect(await chatFormat4SweepComplete(dataDir)).toBe(false);
-    }
-    expect(target.calls).toEqual([`${DONE.projectId}/${DONE.worktreeId}`]);
+    expect((await sweep(target).runPass()).status).toBe('complete');
+    expect(target.calls).toEqual([
+      `${journalOnly.projectId}/${journalOnly.worktreeId}`,
+    ]);
+    expect(await chatFormat4SweepComplete(dataDir)).toBe(true);
+    expect(await resolveStore(journalOnly).format()).toBe('v4');
     expect(await readFile(journal, 'utf8')).toBe('');
   });
 
@@ -918,9 +934,8 @@ describe('legacy scopes the sweep can only partly read (review round 4)', () => 
         inventory.candidates.map((item) => [
           item.scope.worktreeId,
           item.format,
-          item.excluded,
         ]),
-      ).toEqual([['locked', 'v1', false]]);
+      ).toEqual([['locked', 'v1']]);
       const target = recordingTarget(() => ({
         outcome: 'failed',
         reason: 'permission',

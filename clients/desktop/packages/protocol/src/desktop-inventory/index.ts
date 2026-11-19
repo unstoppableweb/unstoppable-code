@@ -9,6 +9,11 @@
  *
  * Design: docs/planning/2026-09-06-desktop-inventory-cloud-sync/design.md
  *
+ * Routes: `PUT`/`GET`/`DELETE /api/v1/[brandNamespace]/desktop-inventory/documents`
+ * (sync, manifest, opt-out), `PUT /api/v1/desktop-inventory/device-status`
+ * (the paused report, CAN-7262) and `GET /api/account/desktop-inventory`
+ * (the browser read).
+ *
  * Environment-neutral: types, constants, and pure validation only. Hashing
  * (SHA-256 of {@link stableStringify}) is done by each host with its own
  * crypto; this module only defines the canonical serialization.
@@ -213,6 +218,41 @@ export const MAX_DESKTOP_INVENTORY_CLIENT_DEVICE_ID_LENGTH = 256;
 export const MAX_DESKTOP_INVENTORY_SCOPE_KEY_LENGTH = 256;
 export const MAX_DESKTOP_INVENTORY_CLIENT_NAME_LENGTH = 256;
 
+/** Hard cap on one device-status request body, enforced before parsing. */
+export const MAX_DESKTOP_INVENTORY_DEVICE_STATUS_REQUEST_BYTES = 4 * 1024;
+
+// ===========================================================================
+// Paused uploads (CAN-7262)
+// ===========================================================================
+
+/**
+ * Why a desktop holds its inventory uploads back while its sync switch is
+ * on. `allow_incoming_off`: Remote Control's Allow incoming is off.
+ */
+export const DESKTOP_INVENTORY_PAUSED_REASONS = ['allow_incoming_off'] as const;
+
+export type DesktopInventoryPausedReason =
+  (typeof DESKTOP_INVENTORY_PAUSED_REASONS)[number];
+
+const DESKTOP_INVENTORY_PAUSED_REASONS_SET: ReadonlySet<string> = new Set(
+  DESKTOP_INVENTORY_PAUSED_REASONS,
+);
+
+export function isDesktopInventoryPausedReason(
+  value: unknown,
+): value is DesktopInventoryPausedReason {
+  return (
+    typeof value === 'string' && DESKTOP_INVENTORY_PAUSED_REASONS_SET.has(value)
+  );
+}
+
+/** A device's paused uploads, as the server recorded them. */
+export interface DesktopInventoryUploadsPaused {
+  /** ISO-8601 server time the pause was first recorded. */
+  since: string;
+  reason: DesktopInventoryPausedReason;
+}
+
 // ===========================================================================
 // Requests and responses
 // ===========================================================================
@@ -309,6 +349,50 @@ export interface DesktopInventoryDeviceSummary {
   clientName?: string;
   /** ISO-8601 time of the most recent accepted document for this device. */
   lastSyncedAt: string;
+  /**
+   * Set while the desktop reports that it holds uploads back (CAN-7262), so
+   * its documents may be out of date. Absent means not paused, including
+   * from a server or desktop that predates the report.
+   */
+  uploadsPaused?: DesktopInventoryUploadsPaused;
+}
+
+/**
+ * Body of `PUT /api/v1/desktop-inventory/device-status` (CAN-7262). The
+ * desktop reports `uploadsPaused: true` with a reason while its switch is on
+ * but uploads are held back, and `false` once they resume.
+ */
+export interface DesktopInventoryDeviceStatusRequest {
+  clientDeviceId: string;
+  uploadsPaused: boolean;
+  /** Required when `uploadsPaused` is true; absent otherwise. */
+  reason?: DesktopInventoryPausedReason;
+}
+
+/**
+ * Response of `PUT /api/v1/desktop-inventory/device-status`. `recorded` is
+ * false when nothing was stored: a pause for a device with no documents, or
+ * an unpause with no status row.
+ */
+export interface DesktopInventoryDeviceStatusResponse {
+  recorded: boolean;
+  uploadsPaused: DesktopInventoryUploadsPaused | null;
+}
+
+/** Structural guard for {@link DesktopInventoryDeviceStatusResponse}. */
+export function isDesktopInventoryDeviceStatusResponse(
+  value: unknown,
+): value is DesktopInventoryDeviceStatusResponse {
+  if (typeof value !== 'object' || value === null) return false;
+  const recorded: unknown = Reflect.get(value, 'recorded');
+  const paused: unknown = Reflect.get(value, 'uploadsPaused');
+  if (typeof recorded !== 'boolean') return false;
+  if (paused === null) return true;
+  if (typeof paused !== 'object' || paused === undefined) return false;
+  return (
+    typeof Reflect.get(paused, 'since') === 'string' &&
+    isDesktopInventoryPausedReason(Reflect.get(paused, 'reason'))
+  );
 }
 
 /**
@@ -495,6 +579,50 @@ export function parseDesktopInventorySyncRequest(
     removals,
   };
   return { ok: true, request };
+}
+
+export type DesktopInventoryDeviceStatusRequestParseResult =
+  | { ok: true; request: DesktopInventoryDeviceStatusRequest }
+  | { ok: false; error: string };
+
+/** Validate a device-status request (CAN-7262). */
+export function parseDesktopInventoryDeviceStatusRequest(
+  body: unknown,
+): DesktopInventoryDeviceStatusRequestParseResult {
+  if (!isRecord(body)) {
+    return { ok: false, error: 'Request body must be a JSON object.' };
+  }
+  if (
+    !isBoundedString(
+      body.clientDeviceId,
+      MAX_DESKTOP_INVENTORY_CLIENT_DEVICE_ID_LENGTH,
+    )
+  ) {
+    return { ok: false, error: 'clientDeviceId is required.' };
+  }
+  const clientDeviceId = body.clientDeviceId;
+  if (typeof body.uploadsPaused !== 'boolean') {
+    return { ok: false, error: 'uploadsPaused must be a boolean.' };
+  }
+  if (!body.uploadsPaused) {
+    if (body.reason !== undefined) {
+      return {
+        ok: false,
+        error: 'reason must be absent when uploadsPaused is false.',
+      };
+    }
+    return { ok: true, request: { clientDeviceId, uploadsPaused: false } };
+  }
+  if (!isDesktopInventoryPausedReason(body.reason)) {
+    return {
+      ok: false,
+      error: 'reason is required and must be a known reason.',
+    };
+  }
+  return {
+    ok: true,
+    request: { clientDeviceId, uploadsPaused: true, reason: body.reason },
+  };
 }
 
 function parseDocument(candidate: unknown): DocumentParseResult {

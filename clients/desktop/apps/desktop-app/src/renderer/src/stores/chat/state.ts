@@ -91,9 +91,10 @@ export interface ChatStateNotice {
   /**
    * `unavailable`: the scope's backend does not serve the change, as a cloud
    * chat's web core refuses some (CAN-6646). Nothing failed, so it clears by
-   * itself and offers no retry.
+   * itself and offers no retry. `unconfirmed`: a cloud change whose answer
+   * never came, so it may have landed; the view was read again (CAN-7196).
    */
-  kind: 'conflict' | 'command_failed' | 'unavailable';
+  kind: 'conflict' | 'command_failed' | 'unavailable' | 'unconfirmed';
   message: string;
 }
 
@@ -997,6 +998,8 @@ export interface UnsavedQueuedEdit {
   /** The queued message's identity, `queuedMessageEditFailureKey`. */
   id: string;
   text: string;
+  /** The save's answer never came, so it may have saved (CAN-7196). */
+  unconfirmed?: true;
 }
 
 export interface ChatQueueSlice {

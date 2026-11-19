@@ -8,6 +8,7 @@ import {
   GitBranchWriteInterrupted,
   GitBranchWriteRefusal,
 } from './branch-writes';
+import { parseGitBranchName, type GitRefName } from './ref-name';
 
 /**
  * The Git commands one checkout's fetch and pull run, each named by the
@@ -24,9 +25,9 @@ export interface GitSyncWritePort {
   /** `rev-parse HEAD`; null when it has no commit. */
   head(this: void): Promise<string | null>;
   /** Effect: `pull --ff-only origin <branch>`. */
-  pullFastForward(this: void, branch: string): Promise<void>;
+  pullFastForward(this: void, branch: GitRefName): Promise<void>;
   /** Effect: `pull --rebase --autostash origin <branch>`. */
-  pullRebase(this: void, branch: string): Promise<void>;
+  pullRebase(this: void, branch: GitRefName): Promise<void>;
   /** Git's `rebase-merge` or `rebase-apply` directory exists. */
   isRebaseInProgress(this: void): Promise<boolean>;
   /** `stash list` names an `autostash` entry; a failed listing is `false`. */
@@ -73,10 +74,18 @@ export async function classifyGitPullConflict(
  */
 export async function pullGitBranch(
   port: GitSyncWritePort,
-  branch: string,
+  branchName: string,
   strategy: WorkerGitPullStrategy,
   options: GitPullOptions = {},
 ): Promise<WorkerGitPullResult> {
+  // CAN-7169: a clone can check out a branch the remote named, so the name
+  // reaches `git pull` only when Git would accept it as a branch.
+  const branch = parseGitBranchName(branchName);
+  if (!branch)
+    throw new GitBranchWriteRefusal(
+      'invalid-name',
+      'The branch name is not a valid branch name.',
+    );
   if (
     (options.expectedBranch !== undefined &&
       (await port.currentBranch()) !== options.expectedBranch) ||

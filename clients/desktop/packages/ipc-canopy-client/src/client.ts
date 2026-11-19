@@ -486,6 +486,8 @@ class PortableIpcCanopyClient implements CanopyClient {
       ...this.createCommandHandlers(terminal),
       ...shell.commands,
       'chat.attachments.upload': shell.uploadAttachment,
+      // The computer's stored copy expires on its own.
+      'chat.attachments.delete': (): Promise<void> => Promise.resolve(),
     };
     this.subscribeHandlers = {
       ...this.createSubscribeHandlers(terminal),
@@ -788,6 +790,14 @@ class PortableIpcCanopyClient implements CanopyClient {
   > {
     const channels = this.channels;
     return {
+      // Cloud chats only (CAN-6111); a computer's composer lists its own rows.
+      'catalog.invocables.list': (): Promise<never> =>
+        Promise.reject(
+          new UnsupportedOperationError(
+            'catalog.invocables.list',
+            'The slash inventory catalog is served for cloud chats only.',
+          ),
+        ),
       'worktree.baseBranches': (args) =>
         channels.invoke(
           C.homeListBranchTargets,
@@ -1071,7 +1081,10 @@ class PortableIpcCanopyClient implements CanopyClient {
 
   private createCommandHandlers(
     terminal: TerminalHandlers,
-  ): Omit<CommandHandlers, ShellCommandName | 'chat.attachments.upload'> {
+  ): Omit<
+    CommandHandlers,
+    ShellCommandName | 'chat.attachments.upload' | 'chat.attachments.delete'
+  > {
     const channels = this.channels;
     return {
       'delegation.extendLifetimeLimit': (args) =>

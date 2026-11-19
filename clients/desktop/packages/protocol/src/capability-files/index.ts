@@ -87,23 +87,69 @@ export function base64UrlEncode(bytes: Uint8Array): string {
 // documents are scanned synchronously in the main process. A private-key
 // header alone is high-confidence, and a JWT match starts only at the first
 // `eyJ` of a token run, so neither rescans the remainder from every start.
-const SECRET_PATTERNS: readonly RegExp[] = [
-  /-----BEGIN (?:[A-Z0-9]+ ){0,4}PRIVATE KEY-----/,
-  /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/,
-  /\bgithub_pat_[A-Za-z0-9_]{20,}/,
-  /\bgh[opusr]_[A-Za-z0-9]{20,}/,
-  /\bxox[baprs]-[A-Za-z0-9-]{10,}/,
-  /\bAKIA[0-9A-Z]{16}\b/,
-  /\bsk-[A-Za-z0-9_-]{16,}/,
-  /\b(?:Authorization|Proxy-Authorization|Cookie|Set-Cookie|X-Api-Key|X-Auth-Token|X-Amz-Security-Token)\s*:\s*[^\r\n]+/i,
-  /\bBearer\s+[A-Za-z0-9._~+/-]+=*/,
-  /["']?(?:api[_-]?key|access[_-]?key|secret[_-]?access[_-]?key|secret[_-]?key|client[_-]?secret|access[_-]?token|refresh[_-]?token|auth[_-]?token|token|secret|password|passwd|pwd)["']?\s*:\s*["']?[^"',}\]\s]+/i,
-  /\b(?:api[_-]?key|access[_-]?key|secret[_-]?access[_-]?key|secret[_-]?key|client[_-]?secret|access[_-]?token|refresh[_-]?token|auth[_-]?token|token|secret|password|passwd|pwd)=[^\s&"']+/i,
+/** Which high-confidence secret signature a text matched. */
+export type SecretMaterialRule =
+  | 'private_key'
+  | 'jwt'
+  | 'github_token'
+  | 'slack_token'
+  | 'aws_access_key'
+  | 'api_key_prefix'
+  | 'auth_header'
+  | 'bearer_token'
+  | 'credential_assignment';
+
+const SECRET_RULES: readonly {
+  readonly rule: SecretMaterialRule;
+  readonly pattern: RegExp;
+}[] = [
+  {
+    rule: 'private_key',
+    pattern: /-----BEGIN (?:[A-Z0-9]+ ){0,4}PRIVATE KEY-----/,
+  },
+  {
+    rule: 'jwt',
+    pattern:
+      /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/,
+  },
+  { rule: 'github_token', pattern: /\bgithub_pat_[A-Za-z0-9_]{20,}/ },
+  { rule: 'github_token', pattern: /\bgh[opusr]_[A-Za-z0-9]{20,}/ },
+  { rule: 'slack_token', pattern: /\bxox[baprs]-[A-Za-z0-9-]{10,}/ },
+  { rule: 'aws_access_key', pattern: /\bAKIA[0-9A-Z]{16}\b/ },
+  { rule: 'api_key_prefix', pattern: /\bsk-[A-Za-z0-9_-]{16,}/ },
+  {
+    rule: 'auth_header',
+    pattern:
+      /\b(?:Authorization|Proxy-Authorization|Cookie|Set-Cookie|X-Api-Key|X-Auth-Token|X-Amz-Security-Token)\s*:\s*[^\r\n]+/i,
+  },
+  { rule: 'bearer_token', pattern: /\bBearer\s+[A-Za-z0-9._~+/-]+=*/ },
+  {
+    rule: 'credential_assignment',
+    pattern:
+      /["']?(?:api[_-]?key|access[_-]?key|secret[_-]?access[_-]?key|secret[_-]?key|client[_-]?secret|access[_-]?token|refresh[_-]?token|auth[_-]?token|token|secret|password|passwd|pwd)["']?\s*:\s*["']?[^"',}\]\s]+/i,
+  },
+  {
+    rule: 'credential_assignment',
+    pattern:
+      /\b(?:api[_-]?key|access[_-]?key|secret[_-]?access[_-]?key|secret[_-]?key|client[_-]?secret|access[_-]?token|refresh[_-]?token|auth[_-]?token|token|secret|password|passwd|pwd)=[^\s&"']+/i,
+  },
 ];
+
+/**
+ * The first high-confidence secret signature in text, or null. Names the
+ * rule only: callers report the rule, never the matched text.
+ */
+export function findSecretMaterialRule(
+  text: string,
+): SecretMaterialRule | null {
+  if (text.length === 0) return null;
+  for (const { rule, pattern } of SECRET_RULES) {
+    if (pattern.test(text)) return rule;
+  }
+  return null;
+}
 
 /** Return whether text contains a high-confidence secret signature. */
 export function containsSecretMaterial(text: string): boolean {
-  return (
-    text.length > 0 && SECRET_PATTERNS.some((pattern) => pattern.test(text))
-  );
+  return findSecretMaterialRule(text) !== null;
 }

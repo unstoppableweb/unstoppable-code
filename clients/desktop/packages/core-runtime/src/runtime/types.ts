@@ -26,6 +26,24 @@ export interface CanopyHandlerContext {
    * stored, logged or forwarded beyond the same-host local worker.
    */
   execution?: CanopyHostExecution;
+  /**
+   * The client lease a lease-bound call was admitted under, set only by the
+   * host transport that checked it (CAN-4730 E2-G).
+   */
+  lease?: CanopyAdmittedLease;
+  /**
+   * Set by a core wrapper around a forwarded worker instruction (CAN-4730
+   * E2-G). Once the request is on its way, the worker binding hands back a
+   * promise that resolves when the worker itself has settled it: its reply,
+   * even one arriving after a cancel or deadline already rejected the call,
+   * or the binding's stop.
+   */
+  workerSettlement?: (settled: Promise<void>) => void;
+}
+
+/** A client lease the host transport admitted a call under. */
+export interface CanopyAdmittedLease {
+  readonly leaseId: string;
 }
 
 export type CanopyDispatcherQueryName<D extends CanopyQueryDefinitionMap> =
@@ -152,6 +170,8 @@ export interface CanopyQueryOptions {
   signal?: AbortSignal;
   /** Refused unless the operation accepts host execution (CAN-5496). */
   execution?: CanopyHostExecution;
+  /** Set only by the host transport that checked the lease (CAN-4730 E2-G). */
+  lease?: CanopyAdmittedLease;
 }
 export interface CanopyInstructionOptions {
   caller: CanopyCallerDescriptor;
@@ -159,6 +179,8 @@ export interface CanopyInstructionOptions {
   signal?: AbortSignal;
   /** Refused unless the operation accepts host execution (CAN-5496). */
   execution?: CanopyHostExecution;
+  /** Set only by the host transport that checked the lease (CAN-4730 E2-G). */
+  lease?: CanopyAdmittedLease;
 }
 export interface CanopyStreamOptions<
   Frame = CanopyStreamFrame<unknown, unknown>,

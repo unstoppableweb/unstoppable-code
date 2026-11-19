@@ -21,6 +21,11 @@ import {
   type CoreCoworkInvoker,
   type CoreCoworkStream,
 } from './invoker';
+import { createKeyedWriteHistory } from './keyed-write-outcome';
+import {
+  CoreCoworkOutcomeUnknownError,
+  isUnknownWriteError,
+} from './unknown-outcome';
 
 export type CoreCoworkStatus = 'disabled' | 'offline' | 'online';
 
@@ -87,9 +92,11 @@ export interface CoreCoworkTask {
   /**
    * A task this window started creating and the web core has not listed
    * yet (CAN-6098): `pending` while its create runs, `failed` once it was
-   * refused, with `creationError` saying why. Absent for a listed task.
+   * refused, with `creationError` saying why, and `unknown` once its answer
+   * never came, so it may exist: the project is read again, and a listing
+   * that holds it settles it (CAN-7196). Absent for a listed task.
    */
-  creation?: 'pending' | 'failed';
+  creation?: 'pending' | 'failed' | 'unknown';
   creationError?: string;
   /**
    * A task deleted on another device whose draft this window keeps
@@ -138,12 +145,13 @@ export interface CoreCoworkState {
   /**
    * Starts a task and returns it at once, as a `pending` row, while
    * `core.chat.create` and the project's re-read settle behind it
-   * (CAN-6098). A refused create leaves the row `failed`.
+   * (CAN-6098). A refused create leaves the row `failed`, and one whose
+   * answer never came leaves it `unknown` (CAN-7196).
    */
   beginTask(workspaceId: string, title?: string): CoreCoworkTaskStart;
   /**
-   * Creates a `failed` task again under the same id, so a create that did
-   * land, slowly, is replayed and never doubled.
+   * Creates a `failed` or `unknown` task again under the same id, so a
+   * create that did land, slowly, is replayed and never doubled.
    */
   retryTask(workspaceId: string, worktreeId: string): Promise<CoreCoworkTask>;
   /**
@@ -377,6 +385,9 @@ export function createCoreCoworkStore(
   let refreshQueue: Promise<void> = Promise.resolve();
   /** Each task's create in flight, by task key, for what waits on it. */
   const creations = new Map<string, Promise<CoreCoworkTask>>();
+  // Tasks whose create ended unknown: Try again goes under the same id, so a
+  // refusal of the retry leaves it unknown too (CAN-7196).
+  const unknownCreations = createKeyedWriteHistory();
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   /** Reconnects tried since the store was last online. */
   let reconnects = 0;
@@ -539,19 +550,49 @@ export function createCoreCoworkStore(
         readonly method: 'core.chat.archive' | 'core.chat.delete';
         readonly action: Record<string, unknown>;
         readonly failure: string;
+        /** What a change that may have landed, and no listing settled, says. */
+        readonly unknown: string;
       },
     ): Promise<void> => {
       const generation = get().generation;
       if (get().status !== 'online')
         throw new Error('Cloud chats are offline.');
       const commandId = globalThis.crypto.randomUUID();
-      const value = await call(generation, change.method, {
-        projectId: workspaceId,
-        worktreeId,
-        commandId,
-        _meta: { idempotencyKey: commandId },
-        action: change.action,
-      });
+      const key = projectKey(workspaceId);
+      let value: unknown;
+      try {
+        value = await call(generation, change.method, {
+          projectId: workspaceId,
+          worktreeId,
+          commandId,
+          _meta: { idempotencyKey: commandId },
+          action: change.action,
+        });
+      } catch (error) {
+        if (!isUnknownWriteError(error)) throw error;
+        // Its answer never came, so it may have landed: the project's
+        // listing says whether it did, and nothing sends it again
+        // (CAN-7196). A task still listed wasn't removed.
+        const read = await serialized(() =>
+          rereadProject(generation, workspaceId),
+        ).then(
+          () => true,
+          () => false,
+        );
+        if (!read) {
+          // Read again later, as an event would have it.
+          pendingRereads.add(workspaceId);
+          scheduleReread(generation);
+          throw new CoreCoworkOutcomeUnknownError(change.unknown);
+        }
+        if (
+          get().tasksByProject[key]?.some(
+            (task) => task.worktreeId === worktreeId,
+          ) !== false
+        )
+          throw new Error(change.failure);
+        return;
+      }
       const result = CoreChatLifecycleResultSchema.parse(value);
       if (
         result.outcome !== 'applied' &&
@@ -559,7 +600,6 @@ export function createCoreCoworkStore(
         result.outcome !== 'not_found'
       )
         throw new Error(result.reason ?? change.failure);
-      const key = projectKey(workspaceId);
       const tasks = get().tasksByProject[key];
       if (tasks !== undefined)
         set({
@@ -636,6 +676,7 @@ export function createCoreCoworkStore(
       patchTask(task, { creation: 'pending', creationError: undefined });
       const run = (async (): Promise<CoreCoworkTask> => {
         await createChat(generation, task);
+        unknownCreations.settle(task.key);
         // The task exists from here: a failed re-read leaves it created, and
         // the project is re-read again as an event would have it.
         await serialized(() =>
@@ -669,6 +710,18 @@ export function createCoreCoworkStore(
             projectKey(task.workspaceId)
           ]?.find((each) => each.key === task.key);
           if (shown?.creation !== 'pending') return;
+          // Its answer never came, so it may exist: the project is read
+          // again, and a listing that holds it settles the row (CAN-7196).
+          if (
+            isUnknownWriteError(error) ||
+            unknownCreations.wasUnknown(task.key)
+          ) {
+            unknownCreations.markUnknown(task.key);
+            patchTask(task, { creation: 'unknown', creationError: undefined });
+            pendingRereads.add(task.workspaceId);
+            scheduleReread(generation);
+            return;
+          }
           patchTask(task, {
             creation: 'failed',
             creationError:
@@ -937,7 +990,7 @@ export function createCoreCoworkStore(
         const task = get().tasksByProject[projectKey(workspaceId)]?.find(
           (each) => each.key === taskKey(workspaceId, worktreeId),
         );
-        if (task?.creation !== 'failed')
+        if (task?.creation !== 'failed' && task?.creation !== 'unknown')
           return Promise.reject(
             new Error('This task is not waiting on a retry.'),
           );
@@ -1002,6 +1055,8 @@ export function createCoreCoworkStore(
           method: 'core.chat.archive',
           action: { type: 'chat.archive_tab', tabId: worktreeId },
           failure: 'The cloud chat was not archived.',
+          unknown:
+            "Couldn't confirm the task was archived. The list will show where it stands.",
         }),
 
       deleteTask: (workspaceId, worktreeId): Promise<void> =>
@@ -1013,6 +1068,8 @@ export function createCoreCoworkStore(
             mode: 'discard',
           },
           failure: 'The cloud task was not deleted.',
+          unknown:
+            "Couldn't confirm the task was deleted. The list will show where it stands.",
         }),
 
       listArchivedTasks: async (

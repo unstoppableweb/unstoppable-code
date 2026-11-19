@@ -245,6 +245,12 @@ export interface CanopyCapabilities {
    */
   readonly chatFileMentions?: boolean;
   /**
+   * The composer's `/` menu reads `catalog.invocables.list`, whose available
+   * rows are enabled through the chat's plugin selections. Optional and
+   * default-deny; cloud chats report it (CAN-5386).
+   */
+  readonly chatInvocableCatalog?: boolean;
+  /**
    * The chat can switch interface modes (the Claude Code terminal view) and
    * use the controls that need the local runtime or local files: the
    * directory picker, Linear ticket attach and editor selection chips.
@@ -327,6 +333,8 @@ export interface CanopyCapabilities {
   readonly localExecution: boolean;
   /** Can attach an interactive PTY (desktop or cloud; Remote Control only relays). */
   readonly terminalPty: boolean;
+  /** Terminal tab names persist across reloads, so desktop panel hosts offer Rename. Unset is default-deny. */
+  readonly terminalRename?: boolean;
   /** File-system reach for browse/read/edit. */
   readonly fileSystemAccess: FileSystemAccessLevel;
   /** On-device voice dictation (macOS desktop only). */
@@ -670,6 +678,13 @@ export interface CanopyCapabilities {
    * the child activity's unavailable state, never stale inline children.
    */
   readonly delegationTranscriptReads?: boolean;
+  /**
+   * Host serves the Subagents and subagent chat panels for a scope whose
+   * delegates don't run on this computer, from what its chats already hold:
+   * their delegate cards, transcripts and live delegate state (CAN-7133).
+   * Optional and default-deny: unset keeps both panels off for such a scope.
+   */
+  readonly subagentPanels?: boolean;
   /**
    * Host reads a paged child row's blocks through
    * `CanopyClient.transcripts.blocks`. Optional and default-deny: unset keeps

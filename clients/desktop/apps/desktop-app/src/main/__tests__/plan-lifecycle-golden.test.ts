@@ -6,6 +6,7 @@
 // change: re-record deliberately with
 // `pnpm test <this file> -u` and review the snapshot diff.
 import {
+  chmodSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -19,10 +20,20 @@ import {
   IPC_CHANNELS,
   SHARED_CONTAINER_VIEWER_PROJECT_ID,
   type TrackedPlanData,
+  type TrackedPlansUpdatedEvent,
 } from '@canopy/desktop-shared/types';
 import { getRemoteChannelDisposition } from '@canopy/desktop-shared/remote-control/channel-dispositions';
-import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
+import type {
+  CanopyCallerDescriptor,
+  WorkerPipelineHostRequest,
+} from '@canopy/protocol/canopy-core';
+import type { ExecutionPlanPersistenceHooks } from '@canopy/execution-engine/node/pipelines/executor/types';
 import type * as PlanPersistence from '../lib/plan-persistence';
+import type * as OwnerRequests from '../pipelines/pipeline-owner-requests';
+import type * as ExecutionRuntime from '../pipelines/execution-runtime';
+import type * as PlanMode from '../agents/plan-mode-tracked-plan';
+import type * as PlanExit from '../services/chat-state-plan-exit';
+import type * as InterfacePort from '../agents/agent-interface-port';
 import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
 import { controllerMayInvoke } from '../remote-control/host/controller-profile';
 import { relayAllows } from '../canopy-runtime/renderer-relay/surface-allowlist';
@@ -55,6 +66,32 @@ jest.mock('../lib/window-send', () => ({
     broadcasts.push({ channel, payload });
   },
 }));
+
+// The proposal-mode writer reads its chat through chat state; one plan-mode
+// tab stands in for it.
+const mockProposalTabs: Record<string, unknown>[] = [];
+jest.mock('../services/chat-state-service', () => ({
+  getChatStateService: (): unknown => ({
+    getState: (): Promise<unknown> =>
+      Promise.resolve({ tabsFile: { tabs: mockProposalTabs } }),
+    getCompatibilityTabs: (): Promise<unknown> =>
+      Promise.resolve({ tabs: mockProposalTabs }),
+    retirePlanReview: (): Promise<boolean> => Promise.resolve(true),
+    commitPlanExit: (): Promise<boolean> => Promise.resolve(true),
+  }),
+}));
+
+function isPlansUpdatedEvent(
+  value: unknown,
+): value is TrackedPlansUpdatedEvent {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'change' in value &&
+    'projectId' in value &&
+    'worktreeId' in value
+  );
+}
 
 const WORKSPACE_ID = 'golden-plans';
 const COWORK_ID = 'golden-cowork';
@@ -455,6 +492,113 @@ describe('tracked plan lifecycle (CAN-4165 golden)', () => {
         (p) => p.id,
       ),
     ).toEqual(before.map((p) => p.id));
+  });
+
+  // CAN-4165 PR 4b-2 pins what the worktree lifecycle writers announce, as
+  // they always have: removing a worktree's plans announces nothing, and
+  // installing restored plans fires one tracked-plans write and nothing else.
+  // Install has always replaced the destination file without reading it, so
+  // it also replaces a file that can't be read.
+  it("clears a worktree's plans silently and installs restored plans with one write event", async () => {
+    const other = { projectId: WORKSPACE_ID, worktreeId: 'golden-wt-restore' };
+    const file = join(
+      dataDir,
+      'workspaces',
+      WORKSPACE_ID,
+      'plans',
+      `${other.worktreeId}.json`,
+    );
+    await invoke(IPC_CHANNELS.trackedPlansCreate, {
+      ...other,
+      source: 'claude',
+      content: '# Before the split',
+    });
+    const archived = JSON.parse(readFileSync(plansFile(), 'utf8')) as {
+      plans: TrackedPlanData[];
+    };
+    const { getExecutionObservabilityIngest } =
+      await import('../observability/ingest');
+    const usage = jest
+      .spyOn(getExecutionObservabilityIngest(), 'recordUsageMetricEvent')
+      .mockImplementation(() => undefined);
+    const writes: { projectId: string; worktreeId: string; file: unknown }[] =
+      [];
+    const onWrite = (
+      projectId: string,
+      worktreeId: string,
+      written: unknown,
+    ): void => {
+      writes.push({ projectId, worktreeId, file: written });
+    };
+    const contentChanges: unknown[] = [];
+    const onContent = (plan: TrackedPlanData): void => {
+      contentChanges.push(plan.id);
+    };
+    const shareChanges: unknown[] = [];
+    const onShare = (plan: TrackedPlanData): void => {
+      shareChanges.push(plan.id);
+    };
+    persistence.addTrackedPlansWriteListener(onWrite);
+    persistence.addPlanContentChangeListener(onContent);
+    persistence.addPlanShareChangeListener(onShare);
+    windowSends.length = 0;
+    broadcasts.length = 0;
+    try {
+      await persistence.deleteTrackedPlansForWorktree(
+        other.projectId,
+        other.worktreeId,
+      );
+      expect(() => readFileSync(file, 'utf8')).toThrow();
+      expect(writes).toEqual([]);
+
+      await persistence.installRestoredTrackedPlans(
+        other.projectId,
+        other.worktreeId,
+        [],
+      );
+      expect(() => readFileSync(file, 'utf8')).toThrow();
+      expect(writes).toEqual([]);
+
+      await persistence.installRestoredTrackedPlans(
+        other.projectId,
+        other.worktreeId,
+        archived.plans,
+      );
+      const installed = archived.plans.map((plan) => ({
+        ...plan,
+        projectId: other.projectId,
+        worktreeId: other.worktreeId,
+      }));
+      expect(readFileSync(file, 'utf8')).toBe(
+        JSON.stringify({ version: 1, plans: installed }, null, 2),
+      );
+      expect(writes).toEqual([
+        { ...other, file: { version: 1, plans: installed } },
+      ]);
+
+      const damaged = '{"version":1,"plans":[{"id":"cut-off';
+      writeFileSync(file, damaged);
+      await persistence.installRestoredTrackedPlans(
+        other.projectId,
+        other.worktreeId,
+        archived.plans,
+      );
+      expect(readFileSync(file, 'utf8')).toBe(
+        JSON.stringify({ version: 1, plans: installed }, null, 2),
+      );
+      expect(writes).toHaveLength(2);
+
+      expect(usage).not.toHaveBeenCalled();
+      expect(contentChanges).toEqual([]);
+      expect(shareChanges).toEqual([]);
+      expect(windowSends).toEqual([]);
+      expect(broadcasts).toEqual([]);
+    } finally {
+      persistence.removeTrackedPlansWriteListener(onWrite);
+      persistence.removePlanContentChangeListener(onContent);
+      persistence.removePlanShareChangeListener(onShare);
+      usage.mockRestore();
+    }
   });
 
   // Changed on purpose in CAN-4165 PR 3b. Desktop used to store a plan with
@@ -892,6 +1036,555 @@ describe('tracked plans on core.plan (CAN-4165 equivalence)', () => {
     ).rejects.toThrow(
       `Tracked plans are not available for cowork project ${COWORK_ID}`,
     );
+  });
+});
+
+// CAN-4165 PR 4 (CAN-7295): the plan-mode agent and the pipeline writers
+// dispatch core.plan.* as their own principals, so each committed write is
+// announced like any other binding's.
+describe('plan-mode agent and pipeline plan writes on core.plan (CAN-7295)', () => {
+  const writers = { projectId: WORKSPACE_ID, worktreeId: 'golden-wt-writers' };
+  const PLAN_MODE: CanopyCallerDescriptor = {
+    principalId: 'desktop-agent-plan-mode',
+    clientInstanceId: 'electron-main-plan-mode',
+    authorityId: 'local-desktop',
+    interfaceKind: 'desktop',
+    grants: ['core.plan.write'],
+  };
+  const PIPELINE_RUNTIME: CanopyCallerDescriptor = {
+    principalId: 'desktop-pipeline-plans',
+    clientInstanceId: 'electron-main-pipeline-runtime',
+    authorityId: 'local-desktop',
+    interfaceKind: 'desktop',
+    grants: ['core.plan.write'],
+  };
+  const pipelineOwner = (executionId: string): CanopyCallerDescriptor => ({
+    ...PIPELINE_RUNTIME,
+    clientInstanceId: `pipeline-owner:${executionId}`,
+  });
+  const relayWriter: { caller: CanopyCallerDescriptor } = {
+    caller: { ...RENDERER, grants: ['core.plan.write'] },
+  };
+  let owner: typeof OwnerRequests;
+  let planMode: typeof PlanMode;
+  let planExit: typeof PlanExit;
+  let interfaces: typeof InterfacePort;
+  let executionRuntime: typeof ExecutionRuntime;
+
+  function ownerRun(
+    executionId: string,
+    target: { projectId: string; worktreeId: string } = writers,
+  ): OwnerRequests.PipelineOwnerRun {
+    return {
+      executionId,
+      scope: () => ({ ...target, folder: root }),
+      secretValues: [],
+    };
+  }
+
+  function ownerRequest(
+    executionId: string,
+    request: WorkerPipelineHostRequest['request'],
+  ): WorkerPipelineHostRequest {
+    return {
+      requestId: `owner-${executionId}-${Math.random()}`,
+      executionId,
+      jobId: 'job',
+      stepId: 'step',
+      childExecutionId: null,
+      attempt: 0,
+      iteration: 0,
+      owner: null,
+      deadlineAt: new Date(Date.now() + 60_000).toISOString(),
+      request,
+    };
+  }
+
+  function ownerPlanId(settlement: { result: unknown }): string {
+    const { result } = settlement;
+    if (
+      typeof result === 'object' &&
+      result !== null &&
+      'value' in result &&
+      typeof result.value === 'object' &&
+      result.value !== null &&
+      'planId' in result.value &&
+      typeof result.value.planId === 'string'
+    )
+      return result.value.planId;
+    throw new Error(`no plan id in ${JSON.stringify(result)}`);
+  }
+
+  function planModeUpsert(
+    sessions: PlanMode.PlanModeSessionPlans,
+    plan: string,
+  ): Promise<TrackedPlanData> {
+    return planMode.upsertPlanModeTrackedPlan(
+      sessions,
+      'golden-session',
+      writers.projectId,
+      writers.worktreeId,
+      'golden-plan-mode-chat',
+      'claude',
+      { plan },
+    );
+  }
+
+  function proposePlan(plan: string): Promise<void> {
+    return planExit.publishOpenCodePlanProposal({
+      ...writers,
+      chatId: 'golden-proposal-chat',
+      plan,
+      isCurrent: () => true,
+      presentPlanExit: (event): void =>
+        interfaces.windowAgentInterfacePort(() => null).presentPlanExit(event),
+    });
+  }
+
+  function inProcessHooks(): ExecutionPlanPersistenceHooks {
+    return must(
+      executionRuntime.createElectronExecutionRuntime().planPersistence,
+    );
+  }
+
+  /** The `tracked-plans:updated` events broadcast since the case began. */
+  function announced(): TrackedPlansUpdatedEvent[] {
+    return broadcasts
+      .filter(({ channel }) => channel === IPC_CHANNELS.trackedPlansUpdated)
+      .flatMap(({ payload }) =>
+        isPlansUpdatedEvent(payload) ? [payload] : [],
+      );
+  }
+
+  beforeAll(async () => {
+    owner = await import('../pipelines/pipeline-owner-requests');
+    planMode = await import('../agents/plan-mode-tracked-plan');
+    planExit = await import('../services/chat-state-plan-exit');
+    interfaces = await import('../agents/agent-interface-port');
+    executionRuntime = await import('../pipelines/execution-runtime');
+    const access = await import('../canopy-runtime/desktop-runtime-access');
+    access.setDesktopCanopyRuntime(dispatcher);
+  });
+
+  afterAll(async () => {
+    const access = await import('../canopy-runtime/desktop-runtime-access');
+    access.setDesktopCanopyRuntime(null);
+  });
+
+  beforeEach(() => {
+    mockProposalTabs.length = 0;
+    mockProposalTabs.push({
+      id: 'golden-proposal-chat',
+      planMode: true,
+      title: 'Proposal',
+    });
+  });
+
+  it("dispatches a plan-mode agent's plan as its own principal with only core.plan.write", async () => {
+    const sessions: PlanMode.PlanModeSessionPlans = new Map();
+    const created = await planModeUpsert(sessions, '# Plan mode\n\nFirst.');
+    const revised = await planModeUpsert(sessions, '# Plan mode\n\nSecond.');
+    expect(revised.id).toBe(created.id);
+    expect(revised.latestRevisionNumber).toBe(created.latestRevisionNumber + 1);
+    expect(revised).toMatchObject({
+      source: 'claude',
+      reviewStatus: 'pending',
+    });
+    expect(dispatched()).toEqual([
+      { name: 'core.plan.create', caller: PLAN_MODE },
+      { name: 'core.plan.update', caller: PLAN_MODE },
+    ]);
+  });
+
+  it('dispatches pipeline plan writes as the pipeline principal, in process and for a daemon run', async () => {
+    const hooks = inProcessHooks();
+    const started = await hooks.createTrackedPlan({
+      ...writers,
+      source: 'pipeline',
+      content: '# In process',
+      reviewStatus: 'approved',
+      linkedExecutionId: 'execution-in-process',
+    });
+    await hooks.updateTrackedPlan({
+      ...writers,
+      planId: started.id,
+      linkedExecutionId: 'execution-in-process-2',
+    });
+    await hooks.updateTrackedPlan({
+      ...writers,
+      planId: started.id,
+      source: 'pipeline',
+      reviewStatus: 'approved',
+      approvedAt: new Date().toISOString(),
+      dismissedAt: null,
+      linkedExecutionId: 'execution-in-process-2',
+    });
+    const context = new owner.PipelineOwnerRunContext(
+      ownerRun('execution-owner'),
+    );
+    const kept = ownerPlanId(
+      await context.apply(
+        ownerRequest('execution-owner', {
+          action: 'owner.plan.create',
+          content: '# Daemon run',
+        }),
+        new AbortController().signal,
+      ),
+    );
+    const approved = await context.apply(
+      ownerRequest('execution-owner', {
+        action: 'owner.plan.update',
+        planId: kept,
+        content: '# Daemon run, refined',
+        approve: true,
+      }),
+      new AbortController().signal,
+    );
+    expect(approved.result).toMatchObject({ status: 'owner' });
+    await context.close(null);
+    expect(dispatched()).toEqual([
+      { name: 'core.plan.create', caller: PIPELINE_RUNTIME },
+      { name: 'core.plan.update', caller: PIPELINE_RUNTIME },
+      { name: 'core.plan.update', caller: PIPELINE_RUNTIME },
+      { name: 'core.plan.create', caller: pipelineOwner('execution-owner') },
+      { name: 'core.plan.update', caller: pipelineOwner('execution-owner') },
+    ]);
+    const stored = await invoke<TrackedPlanData | null>(
+      IPC_CHANNELS.trackedPlansGet,
+      { ...writers, planId: kept },
+    );
+    expect(must(stored)).toMatchObject({
+      source: 'pipeline',
+      reviewStatus: 'approved',
+      content: '# Daemon run, refined',
+    });
+  });
+
+  it("announces each writer's committed write exactly once, and an IPC write not at all", async () => {
+    const relayShape = async (): Promise<TrackedPlansUpdatedEvent> => {
+      const plan = await invoke<TrackedPlanData>(
+        IPC_CHANNELS.trackedPlansCreate,
+        { ...writers, source: 'claude', content: '# Relay shape' },
+      );
+      broadcasts.length = 0;
+      await dispatcher.instruction(
+        'core.plan.update',
+        { scope: writers, planId: plan.id, content: '# Relay shape, edited' },
+        { ...relayWriter, metadata: { idempotencyKey: 'writers-relay-shape' } },
+      );
+      const [event] = announced();
+      broadcasts.length = 0;
+      return must(event);
+    };
+    const relayEvent = await relayShape();
+    const steps: { step: string; pushes: number; planId: string }[] = [];
+    /** Runs one write and records what it announced, checked against the store. */
+    const step = async (
+      name: string,
+      write: () => Promise<string>,
+    ): Promise<string> => {
+      const before = announced().length;
+      const planId = await write();
+      const events = announced().slice(before);
+      steps.push({ step: name, pushes: events.length, planId });
+      for (const event of events) {
+        // No more than a relay write's push carries: the stored plan, as a
+        // controller can already read it, and nothing else.
+        expect(Object.keys(event).sort()).toEqual(
+          Object.keys(relayEvent).sort(),
+        );
+        expect(event).toMatchObject({ ...writers, change: 'upsert' });
+        const stored = await invoke<TrackedPlanData | null>(
+          IPC_CHANNELS.trackedPlansGet,
+          { ...writers, planId },
+        );
+        expect(event.change === 'upsert' ? event.plan : null).toEqual(
+          must(stored),
+        );
+      }
+      return planId;
+    };
+
+    const ipc = await step('IPC create', async () => {
+      const plan = await invoke<TrackedPlanData>(
+        IPC_CHANNELS.trackedPlansCreate,
+        { ...writers, source: 'claude', content: '# From IPC' },
+      );
+      return plan.id;
+    });
+    const sessions: PlanMode.PlanModeSessionPlans = new Map();
+    const planMode = await step(
+      'plan-mode create',
+      async () => (await planModeUpsert(sessions, '# Plan mode')).id,
+    );
+    await step(
+      'plan-mode revise',
+      async () => (await planModeUpsert(sessions, '# Plan mode, revised')).id,
+    );
+    const proposal = await step('proposal-mode create', async () => {
+      await proposePlan('# Proposal');
+      const proposed = await invoke<TrackedPlanData[]>(
+        IPC_CHANNELS.trackedPlansList,
+        writers,
+      );
+      return must(proposed.find((plan) => plan.source === 'opencode')).id;
+    });
+    const hooks = inProcessHooks();
+    const inProcess = await step(
+      'in-process create',
+      async () =>
+        (
+          await hooks.createTrackedPlan({
+            ...writers,
+            source: 'pipeline',
+            content: '# In process',
+            reviewStatus: 'approved',
+            linkedExecutionId: 'execution-writers',
+          })
+        ).id,
+    );
+    await step('in-process link', async () => {
+      await hooks.updateTrackedPlan({
+        ...writers,
+        planId: inProcess,
+        linkedExecutionId: 'execution-writers-2',
+      });
+      return inProcess;
+    });
+    await step('in-process approval', async () => {
+      await hooks.updateTrackedPlan({
+        ...writers,
+        planId: inProcess,
+        source: 'pipeline',
+        reviewStatus: 'approved',
+        approvedAt: new Date().toISOString(),
+        dismissedAt: null,
+        linkedExecutionId: 'execution-writers-2',
+      });
+      return inProcess;
+    });
+    const context = new owner.PipelineOwnerRunContext(
+      ownerRun('execution-daemon'),
+    );
+    const ownerPlan = await step('owner create', async () =>
+      ownerPlanId(
+        await context.apply(
+          ownerRequest('execution-daemon', {
+            action: 'owner.plan.create',
+            content: '# Daemon',
+          }),
+          new AbortController().signal,
+        ),
+      ),
+    );
+    await step('owner update', async () => {
+      await context.apply(
+        ownerRequest('execution-daemon', {
+          action: 'owner.plan.update',
+          planId: ownerPlan,
+          approve: true,
+        }),
+        new AbortController().signal,
+      );
+      return ownerPlan;
+    });
+    await context.close(null);
+    await step('relay update', async () => {
+      await dispatcher.instruction(
+        'core.plan.update',
+        { scope: writers, planId: ipc, content: '# From the relay' },
+        { ...relayWriter, metadata: { idempotencyKey: 'writers-relay-1' } },
+      );
+      return ipc;
+    });
+    await step('IPC delete', async () => {
+      await invoke(IPC_CHANNELS.trackedPlansDelete, {
+        ...writers,
+        planId: ipc,
+      });
+      return ipc;
+    });
+
+    expect(steps.map(({ step: name, pushes }) => [name, pushes])).toEqual([
+      ['IPC create', 0],
+      ['plan-mode create', 1],
+      ['plan-mode revise', 1],
+      ['proposal-mode create', 1],
+      ['in-process create', 1],
+      ['in-process link', 1],
+      ['in-process approval', 1],
+      ['owner create', 1],
+      ['owner update', 1],
+      ['relay update', 1],
+      ['IPC delete', 0],
+    ]);
+    const perPlan = (planId: string): number =>
+      announced().filter(
+        (event) => event.change === 'upsert' && event.plan.id === planId,
+      ).length;
+    expect({
+      ipc: perPlan(ipc),
+      planMode: perPlan(planMode),
+      proposal: perPlan(proposal),
+      inProcess: perPlan(inProcess),
+      owner: perPlan(ownerPlan),
+    }).toEqual({ ipc: 1, planMode: 2, proposal: 1, inProcess: 3, owner: 2 });
+    expect(announced()).toHaveLength(9);
+  });
+
+  it('refuses a renderer or a paired controller that names a host writer, and attributes its call to itself', async () => {
+    const sessions: PlanMode.PlanModeSessionPlans = new Map();
+    await planModeUpsert(sessions, '# Host writer');
+    const { deriveDesktopIpcCaller: deriveCaller } =
+      await import('../canopy-runtime/desktop-ipc-caller');
+    const { createRemoteCoreAccess } =
+      await import('../remote-control/host/remote-core-access');
+    const forged = {
+      ...writers,
+      source: 'pipeline',
+      content: '# Forged',
+      principalId: 'desktop-pipeline-plans',
+      clientInstanceId: 'electron-main-pipeline-runtime',
+      authorityId: 'local-desktop',
+      caller: PIPELINE_RUNTIME,
+    };
+    const appContents = {
+      id: 41,
+      mainFrame: {
+        url: 'file:///app/index.html',
+        detached: false,
+        isDestroyed: (): boolean => false,
+      },
+      getURL: (): string => 'file:///app/index.html',
+      isDestroyed: (): boolean => false,
+    };
+    const bridgeContents = {
+      ...appContents,
+      id: 42,
+      mainFrame: { ...appContents.mainFrame },
+    };
+    const callerOptions = {
+      getAppWindows: (): Array<{
+        isDestroyed(): boolean;
+        webContents: typeof appContents;
+      }> => [{ isDestroyed: (): boolean => false, webContents: appContents }],
+      packagedRendererUrls: ['file:///app/index.html'],
+      resolveRemoteBridgeSender: (sender: { id: number }): string | null =>
+        sender.id === bridgeContents.id ? 'desktop-pipeline-plans' : null,
+    };
+    // The renderer: its caller comes from the sending frame, never the request.
+    ipcCaller = deriveCaller(
+      { sender: appContents, senderFrame: appContents.mainFrame },
+      callerOptions,
+    );
+    await invoke(IPC_CHANNELS.trackedPlansCreate, forged);
+    // A paired controller whose device id is a host writer's principal.
+    ipcCaller = deriveCaller(
+      { sender: bridgeContents, senderFrame: bridgeContents.mainFrame },
+      callerOptions,
+    );
+    await invoke(IPC_CHANNELS.trackedPlansCreate, forged);
+    // A frame that is no app window is refused before any dispatch.
+    const stray = {
+      ...appContents,
+      id: 43,
+      mainFrame: { ...appContents.mainFrame },
+    };
+    expect(() =>
+      deriveCaller(
+        { sender: stray, senderFrame: stray.mainFrame },
+        callerOptions,
+      ),
+    ).toThrow('Untrusted desktop IPC sender.');
+    // Remote Control's core access serves no plan write, whatever it names.
+    const remoteCore = createRemoteCoreAccess(() => dispatcher);
+    await expect(
+      remoteCore.call('golden-device', 'core.plan.create', 1, {
+        scope: writers,
+        source: 'pipeline',
+        content: '# Forged',
+        caller: PIPELINE_RUNTIME,
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'capability_unavailable' },
+    });
+    expect(dispatched()).toEqual([
+      { name: 'core.plan.create', caller: PLAN_MODE },
+      {
+        name: 'core.plan.create',
+        caller: {
+          principalId: 'local-desktop-user',
+          clientInstanceId: 'electron-web-contents:41',
+          authorityId: 'local-desktop',
+          interfaceKind: 'desktop',
+          grants: ['core.plan.write'],
+        },
+      },
+      {
+        name: 'core.plan.create',
+        caller: {
+          principalId: 'remote-device:desktop-pipeline-plans',
+          clientInstanceId: 'remote-bridge:42',
+          authorityId: 'local-desktop',
+          interfaceKind: 'desktop',
+          grants: ['core.plan.write'],
+        },
+      },
+    ]);
+    // Nothing the host writer module exports is a caller anyone could pass.
+    const exported: unknown[] = Object.values(
+      await import('../canopy-runtime/plan-host-writers'),
+    );
+    for (const value of exported)
+      expect(JSON.stringify(value) ?? '').not.toMatch(
+        /desktop-agent-plan-mode|desktop-pipeline-plans/,
+      );
+  });
+
+  it('keeps refusing agent and pipeline plan writes where plans are refused, with the errors they always had', async () => {
+    const cowork = { projectId: COWORK_ID, worktreeId: WORKTREE_ID };
+    const context = new owner.PipelineOwnerRunContext(
+      ownerRun('execution-cowork', cowork),
+    );
+    const refused = await context.apply(
+      ownerRequest('execution-cowork', {
+        action: 'owner.plan.create',
+        content: '# Cowork',
+      }),
+      new AbortController().signal,
+    );
+    expect(refused.result).toMatchObject({
+      status: 'failure',
+      message: 'The app could not answer this workflow step.',
+    });
+    await context.close(null);
+    await expect(
+      inProcessHooks().createTrackedPlan({
+        ...cowork,
+        source: 'pipeline',
+        content: '# Cowork',
+      }),
+    ).rejects.toThrow(
+      `Tracked plans are not available for cowork project ${COWORK_ID}`,
+    );
+    // A store that cannot be written keeps its errno code for the run's
+    // plan_persist_failure_code (CAN-7118).
+    const plansDir = join(dataDir, 'workspaces', WORKSPACE_ID, 'plans');
+    chmodSync(plansDir, 0o500);
+    try {
+      await expect(
+        inProcessHooks().createTrackedPlan({
+          projectId: WORKSPACE_ID,
+          worktreeId: 'golden-wt-read-only',
+          source: 'pipeline',
+          content: '# Read-only',
+        }),
+      ).rejects.toMatchObject({ code: 'EACCES' });
+    } finally {
+      chmodSync(plansDir, 0o700);
+    }
+    expect(broadcasts).toEqual([]);
   });
 });
 

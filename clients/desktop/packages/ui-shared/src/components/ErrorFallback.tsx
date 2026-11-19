@@ -2,6 +2,7 @@
 
 import { Component, type JSX, type ReactNode } from 'react';
 import type { AppErrorPresentation } from '@canopy/protocol/app-errors';
+import { recordReportUnavailable } from '../lib/report-unavailable';
 import { AppErrorDetails } from './AppErrorDetails';
 import { Disclosure } from './Disclosure';
 import { ErrorState } from './StatusBlocks';
@@ -37,13 +38,19 @@ export interface ErrorFallbackProps {
 
 /** Details are optional: losing them must never take the recovery with them. */
 class ErrorFallbackDetailsBoundary extends Component<
-  { readonly children: ReactNode },
+  { readonly children: ReactNode; readonly referenceId?: string },
   { readonly failed: boolean }
 > {
   override state = { failed: false };
 
   static getDerivedStateFromError(): { failed: boolean } {
     return { failed: true };
+  }
+
+  override componentDidCatch(): void {
+    // Details are gone for this defect: record that once per defect, with a
+    // fixed source only.
+    recordReportUnavailable(this.props.referenceId);
   }
 
   override render(): ReactNode {
@@ -55,7 +62,8 @@ class ErrorFallbackDetailsBoundary extends Component<
  * The one display of a caught render failure on desktop and web. It takes the
  * place of what failed: its recovery first, `Report this` beside it, and the
  * reference ID in a closed `Details`. Recording and lifecycle belong to the
- * boundary around it, so rendering this reports nothing.
+ * boundary around it, so rendering this reports nothing beyond Details that
+ * failed to render.
  */
 export function ErrorFallback({
   layout,
@@ -90,7 +98,10 @@ export function ErrorFallback({
           secondaryAction={reportAction}
           footer={
             presentation ? (
-              <ErrorFallbackDetailsBoundary key={presentation.referenceId}>
+              <ErrorFallbackDetailsBoundary
+                key={presentation.referenceId}
+                referenceId={presentation.referenceId}
+              >
                 <Disclosure
                   label="Details"
                   className="max-w-full items-center"

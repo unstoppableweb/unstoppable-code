@@ -32,6 +32,7 @@ export function usePanelTabLiveReorder({
   stripRef,
   setDropIndicatorIndex,
   getTabTitle,
+  isTabTitlePrivate,
 }: PanelTabLiveReorderHost): PanelTabLiveReorderHandle {
   // The live reorder of the tab being dragged, if any, and whether its drop
   // is waiting for the reordered tabs to render.
@@ -184,6 +185,7 @@ export function usePanelTabLiveReorder({
         tabs: stripElements,
         grabClientX: event.clientX,
         title: getTabTitle?.(draggedTab) ?? draggedTab.title,
+        maskTitle: isTabTitlePrivate?.(draggedTab) === true,
       });
       if (live === null) {
         return;

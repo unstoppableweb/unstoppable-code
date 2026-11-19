@@ -485,7 +485,13 @@ test('Run on keeps each destination on this computer and starts a cloud run in t
     // and once its answer was lost, resends it under its key; the person is
     // told it may have started.
     cloud.state.preparing = 1;
-    const resentUnderItsKey = async (refused) => {
+    // Runs the task's cloud run again and checks the resend went under the
+    // held key. The count is read before Run is pressed: the resend leaves
+    // in the click's handler, so its refusal can be in before the click
+    // returns.
+    const resendsUnderItsKey = async () => {
+      const refused = cloud.state.refusedStarts.length;
+      await runTaskInCloud();
       await expect
         .poll(() => cloud.state.refusedStarts.length)
         .toBe(refused + 1);
@@ -509,15 +515,12 @@ test('Run on keeps each destination on this computer and starts a cloud run in t
     await expect(
       window.getByTestId('pipeline-trigger-modal-body'),
     ).toBeHidden();
-    await runTaskInCloud();
-    await resentUnderItsKey(cloud.state.refusedStarts.length);
+    await resendsUnderItsKey();
     lost.release();
     await expect(
       window.getByText('The cloud run may have started.'),
     ).toBeVisible({ timeout: 15_000 });
-    const refused = cloud.state.refusedStarts.length;
-    await runTaskInCloud();
-    await resentUnderItsKey(refused);
+    await resendsUnderItsKey();
 
     // The choice is remembered for this workflow.
     await openRunDialog(window, app, CLOUD_WORKFLOW);

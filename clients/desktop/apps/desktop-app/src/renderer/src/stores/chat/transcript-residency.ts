@@ -31,6 +31,7 @@ import {
   hasWorkflowLaunches,
 } from '@/components/subagents/workflow-run-launches';
 import type { ChatInterestChatRef } from '@canopy/desktop-shared/types';
+import { chatsOwnLatestRuns } from '@/cloud-chats/cloud-delegation-cards';
 import { isUnrefableTimeout, loadingKeys } from './hydration';
 import { hasPendingTrackedPlanReview } from './plan-utils';
 import { chatScopeKey } from './revisioned-sync';
@@ -322,6 +323,25 @@ export function isChatTranscriptPinnedByState(
  * tab is unloaded, the summary an eviction kept. The two cover disjoint rows,
  * so counts add and workflow runs union.
  */
+/**
+ * A chat's own delegate cards' newest runs, with what an eviction of this
+ * still-unloaded tab kept (CAN-7133).
+ */
+export function ownDelegationRunsOf(
+  tab: ChatTab,
+): Readonly<Record<string, number>> {
+  const loaded = chatsOwnLatestRuns(tab.messages);
+  const saved =
+    tab.transcriptLoaded === false
+      ? tab.evictedSubagentRoot?.ownDelegationRuns
+      : undefined;
+  if (saved === undefined) return loaded;
+  const merged: Record<string, number> = { ...saved };
+  for (const [id, run] of Object.entries(loaded))
+    merged[id] = Math.max(merged[id] ?? 0, run);
+  return merged;
+}
+
 export function subagentRootSummary(
   tab: ChatTab,
   backgroundStatusFor?: Parameters<typeof loadedSubagentSummary>[1],
@@ -380,8 +400,17 @@ export function evictChatTabTranscript(tab: ChatTab): ChatTab {
   // earlier eviction of this still-unloaded tab kept.
   delete evicted.evictedSubagentRoot;
   const summary = subagentRootSummary(tab);
-  if (summary.native.hasNativeAgentBlocks || summary.hasWorkflowLaunches) {
-    evicted.evictedSubagentRoot = summary;
+  const ownDelegationRuns = ownDelegationRunsOf(tab);
+  const hasOwnDelegates = Object.keys(ownDelegationRuns).length > 0;
+  if (
+    summary.native.hasNativeAgentBlocks ||
+    summary.hasWorkflowLaunches ||
+    hasOwnDelegates
+  ) {
+    evicted.evictedSubagentRoot = {
+      ...summary,
+      ...(hasOwnDelegates ? { ownDelegationRuns } : {}),
+    };
   }
   return evicted;
 }

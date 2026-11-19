@@ -116,6 +116,7 @@ jest.mock('../../lib/space-notification-gate', () => ({
 import {
   AutomationAccountUnavailableError,
   assertAutomationAccountsReady,
+  assertWorkflowStepAccountsReady,
 } from '../automation-account-preflight';
 import { withAutomationSendAs } from '@canopy/ui-app/capability/accountMcpRows';
 import { resolveAutomationPromptPlugins } from '../../agent-messaging/turn-override';
@@ -534,5 +535,185 @@ describe('a deleted legacy account stops the run (CAN-6233)', () => {
         pluginCuratedKeys: ['slack'],
       }),
     ).toEqual([]);
+  });
+  it("still stops a run whose own legacy account ref's connection is gone (CAN-7186)", async () => {
+    mockConnections = [globex];
+    const merged = await resolveAutomationPromptPlugins(
+      {
+        collectionIds: [],
+        skillRefs: [],
+        pluginRefs: [],
+        mcpServerRefs: [ref('acct-globex')],
+      },
+      undefined,
+      {
+        collectionIds: [],
+        skillRefs: [],
+        pluginRefs: [],
+        mcpServerRefs: [
+          { serverId: 'account:conn-default', configId: 'default' },
+        ],
+      },
+    );
+    await expect(
+      assertAutomationAccountsReady(merged, { automationName: 'Digest' }),
+    ).rejects.toBeInstanceOf(AutomationAccountUnavailableError);
+  });
+
+  it('keeps every ref it keeps exactly as stored (CAN-7186)', async () => {
+    mockConnections = [acme, globex];
+    const legacy = { serverId: 'account:conn-default', configId: 'default' };
+    const merged = await resolveAutomationPromptPlugins(
+      {
+        collectionIds: [],
+        skillRefs: [],
+        pluginRefs: [],
+        mcpServerRefs: [legacy, { serverId: 'linear', configId: 'default' }],
+      },
+      undefined,
+      {
+        collectionIds: [],
+        skillRefs: [],
+        pluginRefs: [],
+        mcpServerRefs: [{ serverId: 'linear', configId: 'acct-eng' }, legacy],
+      },
+    );
+    // The chat's legacy Slack ref stays as written, never in connector form,
+    // and so does the pick's own.
+    expect(merged?.mcpServerRefs).toEqual([
+      legacy,
+      { serverId: 'linear', configId: 'acct-eng' },
+    ]);
+  });
+
+  it("replaces the chat's legacy account ref of the connector too (CAN-7186)", async () => {
+    mockConnections = [acme, globex];
+    const merged = await resolveAutomationPromptPlugins(
+      {
+        collectionIds: [],
+        skillRefs: [],
+        pluginRefs: [],
+        mcpServerRefs: [
+          { serverId: 'account:conn-default', configId: 'default' },
+        ],
+      },
+      undefined,
+      {
+        collectionIds: [],
+        skillRefs: [],
+        pluginRefs: [],
+        mcpServerRefs: [ref('acct-globex')],
+      },
+    );
+    expect(merged?.mcpServerRefs).toEqual([ref('acct-globex')]);
+  });
+});
+
+describe('a workflow step a person runs acts as the account it names (CAN-7186)', () => {
+  const selections = (
+    mcpServerRefs: { serverId: string; configId: string }[],
+  ): ChatTabPluginSelections => ({
+    collectionIds: [],
+    skillRefs: [],
+    pluginRefs: [],
+    mcpServerRefs,
+  });
+
+  beforeEach(() => {
+    mockDataDir = mkdtempSync(join(tmpdir(), 'step-accounts-'));
+    mockConnections = [acme, globex];
+    mockNotify.mockClear();
+  });
+  afterEach(() => {
+    rmSync(mockDataDir, { recursive: true, force: true });
+  });
+
+  it('stops on a gone added account, naming it, with no notice', async () => {
+    mockConnections = [acme];
+    await expect(
+      assertWorkflowStepAccountsReady(selections([ref('acct-globex')])),
+    ).rejects.toThrow(
+      'This run stopped before sending anything. The Slack account this workflow sends as is gone. Choose another account.',
+    );
+    expect(mockNotify).not.toHaveBeenCalled();
+  });
+
+  it("lets the step's own pick stand in for a collection's gone account", async () => {
+    mockConnections = [acme, slack('acct-other', 'other')];
+    mockCollectionRefs = [ref('acct-globex')];
+    mockDisabledCollections = new Set();
+    await expect(
+      assertWorkflowStepAccountsReady({
+        collectionIds: ['team-kit'],
+        skillRefs: [],
+        pluginRefs: [],
+        mcpServerRefs: [ref('acct-other')],
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it('stops on a gone account an installed collection of the step names', async () => {
+    mockConnections = [acme, slack('acct-other', 'other')];
+    mockCollectionRefs = [ref('acct-globex')];
+    mockDisabledCollections = new Set();
+    await expect(
+      assertWorkflowStepAccountsReady({
+        collectionIds: ['team-kit'],
+        skillRefs: [],
+        pluginRefs: [],
+        mcpServerRefs: [],
+      }),
+    ).rejects.toThrow(
+      'The Slack account this workflow sends as is gone. Choose another account.',
+    );
+  });
+
+  it('stops on a legacy account ref whose connection is gone', async () => {
+    mockConnections = [globex];
+    await expect(
+      assertWorkflowStepAccountsReady(
+        selections([{ serverId: 'account:conn-default', configId: 'default' }]),
+      ),
+    ).rejects.toThrow(
+      'An account this workflow sends as is gone. Choose another account.',
+    );
+  });
+
+  it('stops on a named account that is not connected', async () => {
+    mockConnections = [
+      acme,
+      slack('acct-globex', 'globex', { status: 'DISCONNECTED' }),
+    ];
+    await expect(
+      assertWorkflowStepAccountsReady(selections([ref('acct-globex')])),
+    ).rejects.toThrow('Reconnect Slack (globex) to run this workflow.');
+  });
+
+  it('stops when the original account it names is gone, never moving to the new default', async () => {
+    mockConnections = [slack('acct-globex', 'globex', { isDefault: true })];
+    await expect(
+      assertWorkflowStepAccountsReady(selections([ref('default')])),
+    ).rejects.toThrow(
+      'The Slack account this workflow sends as is gone. Choose another account.',
+    );
+  });
+
+  it('keeps the default account when the step names none', async () => {
+    await expect(
+      assertWorkflowStepAccountsReady(selections([ref('cfg-local')])),
+    ).resolves.toBeUndefined();
+    await expect(
+      assertWorkflowStepAccountsReady(undefined),
+    ).resolves.toBeUndefined();
+  });
+
+  it('runs as a named account that is ready, or when the list is unreadable', async () => {
+    await expect(
+      assertWorkflowStepAccountsReady(selections([ref('acct-globex')])),
+    ).resolves.toBeUndefined();
+    mockConnections = null;
+    await expect(
+      assertWorkflowStepAccountsReady(selections([ref('acct-globex')])),
+    ).resolves.toBeUndefined();
   });
 });

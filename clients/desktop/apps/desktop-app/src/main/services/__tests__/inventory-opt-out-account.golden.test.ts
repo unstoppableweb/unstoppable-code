@@ -37,6 +37,11 @@ jest.mock('../../canopy-cloud/client', () => {
           deleted: 1,
         }));
       }
+      // The paused report (CAN-7262); a device with no documents records
+      // nothing.
+      if (path.endsWith('/desktop-inventory/device-status')) {
+        return Promise.resolve({ recorded: false, uploadsPaused: null });
+      }
       return Promise.resolve(
         init?.method === 'PUT'
           ? { accepted: [], removed: 0 }

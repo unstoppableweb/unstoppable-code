@@ -11,6 +11,7 @@ import {
   SettingsRowsSection,
   Skeleton,
   StatusLabel,
+  SyncedInventoryPausedNotice,
 } from '@canopy/ui-shared/components';
 import {
   installedMcpServersSummaryText,
@@ -69,6 +70,10 @@ function McpSettingsContent({
   const state = useSnapshotState();
   return (
     <SettingsRowsSection title="Installed MCP servers">
+      {/* Only a synced copy carries a pause (web); desktop never sets it. */}
+      {state.kind === 'ready' && state.syncPaused ? (
+        <SyncedInventoryPausedNotice deviceName={state.syncPaused.deviceName} />
+      ) : null}
       <SettingsRowsGroup>
         <SettingsRowsRow
           dataTestId="settings-mcp-summary"

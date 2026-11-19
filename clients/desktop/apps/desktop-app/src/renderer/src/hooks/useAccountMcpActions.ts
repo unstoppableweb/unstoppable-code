@@ -37,6 +37,10 @@ interface PendingConnection {
   observing: boolean;
   /** See {@link AccountMcpConnectOptions.discardOnAbandon}. */
   readonly discard: boolean;
+  /** See {@link AccountMcpConnectOptions.discardNamedRowOnly}. */
+  readonly discardNamedRowOnly: boolean;
+  /** The cloud account the start was made under, once it is known. */
+  accountId?: string;
   /** Shared cleanup barrier for both cancellation paths. */
   releasePromise?: Promise<void>;
 }
@@ -61,6 +65,14 @@ export interface AccountMcpConnectOptions {
    * kept disconnected, so no copy of it is left in the list.
    */
   discardOnAbandon?: boolean;
+  /**
+   * With {@link discardOnAbandon}, remove only the row this start named,
+   * never one found by its configuration, and only while the cloud account
+   * the start was made under is still signed in. For a configuration other
+   * clients share, such as a first account's `default` (CAN-6226), where a
+   * row found that way, or under another account, may be another sign-in's.
+   */
+  discardNamedRowOnly?: boolean;
   /** Extra upstream headers stored with a new custom connection. */
   headers?: Record<string, SecretValueInput>;
   /** The device server whose saved secrets the request keeps. */
@@ -263,6 +275,20 @@ export function useAccountMcpActions(
     knownId: string | undefined,
   ): Promise<void> => {
     let id = knownId;
+    if (flow.discardNamedRowOnly) {
+      // The row was named by a lookup under the account active then, so it
+      // is this start's only while that account is still the one signed in;
+      // after a switch it may be the new account's own row.
+      if (id === undefined || flow.accountId === undefined) return;
+      let active: string | undefined;
+      try {
+        active = (await window.api?.loadCanopyCloudAccount?.())?.account?.id;
+      } catch (error) {
+        reportClientAppError(error);
+        return;
+      }
+      if (active !== flow.accountId) return;
+    }
     if (id === undefined) {
       try {
         id = (await window.mcpServers.listAccountConnections()).find(
@@ -338,6 +364,7 @@ export function useAccountMcpActions(
       serverKey,
       configId: configId ?? 'default',
       discard: options.discardOnAbandon === true,
+      discardNamedRowOnly: options.discardNamedRowOnly === true,
     };
     // Every key this flow is registered under; a row can change key mid-flow.
     const keys = [key];
@@ -373,6 +400,7 @@ export function useAccountMcpActions(
       if (!flow.observing) return undefined;
       if (flow.cancelled) return await rollBack();
       const expectedAccountId = options.expectedAccountId ?? currentAccountId;
+      flow.accountId = expectedAccountId;
       const credentials = {
         configId,
         ...(options.label ? { label: options.label } : {}),

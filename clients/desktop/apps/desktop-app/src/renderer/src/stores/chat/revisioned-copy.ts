@@ -33,3 +33,10 @@ export const CHAT_STATE_CONFLICT_NOTICE = 'Your view has been refreshed.';
  */
 export const CHAT_STATE_COMMAND_FAILED_TITLE = 'Change not saved';
 export const CHAT_STATE_COMMAND_FAILED_NOTICE = 'Try again.';
+
+/**
+ * Shown when a cloud change's answer never came, so it may have landed: the
+ * view was read again, and nothing says it failed (CAN-7196).
+ */
+export const CHAT_STATE_UNCONFIRMED_TITLE = "Couldn't confirm that change";
+export const CHAT_STATE_UNCONFIRMED_NOTICE = 'Your view has been refreshed.';

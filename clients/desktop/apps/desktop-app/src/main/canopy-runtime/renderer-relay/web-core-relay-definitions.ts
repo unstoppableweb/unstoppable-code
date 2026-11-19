@@ -21,6 +21,7 @@ import {
   CORE_TRANSPORT_INSTRUCTION_DEFINITIONS,
   CORE_TRANSPORT_QUERY_DEFINITIONS,
   CORE_WORKSPACE_COMMAND_INSTRUCTION_DEFINITIONS,
+  CORE_WORKSPACE_COWORK_UPDATE_SCHEMA_REVISION,
   CORE_PIPELINE_RUN_READ_QUERY_DEFINITIONS,
   CORE_WORKSPACE_METADATA_INSTRUCTION_DEFINITIONS,
   CORE_WORKSPACE_SANDBOX_QUERY_DEFINITIONS,
@@ -90,10 +91,12 @@ export const WEB_CORE_RELAY_OPERATIONS: ReadonlySet<string> = new Set([
   'core.workspace.reorder',
   'core.workspace.update',
   'core.workspace.delete',
-  // A cloud project's instructions and default plugins in its settings
-  // (CAN-7053); each narrowed by `webCoreRelayRefuseParams`.
+  // A cloud project's instructions, default plugins, and description, default
+  // model and Trash retention in its settings (CAN-7053); each narrowed by
+  // `webCoreRelayRefuseParams`.
   'core.workspace.instructions.update',
   'core.workspace.plugins.update',
+  'core.workspace.cowork.update',
   // The Host tab's live forwarded URLs (CAN-7053).
   'core.workspace.sandboxRoutes.get',
   'core.chat.task.list',
@@ -230,11 +233,16 @@ export const WEB_CORE_RELAY_DEFINITIONS: RelayDefinitions = {
         WORKER_ARTIFACT_INSTRUCTION_DEFINITIONS,
       ),
     ),
-    // Only the default plugins save of the guarded settings commands
-    // (CAN-7053); the rest of that registry stays off the relay.
+    // Only the default plugins and Cowork settings saves of the guarded
+    // settings commands (CAN-7053); the rest of that registry stays off the
+    // relay.
     'core.workspace.plugins.update':
       CORE_GUARDED_SETTINGS_INSTRUCTION_DEFINITIONS[
         'core.workspace.plugins.update'
+      ],
+    'core.workspace.cowork.update':
+      CORE_GUARDED_SETTINGS_INSTRUCTION_DEFINITIONS[
+        'core.workspace.cowork.update'
       ],
   },
   streams: allowed(
@@ -440,6 +448,14 @@ const WEB_CORE_PLUGINS_SET_DEFAULTS_FIELDS: ReadonlySet<string> = new Set([
   'expectedDefaultPluginSelectionsRevision',
 ]);
 
+/** The params a cloud project's Cowork settings save takes. */
+const WEB_CORE_COWORK_PARAMS: ReadonlySet<string> = new Set([
+  'workspaceId',
+  'expectedRevision',
+  'revision',
+  'settings',
+]);
+
 const onlyKeys = (
   value: Readonly<Record<string, unknown>>,
   allowed: ReadonlySet<string>,
@@ -447,6 +463,37 @@ const onlyKeys = (
 
 const isPlainRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/**
+ * Each Cowork setting the desktop saves on the web core, and the values it
+ * takes: a cloud project's description, its default model (null clears it)
+ * and its Trash retention (CAN-7053). Its start page, presets, starter
+ * prompts and archive settings stay on the web.
+ */
+const WEB_CORE_COWORK_SETTINGS: ReadonlyMap<
+  string,
+  (value: unknown) => boolean
+> = new Map<string, (value: unknown) => boolean>([
+  ['description', (value) => typeof value === 'string'],
+  ['defaultModel', (value) => value === null || typeof value === 'string'],
+  ['deletionRetentionDays', (value) => Number.isInteger(value)],
+]);
+
+function refuseCoworkSettings(
+  params: Readonly<Record<string, unknown>>,
+): string | null {
+  const settings = params.settings;
+  return onlyKeys(params, WEB_CORE_COWORK_PARAMS) &&
+    (params.revision === undefined ||
+      params.revision === CORE_WORKSPACE_COWORK_UPDATE_SCHEMA_REVISION) &&
+    isPlainRecord(settings) &&
+    Object.keys(settings).length > 0 &&
+    Object.entries(settings).every(
+      ([key, value]) => WEB_CORE_COWORK_SETTINGS.get(key)?.(value) === true,
+    )
+    ? null
+    : "Only a cloud project's description, default model and Trash retention can be changed here.";
+}
 
 /** Refuses a delegate's pages read for a chat other than its scope's. */
 function refuseOtherChatDelegationPage(
@@ -476,6 +523,8 @@ function refuseOtherChatDelegationPage(
  * - `core.workspace.plugins.update` only sets a project's default plugins;
  *   its other changes, such as recommended selections, stay on the web
  *   (CAN-7053).
+ * - `core.workspace.cowork.update` changes only a project's description,
+ *   default model and Trash retention, each of its type (CAN-7053).
  * - `core.chat.delete` only moves one task to the Trash (CAN-7052).
  *   Archiving goes through `core.chat.archive`, and the web core decides
  *   whether the chat is a task.
@@ -503,6 +552,8 @@ export function webCoreRelayRefuseParams(
       ? null
       : "Only a cloud project's default plugins can be changed here.";
   }
+  if (method === 'core.workspace.cowork.update')
+    return refuseCoworkSettings(params);
   if (method === 'core.workspace.sandboxRoutes.get')
     return onlyKeys(params, WEB_CORE_SANDBOX_ROUTES_PARAMS)
       ? null

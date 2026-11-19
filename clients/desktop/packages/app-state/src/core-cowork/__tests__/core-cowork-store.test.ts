@@ -6,6 +6,11 @@ import {
   type CoreCoworkInvoker,
   type CoreCoworkStream,
 } from '../invoker';
+import { CoreCoworkOutcomeUnknownError } from '../unknown-outcome';
+import {
+  isUnknownKeyedWriteOutcome,
+  KEYED_WRITE_OUTCOME_SHAPES,
+} from '../keyed-write-outcome';
 
 // A fake web core shaped like the CAN-4185 contract: `core.workspace.list`,
 // `core.chat.task.list` per cowork project (and per git project, CAN-6106,
@@ -98,6 +103,17 @@ class FakeWebCore implements CoreCoworkInvoker {
   readonly deleteRefusals: CanopyErrorPayload[] = [];
   /** Deletes that apply but lose their reply. */
   lostDeleteReplies = 0;
+  /**
+   * Archives that lose their reply (CAN-7196): applied, or, with
+   * `lostArchivesApply` off, never reaching the task.
+   */
+  lostArchiveReplies = 0;
+  lostArchivesApply = true;
+  /**
+   * How a lost reply reads: a same-key retry, as today, or S7c's unflagged
+   * shape, unavailable and never retried (CAN-7196).
+   */
+  lostReplyRetry: 'same_idempotency_key' | 'never' = 'same_idempotency_key';
   /**
    * The git project's tasks (its worktree root chats), which the web core
    * serves since CAN-6106; null refuses the listing, as before it.
@@ -207,7 +223,7 @@ class FakeWebCore implements CoreCoworkInvoker {
           error: {
             kind: 'unavailable',
             message: 'The reply was lost.',
-            retry: { kind: 'same_idempotency_key' },
+            retry: { kind: this.lostReplyRetry },
           },
         };
       }
@@ -225,12 +241,25 @@ class FakeWebCore implements CoreCoworkInvoker {
       // As the web core does: archiving a task's own chat archives the task.
       const tabId = String(Reflect.get(Object(params.action), 'tabId'));
       const known = this.tasks.some((task) => task.worktreeId === tabId);
-      this.archived.push(
-        ...this.tasks
-          .filter((task) => task.worktreeId === tabId)
-          .map((task) => ({ ...task, revision: 4, locked: true })),
-      );
-      this.tasks = this.tasks.filter((task) => task.worktreeId !== tabId);
+      const lost = known && this.lostArchiveReplies > 0;
+      if (lost) this.lostArchiveReplies -= 1;
+      if (!lost || this.lostArchivesApply) {
+        this.archived.push(
+          ...this.tasks
+            .filter((task) => task.worktreeId === tabId)
+            .map((task) => ({ ...task, revision: 4, locked: true })),
+        );
+        this.tasks = this.tasks.filter((task) => task.worktreeId !== tabId);
+      }
+      if (lost)
+        return {
+          ok: false,
+          error: {
+            kind: 'unavailable',
+            message: 'The reply was lost.',
+            retry: { kind: this.lostReplyRetry },
+          },
+        };
       return {
         ok: true,
         value: {
@@ -262,7 +291,7 @@ class FakeWebCore implements CoreCoworkInvoker {
           error: {
             kind: 'unavailable',
             message: 'The reply was lost.',
-            retry: { kind: 'same_idempotency_key' },
+            retry: { kind: this.lostReplyRetry },
           },
         };
       }
@@ -498,6 +527,67 @@ describe('core cowork store', () => {
     ).toBeUndefined();
   });
 
+  it.each(['never', 'same_idempotency_key'] as const)(
+    'a create whose answer never came, with retry %s, reads unknown, is sent once, and the re-read that lists it settles it (CAN-7196)',
+    async (lostRetry) => {
+      const core = new FakeWebCore();
+      const store = await connected(core);
+      core.lostCreateReplies = 1;
+      core.lostReplyRetry = lostRetry;
+      const { task, created } = store.getState().beginTask(PROJECT);
+      await expect(created).rejects.toThrow('The reply was lost.');
+      expect(tasksOf(store)[0]).toEqual({
+        worktreeId: task.worktreeId,
+        creation: 'unknown',
+      });
+      // The project is read again, and the web core lists the task it
+      // created: the row settles, created, and nothing created it twice.
+      const reads = core.count('core.chat.task.list');
+      await jest.advanceTimersByTimeAsync(250);
+      expect(core.count('core.chat.task.list')).toBe(reads + 1);
+      expect(tasksOf(store)).toEqual([
+        { worktreeId: task.worktreeId, creation: undefined },
+        { worktreeId: 'task-1', creation: undefined },
+      ]);
+      expect(core.count('core.chat.create')).toBe(1);
+    },
+  );
+
+  // CAN-7196: an answered refusal is the core's own words, so a fresh
+  // create it refuses fails. A retry of a create that ended unknown stays
+  // unknown however it is answered, and the re-read settles it.
+  it('fails a fresh create the web core refuses, but keeps a refused retry of an unknown create unknown until the re-read settles it (CAN-7196)', async () => {
+    // An answered refusal that asks for nothing again.
+    const rateLimited: CanopyErrorPayload = {
+      kind: 'failed_precondition',
+      message: 'Too many tasks at once.',
+      retry: { kind: 'never' },
+    };
+    const core = new FakeWebCore();
+    const store = await connected(core);
+    core.createRefusals.push(rateLimited);
+    const creationOf = (worktreeId: string): string | undefined =>
+      tasksOf(store).find((each) => each.worktreeId === worktreeId)?.creation;
+    const fresh = store.getState().beginTask(PROJECT);
+    await expect(fresh.created).rejects.toThrow('Too many tasks at once.');
+    expect(creationOf(fresh.task.worktreeId)).toBe('failed');
+
+    core.lostCreateReplies = 1;
+    const { task, created } = store.getState().beginTask(PROJECT);
+    await expect(created).rejects.toThrow('The reply was lost.');
+    core.createRefusals.push(rateLimited);
+    await expect(
+      store.getState().retryTask(PROJECT, task.worktreeId),
+    ).rejects.toThrow('Too many tasks at once.');
+    expect(creationOf(task.worktreeId)).toBe('unknown');
+    // The project is read again, and the task the first create made settles.
+    await jest.advanceTimersByTimeAsync(250);
+    expect(creationOf(task.worktreeId)).toBeUndefined();
+    expect(
+      core.tasks.filter((each) => each.worktreeId === task.worktreeId),
+    ).toHaveLength(1);
+  });
+
   it('retries a task whose first create landed unanswered under the same id, so the web core keeps one task (CAN-6098)', async () => {
     const core = new FakeWebCore();
     const store = await connected(core);
@@ -506,14 +596,15 @@ describe('core cowork store', () => {
     const { task, created } = store.getState().beginTask(PROJECT);
     release();
     await expect(created).rejects.toThrow('The reply was lost.');
+    // It may exist, so it reads unknown, never refused (CAN-7196).
     expect(tasksOf(store)[0]).toEqual({
       worktreeId: task.worktreeId,
-      creation: 'failed',
+      creation: 'unknown',
     });
     expect(
       store.getState().tasksByProject[`web-core:${PROJECT}`]?.[0]
         ?.creationError,
-    ).toBe('The reply was lost.');
+    ).toBeUndefined();
 
     await expect(
       store.getState().retryTask(PROJECT, task.worktreeId),
@@ -1093,6 +1184,64 @@ describe('core cowork store', () => {
     );
   });
 
+  it.each(['never', 'same_idempotency_key'] as const)(
+    'an archive whose answer never came, with retry %s, is settled by the listing: gone is archived, still listed is not, and it is sent once (CAN-7196)',
+    async (lostRetry) => {
+      const core = new FakeWebCore();
+      const store = await connected(core);
+      core.lostReplyRetry = lostRetry;
+
+      // It reached the task: the listing no longer holds it.
+      core.lostArchiveReplies = 1;
+      await expect(
+        store.getState().archiveTask(PROJECT, 'task-1'),
+      ).resolves.toBeUndefined();
+      expect(core.count('core.chat.archive')).toBe(1);
+      expect(tasksOf(store).map((row) => row.worktreeId)).not.toContain(
+        'task-1',
+      );
+
+      // It never reached the task: still listed, so it wasn't archived.
+      const { task, created } = store.getState().beginTask(PROJECT);
+      await created;
+      core.lostArchiveReplies = 1;
+      core.lostArchivesApply = false;
+      await expect(
+        store.getState().archiveTask(PROJECT, task.worktreeId),
+      ).rejects.toThrow('The cloud chat was not archived.');
+      expect(core.count('core.chat.archive')).toBe(2);
+      expect(tasksOf(store).map((row) => row.worktreeId)).toContain(
+        task.worktreeId,
+      );
+    },
+  );
+
+  it("an archive whose answer never came, and whose listing could not be read, says it couldn't confirm it, never that it failed, and the next listing settles it (CAN-7196)", async () => {
+    const core = new FakeWebCore();
+    const store = await connected(core);
+    core.lostReplyRetry = 'never';
+    core.lostArchiveReplies = 1;
+    core.taskListFailures.push({
+      kind: 'unavailable',
+      message: 'The web core is briefly unavailable.',
+      retry: { kind: 'same_request' },
+    });
+
+    const archived = store.getState().archiveTask(PROJECT, 'task-1');
+    await expect(archived).rejects.toBeInstanceOf(
+      CoreCoworkOutcomeUnknownError,
+    );
+    await expect(archived).rejects.toThrow(
+      "Couldn't confirm the task was archived. The list will show where it stands.",
+    );
+    expect(core.count('core.chat.archive')).toBe(1);
+    // The project is read again on its own, and shows the task archived.
+    await jest.advanceTimersByTimeAsync(250);
+    expect(tasksOf(store).map((row) => row.worktreeId)).not.toContain('task-1');
+    expect(core.count('core.chat.archive')).toBe(1);
+    expect(store.getState().status).toBe('online');
+  });
+
   it('deleting a task moves its own chat to the Trash through core.chat.delete, keyed, and drops its row (CAN-7052)', async () => {
     const core = new FakeWebCore();
     const store = await connected(core);
@@ -1148,25 +1297,26 @@ describe('core cowork store', () => {
     expect(core.archived).toHaveLength(0);
   });
 
-  it('a delete whose reply was lost, tried again, deletes the task once (CAN-7052)', async () => {
-    const core = new FakeWebCore();
-    const store = await connected(core);
-    core.lostDeleteReplies = 1;
+  it.each(['never', 'same_idempotency_key'] as const)(
+    'a delete whose answer never came, with retry %s, is settled by the listing that no longer holds the task, sent once (CAN-7196)',
+    async (lostRetry) => {
+      const core = new FakeWebCore();
+      const store = await connected(core);
+      core.lostDeleteReplies = 1;
+      core.lostReplyRetry = lostRetry;
 
-    // The first delete applied, but its answer never arrived: the row stays
-    // until the user tries again, and nothing retries on its own.
-    await expect(
-      store.getState().deleteTask(PROJECT, 'task-1'),
-    ).rejects.toThrow();
-    expect(core.count('core.chat.delete')).toBe(1);
-    expect(tasksOf(store).map((row) => row.worktreeId)).toContain('task-1');
-
-    // The retry answers already_applied: one task in the Trash, not two.
-    await store.getState().deleteTask(PROJECT, 'task-1');
-    expect(core.count('core.chat.delete')).toBe(2);
-    expect(core.archived).toHaveLength(1);
-    expect(tasksOf(store).map((row) => row.worktreeId)).not.toContain('task-1');
-  });
+      // The delete applied, but its answer never arrived: the project's
+      // listing says it did, and nothing sends it again.
+      await expect(
+        store.getState().deleteTask(PROJECT, 'task-1'),
+      ).resolves.toBeUndefined();
+      expect(core.count('core.chat.delete')).toBe(1);
+      expect(core.archived).toHaveLength(1);
+      expect(tasksOf(store).map((row) => row.worktreeId)).not.toContain(
+        'task-1',
+      );
+    },
+  );
 
   it("lists a project's archived and deleted tasks from its work-entry containers, newest first, and nothing else (CAN-6511)", async () => {
     const core = new FakeWebCore();
@@ -1430,4 +1580,17 @@ describe('core cowork store', () => {
     );
     expect(updates.map((call) => call.params.expectedRevision)).toEqual([3, 4]);
   });
+});
+
+// SWAN guardrail (CAN-7196, 12:16): a write reads as unknown, and says it
+// couldn't confirm it, only when its answer never came: lost and never
+// retried, or a same-key retry, which is also how the client's own deadline
+// after dispatch arrives. Every error the core answered stays a refusal.
+describe('which keyed write errors read as unknown (CAN-7196)', () => {
+  it.each(KEYED_WRITE_OUTCOME_SHAPES.map((row) => [row.name, row] as const))(
+    '%s',
+    (_name, row) => {
+      expect(isUnknownKeyedWriteOutcome(row.payload)).toBe(row.unknown);
+    },
+  );
 });

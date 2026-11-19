@@ -122,7 +122,12 @@ import {
 } from '@canopy/protocol/pipelines';
 import { isSafeCapabilityRelativePath } from '@canopy/protocol/capability-files';
 import {
+  CUSTOM_SKILL_SOURCE_ID,
   extractSkillDependencies,
+  packagedSkillSecretMessage,
+  scanSharedSkillForSecrets,
+  sharedSkillSecretMessage,
+  type SharedSkillSecretFinding,
   skillDependenciesToEnvironmentRequirements,
 } from '@canopy/protocol/skills';
 import { BRAND } from '@canopy/brand/current';
@@ -227,6 +232,7 @@ import {
 import {
   PackageAnalysisBlockedError,
   ShareOperationError,
+  SkillSecretDetectedError,
   ShareStageError,
   shareFailureFromError,
   withShareStage,
@@ -340,8 +346,13 @@ const analyses = new Map<
     cloudCopyAccountId?: string;
     /** The audience the consent dialog showed for its cloud copy. */
     cloudCopyAudience?: CloudCopyAudience;
-    /** The skill a skill analysis read its folder from. */
-    skill?: { sourceId: string; skillName: string; cloudCopy?: true };
+    /** The skill a skill analysis read its folder from, and its SKILL.md. */
+    skill?: {
+      sourceId: string;
+      skillName: string;
+      rawSkill: string;
+      cloudCopy?: true;
+    };
   }
 >();
 const activeAnalysisRequests = new Map<string, symbol>();
@@ -2112,6 +2123,7 @@ export async function analyzeSkillCapabilityPackage(
       skill: {
         sourceId: input.sourceId,
         skillName: input.skillName,
+        rawSkill: input.rawSkill,
         ...(input.cloudCopy === true ? { cloudCopy: true as const } : {}),
       },
     });
@@ -2630,6 +2642,70 @@ export async function readAnalyzedCapabilityPackage(request: {
   };
 }
 
+/**
+ * A skill's package carries its SKILL.md, so one that looks like it holds a
+ * secret is refused before anything uploads, whoever commits it (CAN-7226).
+ */
+function assertSkillPackageHoldsNoSecret(
+  skill: { skillName: string; rawSkill: string } | undefined,
+  message: (
+    finding: SharedSkillSecretFinding,
+  ) => string = sharedSkillSecretMessage,
+): void {
+  if (skill === undefined) return;
+  const finding = scanSharedSkillForSecrets({
+    skillName: skill.skillName,
+    files: [{ path: 'SKILL.md', text: skill.rawSkill }],
+  });
+  if (finding !== null)
+    throw new SkillSecretDetectedError(message(finding), 'prepare');
+}
+
+/**
+ * Each custom skill's SKILL.md as the package would upload it, checked like a
+ * single skill's. Plugin and built-in skills aren't the publisher's text.
+ */
+async function assertCustomSkillsHoldNoSecret(
+  manifest: PipelinePackageManifestV1,
+  readBlob: (sha256: string) => Uint8Array | Promise<Uint8Array>,
+): Promise<void> {
+  const checked = new Set<string>();
+  for (const resource of manifest.resources) {
+    const ref = resource.installedItemRef;
+    if (
+      resource.kind !== 'standalone_skill' ||
+      ref?.kind !== 'skill' ||
+      ref.sourceId !== CUSTOM_SKILL_SOURCE_ID
+    )
+      continue;
+    let carriesSkillFile = false;
+    for (const tree of resource.trees)
+      for (const entry of tree.entries) {
+        // A volume may store any casing.
+        if (entry.path.toLowerCase() !== 'skill.md') continue;
+        carriesSkillFile = true;
+        // Provider twins carry the same name and bytes, so they're checked
+        // once; every distinct name is checked, even over identical bytes.
+        const key = `${ref.skillName}\u0000${entry.sha256}`;
+        if (checked.has(key)) continue;
+        checked.add(key);
+        assertSkillPackageHoldsNoSecret(
+          {
+            skillName: ref.skillName,
+            rawSkill: new TextDecoder().decode(await readBlob(entry.sha256)),
+          },
+          packagedSkillSecretMessage,
+        );
+      }
+    // The name travels in the manifest even without a SKILL.md entry.
+    if (!carriesSkillFile)
+      assertSkillPackageHoldsNoSecret(
+        { skillName: ref.skillName, rawSkill: '' },
+        packagedSkillSecretMessage,
+      );
+  }
+}
+
 async function commitAnalyzedCapabilityPackage(
   request: {
     analysisId: string;
@@ -2641,6 +2717,7 @@ async function commitAnalyzedCapabilityPackage(
   stillInTime?: () => void,
 ): Promise<{ uploadId: string; packageRef: PipelinePackageRef }> {
   const { manifest, readBlob } = await readAnalyzedCapabilityPackage(request);
+  assertSkillPackageHoldsNoSecret(analyses.get(request.analysisId)?.skill);
   return commitCapabilityPackageUpload(
     manifest,
     readBlob,
@@ -2661,6 +2738,9 @@ export async function commitCapabilityPackageUpload(
   /** The caller's budget, checked before preparing and every request. */
   stillInTime?: () => void,
 ): Promise<{ uploadId: string; packageRef: PipelinePackageRef }> {
+  // Every desktop package upload passes here, so each custom skill's SKILL.md
+  // is checked before anything uploads, whatever carries it (CAN-7226).
+  await assertCustomSkillsHoldNoSecret(manifest, readBlob);
   stillInTime?.();
   const startedAt = Date.now();
   emitProgress(getWindow, { stage: 'Preparing files…' });

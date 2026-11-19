@@ -137,6 +137,7 @@ import {
   acquireSplitLock,
   releaseSplitLock,
 } from '../../services/split-lock-service';
+import { useFakeSplitLockKeys } from '../../__tests__/split-lock-key-fixture';
 import {
   createDesktopRuntime,
   type DesktopCanopyDispatcher,
@@ -297,6 +298,7 @@ async function expectOldMtime(path: string): Promise<void> {
 
 let tempRoot = '';
 
+useFakeSplitLockKeys();
 beforeEach(async () => {
   tempRoot = await fs.realpath(
     await fs.mkdtemp(join(tmpdir(), 'file-tree-mutate-golden-')),
@@ -1446,7 +1448,7 @@ describe('single-repository worktree', () => {
             'Error: Shared-container recipient workspaces are read-only',
           code: undefined,
         });
-        acquireSplitLock('project-1', 'wt-1');
+        await acquireSplitLock('project-1', 'wt-1');
         try {
           await expect(
             failure({ ...scope, operation, target }),
@@ -1470,7 +1472,7 @@ describe('single-repository worktree', () => {
     });
 
     it('refuses a split-locked worktree before touching files', async () => {
-      acquireSplitLock('project-1', 'wt-1');
+      await acquireSplitLock('project-1', 'wt-1');
       try {
         await expect(
           failure({ ...scope, operation: 'delete', target: ref('src') }),

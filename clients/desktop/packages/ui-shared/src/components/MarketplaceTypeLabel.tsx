@@ -5,7 +5,6 @@ import type { JSX, ReactNode } from 'react';
 import type { UnifiedEntryKind } from '@canopy/protocol/unified-entry';
 import {
   AgentIcon,
-  AutomationsIcon,
   BundleIcon,
   McpServerIcon,
   PipelineIcon,
@@ -15,6 +14,7 @@ import {
   StorefrontIcon,
 } from '../icons/AppIcons';
 import { UnstoppableDomainsIcon } from '../icons/UnstoppableDomainsIcon';
+import { WORKFLOW_ITEM_LABEL } from '../lib/workflow-labels';
 import { Tooltip } from './Tooltip';
 import { useItemStateMarks } from './ItemStateMark';
 
@@ -30,7 +30,8 @@ const MARKETPLACE_TYPE_GLYPHS: Readonly<Record<UnifiedEntryKind, JSX.Element>> =
     app: <McpServerIcon size="xs" ariaHidden />,
     skill: <SkillIcon size="xs" ariaHidden />,
     pipeline: <PipelineIcon size="xs" ariaHidden />,
-    automation: <AutomationsIcon size="xs" ariaHidden />,
+    // Automations are workflows in the UX (CAN-4651), so they share its mark.
+    automation: <PipelineIcon size="xs" ariaHidden />,
     collection: <BundleIcon size="xs" ariaHidden />,
     agent: <AgentIcon size="xs" ariaHidden />,
     blueprint: <SingleRepoWorkspaceIcon size="xs" ariaHidden />,
@@ -56,8 +57,8 @@ const DETAIL_ENTITY_TYPE_LABELS: Partial<Record<UnifiedEntryKind, string>> = {
  * so other pages keep their headers.
  */
 const NEW_CUSTOMIZE_TYPE_LABELS: Partial<Record<UnifiedEntryKind, string>> = {
-  pipeline: 'Workflow',
-  automation: 'Automation',
+  pipeline: WORKFLOW_ITEM_LABEL,
+  automation: WORKFLOW_ITEM_LABEL,
 };
 
 /** Labels every header on a detail page with the kind it shows. */

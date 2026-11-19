@@ -47,7 +47,7 @@ import {
   createDesktopStepPostProcess,
 } from './execution-runtime-hooks';
 import { reportPipelineEngineError } from './instrumentation';
-import { createTrackedPlan, updateTrackedPlan } from '../lib/plan-persistence';
+import { pipelineRuntimePlanPersistence } from '../canopy-runtime/plan-host-writers';
 import { resolvePipelinePluginCollections } from './plugin-collection-resolver';
 import { resolveClaudeCompatibleInvocation } from '../ollama/claude-compatible';
 import { getCodexGatewayProxyService } from '../agents/codex-gateway-proxy-service';
@@ -290,10 +290,7 @@ export function createElectronExecutionRuntime(
     lifecycle: createDesktopLifecycleHooks(),
     reportEngineError: reportPipelineEngineError,
     onStepPostProcess: createDesktopStepPostProcess(getWindow),
-    planPersistence: {
-      createTrackedPlan,
-      updateTrackedPlan,
-    },
+    planPersistence: pipelineRuntimePlanPersistence,
     // The executor's third argument names the execution, not a catalog.
     resolvePipelinePluginCollections: (collections, preferences) =>
       resolvePipelinePluginCollections(collections, preferences),

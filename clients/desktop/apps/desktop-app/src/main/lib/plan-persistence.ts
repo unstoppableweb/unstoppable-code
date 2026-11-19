@@ -709,6 +709,7 @@ function announceTrackedPlanCommit(
   commit: PlanCommit,
   input: { chatId?: string; initiationSource?: string } | undefined,
 ): void {
+  if (commit.kind === 'cleared') return;
   emitTrackedPlansWrite(scope.projectId, scope.worktreeId, {
     version: 1,
     plans: plans.filter((plan) => isTrackedPlanData(plan)),
@@ -1513,9 +1514,7 @@ export async function deleteTrackedPlansForWorktree(
   projectId: string,
   worktreeId: string,
 ): Promise<void> {
-  const filePath = resolveTrackedPlansFilePath(projectId, worktreeId);
-  // Under the lock, so a write in flight cannot recreate the file after it.
-  await withFileLock(filePath, () => removePlanState(filePath));
+  await trackedPlanEngine.clear({ projectId, worktreeId });
 }
 
 /**
@@ -1529,12 +1528,11 @@ export async function installRestoredTrackedPlans(
   worktreeId: string,
   plans: TrackedPlanData[],
 ): Promise<void> {
-  if (plans.length === 0) return;
-  const filePath = resolveTrackedPlansFilePath(projectId, worktreeId);
-  await withFileLock(filePath, async () => {
-    await writeTrackedPlansFile(projectId, worktreeId, {
-      version: 1,
-      plans: plans.map((plan) => ({ ...plan, projectId, worktreeId })),
-    });
-  });
+  await trackedPlanEngine.install(
+    { projectId, worktreeId },
+    plans.map((plan) => ({
+      ...plan,
+      revisions: plan.revisions.map((revision) => ({ ...revision })),
+    })),
+  );
 }

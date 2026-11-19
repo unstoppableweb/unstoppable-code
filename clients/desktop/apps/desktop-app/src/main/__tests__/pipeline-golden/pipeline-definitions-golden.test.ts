@@ -1842,6 +1842,96 @@ describe('workflow schedules (CAN-5782)', () => {
     }
   });
 
+  it('folds an installed workflow into its automation: one row on install, update and restart, deleted with it (CAN-7285)', async () => {
+    const pipelineId = await savedId();
+    const sharedId = await savedId();
+    const ownerOf = (id: string): string | null =>
+      readPipelineLocalMetadata({ type: 'stored', source: 'user', value: id })
+        .ownerAutomationId ?? null;
+    // The install modal saves the bundled pipeline, then creates the
+    // automation that records it.
+    const install = (
+      id: string,
+      contentHash: string,
+    ): Record<string, unknown> => ({
+      ...schedule(id, { topic: 'installed' }),
+      installedFrom: {
+        remoteId: 'golden-installed-share',
+        contentHash,
+        sourceKind: 'curated',
+        installedAt: '2026-11-18T00:00:00.000Z',
+        bundledPipelineLocalId: id,
+        bundledPipelineContentHash: 'b'.repeat(64),
+      },
+    });
+    try {
+      const installed = createdId(
+        await invokeIpc(
+          IPC_CHANNELS.automationsCreate,
+          install(pipelineId, 'c'.repeat(64)),
+        ),
+      );
+      const ownedOnInstall = ownerOf(pipelineId) === installed;
+      const pageOnInstall = await workflowPage(pipelineId);
+      // Applying the share's next revision keeps the one row.
+      const updated = (await invokeIpc(IPC_CHANNELS.automationsUpdate, {
+        id: installed,
+        ...install(pipelineId, 'd'.repeat(64)),
+      })) as { ok?: unknown };
+      const ownedAfterUpdate = ownerOf(pipelineId) === installed;
+      // A copy installed before the marker was recorded folds on restart,
+      // in the mutation queue ahead of the next write.
+      setUserPipelineOwnerAutomation(pipelineId, null);
+      const service = getAutomationsService();
+      await service.start();
+      service.stop();
+      // A pipeline another record already runs stays its own workflow.
+      const other = createdId(
+        await invokeIpc(
+          IPC_CHANNELS.automationsCreate,
+          schedule(sharedId, { topic: 'first' }),
+        ),
+      );
+      const ownedAfterRestart = ownerOf(pipelineId) === installed;
+      const sharedInstall = createdId(
+        await invokeIpc(
+          IPC_CHANNELS.automationsCreate,
+          install(sharedId, 'e'.repeat(64)),
+        ),
+      );
+      const sharedOwner = ownerOf(sharedId);
+      const removed = (await invokeIpc(IPC_CHANNELS.automationsDelete, {
+        id: installed,
+      })) as { ok?: unknown };
+      for (const id of [other, sharedInstall])
+        await invokeIpc(IPC_CHANNELS.automationsDelete, { id });
+      expect({
+        created: [installed, other, sharedInstall].every(Boolean),
+        ownedOnInstall,
+        pageOnInstall: pageOnInstall !== null,
+        updated: updated.ok,
+        ownedAfterUpdate,
+        ownedAfterRestart,
+        sharedOwner,
+        removed: removed.ok,
+        pipelineKept: getStoredPipeline(pipelineId).success,
+      }).toEqual({
+        created: true,
+        ownedOnInstall: true,
+        pageOnInstall: true,
+        updated: true,
+        ownedAfterUpdate: true,
+        ownedAfterRestart: true,
+        sharedOwner: null,
+        removed: true,
+        pipelineKept: false,
+      });
+    } finally {
+      for (const id of [pipelineId, sharedId])
+        if (id && getStoredPipeline(id).success) deleteStoredPipeline(id);
+    }
+  });
+
   it('counts the workflow pages that call a pipeline through run-pipeline', async () => {
     const saveYaml = async (yaml: string): Promise<string> => {
       const content = parsePipelineText(yaml);

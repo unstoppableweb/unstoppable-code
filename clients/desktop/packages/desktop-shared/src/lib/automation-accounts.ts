@@ -190,6 +190,68 @@ export function automationAccountProblems(
 }
 
 /**
+ * The accounts a workflow step a person started names and could not act as
+ * (CAN-7186): an added account (`acct-*`) that is gone, or an account it
+ * names exactly that isn't connected. The original account's `default`
+ * config counts as named too once the person holds other accounts of the
+ * connector but no longer that one, so a step never moves onto whichever
+ * account became the default. Any other ref that names no account follows the
+ * attended rule, as the person's own chat does, so it never asks to choose.
+ * Device servers and connectors served on the device only are not checked.
+ */
+export function workflowStepAccountProblems(
+  input: Pick<
+    AutomationAccountCheckInput,
+    'connections' | 'directRefs' | 'isDeviceServer' | 'desktopOnlyKeys'
+  >,
+): AutomationAccountProblem[] {
+  const problems = new Map<string, AutomationAccountProblem>();
+  for (const ref of input.directRefs) {
+    const curated =
+      legacyAccountMcpConnectionId(ref.serverId) === undefined &&
+      !isCustomAccountMcpServerKey(ref.serverId);
+    if (
+      curated &&
+      (input.isDeviceServer(ref.serverId) ||
+        input.desktopOnlyKeys?.has(ref.serverId))
+    )
+      continue;
+    const connection = accountMcpConnectionForRef(ref, input.connections);
+    let problem: AutomationAccountProblem | undefined;
+    if (connection) {
+      if (!usable(connection)) problem = disconnected(connection);
+    } else if (legacyAccountMcpConnectionId(ref.serverId) !== undefined) {
+      // A legacy ref names one connection; once it is gone the session drops
+      // it, so the step would run without the connector.
+      problem = {
+        reason: 'gone',
+        serverKey: ref.serverId,
+        connector: connectorName(input.connections, ref.serverId),
+      };
+    } else if (
+      curated &&
+      (isAccountMcpInstanceConfigId(ref.configId) ||
+        (ref.configId === 'default' &&
+          input.connections.some(
+            (row) => row.kind === 'CURATED' && row.serverKey === ref.serverId,
+          )))
+    ) {
+      problem = {
+        reason: 'gone',
+        serverKey: ref.serverId,
+        connector: connectorName(input.connections, ref.serverId),
+      };
+    }
+    if (problem)
+      problems.set(
+        JSON.stringify([problem.serverKey, problem.reason, problem.account]),
+        problem,
+      );
+  }
+  return Array.from(problems.values());
+}
+
+/**
  * Whether the person chose a sign-in other than the account for a server a
  * plugin brings (on the server, or for the run), so the run never acts as an
  * account for it. The global default alone is not a choice: an unbound row
@@ -206,21 +268,26 @@ export function choseOtherSignIn(server: {
   );
 }
 
-/** One problem in words, for a run's failure reason and the owner's notice. */
+/**
+ * One problem in words, for a run's failure reason and the owner's notice.
+ * `subject` names what sends: a scheduled run's automation, or the workflow
+ * a person ran.
+ */
 export function automationAccountProblemText(
   problem: AutomationAccountProblem,
+  subject: 'automation' | 'workflow' = 'automation',
 ): string {
   switch (problem.reason) {
     case 'choose':
-      return `You have several ${problem.connector} accounts. Choose which one this automation sends as.`;
+      return `You have several ${problem.connector} accounts. Choose which one this ${subject} sends as.`;
     case 'gone':
       // A legacy ref names a connection, not a connector, so a deleted one
       // has no connector name to show.
       return problem.connector === problem.serverKey &&
         problem.serverKey.startsWith('account:')
-        ? 'An account this automation sends as is gone. Choose another account.'
-        : `The ${problem.connector} account this automation sends as is gone. Choose another account.`;
+        ? `An account this ${subject} sends as is gone. Choose another account.`
+        : `The ${problem.connector} account this ${subject} sends as is gone. Choose another account.`;
     case 'disconnected':
-      return `Reconnect ${problem.connector} (${problem.account ?? problem.connector}) to run this automation.`;
+      return `Reconnect ${problem.connector} (${problem.account ?? problem.connector}) to run this ${subject}.`;
   }
 }

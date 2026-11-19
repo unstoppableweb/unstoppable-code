@@ -15,3 +15,4 @@ export * from './wire';
 export * from './runtime-descriptor';
 export * from './mcp-availability';
 export * from './chat-plan-review';
+export * from './keyed-write-outcome';

@@ -111,6 +111,7 @@ export interface PanelGroupProps {
   onTabIntent?: PanelTabBarProps['onTabIntent'];
   /** Plain-string title resolver for tooltips + close-button accessible names. */
   getTabTitle?: (tab: PanelTabModel) => string;
+  isTabTitlePrivate?: (tab: PanelTabModel) => boolean;
   renderTabAccessibleStatus?: (tab: PanelTabModel) => ReactNode;
   /** Persistent attention remains visible when a fill tab shrinks to its icon. */
   renderTabAttention?: (tab: PanelTabModel) => ReactNode;
@@ -327,6 +328,7 @@ function PanelGroupComponent({
   renderTabLabel,
   onTabIntent,
   getTabTitle,
+  isTabTitlePrivate,
   renderTabAccessibleStatus,
   renderTabAttention,
   renderTabTooltip,
@@ -674,6 +676,7 @@ function PanelGroupComponent({
             renderTabLabel={renderTabLabel}
             onTabIntent={onTabIntent}
             getTabTitle={getTabTitle}
+            isTabTitlePrivate={isTabTitlePrivate}
             renderTabAccessibleStatus={renderTabAccessibleStatus}
             renderTabTooltip={renderTabTooltip}
             renderTabHoverCard={renderTabHoverCard}
@@ -831,6 +834,7 @@ function PanelGroupComponent({
           addTab={addTab}
           renderTabIcon={renderCollapsedTabIcon ?? renderTabIcon}
           getTabTitle={getTabTitle}
+          isTabTitlePrivate={isTabTitlePrivate}
           renderTabAccessibleStatus={renderTabAccessibleStatus}
           renderTabTooltip={renderTabTooltip}
           tabStripAccessory={tabStripAccessory}

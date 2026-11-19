@@ -25,5 +25,6 @@ export * from './git-executable';
 export * from './filesystem/read-only-directory-inputs';
 export * from './filesystem/watch-registry';
 export * from './filesystem/watch-stream';
+export * from './filesystem/worktree-fence-key';
 export * from './worktree/branch-observer';
 export * from './daemon/repair';

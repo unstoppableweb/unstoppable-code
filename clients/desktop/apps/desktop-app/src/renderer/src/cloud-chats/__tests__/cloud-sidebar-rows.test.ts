@@ -26,7 +26,13 @@ import {
 } from '../cloud-sidebar-intent';
 import { openCoworkWorkEntryFromSidebar } from '@/lib/openCoworkWorkEntryFromSidebar';
 import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
-import { deleteCloudTask } from '../archive-cloud-task';
+import { CoreCoworkOutcomeUnknownError } from '@canopy/app-state/core-cowork';
+import {
+  archiveCloudTask,
+  CLOUD_TASK_ARCHIVE_FAILED,
+  cloudTaskArchiveFailure,
+  deleteCloudTask,
+} from '../archive-cloud-task';
 import { cloudCoworkStore } from '../cloud-cowork-store';
 import type { SingleRepoSidebarItem } from '@canopy/desktop-shared/types';
 import { useProjectsStore } from '@/stores/projectsStore';
@@ -280,6 +286,30 @@ describe('cloud projects in the shared desktop sidebar (CAN-6099)', () => {
     expect(deleteTask).toHaveBeenCalledWith('p1', 't1');
     expect(archiveTask).not.toHaveBeenCalled();
     resetWebCoreServedOperations();
+  });
+
+  it("an archive that may have landed, which no listing settled, says it couldn't confirm it, never that it failed, and keeps the task open (CAN-7196)", async () => {
+    const unknown = new CoreCoworkOutcomeUnknownError(
+      "Couldn't confirm the task was archived. The list will show where it stands.",
+    );
+    const archiveTask = jest.fn((): Promise<void> => Promise.reject(unknown));
+    const listArchivedTasks = jest.fn(() => Promise.resolve([]));
+    cloudCoworkStore.setState({ archiveTask, listArchivedTasks });
+
+    const failure = await archiveCloudTask('web-core:p1', 'web-core:t1').catch(
+      (error: unknown) => error,
+    );
+    expect(failure).toBe(unknown);
+    expect(archiveTask).toHaveBeenCalledTimes(1);
+    // Not left as if archived: the archived list isn't read for it.
+    expect(listArchivedTasks).not.toHaveBeenCalled();
+    expect(cloudTaskArchiveFailure(failure)).toBe(
+      "Couldn't confirm the task was archived. The list will show where it stands.",
+    );
+    // A refusal still says it wasn't archived.
+    expect(cloudTaskArchiveFailure(new Error('Refused.'))).toBe(
+      CLOUD_TASK_ARCHIVE_FAILED,
+    );
   });
 
   it('a cloud task is deleted only from the sidebar host (CAN-7052)', () => {

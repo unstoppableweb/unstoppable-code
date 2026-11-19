@@ -15,12 +15,17 @@ import {
   CLOUD_ATTACHMENT_MAX_BYTES,
   isCloudAttachmentMediaType,
 } from '@canopy/protocol/cloud-attachments';
+import { createKeyedWriteHistory } from '@canopy/app-state/core-cowork';
 import { CanopyClientError } from '@canopy/core-client';
 import { CanopyTransportError } from '@canopy/core-transport';
 import type { CloudWorkspaceFileUploadResult } from '@canopy/desktop-shared/types';
 import { z } from 'zod';
 import { validateId } from '../lib/validation';
-import { withLeasedWebCoreClient } from './cloud-chat-attachments';
+import {
+  isUnconfirmedKeyedWrite,
+  logUnreadableUploadAnswer,
+  withLeasedWebCoreClient,
+} from './cloud-chat-attachments';
 import type { WebCoreBindingOptions } from './web-core-connection';
 
 /**
@@ -32,11 +37,13 @@ import type { WebCoreBindingOptions } from './web-core-connection';
  * Main writes them with `worker.artifact.upload.open`, `.write` and `.commit`
  * on a web core connection of its own.
  *
- * Fails closed: main never retries. Once the open is sent, only a refusal the
- * web core answered stays typed; any other failure (a lost reply, a dropped
- * connection, a timeout) is `unknown`, since the file may have been stored.
- * The person's Try again resends under the same operation id, which the web
- * core keys the upload by, so it can store the file once at most.
+ * Fails closed: main never retries. Once the open is sent, an answer that
+ * never came (lost and never retried, or a same-key retry, as the client's
+ * own deadline arrives) is `unknown`, since the file may have been stored, as
+ * is an answer main can't read. Every error the web core answered keeps its
+ * own kind (CAN-7196). The person's Try again resends under the same
+ * operation id, which the web core keys the upload by, so it can store the
+ * file once at most.
  */
 
 const UPLOAD_TIMEOUT_MS = 120_000;
@@ -145,16 +152,60 @@ const REFUSALS: ReadonlySet<string> = new Set([
   'capability_unavailable',
 ]);
 
-/** A failure once the open was sent: typed only for an answered refusal. */
-function afterDispatch(error: unknown): CloudWorkspaceFileUploadResult {
-  if (
-    !(error instanceof CanopyClientError) ||
-    !REFUSALS.has(error.payload.kind)
-  )
+/** Errors the web core answered that a later try may clear. */
+const TRANSIENT: ReadonlySet<string> = new Set([
+  'unavailable',
+  'deadline_exceeded',
+  'cancelled',
+]);
+
+/**
+ * The web core's commit refusals raised before this attempt stores anything
+ * (CAN-7196, SWAN 05:33): only these keep their kind once the commit is sent.
+ * `capability_unavailable` comes from the upload's record read, the commit's
+ * first step (apps/web/src/lib/web-core/artifact-uploads.ts:285-294, :590);
+ * a digest mismatch is checked before any byte is read or stored (:596-607,
+ * :617-621). Every other commit answer, a conflict included, may follow a
+ * stored file: the same code can come from Core's own write, or from a
+ * retry after the file was stored but its record wasn't.
+ */
+function isRefusedBeforeStore(payload: CanopyErrorPayload): boolean {
+  return (
+    payload.kind === 'capability_unavailable' ||
+    payload.code === 'worker.artifact.upload.digestMismatch'
+  );
+}
+
+/**
+ * A failure once the open was sent: `unknown` only when its answer never
+ * came, or main couldn't read it; an answered error keeps its kind. The
+ * commit, which stores the file, is inherent rather than keyed, so a lost
+ * reply to it can't be told from an answered one: once it is sent, only a
+ * refusal proven to come before the store keeps its kind (CAN-7196).
+ */
+function afterDispatch(
+  error: unknown,
+  committing: boolean,
+): CloudWorkspaceFileUploadResult {
+  if (isUnconfirmedKeyedWrite(error)) return { ok: false, reason: 'unknown' };
+  const payload = payloadOf(error);
+  if (payload === null) {
+    logUnreadableUploadAnswer('workspace-file');
     return { ok: false, reason: 'unknown' };
-  const { kind, code } = error.payload;
-  const message = error.payload.message.trim();
+  }
+  const message = payload.message.trim();
   const withMessage = message === '' ? {} : { message };
+  const refused =
+    error instanceof CanopyClientError && REFUSALS.has(payload.kind);
+  if (committing && !(refused && isRefusedBeforeStore(payload)))
+    return { ok: false, reason: 'unknown' };
+  // Only a refusal the web core answered keeps its words: any other error,
+  // such as internal, can be the client's own, in developer words.
+  if (!refused)
+    return TRANSIENT.has(payload.kind)
+      ? { ok: false, reason: 'offline' }
+      : { ok: false, reason: 'rejected' };
+  const { kind, code } = payload;
   if (kind === 'unauthenticated')
     return { ok: false, reason: 'unauthenticated' };
   if (kind === 'capability_unavailable')
@@ -185,6 +236,24 @@ export function createCloudWorkspaceFileUpload(
   let inFlight = 0;
   let active = 0;
   const waiting: (() => void)[] = [];
+  // Uploads whose answer never came, by operation id: Try again resends the
+  // same id, so any failure of the retry leaves it unknown (CAN-7196).
+  const unknownUploads = createKeyedWriteHistory();
+
+  function remembered(
+    operationId: string,
+    result: CloudWorkspaceFileUploadResult,
+  ): CloudWorkspaceFileUploadResult {
+    if (result.ok) unknownUploads.settle(operationId);
+    else if (
+      result.reason === 'unknown' ||
+      unknownUploads.wasUnknown(operationId)
+    ) {
+      unknownUploads.markUnknown(operationId);
+      return { ok: false, reason: 'unknown' };
+    }
+    return result;
+  }
 
   async function takeSlot(): Promise<void> {
     if (active < MAX_ACTIVE_UPLOADS) {
@@ -207,6 +276,7 @@ export function createCloudWorkspaceFileUpload(
     const sha256 = createHash('sha256').update(bytes).digest('hex');
     const scope = { workspaceId: request.workspaceId };
     let dispatched = false;
+    let committing = false;
     let artifactId: string;
     try {
       artifactId = await options.withWriter(async (instructions) => {
@@ -240,6 +310,7 @@ export function createCloudWorkspaceFileUpload(
           if (next <= offset) throw new Error('The upload did not advance.');
           offset = next;
         }
+        committing = true;
         return WorkerArtifactSchema.parse(
           await instructions.commit({
             scope,
@@ -250,10 +321,14 @@ export function createCloudWorkspaceFileUpload(
         ).artifactId;
       });
     } catch (error) {
-      return dispatched ? afterDispatch(error) : beforeDispatch(error);
+      return dispatched
+        ? afterDispatch(error, committing)
+        : beforeDispatch(error);
     }
-    if (!artifactId.startsWith(WORKSPACE_FILE_PREFIX))
+    if (!artifactId.startsWith(WORKSPACE_FILE_PREFIX)) {
+      logUnreadableUploadAnswer('workspace-file');
       return { ok: false, reason: 'unknown' };
+    }
     return { ok: true, fileId: artifactId.slice(WORKSPACE_FILE_PREFIX.length) };
   }
 
@@ -280,7 +355,7 @@ export function createCloudWorkspaceFileUpload(
     try {
       await takeSlot();
       try {
-        return await send(parsed.data);
+        return remembered(parsed.data.operationId, await send(parsed.data));
       } finally {
         releaseSlot();
       }

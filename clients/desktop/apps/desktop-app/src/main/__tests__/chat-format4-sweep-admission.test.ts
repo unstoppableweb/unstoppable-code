@@ -206,17 +206,17 @@ describe('a scope someone else holds (the lease rule)', () => {
     await target.drainAll();
   });
 
-  it('never admits a viewer scope, or any scope once the repository drains', async () => {
+  it('admits no scope once the repository drains, a viewer scope included (viewer promotion: chat-format4-sweep-viewer-scopes.test.ts)', async () => {
     const viewer = {
       projectId: SHARED_CONTAINER_VIEWER_PROJECT_ID,
       worktreeId: 'replica',
     };
     await seedV3(viewer);
+    await seedV3();
     const target = repository();
+    await target.drainAll();
     expect(await target.sweepFormat4(viewer)).toEqual({ outcome: 'held' });
     expect(await storeFor(viewer).format()).toBe('v3');
-    await target.drainAll();
-    await seedV3();
     expect(await target.sweepFormat4(SCOPE)).toEqual({ outcome: 'held' });
     expect(await storeFor().format()).toBe('v3');
   });

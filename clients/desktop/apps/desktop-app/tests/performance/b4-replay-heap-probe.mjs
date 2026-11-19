@@ -102,6 +102,9 @@ function harnessSource(config, root) {
     delegation: imports(
       'apps/desktop-app/src/main/agents/delegation/service.ts',
     ),
+    interfacePort: imports(
+      'apps/desktop-app/src/main/agents/agent-interface-port.ts',
+    ),
     fixture: imports(
       'apps/desktop-app/src/main/__tests__/helpers/chat-delta-journal-harness.ts',
     ),
@@ -118,6 +121,7 @@ import { ChatStateService, resetChatStateServiceForTests } from ${JSON.stringify
 import { getWorktreeDataDir } from ${JSON.stringify(moduleImports.paths)};
 import { createDelegationRunState } from ${JSON.stringify(moduleImports.lifecycle)};
 import { createManagedDelegationSession, shutdownManagedDelegations } from ${JSON.stringify(moduleImports.delegation)};
+import { windowAgentInterfacePort } from ${JSON.stringify(moduleImports.interfacePort)};
 import { scopeSource, message } from ${JSON.stringify(moduleImports.fixture)};
 
 const config = ${JSON.stringify(config)};
@@ -322,7 +326,7 @@ test('measures real retained delegation replay against a cold fixture scope', as
       sessionKey: projectId + '/' + worktreeId + '/' + chatId,
       currentOptions: () => ({ projectId, worktreeId, chatId, cwd: tempRoot }),
       currentTurn: () => undefined,
-      getWindow: () => null,
+      interfacePort: windowAgentInterfacePort(() => null),
       onTranscript: () => { publishedTranscripts += 1; },
     }));
     sampleHeap();

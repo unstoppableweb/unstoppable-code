@@ -9,7 +9,10 @@ import {
 import { useStore } from 'zustand';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
-import type { CloudChatCatalog } from '@canopy/app-state/core-cowork';
+import {
+  CoreCoworkOutcomeUnknownError,
+  type CloudChatCatalog,
+} from '@canopy/app-state/core-cowork';
 import { RemoteControlPluginsPicker } from '@canopy/ui-app';
 import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import { brandText } from '@/lib/brand';
@@ -197,7 +200,10 @@ function CatalogPicker({
           const save = catalog.setSelections(next);
           trackSelectionSave(chatId, save);
           return save.catch((error: unknown) => {
-            reportClientAppError(error);
+            // A save that may have landed isn't a failure: the selection
+            // was read again and shows as it stands (CAN-7196).
+            if (!(error instanceof CoreCoworkOutcomeUnknownError))
+              reportClientAppError(error);
             throw error;
           });
         }}

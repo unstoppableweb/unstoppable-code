@@ -12,6 +12,10 @@ import {
   WORKSPACE_TEMPLATE_SHARE_LABEL,
   WORKSPACE_TEMPLATE_SHARE_LABEL_LOWER,
 } from '@canopy/protocol/workspace-templates';
+import {
+  SCHEDULED_WORKFLOW_ITEM_LABEL,
+  WORKFLOW_ITEM_LABEL,
+} from '@canopy/ui-shared/lib/workflow-labels';
 
 /** Every shared resource that installs; a shared container is accepted, not installed. */
 export type ShareInstallEntity = Exclude<
@@ -32,13 +36,15 @@ export type ShareInstallActionState =
 
 /**
  * The noun for each entity as it appears in sentence-case copy. A workspace
- * share is a Blueprint, which the reader receives as a project.
+ * share is a Blueprint, which the reader receives as a project. Pipelines and
+ * automations are both workflows; an automation is named by how it starts
+ * (`scheduled workflow`) so the two kinds stay distinguishable.
  */
 const ENTITY_NOUN: Readonly<Record<ShareInstallEntity, string>> = {
   skill: 'skill',
   plugin: 'plugin',
-  pipeline: 'workflow',
-  automation: 'automation',
+  pipeline: WORKFLOW_ITEM_LABEL.toLowerCase(),
+  automation: SCHEDULED_WORKFLOW_ITEM_LABEL.toLowerCase(),
   agent: 'agent',
   collection: 'collection',
   workspace: 'project',
@@ -48,7 +54,7 @@ const DEFAULT_DESCRIPTION: Readonly<Record<ShareInstallEntity, string>> = {
   skill: 'A skill your agents can use when it fits the task.',
   plugin: 'A plugin that adds tools and skills to your agents.',
   pipeline: 'A workflow you can run on a project when you need it.',
-  automation: 'An automation that runs a task for you on a schedule.',
+  automation: 'A workflow that runs a task for you on a schedule.',
   agent: 'An agent you can start from any chat.',
   collection: 'A set of skills and plugins that install together.',
   workspace: 'A project template with its setup ready to use.',

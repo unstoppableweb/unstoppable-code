@@ -58,7 +58,7 @@ export function formatAutomationTargetContexts(
 export const AUTOMATION_TARGET_UNVERIFIED_NOTE =
   'The workflow’s own requirements are checked when you install, and may narrow these choices.';
 export const AUTOMATION_TARGET_NONE_LABEL =
-  'This automation has no compatible place to run.';
+  'This scheduled workflow has no compatible place to run.';
 
 export interface AutomationTargetRequirementDisplay {
   contexts: TargetContext[];

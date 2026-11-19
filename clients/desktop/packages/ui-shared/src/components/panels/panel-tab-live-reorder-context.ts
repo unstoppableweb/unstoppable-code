@@ -29,6 +29,7 @@ export interface PanelTabLiveReorderHost {
   };
   readonly setDropIndicatorIndex: (index: number | null) => void;
   readonly getTabTitle?: (tab: PanelTabModel) => string;
+  readonly isTabTitlePrivate?: (tab: PanelTabModel) => boolean;
 }
 
 /** What the tab bar calls back as a tab is pressed, dragged and released. */

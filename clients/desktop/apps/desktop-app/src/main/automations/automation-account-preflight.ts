@@ -1,6 +1,7 @@
 import {
   chatSurfaceUsesGlobalPluginDefaults,
   legacyAccountMcpConnectionId,
+  withoutAccountsPickedOver,
 } from '@canopy/desktop-shared/lib/effective-plugin-selections';
 import { access } from 'node:fs/promises';
 import type { BrowserWindow } from 'electron';
@@ -8,8 +9,10 @@ import {
   automationAccountProblemText,
   automationAccountProblems,
   choseOtherSignIn,
+  workflowStepAccountProblems,
   type AutomationAccountProblem,
 } from '@canopy/desktop-shared/lib/automation-accounts';
+import type { McpServerRef } from '@canopy/protocol/mcp-servers';
 import type { ChatTabPluginSelections } from '@canopy/desktop-shared/types';
 import { CURATED_PLUGIN_MARKETPLACE_ID } from '@canopy/execution-engine/types/plugins';
 import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
@@ -28,11 +31,16 @@ import { listDetectedMcpServersForSelections } from '../plugins/mcp-inventory';
 
 /** The run stopped before sending anything because of an account (CAN-6233). */
 export class AutomationAccountUnavailableError extends Error {
-  constructor(readonly problems: readonly AutomationAccountProblem[]) {
+  constructor(
+    readonly problems: readonly AutomationAccountProblem[],
+    subject: 'automation' | 'workflow' = 'automation',
+  ) {
     super(
       [
         'This run stopped before sending anything.',
-        ...problems.map(automationAccountProblemText),
+        ...problems.map((problem) =>
+          automationAccountProblemText(problem, subject),
+        ),
       ].join(' '),
     );
     this.name = 'AutomationAccountUnavailableError';
@@ -139,6 +147,25 @@ function selectsAccountConnector(selections: ChatTabPluginSelections): boolean {
   );
 }
 
+/** Which refs name a server on this device, read once off the main thread. */
+async function deviceServerCheck(
+  refs: readonly McpServerRef[],
+): Promise<(serverId: string) => boolean> {
+  const deviceServerIds = new Set(
+    (
+      await Promise.all(
+        Array.from(new Set(refs.map((ref) => ref.serverId)), (id) =>
+          access(getMcpServerFilePath(id)).then(
+            (): string | null => id,
+            (): string | null => null,
+          ),
+        ),
+      )
+    ).filter((id): id is string => id !== null),
+  );
+  return (serverId) => deviceServerIds.has(serverId);
+}
+
 function noticeOwner(run: AutomationAccountRun, message: string): void {
   if (
     run.scope !== undefined &&
@@ -193,21 +220,7 @@ export async function assertAutomationAccountsReady(
     'unattended',
   );
   const directRefs = effective.mcpServerRefs;
-  // Which refs name a server on this device, read once off the main thread.
-  const deviceServerIds = new Set(
-    (
-      await Promise.all(
-        Array.from(new Set(directRefs.map((ref) => ref.serverId)), (id) =>
-          access(getMcpServerFilePath(id)).then(
-            (): string | null => id,
-            (): string | null => null,
-          ),
-        ),
-      )
-    ).filter((id): id is string => id !== null),
-  );
-  const isDeviceServer = (serverId: string): boolean =>
-    deviceServerIds.has(serverId);
+  const isDeviceServer = await deviceServerCheck(directRefs);
   const connections = await loadAccountMcpRefConnections();
   if (connections === null) {
     // Only a ref that names an account needs the list; device servers and
@@ -247,4 +260,66 @@ export async function assertAutomationAccountsReady(
   const error = new AutomationAccountUnavailableError(problems);
   noticeOwner(run, error.message);
   throw error;
+}
+
+/**
+ * Stops a send step a person started before it sends anything when an account
+ * the step names can't be acted as (CAN-7186): the added account it names is
+ * gone, or an account it names isn't connected. Only the step's own
+ * selections are checked, its installed collections' refs included; a
+ * connector it names no account of acts as the
+ * person's default, as their own chat does. The person sees the step fail, so
+ * no notice is raised. A connection list that can't be read lets the run
+ * through, since an attended turn binds as it would anyway.
+ */
+export async function assertWorkflowStepAccountsReady(
+  stepSelections: ChatTabPluginSelections | undefined,
+): Promise<void> {
+  if (!accountMcpConnectionsEnabled() || !stepSelections) return;
+  // The step's installed collections bring account refs too: expanded by
+  // the session's own filter (turned-off ones bring none), as the scheduled
+  // check expands them, beside the step's own refs as written.
+  const collectionRefs =
+    stepSelections.collectionIds.length === 0
+      ? []
+      : (
+          await (
+            await import('../plugins/plugin-resolver')
+          ).resolveEffectivePluginSelectionRefs(
+            {
+              collectionIds: stepSelections.collectionIds,
+              skillRefs: [],
+              pluginRefs: [],
+            },
+            [],
+            undefined,
+            undefined,
+            'unattended',
+          )
+        ).mcpServerRefs;
+  // The step's own account pick of a connector stands in for a collection's
+  // other account of it, as the session layers them.
+  const directRefs = [
+    ...(stepSelections.mcpServerRefs ?? []),
+    ...(withoutAccountsPickedOver(
+      {
+        collectionIds: [],
+        skillRefs: [],
+        pluginRefs: [],
+        mcpServerRefs: collectionRefs,
+      },
+      stepSelections,
+    )?.mcpServerRefs ?? []),
+  ];
+  if (directRefs.length === 0) return;
+  const connections = await loadAccountMcpRefConnections();
+  if (connections === null) return;
+  const problems = workflowStepAccountProblems({
+    connections,
+    directRefs,
+    isDeviceServer: await deviceServerCheck(directRefs),
+    desktopOnlyKeys: await readCachedCuratedMcpDesktopOnlyKeys(),
+  });
+  if (problems.length > 0)
+    throw new AutomationAccountUnavailableError(problems, 'workflow');
 }

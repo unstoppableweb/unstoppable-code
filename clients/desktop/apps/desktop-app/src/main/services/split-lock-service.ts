@@ -15,8 +15,59 @@
 
 import { assertWorkspaceTargetRuntimeStartAllowed } from '../lib/workspace-target-exclusion';
 
-/** Locked worktrees keyed by `${workspaceId}:${worktreeId}`. */
-const lockedWorktrees = new Set<string>();
+/**
+ * Resolves a worktree to its fence key (CAN-4730): its root through
+ * `realpath.native`, so every ID form, symlink or case variant naming one
+ * worktree gets one key. `key` is for acquire; `keySync` runs only while a
+ * lock is held, to place a guarded target against the held keys.
+ */
+export interface SplitLockKeyResolver {
+  key(workspaceId: string, worktreeId: string): Promise<string>;
+  keySync(workspaceId: string, worktreeId: string): string;
+}
+
+let keyResolver: SplitLockKeyResolver | undefined;
+
+/**
+ * Installs the key resolver; main startup wires it. Without one, acquire
+ * refuses and a held lock refuses every guarded target. Returns an undo.
+ */
+export function setSplitLockKeyResolver(
+  resolver: SplitLockKeyResolver,
+): () => void {
+  const previous = keyResolver;
+  keyResolver = resolver;
+  return (): void => {
+    if (keyResolver === resolver) keyResolver = previous;
+  };
+}
+
+export interface HeldSplitLock {
+  workspaceId: string;
+  worktreeId: string;
+}
+
+/**
+ * Confirms a new lock where other hosts enforce it (CAN-4730 E2-G: the
+ * daemon's mutation fence). Resolves once it holds there; rejects otherwise.
+ */
+export type SplitLockFenceConfirmer = (held: HeldSplitLock) => Promise<void>;
+
+let confirmFence: SplitLockFenceConfirmer | undefined;
+
+/** Installs the fence confirmer; main startup wires it. Returns an undo. */
+export function setSplitLockFenceConfirmer(
+  confirmer: SplitLockFenceConfirmer,
+): () => void {
+  const previous = confirmFence;
+  confirmFence = confirmer;
+  return (): void => {
+    if (confirmFence === confirmer) confirmFence = previous;
+  };
+}
+
+/** Locked worktrees by fence key, with the IDs each lock was taken under. */
+const lockedWorktrees = new Map<string, HeldSplitLock>();
 /** Workspace deletions exclude split starts for the full deletion lifetime. */
 const workspaceDeletionLeases = new Set<string>();
 /** Archive-retention writes exclude split planning for the same workspace. */
@@ -91,7 +142,8 @@ export class SplitStartBlockedError extends Error {
   }
 }
 
-function lockKey(workspaceId: string, worktreeId: string): string {
+/** Destination claims stay keyed by the IDs their split reserved. */
+function claimKey(workspaceId: string, worktreeId: string): string {
   return `${workspaceId}:${worktreeId}`;
 }
 
@@ -101,12 +153,28 @@ function emitChange(event: SplitLockChangeEvent): void {
   }
 }
 
-/**
- * Acquire the split lock for a worktree. Throws {@link SplitLockError} if the
- * worktree is already locked (a split is already in progress for it), so a
- * second concurrent start is rejected instead of racing the first.
- */
-export function acquireSplitLock(
+/** The held lock with exactly these IDs, found without a filesystem call. */
+function heldKeyByIds(
+  workspaceId: string,
+  worktreeId: string,
+): string | undefined {
+  for (const [key, held] of lockedWorktrees)
+    if (held.workspaceId === workspaceId && held.worktreeId === worktreeId)
+      return key;
+  return undefined;
+}
+
+/** A guarded target's key while a lock is held; null when it can't be placed. */
+function targetKey(workspaceId: string, worktreeId: string): string | null {
+  if (!keyResolver) return null;
+  try {
+    return keyResolver.keySync(workspaceId, worktreeId);
+  } catch {
+    return null;
+  }
+}
+
+function assertSplitStartAllowed(
   workspaceId: string,
   worktreeId: string,
 ): void {
@@ -132,15 +200,86 @@ export function acquireSplitLock(
       { workspaceId, worktreeId, operation: 'acquire' },
     );
   }
-  const key = lockKey(workspaceId, worktreeId);
-  if (lockedWorktrees.has(key)) {
+}
+
+/** A split lock whose key is resolved, taken by `acquire`. */
+export interface PreparedSplitLock {
+  /**
+   * Takes the lock before its first await, so a caller's own checks just
+   * before it stay atomic with it, or throws {@link SplitLockError} without
+   * taking it. Resolves once the lock's fence is confirmed; if it isn't, the
+   * lock is released and the promise rejects with {@link SplitLockError}.
+   */
+  acquire(): Promise<void>;
+}
+
+/**
+ * Resolves a worktree's lock key ahead of taking its lock. The key is the
+ * worktree's resolved root; a worktree that can't be resolved is refused,
+ * never keyed by its raw IDs.
+ */
+export async function prepareSplitLock(
+  workspaceId: string,
+  worktreeId: string,
+): Promise<PreparedSplitLock> {
+  assertSplitStartAllowed(workspaceId, worktreeId);
+  let key: string;
+  try {
+    if (!keyResolver) throw new Error('No split lock key resolver.');
+    key = await keyResolver.key(workspaceId, worktreeId);
+  } catch {
     throw new SplitLockError(
-      'A Split PR workflow is already in progress for this worktree.',
+      "Couldn't find this worktree, so a Split PR can't start.",
       { workspaceId, worktreeId, operation: 'acquire' },
     );
   }
-  lockedWorktrees.add(key);
-  emitChange({ workspaceId, worktreeId, locked: true });
+  const take = (): HeldSplitLock => {
+    // Deletion and retention leases may have been taken since preparing.
+    assertSplitStartAllowed(workspaceId, worktreeId);
+    if (lockedWorktrees.has(key)) {
+      throw new SplitLockError(
+        'A Split PR workflow is already in progress for this worktree.',
+        { workspaceId, worktreeId, operation: 'acquire' },
+      );
+    }
+    const held = { workspaceId, worktreeId };
+    lockedWorktrees.set(key, held);
+    emitChange({ ...held, locked: true });
+    return held;
+  };
+  return {
+    // Async, but everything before the first await runs at the call, so the
+    // lock is taken synchronously with the caller's own checks.
+    acquire: async (): Promise<void> => {
+      const held = take();
+      const confirm = confirmFence;
+      if (!confirm) return;
+      try {
+        await confirm(held);
+      } catch {
+        if (lockedWorktrees.get(key) === held) {
+          lockedWorktrees.delete(key);
+          emitChange({ ...held, locked: false });
+        }
+        throw new SplitLockError(
+          "Couldn't confirm this worktree is locked, so a Split PR can't start. Try again.",
+          { workspaceId, worktreeId, operation: 'acquire' },
+        );
+      }
+    },
+  };
+}
+
+/**
+ * Acquire the split lock for a worktree. Throws {@link SplitLockError} if the
+ * worktree is already locked (a split is already in progress for it), so a
+ * second concurrent start is rejected instead of racing the first.
+ */
+export async function acquireSplitLock(
+  workspaceId: string,
+  worktreeId: string,
+): Promise<void> {
+  await (await prepareSplitLock(workspaceId, worktreeId)).acquire();
 }
 
 /** Read-only admission fence, including deletion before its first journal save. */
@@ -190,7 +329,7 @@ export function acquireSplitDestinationWorktreeClaim(
       { workspaceId, worktreeId, operation: 'claim split destination' },
     );
   }
-  const key = lockKey(workspaceId, worktreeId);
+  const key = claimKey(workspaceId, worktreeId);
   if (splitDestinationWorktreeClaims.has(key)) {
     throw new SplitLockError(
       'This split destination is already claimed by an active split.',
@@ -205,14 +344,14 @@ export function releaseSplitDestinationWorktreeClaim(
   workspaceId: string,
   worktreeId: string,
 ): void {
-  splitDestinationWorktreeClaims.delete(lockKey(workspaceId, worktreeId));
+  splitDestinationWorktreeClaims.delete(claimKey(workspaceId, worktreeId));
 }
 
 export function isSplitDestinationWorktreeClaimed(
   workspaceId: string,
   worktreeId: string,
 ): boolean {
-  return splitDestinationWorktreeClaims.has(lockKey(workspaceId, worktreeId));
+  return splitDestinationWorktreeClaims.has(claimKey(workspaceId, worktreeId));
 }
 
 /** Refuse destructive operations against a split-owned destination row. */
@@ -266,19 +405,32 @@ export function releaseSplitLock(
   workspaceId: string,
   worktreeId: string,
 ): void {
-  const key = lockKey(workspaceId, worktreeId);
-  if (!lockedWorktrees.has(key)) {
-    return;
+  if (lockedWorktrees.size === 0) return;
+  // The IDs it was taken under first, so a lock whose directory has vanished
+  // is still freed; otherwise any other form naming the same worktree.
+  let key = heldKeyByIds(workspaceId, worktreeId);
+  if (key === undefined) {
+    const resolved = targetKey(workspaceId, worktreeId);
+    if (resolved !== null && lockedWorktrees.has(resolved)) key = resolved;
   }
+  const held = key === undefined ? undefined : lockedWorktrees.get(key);
+  if (key === undefined || !held) return;
   lockedWorktrees.delete(key);
-  emitChange({ workspaceId, worktreeId, locked: false });
+  emitChange({ ...held, locked: false });
 }
 
+/**
+ * Whether a worktree is split-locked. Returns at once when no lock is held.
+ * While one is, a target that can't be resolved counts as locked.
+ */
 export function isSplitLocked(
   workspaceId: string,
   worktreeId: string,
 ): boolean {
-  return lockedWorktrees.has(lockKey(workspaceId, worktreeId));
+  if (lockedWorktrees.size === 0) return false;
+  if (heldKeyByIds(workspaceId, worktreeId) !== undefined) return true;
+  const key = targetKey(workspaceId, worktreeId);
+  return key === null || lockedWorktrees.has(key);
 }
 
 /**
@@ -304,18 +456,12 @@ export function releaseIdleSplitLocks(
 ): number {
   let released = 0;
   // Snapshot before mutating so we can iterate safely while releasing.
-  for (const key of Array.from(lockedWorktrees)) {
-    const separatorIndex = key.indexOf(':');
-    if (separatorIndex < 0) {
-      continue;
-    }
-    const workspaceId = key.slice(0, separatorIndex);
-    const worktreeId = key.slice(separatorIndex + 1);
-    if (hasInFlight(workspaceId, worktreeId)) {
+  for (const [key, held] of Array.from(lockedWorktrees)) {
+    if (hasInFlight(held.workspaceId, held.worktreeId)) {
       continue;
     }
     lockedWorktrees.delete(key);
-    emitChange({ workspaceId, worktreeId, locked: false });
+    emitChange({ ...held, locked: false });
     released += 1;
   }
   return released;
@@ -330,18 +476,7 @@ export function getSplitLockedWorktrees(): Array<{
   workspaceId: string;
   worktreeId: string;
 }> {
-  const result: Array<{ workspaceId: string; worktreeId: string }> = [];
-  for (const key of Array.from(lockedWorktrees)) {
-    const separatorIndex = key.indexOf(':');
-    if (separatorIndex < 0) {
-      continue;
-    }
-    result.push({
-      workspaceId: key.slice(0, separatorIndex),
-      worktreeId: key.slice(separatorIndex + 1),
-    });
-  }
-  return result;
+  return Array.from(lockedWorktrees.values(), (held) => ({ ...held }));
 }
 
 /**

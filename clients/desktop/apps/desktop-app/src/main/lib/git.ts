@@ -15,6 +15,7 @@ import {
 import { execFile, spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import {
+  lstat,
   mkdir,
   open,
   readdir,
@@ -72,6 +73,10 @@ import {
   type GitBranchNameReads,
   type GitBranchWritePort,
   type GitChangeSetReader,
+  assertGitRefName,
+  originBranchRefspec,
+  parseRemoteDefaultBranch,
+  type GitRefName,
 } from '@canopy/core-runtime/node/git';
 import { getResolvedGitExecutableForSpawn } from './git-executable';
 import {
@@ -116,6 +121,7 @@ import {
 } from './worktree-process-cleanup';
 import { removeWindowsWorktreeReparsePoints } from './windows-worktree-reparse-points';
 import { settleAll } from '@canopy/desktop-shared/node/lib/detached-work';
+import { refuseOptionLikeWorktreePath } from '@canopy/desktop-shared/node/lib/worktree-path-refusal';
 export { removeWindowsWorktreeReparsePoints } from './windows-worktree-reparse-points';
 import {
   bufferContainsLfsAttributes,
@@ -655,7 +661,7 @@ export async function getComparisonDiff(
   if (!mergeBase) {
     return '';
   }
-  return runGitRaw(['diff', mergeBase, 'HEAD'], repoPath);
+  return runGitRaw(['diff', '--end-of-options', mergeBase, 'HEAD'], repoPath);
 }
 
 export async function getHeadCommitSha(
@@ -774,7 +780,10 @@ export async function getCombinedDiffText(
       ? await getMergeBaseForBranch(repoPath, baseBranch)
       : resolvedMergeBase;
   try {
-    return await runGitRaw(['diff', mergeBase ?? 'HEAD'], repoPath);
+    return await runGitRaw(
+      ['diff', '--end-of-options', mergeBase ?? 'HEAD'],
+      repoPath,
+    );
   } catch {
     return '';
   }
@@ -830,7 +839,7 @@ export async function listWorkingTreeDiffAgainstCommit(
 ): Promise<RawDiffEntry[]> {
   const records = decodeStrictGitPaths(
     await runGitUntrimmedBuffer(
-      ['diff', sha, '--raw', '-z', '--no-renames'],
+      ['diff', '--raw', '-z', '--no-renames', '--end-of-options', sha],
       repoPath,
       options,
     ),
@@ -999,7 +1008,7 @@ export async function repositoryUsesGitLfs(
         return true;
       }
       const contents = await runGitUntrimmedBuffer(
-        ['cat-file', 'blob', objectSpec],
+        ['cat-file', 'blob', '--end-of-options', objectSpec],
         repoPath,
         options,
       );
@@ -1143,7 +1152,7 @@ export async function inspectRepositoryTreeEntryKinds(
       continue;
     }
     const targetBuffer = await runGitUntrimmedBuffer(
-      ['cat-file', 'blob', entry.objectId],
+      ['cat-file', 'blob', '--end-of-options', entry.objectId],
       repoPath,
       options,
     );
@@ -1310,10 +1319,14 @@ export async function getLiveOriginBranchSha(
       // Verify the advertised object directly. FETCH_HEAD is shared mutable
       // state for the worktree and may be rewritten by an unrelated background
       // fetch between these commands.
-      await runGit(['cat-file', '-e', `${sha}^{commit}`], repoPath, {
-        signal,
-        nonInteractive: true,
-      });
+      await runGit(
+        ['cat-file', '-e', '--end-of-options', `${sha}^{commit}`],
+        repoPath,
+        {
+          signal,
+          nonInteractive: true,
+        },
+      );
       return sha;
     }
   }
@@ -1554,6 +1567,7 @@ export async function mergeBase(
         ? GIT_EXACT_CATALOGUE_REF_ARGS
         : []),
       'merge-base',
+      '--end-of-options',
       a,
       b,
     ],
@@ -1566,7 +1580,10 @@ export async function countCommits(
   repoPath: string,
   range: string,
 ): Promise<number> {
-  const result = await runGit(['rev-list', '--count', range], repoPath);
+  const result = await runGit(
+    ['rev-list', '--count', '--end-of-options', range],
+    repoPath,
+  );
   const count = Number.parseInt(result, 10);
   if (!Number.isSafeInteger(count) || count < 0) {
     throw new Error('Git returned an invalid commit count');
@@ -1785,15 +1802,190 @@ export async function cloneRepo(
   // Default stays redirect-following so unrelated callers (workspace/repo
   // clones of trusted remotes) are unchanged; only callers that pass
   // `followRedirects: false` (the portal external-install path) refuse them.
-  await runGit(
-    buildCloneRepoArgs(url, destination, options?.followRedirects !== false),
-    undefined,
-    {
-      nonInteractive: options?.nonInteractive === true,
-      skipLfsSmudge: options?.skipLfsSmudge === true,
-      signal: options?.signal,
-      timeoutMs: options?.timeoutMs,
+  const gitOptions = {
+    nonInteractive: options?.nonInteractive === true,
+    skipLfsSmudge: options?.skipLfsSmudge === true,
+    signal: options?.signal,
+    timeoutMs: options?.timeoutMs,
+  };
+  await cloneThenCheckOut(destination, {
+    signal: options?.signal,
+    clone: async () => {
+      await runGit(
+        buildCloneRepoArgs(
+          url,
+          destination,
+          options?.followRedirects !== false,
+          ['--no-checkout'],
+        ),
+        undefined,
+        gitOptions,
+      );
     },
+    checkOut: () => checkOutClonedHead(destination, gitOptions),
+  });
+}
+
+/**
+ * The checkout a `--no-checkout` clone skipped: `checkout -f` populates the
+ * tree exactly as the clone's own checkout would, hooks included. An empty
+ * repository has nothing to check out.
+ */
+async function checkOutClonedHead(
+  destination: string,
+  gitOptions: {
+    nonInteractive?: boolean;
+    skipLfsSmudge?: boolean;
+    signal?: AbortSignal;
+    timeoutMs?: number;
+  },
+): Promise<void> {
+  if (await clonedHeadExists(destination, gitOptions.signal))
+    await runGit(['checkout', '-q', '-f'], destination, gitOptions);
+}
+
+/** Whether a fresh clone's HEAD names a commit; an unborn HEAD does not. */
+async function clonedHeadExists(
+  destination: string,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  const head = await runGit(
+    ['rev-parse', '--verify', '--quiet', 'HEAD'],
+    destination,
+    { nonInteractive: true, signal },
+  ).catch((error: unknown): string => quietProbeMiss(error, signal));
+  return head !== '';
+}
+
+/**
+ * A `--quiet` probe's expected "no answer" is exit status 1 (an unborn HEAD,
+ * or a HEAD that is not a symbolic ref). Cancellation and every other
+ * failure are rethrown, so a cancelled clone never completes.
+ */
+function quietProbeMiss(error: unknown, signal?: AbortSignal): string {
+  signal?.throwIfAborted();
+  if (Reflect.get(Object(error), 'code') === 1) return '';
+  throw error;
+}
+
+/**
+ * CAN-7169: the one clone sequence for every Electron clone. The caller's
+ * clone runs without a checkout; the HEAD it names is read with the shared
+ * validator; only then does the caller's checkout run. A refused HEAD fails
+ * the way a failed `git clone` does: the directory the clone created is
+ * removed and nothing is checked out.
+ */
+async function cloneThenCheckOut(
+  destination: string,
+  steps: {
+    signal?: AbortSignal;
+    clone(): Promise<void>;
+    checkOut(): Promise<void>;
+  },
+): Promise<void> {
+  // Resolved once; the existence check, the HEAD read and any removal all
+  // use this one path.
+  const target = resolve(destination);
+  const existedBefore = await lstat(target).then(
+    () => true,
+    () => false,
+  );
+  // Each caller's clone step settles only after its git process has exited.
+  await steps.clone();
+  await refuseInvalidClonedHead(target, existedBefore, steps.signal);
+  await steps.checkOut();
+}
+
+/**
+ * CAN-7169: thrown when a remote's HEAD names a branch Git would not accept
+ * as a branch name. The clone is removed before anything is checked out.
+ */
+export class InvalidRemoteHeadCloneError extends Error {
+  readonly code = 'invalid-remote-default-branch';
+  /** Why the refused clone was left in place; removal is never retried. */
+  readonly cleanupError: unknown;
+
+  constructor(destination: string, cleanupError?: unknown) {
+    super(
+      cleanupError === undefined
+        ? "The repository wasn't cloned because its default branch isn't a valid branch name."
+        : `The repository wasn't cloned because its default branch isn't a valid branch name. The partial clone at ${destination} was left in place.`,
+    );
+    this.name = 'InvalidRemoteHeadCloneError';
+    this.cleanupError = cleanupError;
+  }
+}
+
+/**
+ * CAN-7169: `checkout` and `reset` reject `--end-of-options` on Git before
+ * 2.43, so their revisions are refused here when they would read as an option.
+ */
+function revisionArgument(revision: string): string {
+  if (revision.startsWith('-'))
+    throw new Error('The revision is not a valid revision.');
+  return revision;
+}
+
+function assertedRef(name: GitRefName): GitRefName {
+  assertGitRefName(name);
+  return name;
+}
+
+/**
+ * Removes a refused clone at exactly `target`, the path resolved before the
+ * clone ran. A destination that existed before the clone is never removed,
+ * and neither is anything that is no longer a real folder (a symlink or a
+ * file) when removal starts. The removal is tried once; whatever is left is
+ * logged and returned for the caller to report.
+ */
+async function removeRefusedClone(
+  target: string,
+  existedBefore: boolean,
+): Promise<unknown> {
+  const leftInPlace = (reason: string, error?: unknown): unknown => {
+    // eslint-disable-next-line no-console
+    console.warn('[git] A refused clone was left in place', {
+      path: target,
+      reason,
+      error,
+    });
+    return error ?? new Error(reason);
+  };
+  if (existedBefore)
+    return leftInPlace('The destination existed before the clone.');
+  const now = await lstat(target).catch(() => null);
+  if (!now) return undefined;
+  if (!now.isDirectory())
+    return leftInPlace('The destination is no longer a real folder.');
+  try {
+    await rm(target, { recursive: true, force: true, maxRetries: 0 });
+    return undefined;
+  } catch (error) {
+    return leftInPlace('The destination could not be removed.', error);
+  }
+}
+
+/**
+ * Reads the branch a fresh `--no-checkout` clone's HEAD names. A name Git
+ * would not accept as a branch (an option-shaped `--upload-pack=…`, say) is
+ * refused and the clone fails closed; `removeRefusedClone` decides what may
+ * be removed.
+ */
+async function refuseInvalidClonedHead(
+  target: string,
+  existedBefore: boolean,
+  signal?: AbortSignal,
+): Promise<void> {
+  const head = await runGit(['symbolic-ref', '--quiet', 'HEAD'], target, {
+    nonInteractive: true,
+    signal,
+  }).catch((error: unknown): string => quietProbeMiss(error, signal));
+  if (!head.startsWith('refs/heads/')) return;
+  if (parseRemoteDefaultBranch(head.slice('refs/heads/'.length), 'clone-head'))
+    return;
+  throw new InvalidRemoteHeadCloneError(
+    target,
+    await removeRefusedClone(target, existedBefore),
   );
 }
 
@@ -1821,92 +2013,123 @@ export async function cloneRepoWithLiveProgress(
   if (options.signal?.aborted) throw new Error('Clone cancelled');
   const executable = await getResolvedGitExecutableForSpawn();
   if (options.signal?.aborted) throw new Error('Clone cancelled');
-  await new Promise<void>((resolvePromise, reject) => {
-    const child = spawn(
-      executable,
-      buildCloneRepoArgs(url, destination, true, ['--progress']),
-      {
-        detached: process.platform !== 'win32',
-        windowsHide: true,
-        env: withGitRequestContextEnv(
-          getEnhancedEnv({ includeCanopySecrets: false, environment: false }),
-        ),
-        stdio: ['ignore', 'ignore', 'pipe'],
-      },
-    );
-    let tail = '';
-    let pending = '';
-    let aborted = false;
-    let killTimer: ReturnType<typeof setTimeout> | undefined;
-    const signalTree = (signal: NodeJS.Signals): void => {
-      if (child.pid === undefined || child.exitCode !== null) return;
-      if (process.platform === 'win32') {
-        execFile(
-          'taskkill',
-          ['/PID', String(child.pid), '/T', '/F'],
-          { windowsHide: true },
-          (): void => undefined,
-        );
-        return;
-      }
-      try {
-        process.kill(-child.pid, signal);
-      } catch {
-        /* Already exited. */
-      }
-    };
-    const abort = (): void => {
-      if (aborted) return;
-      aborted = true;
-      signalTree('SIGTERM');
-      killTimer = setTimeout(
-        () => signalTree('SIGKILL'),
-        CLONE_TERMINATE_GRACE_MS,
-      );
-    };
-    options.signal?.addEventListener('abort', abort, { once: true });
-    if (options.signal?.aborted) abort();
-    const cleanUp = (): void => {
-      if (killTimer) clearTimeout(killTimer);
-      options.signal?.removeEventListener('abort', abort);
-    };
-    child.stderr.setEncoding('utf8');
-    child.stderr.on('data', (chunk: string): void => {
-      tail = (tail + chunk).slice(-CLONE_STDERR_TAIL_BYTES);
-      pending += chunk;
-      const lines = pending.split(/[\r\n]/);
-      pending = (lines.pop() ?? '').slice(-CLONE_STDERR_TAIL_BYTES);
-      for (const line of lines) {
-        const update = parseGitCloneProgressLine(line);
-        if (update) options.onProgress(update);
-      }
-    });
-    child.once('error', (error): void => {
-      cleanUp();
-      reject(error);
-    });
-    child.once('close', (code, signal): void => {
-      cleanUp();
-      if (aborted) {
-        reject(new Error('Clone cancelled'));
-        return;
-      }
-      if (code === 0) {
-        resolvePromise();
-        return;
-      }
-      const explanation = tail
-        .split(/[\r\n]/)
-        .filter((line) => !isGitCloneProgressLine(line))
-        .join('\n')
-        .trim();
-      reject(
-        new Error(
-          redactRemoteUrlCredentialsInText(explanation) ||
-            `git clone exited with ${signal ? `signal ${signal}` : `code ${code ?? 'unknown'}`}`,
-        ),
-      );
-    });
+  // CAN-7169: the shared clone sequence. `run` is one live-progress Git step
+  // (the `--no-checkout` clone, then its checkout) and settles only after git
+  // has exited.
+  await cloneThenCheckOutWithLiveProgress(url, destination, options.signal, {
+    run: (args: string[], cwd: string | undefined): Promise<void> =>
+      new Promise<void>((resolvePromise, reject) => {
+        const child = spawn(executable, args, {
+          cwd,
+          detached: process.platform !== 'win32',
+          windowsHide: true,
+          env: withGitRequestContextEnv(
+            getEnhancedEnv({ includeCanopySecrets: false, environment: false }),
+          ),
+          stdio: ['ignore', 'ignore', 'pipe'],
+        });
+        let tail = '';
+        let pending = '';
+        let aborted = false;
+        let killTimer: ReturnType<typeof setTimeout> | undefined;
+        const signalTree = (signal: NodeJS.Signals): void => {
+          if (child.pid === undefined || child.exitCode !== null) return;
+          if (process.platform === 'win32') {
+            execFile(
+              'taskkill',
+              ['/PID', String(child.pid), '/T', '/F'],
+              { windowsHide: true },
+              (): void => undefined,
+            );
+            return;
+          }
+          try {
+            process.kill(-child.pid, signal);
+          } catch {
+            /* Already exited. */
+          }
+        };
+        const abort = (): void => {
+          if (aborted) return;
+          aborted = true;
+          signalTree('SIGTERM');
+          killTimer = setTimeout(
+            () => signalTree('SIGKILL'),
+            CLONE_TERMINATE_GRACE_MS,
+          );
+        };
+        options.signal?.addEventListener('abort', abort, { once: true });
+        if (options.signal?.aborted) abort();
+        const cleanUp = (): void => {
+          if (killTimer) clearTimeout(killTimer);
+          options.signal?.removeEventListener('abort', abort);
+        };
+        child.stderr.setEncoding('utf8');
+        child.stderr.on('data', (chunk: string): void => {
+          tail = (tail + chunk).slice(-CLONE_STDERR_TAIL_BYTES);
+          pending += chunk;
+          const lines = pending.split(/[\r\n]/);
+          pending = (lines.pop() ?? '').slice(-CLONE_STDERR_TAIL_BYTES);
+          for (const line of lines) {
+            const update = parseGitCloneProgressLine(line);
+            if (update) options.onProgress(update);
+          }
+        });
+        child.once('error', (error): void => {
+          cleanUp();
+          reject(error);
+        });
+        child.once('close', (code, signal): void => {
+          cleanUp();
+          if (aborted) {
+            reject(new Error('Clone cancelled'));
+            return;
+          }
+          if (code === 0) {
+            resolvePromise();
+            return;
+          }
+          const explanation = tail
+            .split(/[\r\n]/)
+            .filter((line) => !isGitCloneProgressLine(line))
+            .join('\n')
+            .trim();
+          reject(
+            new Error(
+              redactRemoteUrlCredentialsInText(explanation) ||
+                `git clone exited with ${signal ? `signal ${signal}` : `code ${code ?? 'unknown'}`}`,
+            ),
+          );
+        });
+      }),
+  });
+}
+
+/**
+ * The clone and its checkout for {@link cloneRepoWithLiveProgress}: the
+ * remote's HEAD is checked before anything is checked out, and the checkout
+ * reports its own progress, as the clone's checkout did.
+ */
+async function cloneThenCheckOutWithLiveProgress(
+  url: string,
+  destination: string,
+  signal: AbortSignal | undefined,
+  step: { run(args: string[], cwd: string | undefined): Promise<void> },
+): Promise<void> {
+  await cloneThenCheckOut(destination, {
+    signal,
+    clone: () =>
+      step.run(
+        buildCloneRepoArgs(url, destination, true, [
+          '--progress',
+          '--no-checkout',
+        ]),
+        undefined,
+      ),
+    checkOut: async () => {
+      if (await clonedHeadExists(destination, signal))
+        await step.run(['checkout', '--progress', '-f'], destination);
+    },
   });
 }
 
@@ -1939,7 +2162,7 @@ export async function cloneRepoAtCommit(
     timeoutMs: options.timeoutMs,
   };
   await runGit(['init', '--', destination], undefined, runOptions);
-  await runGit(['remote', 'add', 'origin', url], destination, runOptions);
+  await runGit(['remote', 'add', '--', 'origin', url], destination, runOptions);
   await fetchRemoteCommit(destination, commitSha, options);
 }
 
@@ -1982,12 +2205,12 @@ export async function initializeRepoFromSnapshotBundle(
   };
   await runGit(['init', '--', destination], undefined, runOptions);
   await runGit(
-    ['fetch', '--no-tags', bundlePath, 'refs/heads/snapshot'],
+    ['fetch', '--no-tags', '--', bundlePath, 'refs/heads/snapshot'],
     destination,
     runOptions,
   );
   await runGit(
-    ['cat-file', '-e', `${commitSha}^{commit}`],
+    ['cat-file', '-e', '--end-of-options', `${commitSha}^{commit}`],
     destination,
     runOptions,
   );
@@ -2028,6 +2251,7 @@ export async function warmCommitRangeDiffObjects(
       '--no-renames',
       '--no-ext-diff',
       '--no-textconv',
+      '--end-of-options',
       oldCommitSha,
       newCommitSha,
     ],
@@ -2077,7 +2301,14 @@ export async function materializeGitCommitRaw(
       ? ['-c', 'remote.origin.promisor=false']
       : [];
   const listing = await runGit(
-    [...localOnlyGitConfig, 'ls-tree', '-rz', '--full-tree', commitSha],
+    [
+      ...localOnlyGitConfig,
+      'ls-tree',
+      '-rz',
+      '--full-tree',
+      '--end-of-options',
+      commitSha,
+    ],
     repoPath,
     {
       signal: options.signal,
@@ -2517,7 +2748,13 @@ export async function getAheadBehindCounts(
   remoteRef: string,
 ): Promise<{ ahead: number; behind: number }> {
   const output = await runGit(
-    ['rev-list', '--left-right', '--count', `${localRef}...${remoteRef}`],
+    [
+      'rev-list',
+      '--left-right',
+      '--count',
+      '--end-of-options',
+      `${localRef}...${remoteRef}`,
+    ],
     repoPath,
   );
   const [aheadRaw, behindRaw] = output.trim().split(/\s+/);
@@ -2531,17 +2768,21 @@ export async function getAheadBehindCounts(
 
 export async function pullBranchFastForward(
   repoPath: string,
-  branchName: string,
+  branchName: GitRefName,
 ): Promise<void> {
+  // CAN-7169: only a validated name, which never starts with '-', re-checked
+  // here. The argv (and the command Git's errors echo) is unchanged.
+  assertGitRefName(branchName);
   await runGit(['pull', '--ff-only', 'origin', branchName], repoPath);
 }
 
 export async function pullBranchRebase(
   repoPath: string,
-  branchName: string,
+  branchName: GitRefName,
 ): Promise<void> {
   await runGit(
-    ['pull', '--rebase', '--autostash', 'origin', branchName],
+    // CAN-7169: only a validated name, which never starts with '-'.
+    ['pull', '--rebase', '--autostash', 'origin', assertedRef(branchName)],
     repoPath,
   );
 }
@@ -2627,7 +2868,7 @@ export async function restoreToSnapshot(
 
   if (ref.headCommitSha) {
     await runGit(
-      disableGitHooks(['reset', '--hard', ref.headCommitSha]),
+      disableGitHooks(['reset', '--hard', revisionArgument(ref.headCommitSha)]),
       repoPath,
     );
   } else {
@@ -2791,6 +3032,8 @@ export async function validateBranchName(
   repoPath: string,
   branchName: string,
 ): Promise<boolean> {
+  // CAN-7169: never hand Git an option-shaped name, even to validate it.
+  if (branchName.startsWith('-')) return false;
   try {
     await runGit(['check-ref-format', '--branch', branchName], repoPath);
     return true;
@@ -2940,7 +3183,12 @@ export async function readLocalBranchMergeState(
 ): Promise<{ exists: boolean; merged: boolean }> {
   const ref = `refs/heads/${branchName}`;
   const rows = await runGit(
-    ['for-each-ref', '--format=%(refname) %(objectname) %(upstream)', ref],
+    [
+      'for-each-ref',
+      '--format=%(refname) %(objectname) %(upstream)',
+      '--end-of-options',
+      ref,
+    ],
     repoPath,
   );
   const row = rows.split('\n').find((line) => line.split(' ')[0] === ref);
@@ -2951,7 +3199,7 @@ export async function readLocalBranchMergeState(
   // after its remote branch was deleted) falls back to HEAD.
   const configuredBase = upstream
     ? await runGit(
-        ['rev-parse', '--verify', '--quiet', upstream],
+        ['rev-parse', '--verify', '--quiet', '--end-of-options', upstream],
         repoPath,
       ).catch(() => '')
     : '';
@@ -2959,7 +3207,10 @@ export async function readLocalBranchMergeState(
     configuredBase ||
     (await runGit(['rev-parse', '--verify', 'HEAD'], repoPath));
   try {
-    await runGit(['merge-base', '--is-ancestor', tip, base], repoPath);
+    await runGit(
+      ['merge-base', '--is-ancestor', '--end-of-options', tip, base],
+      repoPath,
+    );
     return { exists: true, merged: true };
   } catch (error) {
     if (
@@ -3063,7 +3314,7 @@ export function gitBranchWritePort(
           'checkout',
           '-b',
           name,
-          startPoint,
+          revisionArgument(startPoint),
           ...(startPoint.startsWith('refs/') ? ['--'] : []),
         ],
         worktreePath,
@@ -3090,7 +3341,7 @@ export function gitBranchDeletePort(
   return {
     listCheckedOutBranches: () => listCheckedOutBranches(repoPath),
     deleteBranch: async (branch, force) => {
-      await runGit(['branch', force ? '-D' : '-d', branch], repoPath);
+      await runGit(['branch', force ? '-D' : '-d', '--', branch], repoPath);
     },
     deleteBranchRef: async (branch, tip) => {
       await runGit(
@@ -3282,6 +3533,7 @@ export async function createWorktreeFromStartPoint(
         ...(options.forceTracking ? ['--track'] : []),
         '-b',
         resolvedName,
+        '--',
         worktreePath,
         trackingRef ?? startPoint,
       ]),
@@ -3377,11 +3629,15 @@ export async function checkoutDetachedRef(
     timeoutMs?: number;
   },
 ): Promise<void> {
-  await runGit(disableGitHooks(['checkout', '--detach', ref]), worktreePath, {
-    signal: options?.signal,
-    skipLfsSmudge: options?.skipLfsSmudge,
-    timeoutMs: options?.timeoutMs,
-  });
+  await runGit(
+    disableGitHooks(['checkout', '--detach', revisionArgument(ref)]),
+    worktreePath,
+    {
+      signal: options?.signal,
+      skipLfsSmudge: options?.skipLfsSmudge,
+      timeoutMs: options?.timeoutMs,
+    },
+  );
 }
 
 export async function createWorktreeForExistingBranch(
@@ -3425,6 +3681,7 @@ export async function createWorktreeForExistingBranch(
         'worktree',
         'add',
         ...(namespace === 'local' ? ['--no-guess-remote'] : []),
+        '--',
         worktreePath,
         branchName,
       ]),
@@ -3437,7 +3694,7 @@ export async function createWorktreeForExistingBranch(
         `refs/heads/${branchName}`
     ) {
       await runGit(
-        ['worktree', 'remove', '--force', worktreePath],
+        ['worktree', 'remove', '--force', '--', worktreePath],
         repoPath,
         options,
       );
@@ -3457,6 +3714,7 @@ export async function createWorktreeForExistingBranch(
         '--track',
         '-b',
         branchName,
+        '--',
         worktreePath,
         `refs/remotes/origin/${branchName}`,
       ]),
@@ -3481,6 +3739,7 @@ async function removeWorktreeWithoutLock(
   repoPath: string,
   worktreePath: string,
 ): Promise<void> {
+  refuseOptionLikeWorktreePath(worktreePath);
   await terminateProcessesReferencingPath(worktreePath).catch(
     (error: unknown) => {
       // On Linux a process that outlives termination can keep writing into
@@ -3503,9 +3762,13 @@ async function removeWorktreeWithoutLock(
   );
   const removeCheckout = async (): Promise<void> => {
     await removeWindowsWorktreeReparsePoints(worktreePath);
-    await runGit(['worktree', 'remove', '--force', worktreePath], repoPath, {
-      timeoutMs: getWorktreeDeleteTimeoutMs(),
-    });
+    await runGit(
+      ['worktree', 'remove', '--force', '--', worktreePath],
+      repoPath,
+      {
+        timeoutMs: getWorktreeDeleteTimeoutMs(),
+      },
+    );
   };
   if (hostOperatingSystem() !== 'linux') {
     await removeCheckout();
@@ -3560,7 +3823,7 @@ export async function moveWorktree(
   newPath: string,
 ): Promise<void> {
   try {
-    await runGit(['worktree', 'move', oldPath, newPath], repoPath, {
+    await runGit(['worktree', 'move', '--', oldPath, newPath], repoPath, {
       timeoutMs: WORKTREE_GIT_TIMEOUT_MS,
     });
     return;
@@ -3651,7 +3914,7 @@ export async function renameBranch(
   worktreePath: string,
   newName: string,
 ): Promise<void> {
-  await runGit(['branch', '-m', newName], worktreePath);
+  await runGit(['branch', '-m', '--', newName], worktreePath);
 }
 
 export async function getDiffStats(
@@ -3916,10 +4179,11 @@ export async function getCommittedFilesBetween(
         '-c',
         'core.quotePath=false',
         'diff',
-        `${fromSha}..${toSha}`,
         '--name-status',
         '--find-renames',
         '--find-copies',
+        '--end-of-options',
+        `${fromSha}..${toSha}`,
       ],
       worktreePath,
     ).catch(() => ''),
@@ -3928,10 +4192,11 @@ export async function getCommittedFilesBetween(
         '-c',
         'core.quotePath=false',
         'diff',
-        `${fromSha}..${toSha}`,
         '--numstat',
         '--find-renames',
         '--find-copies',
+        '--end-of-options',
+        `${fromSha}..${toSha}`,
       ],
       worktreePath,
     ).catch(() => ''),
@@ -4157,7 +4422,7 @@ export function gitMergeWritePort(
     temporaryWorktree: () =>
       join(tmpdir(), `${BRAND.internalName}-merge-${randomUUID()}`),
     addWorktree: async (root, path, branch) => {
-      await runGit(['worktree', 'add', path, branch], root);
+      await runGit(['worktree', 'add', '--', path, branch], root);
     },
     isDirty: async (path) =>
       (
@@ -4168,6 +4433,8 @@ export function gitMergeWritePort(
       ).trim().length > 0,
     merge: async (path, source, base) => {
       try {
+        // CAN-7169: the core policy validated both names; re-checked here.
+        assertGitRefName(source);
         await runGit(['merge', '--no-edit', source], path);
       } catch (error) {
         const failure = new Error(
@@ -4184,7 +4451,7 @@ export function gitMergeWritePort(
     abort: (path) => abortMerge(path),
     head: (path) => runGit(['rev-parse', 'HEAD'], path),
     removeWorktree: async (root, path) => {
-      await runGit(['worktree', 'remove', '--force', path], root);
+      await runGit(['worktree', 'remove', '--force', '--', path], root);
     },
   };
 }
@@ -4272,7 +4539,7 @@ async function getFileAtRef(
 ): Promise<string> {
   try {
     return await runGitRaw(
-      ['show', `${ref}:${filePath}`],
+      ['show', '--end-of-options', `${ref}:${filePath}`],
       worktreePath,
       options,
     );
@@ -4310,7 +4577,7 @@ async function getFileAtRefBuffer(
 ): Promise<Buffer | undefined> {
   try {
     const sizeRaw = await runGit(
-      ['cat-file', '-s', `${ref}:${filePath}`],
+      ['cat-file', '-s', '--end-of-options', `${ref}:${filePath}`],
       worktreePath,
       options,
     );
@@ -4319,7 +4586,7 @@ async function getFileAtRefBuffer(
       return undefined;
     }
     return await runGitBuffer(
-      ['show', `${ref}:${filePath}`],
+      ['show', '--end-of-options', `${ref}:${filePath}`],
       worktreePath,
       options,
     );
@@ -4335,7 +4602,7 @@ function readGitBlobPrefix(
 ): Promise<Buffer> {
   return readGitStdoutPrefix(
     worktreePath,
-    ['cat-file', 'blob', objectSpec],
+    ['cat-file', 'blob', '--end-of-options', objectSpec],
     maximumBytes,
   );
 }
@@ -4434,7 +4701,10 @@ async function getFileAtRefPrefix(
     const data =
       size > BigInt(MAX_FILE_CONTENT_PREFIX_BYTES)
         ? await readGitBlobPrefix(worktreePath, objectSpec, prefixSize)
-        : await runGitBuffer(['cat-file', 'blob', objectSpec], worktreePath);
+        : await runGitBuffer(
+            ['cat-file', 'blob', '--end-of-options', objectSpec],
+            worktreePath,
+          );
     return {
       data,
       truncated: size > BigInt(data.byteLength),
@@ -4529,19 +4799,21 @@ async function isFileBinary(
     if (oldRef && newRef) {
       diffArgs = [
         'diff',
-        oldRef,
-        newRef,
         '--numstat',
         ...diffSafetyArgs,
+        '--end-of-options',
+        oldRef,
+        newRef,
         '--',
         filePath,
       ];
     } else if (oldRef) {
       diffArgs = [
         'diff',
-        oldRef,
         '--numstat',
         ...diffSafetyArgs,
+        '--end-of-options',
+        oldRef,
         '--',
         filePath,
       ];
@@ -4753,9 +5025,13 @@ export async function hasLocalCommit(
 ): Promise<boolean> {
   if (!/^[a-fA-F0-9]{40}$/.test(commitSha)) return false;
   try {
-    await runGit(['cat-file', '-e', `${commitSha}^{commit}`], repoPath, {
-      disableReplaceObjects: true,
-    });
+    await runGit(
+      ['cat-file', '-e', '--end-of-options', `${commitSha}^{commit}`],
+      repoPath,
+      {
+        disableReplaceObjects: true,
+      },
+    );
     return true;
   } catch {
     return false;
@@ -4874,11 +5150,12 @@ export async function getFileDiffBetweenTreesWithPaths(
       : await runGit(
           [
             'diff',
-            startTree,
-            endTree,
             '--numstat',
             '--no-ext-diff',
             ...(options?.disableTextconv ? ['--no-textconv'] : []),
+            '--end-of-options',
+            startTree,
+            endTree,
             '--',
             oldFilePath,
             newFilePath,
@@ -4908,11 +5185,14 @@ export async function addRemoteAndSync(
   repoPath: string,
   remoteUrl: string,
 ): Promise<void> {
-  await runGit(['remote', 'add', 'origin', remoteUrl], repoPath);
+  await runGit(['remote', 'add', '--', 'origin', remoteUrl], repoPath);
 
   try {
     await runGit(['fetch', 'origin'], repoPath);
 
+    // CAN-7169: the remote names its default branch. The reader returns only
+    // a valid name (an invalid one counts as no default), and it reaches Git
+    // only as a refspec.
     const [defaultBranch, currentBranch, commitCount] = await Promise.all([
       getRemoteDefaultBranch(repoPath),
       getCurrentBranch(repoPath),
@@ -4931,9 +5211,9 @@ export async function addRemoteAndSync(
           '--no-rebase',
           '--no-edit',
           ...mergeStrategy,
-          'origin',
-          defaultBranch,
           '--allow-unrelated-histories',
+          'origin',
+          originBranchRefspec(defaultBranch),
         ],
         repoPath,
       );
@@ -5055,7 +5335,10 @@ export async function checkoutPathsFromRef(
   if (paths.length === 0) {
     return;
   }
-  await runGit(['checkout', ref, '--', ...paths], worktreePath);
+  await runGit(
+    ['checkout', revisionArgument(ref), '--', ...paths],
+    worktreePath,
+  );
 }
 
 /**
@@ -5080,7 +5363,10 @@ export async function mergeBranch(
   branch: string,
   message: string,
 ): Promise<void> {
-  await runGit(['merge', '--no-ff', '-m', message, branch], worktreePath);
+  await runGit(
+    ['merge', '--no-ff', '-m', message, '--end-of-options', branch],
+    worktreePath,
+  );
 }
 
 /**
@@ -5091,7 +5377,7 @@ export async function deleteLocalBranch(
   branch: string,
   force: boolean,
 ): Promise<void> {
-  await runGit(['branch', force ? '-D' : '-d', branch], repoPath);
+  await runGit(['branch', force ? '-D' : '-d', '--', branch], repoPath);
 }
 
 /**
@@ -5101,7 +5387,10 @@ export async function getTreeSha(
   repoPath: string,
   ref: string,
 ): Promise<string> {
-  return runGit(['rev-parse', `${ref}^{tree}`], repoPath);
+  return runGit(
+    ['rev-parse', '--verify', '--end-of-options', `${ref}^{tree}`],
+    repoPath,
+  );
 }
 
 /**
@@ -5120,7 +5409,7 @@ export async function isAncestor(
 ): Promise<boolean> {
   try {
     await runGit(
-      ['merge-base', '--is-ancestor', ancestor, descendant],
+      ['merge-base', '--is-ancestor', '--end-of-options', ancestor, descendant],
       repoPath,
     );
     return true;
@@ -5137,7 +5426,7 @@ export async function resolveExactRefSha(
   repoPath: string,
   ref: string,
 ): Promise<string> {
-  return runGit(['show-ref', '--verify', '--hash', ref], repoPath);
+  return runGit(['show-ref', '--verify', '--hash', '--', ref], repoPath);
 }
 
 /**
@@ -5147,7 +5436,7 @@ export async function resolveRefSha(
   repoPath: string,
   ref: string,
 ): Promise<string> {
-  return runGit(['rev-parse', ref], repoPath);
+  return runGit(['rev-parse', '--verify', '--end-of-options', ref], repoPath);
 }
 
 /**
@@ -5184,7 +5473,12 @@ export async function pushNamedBranch(
   repoPath: string,
   branch: string,
 ): Promise<void> {
-  await runGit(['push', '-u', 'origin', `${branch}:${branch}`], repoPath);
+  // CAN-7169: a clone can name a local branch like an option; a refspec
+  // under refs/heads/ never parses as one.
+  await runGit(
+    ['push', '-u', 'origin', `refs/heads/${branch}:refs/heads/${branch}`],
+    repoPath,
+  );
 }
 
 /**
@@ -5210,10 +5504,15 @@ export async function pushBranchToOriginNonInteractive(
   repoPath: string,
   branch: string,
 ): Promise<void> {
-  await runGit(['push', 'origin', `${branch}:${branch}`], repoPath, {
-    timeoutMs: SHARED_CONTAINER_GIT_PUSH_TIMEOUT_MS,
-    nonInteractive: true,
-  });
+  // CAN-7169: a refspec under refs/heads/ never parses as an option.
+  await runGit(
+    ['push', 'origin', `refs/heads/${branch}:refs/heads/${branch}`],
+    repoPath,
+    {
+      timeoutMs: SHARED_CONTAINER_GIT_PUSH_TIMEOUT_MS,
+      nonInteractive: true,
+    },
+  );
 }
 
 /** Every configured value of a git config key; empty when it isn't set. */
@@ -5222,7 +5521,7 @@ async function getConfigValues(
   key: string,
 ): Promise<string[]> {
   try {
-    const output = await runGit(['config', '--get-all', key], repoPath);
+    const output = await runGit(['config', '--get-all', '--', key], repoPath);
     return output
       .split('\n')
       .map((line) => line.trim())
@@ -5259,7 +5558,7 @@ export async function resetHardTo(
     timeoutMs?: number;
   },
 ): Promise<void> {
-  await runGit(['reset', '--hard', ref], worktreePath, {
+  await runGit(['reset', '--hard', revisionArgument(ref)], worktreePath, {
     signal: options?.signal,
     skipLfsSmudge: options?.skipLfsSmudge,
     timeoutMs: options?.timeoutMs,
@@ -5304,7 +5603,7 @@ export async function createBranchAt(
   branch: string,
   startPoint: string,
 ): Promise<void> {
-  await runGit(['branch', branch, startPoint], repoPath);
+  await runGit(['branch', '--end-of-options', branch, startPoint], repoPath);
 }
 
 /**
@@ -5323,14 +5622,14 @@ export async function createBranchWithEmptyCommit(
   message: string,
 ): Promise<string> {
   const startTree = await runGit(
-    ['rev-parse', `${startPoint}^{tree}`],
+    ['rev-parse', '--verify', '--end-of-options', `${startPoint}^{tree}`],
     repoPath,
   );
   const commitSha = await runGit(
     ['commit-tree', startTree, '-p', startPoint, '-m', message],
     repoPath,
   );
-  await runGit(['branch', branch, commitSha], repoPath);
+  await runGit(['branch', '--end-of-options', branch, commitSha], repoPath);
   return commitSha;
 }
 
@@ -5348,7 +5647,7 @@ export async function addDetachedWorktree(
   options?: { signal?: AbortSignal },
 ): Promise<void> {
   await runGit(
-    disableGitHooks(['worktree', 'add', '--detach', worktreePath, ref]),
+    disableGitHooks(['worktree', 'add', '--detach', '--', worktreePath, ref]),
     repoPath,
     { signal: options?.signal },
   );
@@ -5362,7 +5661,7 @@ export async function removeGitWorktree(
   repoPath: string,
   worktreePath: string,
 ): Promise<void> {
-  await runGit(['worktree', 'remove', '--force', worktreePath], repoPath);
+  await runGit(['worktree', 'remove', '--force', '--', worktreePath], repoPath);
 }
 
 /** Parse one CR/LF-delimited git progress line. */
@@ -5398,105 +5697,110 @@ export async function cloneRepoWithProgress(
   const executable = await getResolvedGitExecutableForSpawn();
   const deadline = Date.now() + (options.timeoutMs ?? 15 * 60 * 1000);
   if (options.signal?.aborted) throw new GitCloneError('Clone cancelled', '');
-  await new Promise<void>((resolvePromise, reject) => {
-    const child = spawn(
-      executable,
-      [
-        '-c',
-        `core.hooksPath=${devNull}`,
-        'clone',
-        // Checkout is the first moment repository-controlled content gets a
-        // say, and a committed `.gitattributes` can name any filter driver the
-        // user happens to have configured globally — not just LFS. So nothing
-        // is checked out here at all; `checkoutClonedWorktree` populates the
-        // tree afterwards with filters disabled wholesale.
-        '--no-checkout',
-        '--progress',
-        '--',
-        url,
-        destination,
-      ],
-      {
-        detached: process.platform !== 'win32',
-        windowsHide: true,
-        env: {
-          ...getEnhancedEnv({
-            includeCanopySecrets: false,
-            environment: false,
-          }),
-          GIT_TERMINAL_PROMPT: '0',
-          GCM_INTERACTIVE: 'never',
-          GIT_LFS_SKIP_SMUDGE: '1',
-        },
-        stdio: ['ignore', 'ignore', 'pipe'],
-      },
-    );
-    let tail = Buffer.alloc(0);
-    let pending = '';
-    let stopped = false;
-    let lastPercent: number | null = null;
-    const stop = (): void => {
-      if (stopped) return;
-      stopped = true;
-      if (child.pid === undefined) return;
-      if (process.platform === 'win32') {
-        execFile(
-          'taskkill',
-          ['/PID', String(child.pid), '/T', '/F'],
-          { windowsHide: true },
-          (): void => {},
-        );
-      } else {
-        try {
-          process.kill(-child.pid, 'SIGKILL');
-        } catch {
-          /* Already exited. */
-        }
-      }
-    };
-    const timer = setTimeout(stop, options.timeoutMs ?? 15 * 60 * 1000);
-    options.signal?.addEventListener('abort', stop, { once: true });
-    if (options.signal?.aborted) stop();
-    const clean = (): void => {
-      clearTimeout(timer);
-      options.signal?.removeEventListener('abort', stop);
-    };
-    child.stderr.on('data', (chunk: Buffer): void => {
-      tail = Buffer.concat([tail, chunk]).subarray(-8192);
-      pending += chunk.toString('utf8');
-      const lines = pending.split(/[\r\n]/);
-      pending = (lines.pop() ?? '').slice(-8192);
-      for (const line of lines) {
-        const percent = parseCloneProgress(line);
-        if (percent !== null && percent !== lastPercent) {
-          lastPercent = percent;
-          options.onProgress(percent);
-        }
-      }
-    });
-    child.once('error', (error): void => {
-      clean();
-      reject(new GitCloneError(error.message, tail.toString('utf8')));
-    });
-    child.once('close', (code): void => {
-      clean();
-      if (code === 0 && !stopped) resolvePromise();
-      else
-        reject(
-          new GitCloneError(
-            stopped ? 'Clone cancelled or timed out' : 'Clone failed',
-            tail.toString('utf8'),
-          ),
-        );
-    });
-  });
-  // Populating the tree is part of cloning, not a step a caller can forget:
-  // the `--no-checkout` above is only safe because this runs. It shares the
-  // caller's deadline rather than starting a second one — the claim lease this
-  // budget protects does not restart either.
-  await checkoutClonedWorktree(destination, {
+  await cloneThenCheckOut(destination, {
     signal: options.signal,
-    timeoutMs: Math.max(1, deadline - Date.now()),
+    clone: () =>
+      new Promise<void>((resolvePromise, reject) => {
+        const child = spawn(
+          executable,
+          [
+            '-c',
+            `core.hooksPath=${devNull}`,
+            'clone',
+            // Checkout is the first moment repository-controlled content gets a
+            // say, and a committed `.gitattributes` can name any filter driver the
+            // user happens to have configured globally — not just LFS. So nothing
+            // is checked out here at all; `checkoutClonedWorktree` populates the
+            // tree afterwards with filters disabled wholesale.
+            '--no-checkout',
+            '--progress',
+            '--',
+            url,
+            destination,
+          ],
+          {
+            detached: process.platform !== 'win32',
+            windowsHide: true,
+            env: {
+              ...getEnhancedEnv({
+                includeCanopySecrets: false,
+                environment: false,
+              }),
+              GIT_TERMINAL_PROMPT: '0',
+              GCM_INTERACTIVE: 'never',
+              GIT_LFS_SKIP_SMUDGE: '1',
+            },
+            stdio: ['ignore', 'ignore', 'pipe'],
+          },
+        );
+        let tail = Buffer.alloc(0);
+        let pending = '';
+        let stopped = false;
+        let lastPercent: number | null = null;
+        const stop = (): void => {
+          if (stopped) return;
+          stopped = true;
+          if (child.pid === undefined) return;
+          if (process.platform === 'win32') {
+            execFile(
+              'taskkill',
+              ['/PID', String(child.pid), '/T', '/F'],
+              { windowsHide: true },
+              (): void => {},
+            );
+          } else {
+            try {
+              process.kill(-child.pid, 'SIGKILL');
+            } catch {
+              /* Already exited. */
+            }
+          }
+        };
+        const timer = setTimeout(stop, options.timeoutMs ?? 15 * 60 * 1000);
+        options.signal?.addEventListener('abort', stop, { once: true });
+        if (options.signal?.aborted) stop();
+        const clean = (): void => {
+          clearTimeout(timer);
+          options.signal?.removeEventListener('abort', stop);
+        };
+        child.stderr.on('data', (chunk: Buffer): void => {
+          tail = Buffer.concat([tail, chunk]).subarray(-8192);
+          pending += chunk.toString('utf8');
+          const lines = pending.split(/[\r\n]/);
+          pending = (lines.pop() ?? '').slice(-8192);
+          for (const line of lines) {
+            const percent = parseCloneProgress(line);
+            if (percent !== null && percent !== lastPercent) {
+              lastPercent = percent;
+              options.onProgress(percent);
+            }
+          }
+        });
+        child.once('error', (error): void => {
+          clean();
+          reject(new GitCloneError(error.message, tail.toString('utf8')));
+        });
+        child.once('close', (code): void => {
+          clean();
+          if (code === 0 && !stopped) resolvePromise();
+          else
+            reject(
+              new GitCloneError(
+                stopped ? 'Clone cancelled or timed out' : 'Clone failed',
+                tail.toString('utf8'),
+              ),
+            );
+        });
+      }),
+    // Populating the tree is part of cloning, not a step a caller can forget:
+    // the `--no-checkout` above is only safe because this runs. It shares the
+    // caller's deadline rather than starting a second one — the claim lease
+    // this budget protects does not restart either.
+    checkOut: () =>
+      checkoutClonedWorktree(destination, {
+        signal: options.signal,
+        timeoutMs: Math.max(1, deadline - Date.now()),
+      }),
   });
 }
 

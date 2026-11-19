@@ -1,7 +1,8 @@
 /**
  * CAN-5771: Electron main's daemon owner session connects as owner only to
- * the daemon this app spawned, declares only the lease, runtime reads and
- * the host request channel, and never spawns a daemon.
+ * the daemon this app spawned, declares only the lease, runtime reads, the
+ * host request channel and the split-lock fence publish (CAN-4730 E2-G), and
+ * never spawns a daemon.
  */
 const mockIsSpawnedDaemon = jest.fn<Promise<boolean>, [AbortSignal]>();
 const mockOwnerConnect = jest.fn<Promise<unknown>, [unknown]>();
@@ -65,6 +66,7 @@ jest.mock('../electron-daemon-connection', () => ({
 
 import {
   CORE_TRANSPORT_INSTRUCTION_DEFINITIONS,
+  MUTATION_FENCE_GRANTS,
   WORKER_PIPELINE_GRANTS,
 } from '@canopy/protocol/canopy-core';
 import {
@@ -106,13 +108,14 @@ describe('Electron daemon owner session (CAN-5771)', () => {
       definitions: ELECTRON_DAEMON_OWNER_DEFINITIONS,
     });
     expect(isDaemonPipelineOwnerPossible()).toBe(true);
-    // The owner caller holds the host grant only, under its own lease (D10).
+    // The owner caller holds the host and fence publish grants only, under
+    // its own lease (D10, CAN-4730 E2-G).
     expect(mockCallers.at(-1)).toEqual({
       principalId: 'electron-main',
       clientInstanceId: DAEMON_PIPELINE_OWNER_CLIENT_INSTANCE_ID,
       authorityId: 'authority-1',
       interfaceKind: 'desktop',
-      grants: [WORKER_PIPELINE_GRANTS.host],
+      grants: [WORKER_PIPELINE_GRANTS.host, MUTATION_FENCE_GRANTS.publish],
     });
     expect(mockServiceOptions[0]).toMatchObject({
       lease: {
@@ -125,12 +128,13 @@ describe('Electron daemon owner session (CAN-5771)', () => {
     expect(mockServiceOptions[0]).not.toHaveProperty('onReachability');
   });
 
-  it('the owner session declares only the lease, runtime reads and the host request channel', () => {
+  it('the owner session declares only the lease, runtime reads, the host request channel and the fence publish', () => {
     expect(
       Object.keys(ELECTRON_DAEMON_OWNER_DEFINITIONS.instructions).sort(),
     ).toEqual(
       [
         ...Object.keys(CORE_TRANSPORT_INSTRUCTION_DEFINITIONS),
+        'core.mutationFence.publish',
         'worker.pipeline.hostRequest.respond',
       ].sort(),
     );

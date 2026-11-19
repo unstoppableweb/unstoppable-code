@@ -761,11 +761,11 @@ describe('cloud model preflight', () => {
       reason: 'local_harness',
       harness: 'cursor',
     });
-    // The cloud runner can't start Codex steps yet (CAN-7235): only Claude
-    // models are offered, though the host runs both.
     expect(cursor?.alternatives.map((option) => option.harness)).toEqual([
       'claude',
+      'codex',
     ]);
+    // The cloud runner starts Codex steps (CAN-7235): one runs as written.
     expect(
       findCloudModelItems(
         oneStep({
@@ -774,13 +774,7 @@ describe('cloud model preflight', () => {
         }),
         context,
       ),
-    ).toMatchObject([
-      {
-        reason: 'action_harness',
-        harness: 'codex',
-        alternatives: [{ modelId: 'anthropic/claude-sonnet-5.5' }],
-      },
-    ]);
+    ).toEqual([]);
     const [codex] = findCloudModelItems(
       oneStep({
         uses: 'builtin/phase-compaction',
@@ -796,8 +790,7 @@ describe('cloud model preflight', () => {
       ),
     ).toEqual([]);
     // A composite that fixes its model step's preset ignores the step's own;
-    // one that forwards it can't run Codex with `none`. Until CAN-7235 the
-    // cloud runner starts no Codex step, so both are listed.
+    // one that forwards it can't run Codex with `none`.
     const codexWithNone = (uses: string): Pipeline =>
       oneStep({
         uses,
@@ -805,7 +798,7 @@ describe('cloud model preflight', () => {
       });
     expect(
       findCloudModelItems(codexWithNone('builtin/planner'), context),
-    ).toMatchObject([{ reason: 'action_harness', harness: 'codex' }]);
+    ).toEqual([]);
     expect(
       findCloudModelItems(codexWithNone('builtin/coder'), context),
     ).toMatchObject([{ reason: 'action_harness', harness: 'codex' }]);
@@ -1195,19 +1188,6 @@ describe('matrix models (CAN-7018)', () => {
     ],
     isBlocked: (): boolean => false,
   };
-  // The cloud runner starts no Codex step yet (CAN-7235), so a replacement
-  // is a Claude model: these offer a second one.
-  const WITH_SONNET = {
-    ...CATALOG,
-    catalog: [
-      ...CATALOG.catalog,
-      {
-        modelId: 'anthropic/claude-sonnet-5.5',
-        harness: 'claude' as const,
-        label: 'Sonnet',
-      },
-    ],
-  };
   const matrixJob = (
     matrix: NonNullable<Pipeline['jobs'][string]['strategy']>['matrix'],
     steps: Step[],
@@ -1271,7 +1251,7 @@ describe('matrix models (CAN-7018)', () => {
       },
       [review(), review()],
     );
-    const items = findCloudModelItems(pipeline, WITH_SONNET);
+    const items = findCloudModelItems(pipeline, CATALOG);
     expect(
       items.map(({ itemKey, reason, model, matrix }) => ({
         itemKey,
@@ -1288,23 +1268,20 @@ describe('matrix models (CAN-7018)', () => {
       },
     ]);
     const outcome = applyCloudModelChoices(pipeline, items, [
-      {
-        itemKey: 'tracks#matrix.model[1]',
-        modelId: 'anthropic/claude-sonnet-5.5',
-      },
+      { itemKey: 'tracks#matrix.model[1]', modelId: 'openai/gpt-6.1-terra' },
     ]);
     // Written out as the variants it runs, each with its own settings.
     expect(outcome.ok && outcome.pipeline.jobs.tracks?.strategy).toEqual({
       matrix: {
         include: [
           { model: 'haiku' },
-          { model: 'anthropic/claude-sonnet-5.5', effort: 'high' },
+          { model: 'openai/gpt-6.1-terra', effort: 'high' },
         ],
       },
     });
     // The excluded value runs nowhere, so it needs no replacement.
     expect(
-      outcome.ok && findCloudModelItems(outcome.pipeline, WITH_SONNET),
+      outcome.ok && findCloudModelItems(outcome.pipeline, CATALOG),
     ).toEqual([]);
   });
 
@@ -1353,12 +1330,12 @@ describe('matrix models (CAN-7018)', () => {
         include: [{ model: '$sol', effort: 'high' }],
         exclude: [
           { model: '$sol', os: 'a' },
-          { model: 'anthropic/claude-sonnet-5.5' },
+          { model: 'openai/gpt-6.1-terra' },
         ],
       },
       [review()],
     );
-    const items = findCloudModelItems(pipeline, WITH_SONNET);
+    const items = findCloudModelItems(pipeline, CATALOG);
     expect(items.map((item) => item.itemKey)).toEqual([
       'tracks#matrix.model[1]',
       'tracks#matrix.model[2]',
@@ -1380,13 +1357,13 @@ describe('matrix models (CAN-7018)', () => {
         { model: 'anthropic/claude-haiku-5.5', os: 'b' },
       ],
     });
-    expect(variants('anthropic/claude-sonnet-5.5')).toMatchObject({
+    expect(variants('openai/gpt-6.1-terra')).toMatchObject({
       include: [
         { model: 'anthropic/claude-haiku-5.5', os: 'a' },
         { model: 'anthropic/claude-haiku-5.5', os: 'b' },
-        { model: 'anthropic/claude-sonnet-5.5', os: 'b', effort: 'high' },
-        { model: 'anthropic/claude-sonnet-5.5', os: 'a' },
-        { model: 'anthropic/claude-sonnet-5.5', os: 'b' },
+        { model: 'openai/gpt-6.1-terra', os: 'b', effort: 'high' },
+        { model: 'openai/gpt-6.1-terra', os: 'a' },
+        { model: 'openai/gpt-6.1-terra', os: 'b' },
       ],
     });
   });
@@ -1457,10 +1434,7 @@ describe('matrix models (CAN-7018)', () => {
         parityId: 'G4',
         stepIndex: 1,
         matrix: { axis: 'model' },
-        // Claude models only until CAN-7235.
-        alternatives: CATALOG.catalog.filter(
-          (option) => option.harness === 'claude',
-        ),
+        alternatives: CATALOG.catalog,
       }),
     ]);
     expect(applyCloudModelChoices(pipeline, items, []).ok).toBe(false);

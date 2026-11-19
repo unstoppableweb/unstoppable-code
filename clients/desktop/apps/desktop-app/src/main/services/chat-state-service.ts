@@ -3706,7 +3706,12 @@ export class ChatStateService implements ChatStateCommandPort {
       !isE2eBuild() &&
       process.env.NODE_ENV !== 'test'
     )
-      startChatFormat4Sweep(this.repository, isChatFormat4PromotionEnabled);
+      startChatFormat4Sweep(
+        this.repository,
+        isChatFormat4PromotionEnabled,
+        (scope): boolean =>
+          this.deletingScopeIds.has(chatScopeLifecycleKey(scope)),
+      );
     this.reconcileHostRuntime = options.repository === undefined;
     this.now = options.now ?? Date.now;
     this.createId = options.createId ?? randomUUID;
@@ -6207,6 +6212,9 @@ export class ChatStateService implements ChatStateCommandPort {
                   interruptedUserMessageId:
                     runtime.activeTurn?.userMessageId ??
                     runtime.turn?.current?.userMessageId,
+                  turnStartedAt: runtime.activeTurn
+                    ? runtime.activeTurn.startedAt
+                    : runtime.turn?.current?.startedAtMs,
                   workspaceName: '',
                   chatTitle: tab.title ?? '',
                 },

@@ -286,6 +286,7 @@ import type { AppAdvisorToolRuntimeSurfaces } from '../app-advisor/runtime';
 import { normalizePipelinePluginCollectionPreferences } from '@canopy/execution-engine/node/pipelines/plugin-collection-store';
 import { resumePipelineExecutionFromMain } from '../pipelines/pipeline-resume-service';
 import * as pipelineStore from '../pipelines/pipeline-service';
+import { pipelineDefinitionRecoveryRefusal } from '../pipelines/pipeline-install-intents';
 import type {
   ExecutionEvent,
   Pipeline,
@@ -311,10 +312,13 @@ import {
   WORKFLOW_RELEASE_FAILED,
   INSTALLED_OWNER_RETARGET_REFUSED,
   addedScheduleRefusal,
+  bundledPackageHolder,
+  claimInstalledPipeline,
   handOffInstall,
   hideOrchestratorPipelineForSchedule,
   inheritedInstallOwner,
   installSuccessor,
+  reconcileInstalledPipelineOwner,
   isSharedByOtherSchedules,
   isWorkflowPagePipeline,
   keepLastScheduleValues,
@@ -324,6 +328,7 @@ import {
   releaseOwnedPipeline,
   scheduledUserPipelineId,
   targetsAgentHiddenPipeline,
+  usesInputOnlyInRunScripts,
   userPipelineMetadata,
   type OwnedPipelineRelease,
 } from './workflow-schedules';
@@ -1997,6 +2002,33 @@ export class AutomationsService {
     this.sessionActivityUnsubscribe = subscribeChatSessionActivity(() => {
       void this.runDueCheck().catch(() => undefined);
     });
+    // Off the start path, ahead of the next write: a failure never keeps
+    // the scheduler from starting.
+    void this.enqueueMutation(() => this.claimInstalledPipelines()).catch(
+      (error: unknown) =>
+        logMainProcessError(
+          'Failed to record installed workflow owners',
+          error,
+        ),
+    );
+  }
+
+  /**
+   * CAN-7285: an install saved before it recorded its bundled pipeline's
+   * owner folds into one Library row once it does. Runs inside the mutation
+   * queue; a failed surface refresh is logged, as `persistAndNotify` does.
+   */
+  private async claimInstalledPipelines(): Promise<void> {
+    const file = await this.ensureFile();
+    const claimed = file.activities.filter((activity) =>
+      reconcileInstalledPipelineOwner(file.activities, activity),
+    );
+    if (claimed.length === 0) return;
+    try {
+      await this.republish();
+    } catch (error) {
+      logMainProcessError('Failed to notify automation surfaces', error);
+    }
   }
 
   stop(): void {
@@ -2446,6 +2478,11 @@ export class AutomationsService {
     if (chat) return this.nativeTargetRefusal({ ...activity, action: chat });
     const projectId = inputs.project_id;
     if (!projectId) return null;
+    // CAN-7285: a `project_id` the workflow reads only in `run` scripts is
+    // text, such as a tracker key, not where it runs; any other use is
+    // still checked.
+    if (usesInputOnlyInRunScripts(stored.data.content, 'project_id'))
+      return null;
     const { items } = await readAllSidebarItems();
     const workspace = items.find((item) => item.id === projectId);
     if (!workspace)
@@ -3221,6 +3258,8 @@ export class AutomationsService {
         await assertAutomationContext(activity);
         activity.nextRunAt = nextRunForEnabledActivity(activity, file, now);
         file.activities.push(activity);
+        // CAN-7285: an install owns the bundled pipeline it saved.
+        claimInstalledPipeline(file.activities, activity);
         await this.persistAndNotify(file);
         if (scheduledPipeline !== undefined)
           markSharedWorkflowPage(file.activities, scheduledPipeline);
@@ -3663,6 +3702,9 @@ export class AutomationsService {
         regeneration.written = true;
         if (startsTargeting !== undefined)
           markSharedWorkflowPage(file.activities, startsTargeting);
+        // CAN-7285: an update that saved a new bundled pipeline owns it; one
+        // that moved off a `global` target lets its workflow show again.
+        reconcileInstalledPipelineOwner(file.activities, activity);
         this.surfaces?.onChange?.(await contextSnapshot(file));
         if (request.installedFrom !== undefined) {
           // Applying a shared update re-registers the new hash.
@@ -4659,6 +4701,15 @@ export class AutomationsService {
         activity.executionContext = run?.executionContext;
       }
 
+      // CAN-7308: authorization and dispatch read the workflow, so wait for
+      // an interrupted update of it to be undone before either does.
+      if (activity.action.type === 'worktree_pipeline') {
+        const refusal = await pipelineDefinitionRecoveryRefusal(
+          activity.action.pipelineId,
+        );
+        if (refusal) throw new Error(refusal.error);
+      }
+
       if (backgroundExecutionContextEnabled()) {
         const { resources, destination, sharedPipelineReadFailure } =
           await this.backgroundAuthorizationInput(activity);
@@ -5124,14 +5175,18 @@ export class AutomationsService {
             activity.installedFrom?.capabilityPackage,
           )
         : undefined;
+    // CAN-7285: another schedule of an installed workflow page runs with its
+    // owner's bundled package, as CAN-6065 runs it with the owner's install.
+    const packageHolder =
+      action.type === 'worktree_pipeline'
+        ? bundledPackageHolder((await this.ensureFile()).activities, activity)
+        : undefined;
     const automationPipelinePackage =
-      action.type === 'worktree_pipeline' &&
-      action.pipelineSource === 'user' &&
-      activity.installedFrom?.bundledPipelineLocalId === action.pipelineId
+      packageHolder?.installedFrom?.bundledPipelineLocalId !== undefined
         ? await resolveInstalledAutomationPipelinePackage(
-            activity.id,
-            activity.installedFrom.bundledPipelineLocalId,
-            activity.installedFrom.capabilityPackage,
+            packageHolder.id,
+            packageHolder.installedFrom.bundledPipelineLocalId,
+            packageHolder.installedFrom.capabilityPackage,
           )
         : undefined;
     // A converted install's package is verified before its run starts, as

@@ -6,6 +6,17 @@ import {
   type PromptSuggestionEventData,
 } from '@canopy/desktop-shared/types';
 import { sendToWindow } from '../lib/window-send';
+import type { DelegationLiveClass } from './delegation/live-frame-class';
+
+/**
+ * A delegate's live transcript frame. The delegation service spreads its
+ * `canopy_delegation` event into it; these are the members it types, and so
+ * the members the controller-visible `chat:event` shape records.
+ */
+export type DelegationLiveEventData = {
+  delivery: string;
+  liveClass: DelegationLiveClass;
+};
 
 export interface AgentChatTarget {
   projectId: string;
@@ -33,11 +44,20 @@ export interface AgentInterfacePort {
     target: AgentChatTarget,
     data: ChatIngestionLagEventData,
   ): void;
+  /**
+   * A managed delegate's live transcript frame on its root chat's
+   * `chat:event`, outside admission and commit.
+   */
+  publishDelegationLive(
+    target: AgentChatTarget,
+    data: DelegationLiveEventData,
+  ): void;
   /** Shows a plan-exit request the session has already committed. */
   presentPlanExit(event: PlanExitRequestEvent): void;
   /**
-   * The window, for the intents still to move onto this port: approvals,
-   * questions, delegation, file comments and worktree actions.
+   * The window, for the intents still to move onto this port: approvals
+   * (including a delegate's), questions, a delegate's detached transcript
+   * updates and worktree actions.
    */
   legacyWindow(): BrowserWindow | null;
 }
@@ -52,6 +72,14 @@ export function windowAgentInterfacePort(
     },
     publishIngestionLag: (target, data): void => {
       sendToWindow(getWindow(), IPC_CHANNELS.chatEvent, { ...target, data });
+    },
+    publishDelegationLive: (target, data): void => {
+      sendToWindow(getWindow(), IPC_CHANNELS.chatEvent, {
+        projectId: target.projectId,
+        worktreeId: target.worktreeId,
+        chatId: target.chatId,
+        data,
+      });
     },
     presentPlanExit: (event): void => {
       sendToWindow(getWindow(), IPC_CHANNELS.planExitRequest, event);

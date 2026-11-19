@@ -73,6 +73,8 @@ import {
   updatePreferencesFile,
 } from '../../lib/preferences-store';
 import { cloneRepo } from '../../lib/git';
+import type * as GitModule from '../../lib/git';
+import { execFileSync } from 'node:child_process';
 import { getMcpServersIndexFilePath } from '../../lib/paths';
 import { runClaudeCliProcessOffMain } from '../../agents/claude-process-host-runner';
 import {
@@ -1727,6 +1729,69 @@ describe('catalog persistence contract shared by desktop and pipeline execution 
     });
     expect(readPluginCatalogHealth().state).toBe('valid');
   });
+
+  // CAN-7169: plugin sources are the likeliest hostile remote. Through the
+  // real clone, a remote HEAD named like an option fails the install closed:
+  // nothing is checked out, no clone is left in the cache, nothing is indexed.
+  test.each(['--upload-pack=sub/pwned', '-uxyz'])(
+    'plugins:install-plugin refuses a plugin remote whose HEAD names %s',
+    async (hostile) => {
+      write(healthy());
+      const base = fs.mkdtempSync(path.join(os.tmpdir(), 'plugin-hostile-'));
+      const seed = path.join(base, 'seed');
+      const git = (cwd: string, args: string[]): void => {
+        execFileSync('git', ['-C', cwd, ...args], { stdio: 'pipe' });
+      };
+      fs.mkdirSync(path.join(seed, '.claude-plugin'), { recursive: true });
+      git(seed, ['init', '-q', '-b', 'main']);
+      write(
+        { name: 'p', version: '1.0.0' },
+        path.join(seed, '.claude-plugin', 'plugin.json'),
+      );
+      git(seed, ['add', '-A']);
+      git(seed, [
+        '-c',
+        'user.name=Golden',
+        '-c',
+        'user.email=golden@example.com',
+        'commit',
+        '-q',
+        '-m',
+        'plugin',
+      ]);
+      const origin = path.join(base, 'origin.git');
+      execFileSync('git', ['clone', '-q', '--bare', seed, origin], {
+        stdio: 'pipe',
+      });
+      git(origin, ['update-ref', `refs/heads/${hostile}`, 'refs/heads/main']);
+      git(origin, ['symbolic-ref', 'HEAD', `refs/heads/${hostile}`]);
+      const actualGit = jest.requireActual<typeof GitModule>('../../lib/git');
+      let destination: string | undefined;
+      jest
+        .mocked(cloneRepo)
+        .mockImplementationOnce((source, target, options) => {
+          destination = target;
+          return actualGit.cloneRepo(source, target, options);
+        });
+      try {
+        const installed = await installPlugin('m', 'p', origin, {
+          skipRefresh: true,
+        });
+        expect(installed.success).toBe(false);
+        expect(installed.error).toContain(
+          "default branch isn't a valid branch name",
+        );
+        if (!destination) throw new Error('expected the real clone to run');
+        expect(fs.existsSync(destination)).toBe(false);
+        const index = readPluginIndexHealth();
+        expect(['absent', 'valid']).toContain(index.state);
+        if (index.state === 'valid')
+          expect(index.data.entries['m/p']).toBeUndefined();
+      } finally {
+        fs.rmSync(base, { recursive: true, force: true });
+      }
+    },
+  );
 
   test('a clone completing after catalog damage still installs and rewrites both files', async () => {
     write(healthy());

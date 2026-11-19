@@ -6,6 +6,7 @@ import {
   ActiveItemsSummary,
   SettingsRowsGroup,
   SettingsRowsSection,
+  SyncedInventoryPausedNotice,
   type ActiveItemsSummaryState,
 } from '@canopy/ui-shared/components';
 import type { InstalledItemSnapshotState } from '@canopy/ui-shared/lib';
@@ -45,6 +46,10 @@ function PluginsSettingsContent({
       title="Active items"
       dataTestId="settings-plugins-active"
     >
+      {/* Only a synced copy carries a pause (web); desktop never sets it. */}
+      {state.kind === 'ready' && state.syncPaused ? (
+        <SyncedInventoryPausedNotice deviceName={state.syncPaused.deviceName} />
+      ) : null}
       <SettingsRowsGroup>
         <ActiveItemsSummary
           state={summary}

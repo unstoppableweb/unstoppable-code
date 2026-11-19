@@ -3,7 +3,12 @@
  * runtime, model config, plan mode, approval mode and plugins one message runs
  * with, resolved against the chat as it is when the message is sent.
  */
-import { withoutAccountsPickedOver } from '@canopy/desktop-shared/lib/effective-plugin-selections';
+import type { McpServerRef } from '@canopy/protocol/mcp-servers';
+import {
+  hasLegacyAccountMcpRefs,
+  normalizeAccountMcpSelectionRefs,
+  withoutAccountsPickedOver,
+} from '@canopy/desktop-shared/lib/effective-plugin-selections';
 import {
   getExecutionHarnessForModel,
   requireProviderForModel,
@@ -82,6 +87,54 @@ export async function resolveAutomationApprovalMode(
   });
 }
 
+/**
+ * `defaults` without the account refs `direct` picks another account of the
+ * connector over, where legacy `account:<connectionId>` refs on either side
+ * are compared as the connector and account they name (CAN-7186). Every ref
+ * it keeps is returned exactly as stored, so a queued send and a terminal
+ * chat's settings check see what the chat holds. Compared as written when
+ * the account list can't be read.
+ */
+async function withoutAccountsPickedOverCanonically(
+  defaults: ChatTabPluginSelections | undefined,
+  direct: ChatTabPluginSelections,
+): Promise<ChatTabPluginSelections | undefined> {
+  const { loadAccountMcpRefConnections } =
+    await import('../mcp/account-catalog');
+  const connections = await loadAccountMcpRefConnections();
+  if (!defaults || connections === null)
+    return withoutAccountsPickedOver(defaults, direct);
+  // A legacy ref whose connection is gone has no connector to compare by,
+  // so it reads as itself, and the run's check still names it.
+  const canonical = (ref: McpServerRef): McpServerRef =>
+    normalizeAccountMcpSelectionRefs(
+      {
+        collectionIds: [],
+        skillRefs: [],
+        pluginRefs: [],
+        mcpServerRefs: [ref],
+      },
+      connections,
+    ).selections.mcpServerRefs?.[0] ?? ref;
+  const picks = { mcpServerRefs: (direct.mcpServerRefs ?? []).map(canonical) };
+  const refs = defaults.mcpServerRefs ?? [];
+  const kept = refs.filter(
+    (ref) =>
+      (withoutAccountsPickedOver(
+        {
+          collectionIds: [],
+          skillRefs: [],
+          pluginRefs: [],
+          mcpServerRefs: [canonical(ref)],
+        },
+        picks,
+      )?.mcpServerRefs?.length ?? 0) > 0,
+  );
+  return kept.length === refs.length
+    ? defaults
+    : { ...defaults, mcpServerRefs: kept };
+}
+
 export async function resolveAutomationPromptPlugins(
   defaults: ChatTabPluginSelections | undefined,
   plugins: ShareablePluginRef[] | undefined,
@@ -92,9 +145,15 @@ export async function resolveAutomationPromptPlugins(
     : undefined;
   // The automation's own account pick of a connector stands in for the
   // chat's (or the defaults') other account of it (CAN-6233), so a run acts
-  // as the account its Send as names.
+  // as the account its Send as names. Legacy `account:<connectionId>` refs
+  // are compared as their connector, so one is still replaced (CAN-7186).
   const baseSelections = direct
-    ? mergePluginSelections(withoutAccountsPickedOver(defaults, direct), direct)
+    ? mergePluginSelections(
+        hasLegacyAccountMcpRefs(defaults) || hasLegacyAccountMcpRefs(direct)
+          ? await withoutAccountsPickedOverCanonically(defaults, direct)
+          : withoutAccountsPickedOver(defaults, direct),
+        direct,
+      )
     : defaults;
   if (!plugins || plugins.length === 0) {
     return baseSelections;

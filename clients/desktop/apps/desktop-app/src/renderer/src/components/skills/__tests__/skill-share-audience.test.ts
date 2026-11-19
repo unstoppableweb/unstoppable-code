@@ -11,6 +11,7 @@ import {
   SKILL_SHARE_AUDIENCE_WIDER_MESSAGE,
   skillShareCreateAudience,
   skillShareCreateRefusal,
+  skillShareKeepsStoredPackage,
   skillShareUpdateAudience,
 } from '../skill-share-audience';
 
@@ -131,5 +132,64 @@ describe('a new skill share names its audience only for "Only me" (CAN-7037)', (
       ),
     ).toBeNull();
     expect(skillShareCreateRefusal(new Error('Offline'))).toBeNull();
+  });
+});
+
+describe('an update keeps the stored package only to take a linked skill down to "Only me" (CAN-7226)', () => {
+  const STORED = '---\nname: notes\n---\nNotes.\n';
+  const stored = (
+    overrides: Partial<
+      Pick<SharedSkillDetail, 'rawSkill' | 'shareScope' | 'publicShare'>
+    > = {},
+  ): Pick<SharedSkillDetail, 'rawSkill' | 'shareScope' | 'publicShare'> => ({
+    rawSkill: STORED,
+    shareScope: 'team',
+    publicShare: null,
+    ...overrides,
+  });
+
+  it.each([
+    ['a team', stored()],
+    ['an organization', stored({ shareScope: 'organization' })],
+    [
+      'a public link',
+      stored({ shareScope: 'private', publicShare: PUBLIC_SHARE }),
+    ],
+  ])(
+    'keeps it for a linked skill shared with %s made private with its stored text unchanged',
+    (_case, loaded) => {
+      expect(
+        skillShareKeepsStoredPackage({
+          scope: 'private',
+          linked: true,
+          outgoingRawSkill: STORED,
+          stored: loaded,
+        }),
+      ).toBe(true);
+    },
+  );
+
+  it.each([
+    ['changed text', { outgoingRawSkill: `${STORED}More.\n` }],
+    ['a team', { scope: 'team' as const }],
+    ['an organization', { scope: 'organization' as const }],
+    ['a public link', { scope: 'public' as const }],
+    ['an unlinked skill', { linked: false }],
+    ['no stored copy loaded', { stored: null }],
+    // Already private: nothing narrows, so its supporting files still upload.
+    [
+      'a skill that is already private',
+      { stored: stored({ shareScope: 'private' }) },
+    ],
+  ])('commits a package for %s', (_case, change) => {
+    expect(
+      skillShareKeepsStoredPackage({
+        scope: 'private',
+        linked: true,
+        outgoingRawSkill: STORED,
+        stored: stored(),
+        ...change,
+      }),
+    ).toBe(false);
   });
 });

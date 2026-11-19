@@ -503,6 +503,12 @@ export interface ChatTab extends Omit<
     native: LoadedSubagentSummary;
     hasWorkflowLaunches: boolean;
     workflowLocations: readonly WorkflowRunLocation[];
+    /**
+     * The chat's own delegate cards' newest runs, by delegation id: a cloud
+     * root's delegates are counted from them (CAN-7133). Ids and run numbers
+     * only, never card content.
+     */
+    ownDelegationRuns?: Readonly<Record<string, number>>;
   };
   /** Required at runtime; `PersistedChatTab.planMode` is optional. */
   planMode: boolean;

@@ -3,6 +3,7 @@ import { unwrapShareOperationResult } from '@/lib/sharing/share-operation-result
 import {
   skillShareCreateAudience,
   skillShareCreateRefusal,
+  skillShareKeepsStoredPackage,
   skillShareUpdateAudience,
 } from './skill-share-audience';
 import {
@@ -236,7 +237,18 @@ export function ShareSkillModal({
       // Build the share payload from the exact SKILL.md bytes: the server
       // hashes the raw bytes and the SHA-256 must round-trip identically.
       const outgoingRawSkill = await window.skills.readRawSkill(skillPath);
-      const selection = input.packageSelection ?? null;
+      // Taking a linked skill down to "Only me" with its stored text keeps the
+      // cloud's package: committing it again would send nothing new, and
+      // would refuse a skill stored before the secret check (CAN-7226).
+      const keepsStoredPackage = skillShareKeepsStoredPackage({
+        scope: input.scope,
+        linked: skill.remote !== undefined,
+        outgoingRawSkill,
+        stored: remoteDetail,
+      });
+      const selection = keepsStoredPackage
+        ? null
+        : (input.packageSelection ?? null);
       if (selection !== null && outgoingRawSkill !== analyzedRawSkill.current) {
         // The bytes moved under the dialog, so the reviewed analysis no longer
         // describes what is about to be shared.
@@ -313,6 +325,7 @@ export function ShareSkillModal({
               ...(revokePublicShare ? { revokePublicShare } : {}),
               ...ownerFields,
               ...packageFields,
+              ...(keepsStoredPackage ? { preservePackage: true } : {}),
               // "Only me" refuses a link published since the dialog loaded.
               ...skillShareUpdateAudience(input.scope, remoteDetail),
             }),

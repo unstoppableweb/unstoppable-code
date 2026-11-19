@@ -13,10 +13,15 @@ import { markCloudTaskShown } from './task-creation-timing';
  * (CAN-6098): the composer says why and offers Try again, under the same
  * task id. The draft stays in the composer, and Copy draft puts its text on
  * the clipboard, so a task that can never be created, such as one whose
- * project is gone, never strands it (CAN-6614). Nothing shows otherwise.
+ * project is gone, never strands it (CAN-6614). A task whose create's
+ * answer never came may exist: it says so, never that it wasn't created, and
+ * the listing settles it (CAN-7196). Nothing shows otherwise.
  * The composer supplies its text as it holds it, since typing reaches the
  * store's drafts only after a pause or a save.
  */
+/** What a task whose create's answer never came says (CAN-7196). */
+export const CLOUD_TASK_CREATION_UNKNOWN = "It'll show in the list if it was.";
+
 export function CloudTaskCreationNotice({
   projectId,
   worktreeId,
@@ -37,6 +42,7 @@ export function CloudTaskCreationNotice({
     const task = state.tasksByProject[`web-core:${workspaceId}`]?.find(
       (each) => each.worktreeId === taskId,
     );
+    if (task?.creation === 'unknown') return CLOUD_TASK_CREATION_UNKNOWN;
     return task?.creation === 'failed'
       ? (task.creationError ?? 'This task was not created.')
       : undefined;
@@ -46,12 +52,21 @@ export function CloudTaskCreationNotice({
     if (taskId !== null) markCloudTaskShown(taskId, 'composerUsable');
   }, [taskId]);
   if (reason === undefined) return null;
+  const unknown = reason === CLOUD_TASK_CREATION_UNKNOWN;
   return (
     <Notice
-      errorSource="chat-input-cloud-task-creation-failed"
-      intent="destructive"
-      title="This task wasn't created"
-      data-testid="chat-input-cloud-task-creation-failed"
+      {...(unknown
+        ? {
+            intent: 'attention' as const,
+            title: "Couldn't confirm this task was created",
+            'data-testid': 'chat-input-cloud-task-creation-unknown',
+          }
+        : {
+            errorSource: 'chat-input-cloud-task-creation-failed',
+            intent: 'destructive' as const,
+            title: "This task wasn't created",
+            'data-testid': 'chat-input-cloud-task-creation-failed',
+          })}
       actions={
         <>
           {draftText === '' ? null : (

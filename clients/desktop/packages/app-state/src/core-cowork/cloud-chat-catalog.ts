@@ -36,6 +36,10 @@ import {
   type CoreCoworkInvoker,
   type CanopyCoreRelayLikeReply,
 } from './invoker';
+import {
+  CoreCoworkOutcomeUnknownError,
+  isUnknownWriteError,
+} from './unknown-outcome';
 
 /** The cloud chat a catalog reads and writes for (web core ids, unprefixed). */
 export interface CloudChatCatalogScope {
@@ -89,6 +93,10 @@ export interface CloudChatCatalog {
    */
   setSelections(next: RemoteControlChatTabPluginSelections): Promise<void>;
 }
+
+/** What a model or selection change that may have landed says (CAN-7196). */
+export const CATALOG_CHANGE_UNKNOWN =
+  "Couldn't confirm that change. Showing the current setting.";
 
 const MODEL_ENTRY_PREFIX = 'model:';
 const SET_MODEL_PROVIDERS = [
@@ -410,25 +418,55 @@ async function readCatalogSnapshotReply(
   return fallback;
 }
 
+/** A default model a cloud project's settings offer. */
+export interface CloudProjectModelOption {
+  readonly id: string;
+  readonly label: string;
+  /** Listed but not choosable: the account's library keeps it locked. */
+  readonly disabled: boolean;
+}
+
+/** What a cloud project's settings choose its defaults from. */
+export interface CloudProjectCatalog {
+  readonly plugins: RemoteControlPluginCatalog;
+  /** Null when the web core answered no hosted model catalog. */
+  readonly models: readonly CloudProjectModelOption[] | null;
+}
+
 /**
- * The plugins a cloud project's default selection is chosen from (CAN-7053):
- * its catalog snapshot, mapped as a chat's picker maps it, so the project's
- * settings offer what its chats offer. A curated skill the defaults already
- * name stays on offer, as a chat's selected one does.
+ * What a cloud project's defaults are chosen from (CAN-7053), from one read
+ * of its catalog snapshot. The plugins are mapped as a chat's picker maps
+ * them, so the project's settings offer what its chats offer; a curated
+ * skill the defaults already name stays on offer, as a chat's selected one
+ * does. The models are the hosted catalog's rows in its order, as the web's
+ * settings dialog lists them: a model the library keeps locked is listed
+ * but can't be chosen.
  */
-export async function readCloudProjectPluginCatalog(
+export async function readCloudProjectCatalog(
   invoker: CoreCoworkInvoker,
   workspaceId: string,
   selections: RemoteControlChatTabPluginSelections | null,
-): Promise<RemoteControlPluginCatalog> {
+): Promise<CloudProjectCatalog> {
   const reply = await readCatalogSnapshotReply(invoker, workspaceId, {
     compatibilityRefused: false,
   });
-  const { entries } = CatalogSnapshotGetResultSchema.parse(unwrap(reply));
+  const { entries, cloudModels } = CatalogSnapshotGetResultSchema.parse(
+    unwrap(reply),
+  );
   const selected = (selections?.skillRefs ?? []).map((ref) =>
     skillEntryId(ref),
   );
-  return mapCloudChatCatalog(entries, selected).plugins;
+  return {
+    plugins: mapCloudChatCatalog(entries, selected).plugins,
+    models:
+      cloudModels === undefined
+        ? null
+        : cloudModels.models.map((model) => ({
+            id: model.id,
+            label: model.label,
+            disabled: model.libraryEligibility === 'locked',
+          })),
+  };
 }
 
 /** The catalog of one cloud chat over the web core (CAN-5972). */
@@ -582,17 +620,32 @@ export function createCloudChatCatalog(
       modelWrites = write.catch(() => undefined);
       pendingModels += 1;
       modelEpoch += 1;
+      let unknown = false;
       try {
         await write;
         savedModel = modelId;
       } catch (error) {
-        if (choice === modelChoice)
-          store.setState({ currentModel: savedModel });
-        throw error;
+        // Its answer never came, so it may have landed: the chat is read
+        // again below, never rolled back to a model it may no longer have
+        // (CAN-7196).
+        unknown = isUnknownWriteError(error);
+        if (!unknown) {
+          if (choice === modelChoice)
+            store.setState({ currentModel: savedModel });
+          throw error;
+        }
       } finally {
         pendingModels -= 1;
         modelEpoch += 1;
       }
+      if (!unknown) return;
+      if (choice === modelChoice)
+        await refresh().catch(() => {
+          // Unread: the last saved model is the one known to stand.
+          if (choice === modelChoice)
+            store.setState({ currentModel: savedModel });
+        });
+      throw new CoreCoworkOutcomeUnknownError(CATALOG_CHANGE_UNKNOWN);
     },
 
     setSelections: async (next) => {
@@ -631,6 +684,13 @@ export function createCloudChatCatalog(
       try {
         await write;
       } catch (error) {
+        // Its answer never came, so it may have landed: the selection is
+        // read again and shown as it stands (CAN-7196).
+        if (isUnknownWriteError(error)) {
+          if (choice === selectionChoice)
+            await refresh().catch(() => undefined);
+          throw new CoreCoworkOutcomeUnknownError(CATALOG_CHANGE_UNKNOWN);
+        }
         if (!isRevisionConflict(error)) throw error;
         if (choice === selectionChoice) await refresh(true);
         return;

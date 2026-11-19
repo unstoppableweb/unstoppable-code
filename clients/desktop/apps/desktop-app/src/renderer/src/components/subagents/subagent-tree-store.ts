@@ -13,8 +13,12 @@ import type {
   BackgroundProcess,
   BackgroundProcessStatus,
 } from '@canopy/desktop-shared/types';
+import { overlayManagedDelegationSnapshot } from '@canopy/ui-app/managed-delegation-progress';
 import type { SubagentTreeLoadState } from '@canopy/ui-app/subagents';
+import type { AgentDelegationSnapshot } from '@canopy/protocol/delegation';
 import type { ChatMessage } from '@/stores/chatStore';
+import { currentLiveSnapshot } from '@/cloud-chats/cloud-delegation-cards';
+import { isWebCoreScope } from '@/lib/chat-authority';
 import { extractIpcErrorMessage } from '@/lib/errors';
 import { useActivityStore } from '@/stores/activityStore';
 import {
@@ -46,6 +50,9 @@ const EMPTY_LOADED_INPUTS: LoadedSubagentInputs = {
 const EMPTY_MANAGED_ENTRIES: ReadonlyMap<string, ManagedDelegationTreeEntry> =
   new Map();
 
+const NO_LIVE_SNAPSHOTS: ReadonlyMap<string, AgentDelegationSnapshot> =
+  new Map();
+
 const ACTIVITY_REFETCH_DELAY_MS = 500;
 
 export interface SubagentTreeStoreSnapshot {
@@ -61,8 +68,16 @@ interface MutableTreeRecord {
   readonly key: string;
   readonly scope: SubagentHostScope;
   readonly rootChatId: string;
+  /**
+   * A cloud scope (CAN-7133): its delegates don't run on this computer, so
+   * the tree comes only from the root chat's own cards, overlaid with their
+   * live snapshots, and main is never asked.
+   */
+  readonly cloud: boolean;
   readonly listeners: Set<() => void>;
   snapshot: SubagentTreeStoreSnapshot;
+  /** A cloud root's delegates as the web core last read them. */
+  liveSnapshots: ReadonlyMap<string, AgentDelegationSnapshot>;
   consumers: number;
   hydrated: boolean;
   rootChatOpen: boolean;
@@ -210,8 +225,10 @@ function ensureRecord(
     key,
     scope,
     rootChatId,
+    cloud: isWebCoreScope(scope.projectId),
     listeners: new Set(),
     snapshot: INERT_SNAPSHOT,
+    liveSnapshots: NO_LIVE_SNAPSHOTS,
     consumers: 0,
     hydrated: false,
     rootChatOpen: false,
@@ -339,12 +356,75 @@ function sameStatuses(
   return same;
 }
 
+/**
+ * A cloud root's messages with each delegate's latest own card at its live
+ * state: a cloud card keeps its first state (CAN-7133). Only the root's own
+ * cards are overlaid; a snapshot with no card there adds nothing. Earlier
+ * runs' cards keep their own run and state. A live run newer than any card
+ * is shown beside the latest card, as a run of its own; an older one is
+ * ignored.
+ */
+function withLiveCards(
+  messages: readonly ChatMessage[],
+  live: ReadonlyMap<string, AgentDelegationSnapshot>,
+): readonly ChatMessage[] {
+  if (live.size === 0) return messages;
+  const latestCards = new Map<string, ChatMessage['blocks'][number]>();
+  const cardIds = new Set<string>();
+  for (const message of messages)
+    for (const block of message.blocks) {
+      if (block.type !== 'delegated_agent_call') continue;
+      cardIds.add(block.agentBlockId);
+      const previous = latestCards.get(block.delegationId);
+      if (
+        previous?.type !== 'delegated_agent_call' ||
+        block.runGeneration >= previous.runGeneration
+      )
+        latestCards.set(block.delegationId, block);
+    }
+  return messages.map((message): ChatMessage => {
+    let touched = false;
+    const blocks = message.blocks.flatMap((block) => {
+      if (
+        block.type !== 'delegated_agent_call' ||
+        latestCards.get(block.delegationId) !== block
+      )
+        return [block];
+      const snapshot = currentLiveSnapshot(
+        block.runGeneration,
+        live.get(block.delegationId),
+      );
+      if (snapshot === undefined) return [block];
+      const liveRun = snapshot.runGeneration ?? 1;
+      touched = true;
+      const shown = {
+        ...block,
+        ...overlayManagedDelegationSnapshot(block, snapshot),
+      };
+      if (liveRun === block.runGeneration) return [shown];
+      const runId = `delegated-agent-${block.delegationId}-run-${String(liveRun)}`;
+      return [
+        block,
+        {
+          ...shown,
+          runGeneration: liveRun,
+          agentBlockId: cardIds.has(runId) ? `${runId}-live` : runId,
+        },
+      ];
+    });
+    return touched ? { ...message, blocks } : message;
+  });
+}
+
 function updateLoadedInputs(record: MutableTreeRecord): void {
   if (!record.messages) {
     record.loaded = EMPTY_LOADED_INPUTS;
     return;
   }
-  record.loaded = collectLoadedSubagentInputs(record.messages, {
+  const messages = record.cloud
+    ? withLiveCards(record.messages, record.liveSnapshots)
+    : record.messages;
+  record.loaded = collectLoadedSubagentInputs(messages, {
     backgroundStatusFor: (toolUseId) =>
       record.backgroundStatuses.get(toolUseId)?.status,
     backgroundSettledAtFor: (toolUseId) =>
@@ -528,6 +608,15 @@ async function readTree(record: MutableTreeRecord): Promise<void> {
     record.followUpQueued = true;
     return;
   }
+  if (record.cloud) {
+    // Main holds no cloud delegate: the root's own cards are the whole tree.
+    record.latestEntries = [];
+    record.managedEntryMap = EMPTY_MANAGED_ENTRIES;
+    record.initialReadSettled = true;
+    buildTree(record);
+    publish(record);
+    return;
+  }
   record.inFlight = true;
   try {
     const result = await window.api.managedDelegation.tree({
@@ -594,6 +683,7 @@ export function acquireSubagentTree(
     record.workflowReadsSettledOnce = false;
     record.loaded = EMPTY_LOADED_INPUTS;
     record.backgroundStatuses = new Map();
+    record.liveSnapshots = NO_LIVE_SNAPSHOTS;
   };
 }
 
@@ -631,15 +721,35 @@ export function updateSubagentTreeRootChat(
       useActivityStore.getState().bgProcesses[worktreeKey] ?? [],
     );
     updateLoadedInputs(record);
+    // Workflow runs are pipelines on this computer; a cloud root has none.
     updateWorkflowLocations(
       record,
-      nextMessages === null ? [] : collectWorkflowRunLocations(nextMessages),
+      nextMessages === null || record.cloud
+        ? []
+        : collectWorkflowRunLocations(nextMessages),
     );
   }
   if (rootChanged || messageChanged || agentUsageChanged) {
     buildTree(record);
     publish(record);
   }
+}
+
+/**
+ * Sets a cloud root's live delegate snapshots (CAN-7133). A local root's
+ * tree reads main, so it ignores them.
+ */
+export function updateSubagentTreeLiveSnapshots(
+  scope: SubagentHostScope,
+  rootChatId: string,
+  snapshots: ReadonlyMap<string, AgentDelegationSnapshot> | null,
+): void {
+  const record = ensureRecord(scope, rootChatId);
+  const next = snapshots ?? NO_LIVE_SNAPSHOTS;
+  if (!record.cloud || record.liveSnapshots === next) return;
+  record.liveSnapshots = next;
+  updateLoadedInputs(record);
+  if (buildTree(record)) publish(record);
 }
 
 export function getSubagentTreeSnapshot(

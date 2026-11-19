@@ -56,6 +56,7 @@ export * from './org-enforced-consent';
 export * from './operational-status-colors';
 export * from './status-glyph';
 export * from './surfaced-error-port';
+export * from './report-unavailable';
 export * from './workflow-last-run';
 export * from './sidebar-status-surface';
 export * from './pipeline-source-badges';

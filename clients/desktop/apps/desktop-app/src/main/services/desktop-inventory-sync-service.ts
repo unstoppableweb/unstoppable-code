@@ -38,6 +38,26 @@
 // Allow incoming. Turning the switch back on drops the pending delete, waits
 // for one in flight, cancels an opt-out still waiting for its flush to
 // settle, and forces a full re-sync.
+//
+// Paused report (CAN-7262): the gate also passes a three-state upload status
+// (`off`, `paused`, `syncing`). While it is `paused` (switch on, Allow
+// incoming off) the service tells the web, through
+// `PUT /api/v1/desktop-inventory/device-status`, that this computer's lists
+// may be out of date, and reports `syncing` once uploads resume (a reopen
+// with unchanged hashes sends no document PUT, so only this clears the
+// flag). Reports run outside the gate, like the delete, and are serialised:
+// a change between `paused` and `syncing` while one is in flight waits for
+// it instead of aborting it, because an aborted request can still commit
+// and leave the server on the older value. Only `off`, an identity change
+// and dispose abort. `off` sends nothing (the opt-out DELETE removes the
+// server row) and forgets the confirmed status, so a re-enable always
+// reports again. When a pause aborted a flush, the paused report is sent
+// once more after the opt-out confirm delay, since the aborted PUT may have
+// created the documents after the first report found none. A validated
+// 401/403 stops reports until the identity changes, a validated 400 until
+// the status changes, a 405 or validated 404 (a web deploy without the
+// route) waits six hours, and an unvalidated 404 runs the short ladder once
+// first, since a captive portal answers the same way.
 // ---------------------------------------------------------------------------
 
 import { createHash } from 'node:crypto';
@@ -52,6 +72,8 @@ import {
   stableStringify,
   parseWorktreeInventoryScopeKey,
   isDesktopInventoryDeleteResponse,
+  isDesktopInventoryDeviceStatusResponse,
+  type DesktopInventoryDeviceStatusRequest,
   type DesktopInventoryDocument,
   type DesktopInventoryKind,
   type DesktopInventoryManifestResponse,
@@ -121,8 +143,23 @@ export const DESKTOP_INVENTORY_OPT_OUT_SETTLE_TIMEOUT_MS = 10_000;
  */
 export const DESKTOP_INVENTORY_OPT_OUT_CONFIRM_DELAY_MS = 15_000;
 
+/**
+ * Retry interval for the paused report after a 405 or a 404 from a web
+ * deploy that predates the device-status route (CAN-7262).
+ */
+export const DESKTOP_INVENTORY_STATUS_UNSUPPORTED_RETRY_MS = 6 * 60 * 60 * 1000;
+
 /** What the settings row shows about this device's server-side delete. */
 export type DesktopInventoryDeleteStatus = 'idle' | 'pending' | 'failed';
+
+/**
+ * The upload status the inventory sync gate reports (CAN-7262): `off` with
+ * the switch off, `paused` with it on and Allow incoming off, `syncing`
+ * with both on.
+ */
+export type DesktopInventoryUploadStatus = 'off' | 'paused' | 'syncing';
+
+const DEVICE_STATUS_PATH = '/api/v1/desktop-inventory/device-status';
 
 /** Main-owned callbacks for the opt-out delete; set once at start-up. */
 export interface DesktopInventoryDeleteHooks {
@@ -367,6 +404,27 @@ export class DesktopInventorySyncService {
   private deleteRetryAttempt = 0;
   /** Set by a validated 401/403 on the delete; cleared by an identity change. */
   private deleteRefused = false;
+
+  // Paused report (CAN-7262); see the header.
+  /** The gate's latest upload status; null until its first call. */
+  private desiredStatus: DesktopInventoryUploadStatus | null = null;
+  /** The last status the server confirmed; in memory only. */
+  private confirmedStatus: 'paused' | 'syncing' | null = null;
+  private statusInFlight = false;
+  private statusAbort: AbortController | null = null;
+  /** Bumped by `off`, an identity change and dispose; stale responses drop. */
+  private statusGeneration = 0;
+  private statusRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  private statusRetryAttempt = 0;
+  private statusConfirmTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The pause aborted a flush, so the paused report is sent once more. */
+  private statusConfirmPending = false;
+  /** Set by a validated 401/403; cleared by an identity change. */
+  private statusRefused = false;
+  /** Set when no credentials were found; cleared by an identity change. */
+  private statusAwaitingCredentials = false;
+  /** The status a validated 400 refused; cleared when the status changes. */
+  private statusRejectedFor: DesktopInventoryUploadStatus | null = null;
   private deleteStatus: DesktopInventoryDeleteStatus = 'idle';
   /**
    * Bumped by every opt-out and opt-in. An opt-out captures it before it
@@ -440,6 +498,9 @@ export class DesktopInventorySyncService {
         this.deleteRefused = false;
         this.deleteRetryAttempt = 0;
         this.kickPendingDelete();
+        // The new identity has its own status row; report to it afresh.
+        this.resetStatusReports();
+        this.kickStatusReport();
       }),
     );
     this.reconcileTimer = setInterval((): void => {
@@ -469,6 +530,32 @@ export class DesktopInventorySyncService {
       this.pendingKinds.clear();
       this.flushAbort?.abort();
     }
+  }
+
+  /**
+   * The gate's upload status (CAN-7262; see the header). `paused` and
+   * `syncing` are reported to the web when they differ from the confirmed
+   * status; `off` stops reporting and forgets the confirmed status.
+   */
+  setUploadStatus(status: DesktopInventoryUploadStatus): void {
+    if (this.disposed) return;
+    if (status === 'off') {
+      this.desiredStatus = 'off';
+      this.resetStatusReports();
+      return;
+    }
+    if (status !== this.desiredStatus) {
+      // A pause that just aborted a flush (the gate closes first, and the
+      // flush is still settling) confirms its report once more.
+      this.statusConfirmPending =
+        status === 'paused' && this.flushInFlight !== null;
+      if (status !== 'paused') this.clearStatusConfirm();
+      this.statusRejectedFor = null;
+      this.statusRetryAttempt = 0;
+      this.clearStatusRetry();
+      this.desiredStatus = status;
+    }
+    this.kickStatusReport();
   }
 
   /** Main supplies the account and marker callbacks once at start-up. */
@@ -503,6 +590,8 @@ export class DesktopInventorySyncService {
    */
   async optOut(accountKeys: readonly string[]): Promise<void> {
     if (this.disposed) return;
+    // Whichever listener fires first, no paused report follows an opt-out.
+    this.setUploadStatus('off');
     this.optSequence += 1;
     const sequence = this.optSequence;
     if (this.flushInFlight) this.confirmDeleteAfterAbort = true;
@@ -1154,6 +1243,195 @@ export class DesktopInventorySyncService {
     }, delayMs);
   }
 
+  /** Start the next status report when one is due and none is in flight. */
+  private kickStatusReport(): void {
+    if (
+      this.disposed ||
+      this.statusInFlight ||
+      this.statusRetryTimer !== null ||
+      this.statusRefused ||
+      this.statusAwaitingCredentials
+    ) {
+      return;
+    }
+    const status = this.desiredStatus;
+    if (status !== 'paused' && status !== 'syncing') return;
+    if (status === this.confirmedStatus || status === this.statusRejectedFor) {
+      return;
+    }
+    this.statusInFlight = true;
+    void this.runStatusReport(status).finally((): void => {
+      this.statusInFlight = false;
+      // The status may have moved on while this was in flight.
+      this.kickStatusReport();
+    });
+  }
+
+  private async runStatusReport(status: 'paused' | 'syncing'): Promise<void> {
+    const generation = this.statusGeneration;
+    const identity = this.identityGeneration;
+    const stale = (): boolean =>
+      this.disposed ||
+      generation !== this.statusGeneration ||
+      identity !== this.identityGeneration;
+    let credentials: CanopyCloudCredentialContext;
+    try {
+      credentials = await getCanopyCloudCredentials();
+    } catch {
+      // Signed out or a local-only build: the identity change retries.
+      if (!stale()) this.statusAwaitingCredentials = true;
+      return;
+    }
+    if (stale()) return;
+    const abort = new AbortController();
+    this.statusAbort = abort;
+    try {
+      const clientDeviceId = await getInstallId();
+      const request: DesktopInventoryDeviceStatusRequest =
+        status === 'paused'
+          ? {
+              clientDeviceId,
+              uploadsPaused: true,
+              reason: 'allow_incoming_off',
+            }
+          : { clientDeviceId, uploadsPaused: false };
+      const response = await requestCanopyCloudJson<unknown>(
+        DEVICE_STATUS_PATH,
+        {
+          method: 'PUT',
+          body: JSON.stringify(request),
+          credentialContext: credentials,
+          signal: abort.signal,
+        },
+      );
+      if (stale()) return;
+      if (!isDesktopInventoryDeviceStatusResponse(response)) {
+        throw new Error(
+          'Inventory device status returned an unexpected response.',
+        );
+      }
+      // The status this request carried, not the current desired one;
+      // `recorded: false` (no documents yet) counts as confirmed too.
+      this.confirmedStatus = status;
+      this.statusRetryAttempt = 0;
+      if (status === 'paused' && this.statusConfirmPending) {
+        this.statusConfirmPending = false;
+        this.scheduleStatusConfirm(generation);
+      }
+    } catch (error) {
+      if (stale()) return;
+      if (error instanceof CanopyCloudClientError) {
+        if (
+          error.isValidatedServerError &&
+          isDeleteRefusedStatus(error.status)
+        ) {
+          this.statusRefused = true;
+          logMainProcessError('Desktop inventory status refused', error);
+          return;
+        }
+        if (error.isValidatedServerError && error.status === 400) {
+          // The same body cannot succeed; wait for the status to change.
+          this.statusRejectedFor = status;
+          logMainProcessError('Desktop inventory status rejected', error);
+          return;
+        }
+        if (isDeleteUnsupported(error)) {
+          this.scheduleStatusRetry(
+            DESKTOP_INVENTORY_STATUS_UNSUPPORTED_RETRY_MS,
+          );
+          return;
+        }
+        if (error.status === 404) {
+          // An old deploy or a captive portal: the short ladder once, then
+          // the long wait.
+          this.scheduleStatusRetry(
+            this.statusRetryAttempt < DESKTOP_INVENTORY_SYNC_RETRY_MS.length
+              ? undefined
+              : DESKTOP_INVENTORY_STATUS_UNSUPPORTED_RETRY_MS,
+          );
+          return;
+        }
+      }
+      logMainProcessError('Desktop inventory status failed', error);
+      this.scheduleStatusRetry();
+    } finally {
+      if (this.statusAbort === abort) this.statusAbort = null;
+    }
+  }
+
+  /**
+   * Retries the status report on the upload ladder, then steadily; an
+   * explicit `fixedDelayMs` is used instead and leaves the ladder alone.
+   */
+  private scheduleStatusRetry(fixedDelayMs?: number): void {
+    if (this.disposed) return;
+    let delayMs = fixedDelayMs;
+    if (delayMs === undefined) {
+      delayMs =
+        this.statusRetryAttempt < DESKTOP_INVENTORY_SYNC_RETRY_MS.length
+          ? DESKTOP_INVENTORY_SYNC_RETRY_MS[this.statusRetryAttempt]
+          : DESKTOP_INVENTORY_DELETE_STEADY_RETRY_MS;
+      this.statusRetryAttempt += 1;
+    }
+    this.clearStatusRetry();
+    this.statusRetryTimer = setTimeout((): void => {
+      this.statusRetryTimer = null;
+      this.kickStatusReport();
+    }, delayMs);
+  }
+
+  /**
+   * After a pause aborted a flush, send the paused report once more: the
+   * aborted PUT may have created documents after the first report.
+   */
+  private scheduleStatusConfirm(generation: number): void {
+    this.clearStatusConfirm();
+    this.statusConfirmTimer = setTimeout((): void => {
+      this.statusConfirmTimer = null;
+      if (
+        this.disposed ||
+        generation !== this.statusGeneration ||
+        this.desiredStatus !== 'paused'
+      ) {
+        return;
+      }
+      this.confirmedStatus = null;
+      this.kickStatusReport();
+    }, DESKTOP_INVENTORY_OPT_OUT_CONFIRM_DELAY_MS);
+  }
+
+  /**
+   * Abort the report in flight and forget what the server confirmed, for
+   * `off`, an identity change or dispose.
+   */
+  private resetStatusReports(): void {
+    this.statusGeneration += 1;
+    this.statusAbort?.abort();
+    this.statusAbort = null;
+    this.clearStatusRetry();
+    this.clearStatusConfirm();
+    this.confirmedStatus = null;
+    this.statusConfirmPending = false;
+    this.statusRetryAttempt = 0;
+    this.statusRefused = false;
+    this.statusAwaitingCredentials = false;
+    this.statusRejectedFor = null;
+  }
+
+  private clearStatusRetry(): void {
+    if (this.statusRetryTimer !== null) {
+      clearTimeout(this.statusRetryTimer);
+      this.statusRetryTimer = null;
+    }
+  }
+
+  private clearStatusConfirm(): void {
+    if (this.statusConfirmTimer !== null) {
+      clearTimeout(this.statusConfirmTimer);
+      this.statusConfirmTimer = null;
+    }
+  }
+
   private clearTimers(): void {
     if (this.debounceTimer !== null) {
       clearTimeout(this.debounceTimer);
@@ -1170,6 +1448,7 @@ export class DesktopInventorySyncService {
     this.disposed = true;
     this.clearTimers();
     this.clearDeleteRetry();
+    this.resetStatusReports();
     this.flushAbort?.abort();
     if (this.reconcileTimer !== null) {
       clearInterval(this.reconcileTimer);

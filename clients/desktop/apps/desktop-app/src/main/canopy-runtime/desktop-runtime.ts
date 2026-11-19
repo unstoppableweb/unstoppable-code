@@ -231,6 +231,7 @@ import {
 import { createCoreCatalogAdapter } from './core-catalog-adapter';
 import { createCoreMcpAccountAdapter } from './core-mcp-account-adapter';
 import { accountMcpConnectionsEnabled } from '../mcp/account-catalog';
+import { workerOperationReceiptAdapter } from './worker-operation-receipt-adapter';
 import { createWorkerCatalogAdapter } from './worker-catalog-adapter';
 import {
   createWorkerVisualAdapter,
@@ -1932,6 +1933,13 @@ export function createDesktopRuntime(
       ownedAdapter('core.agent.deferredTools', deferredToolsAdapter),
       ownedAdapter('core.chat.visual.stage', visualStageAdapter),
       ownedAdapter('worker.visual', visualRenderAdapter),
+      {
+        name: 'worker.operation.receipts',
+        operations: [
+          'worker.operation.receipt.get',
+          'worker.operation.receipt.seal',
+        ],
+      },
       ownedAdapter('core.catalog', catalogAdapter),
       ownedAdapter('worker.catalog', workerCatalogAdapter),
       ownedAdapter('core.workspace.instructions', workspaceInstructionsAdapter),
@@ -2001,7 +2009,11 @@ export function createDesktopRuntime(
         profile: input.profile,
         definitions: input.definitions,
         handlers: {
-          queries: { ...queries, ...input.runtimeHandlers.queries },
+          queries: {
+            ...queries,
+            ...input.runtimeHandlers.queries,
+            ...workerOperationReceiptAdapter.queries,
+          },
           // The filesystem write and entry instructions are keyed with no
           // retained outcome by decision (Mike, q-14 D3, 2026-10-31) until
           // CAN-4733, so a reused key re-executes: file.write and
@@ -2016,6 +2028,7 @@ export function createDesktopRuntime(
             ...workspaceGuardedAdapter.instructions,
             ...sourceCompositionAdapter.instructions,
             ...workerHandlers,
+            ...workerOperationReceiptAdapter.instructions,
           },
           streams: { ...streams, ...input.runtimeHandlers.streams },
         },

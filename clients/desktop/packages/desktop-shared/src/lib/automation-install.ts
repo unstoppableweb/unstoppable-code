@@ -355,6 +355,45 @@ function packagedPipelineProvenance(
   return pipelineDependencies.length > 0 ? { pipelineDependencies } : {};
 }
 
+/**
+ * Whether the install saved `pipelineId` as one of the share's definitions:
+ * its bundled pipeline or a recorded packaged dependency. A pipeline
+ * converted on this computer from a chat action is not one (CAN-7285).
+ */
+export function isInstalledSharedDefinition(
+  installedFrom: AutomationInstalledFromMetadata | undefined,
+  pipelineId: string,
+): boolean {
+  return (
+    installedFrom?.bundledPipelineLocalId === pipelineId ||
+    (installedFrom?.pipelineDependencies ?? []).some(
+      (dependency) => dependency.localPipelineId === pipelineId,
+    )
+  );
+}
+
+/**
+ * The action a failed shared update restores (CAN-7285). An owned workflow
+ * the share installed is kept or restored from its raw YAML, so its stored
+ * action goes back as it was; sending the chat action it projects to would
+ * regenerate it. Anything else, such as a workflow converted here from a
+ * chat action, which the update deleted, goes back as the chat action, so
+ * main converts it again.
+ */
+export function sharedUpdateRollbackAction(
+  activity: Pick<
+    ScheduledActivity,
+    'action' | 'installedFrom' | 'ownedPipeline'
+  >,
+): AutomationAction {
+  const stored = activity.ownedPipeline?.storedAction;
+  return stored !== undefined &&
+    stored.type === 'worktree_pipeline' &&
+    isInstalledSharedDefinition(activity.installedFrom, stored.pipelineId)
+    ? stored
+    : activity.action;
+}
+
 /** Locally installed pipelines recorded for a share, by key. */
 function recordedPipelineInstalls(
   installedFrom: AutomationInstalledFromMetadata | undefined,

@@ -23,6 +23,13 @@ const armSchema = z.object({
     createdAt: z.string().datetime(),
     branchName: z.string().optional(),
   }),
+  confirmationId: z.uuid().optional(),
+  forceBranchPins: z
+    .array(z.object({ repoId: z.string(), branchName: z.string().nullable() }))
+    .optional(),
+  branchConfirmation: z
+    .array(z.object({ repoId: z.string(), branchName: z.string().nullable() }))
+    .optional(),
   unmergedBranches: z.array(z.string()).optional(),
   branchAnswer: z.enum(['delete-branch', 'keep-branch']).optional(),
 });

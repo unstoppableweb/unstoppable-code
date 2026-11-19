@@ -1021,6 +1021,22 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
     grants: Object.freeze(['core.catalog.write'] as const),
     revision: 'none',
   }),
+  // CAN-7262: the port asks the person before turning sync off, in the
+  // Advisor window, so it needs an interface.
+  'inventory_sync.get_state': Object.freeze({
+    kind: 'core',
+    access: 'read',
+    executor: 'shared-engine',
+    requiresInterface: true,
+  }),
+  'inventory_sync.set_enabled': Object.freeze({
+    kind: 'core',
+    access: 'write',
+    executor: 'shared-engine',
+    grants: Object.freeze(['core.remoteAccess.write'] as const),
+    revision: 'none',
+    requiresInterface: true,
+  }),
   'ledger.add_entry': Object.freeze({
     kind: 'core',
     access: 'write',

@@ -35,7 +35,8 @@ import {
   type SharedAutomationModelConfig,
 } from '../automations';
 import {
-  containsSecretMaterial,
+  findSecretMaterialRule,
+  type SecretMaterialRule,
   isPortableCapabilityPathSegment,
   isSafeCapabilityRelativePath,
 } from '../capability-files';
@@ -276,6 +277,30 @@ const SECRET_PLACEHOLDER_ASSIGNMENT_PATTERN = new RegExp(
 );
 
 /**
+ * Neutralizes a placeholder assignment unless the placeholder itself holds
+ * secret material: `token: <ghp_…>` or `token: ${{ ghp_… }}` carries a real
+ * value in brackets, so it stays and is scanned (CAN-7226). Only the part
+ * after the separator is checked, so the keyword never trips a rule itself.
+ */
+export function neutralizePlaceholderAssignment(assignment: string): string {
+  const placeholder = assignment.slice(assignment.search(/[=:]/) + 1);
+  return findSecretMaterialRule(placeholder) === null
+    ? 'placeholder=example'
+    : assignment;
+}
+
+/**
+ * How a credential check treats what is inside a placeholder. `checked`, for
+ * text being written or shared, refuses a real value in placeholder
+ * brackets. `ignored` reads every placeholder as a placeholder, as stored
+ * definitions were checked when they were written, so one already stored
+ * still loads (CAN-7226).
+ */
+export interface SharedCredentialCheckOptions {
+  readonly placeholderContents?: 'checked' | 'ignored';
+}
+
+/**
  * Environment-style assignments with any prefix, such as `NPM_TOKEN=npm_x`
  * or `DATABASE_PASSWORD=hunter2`. Comparisons (`==`) and empty quoted values
  * are not assignments of a credential. The search is unanchored, so the
@@ -309,8 +334,15 @@ function isPlaceholderMarker(value: string): boolean {
   return value.length > 0 && value.split(PLACEHOLDER_MARKER).join('') === '';
 }
 
-function containsUserInfoCredential(text: string): boolean {
-  const marked = text.replace(NAMED_PLACEHOLDER_PATTERN, PLACEHOLDER_MARKER);
+function containsUserInfoCredential(
+  text: string,
+  checkContents: boolean,
+): boolean {
+  const marked = text.replace(NAMED_PLACEHOLDER_PATTERN, (placeholder) =>
+    !checkContents || findSecretMaterialRule(placeholder) === null
+      ? PLACEHOLDER_MARKER
+      : placeholder,
+  );
   for (const match of Array.from(marked.matchAll(URL_USER_INFO_PATTERN))) {
     const password = match[1];
     if (password !== undefined && !isPlaceholderMarker(password)) return true;
@@ -361,19 +393,42 @@ function isResourceId(value: unknown): value is string {
   );
 }
 
+/** Which credential check a shared text tripped. */
+export type SharedTextCredentialRule =
+  | SecretMaterialRule
+  | 'env_assignment'
+  | 'url_credentials';
+
+/**
+ * The first credential check a shared text trips once named placeholders
+ * are neutralized, or null. Names the rule only, never the matched text.
+ * Placeholder contents are checked unless the caller reads stored text.
+ */
+export function findSharedTextCredentialRule(
+  text: string,
+  options: SharedCredentialCheckOptions = {},
+): SharedTextCredentialRule | null {
+  const checkContents = options.placeholderContents !== 'ignored';
+  const neutralized = text.replace(
+    SECRET_PLACEHOLDER_ASSIGNMENT_PATTERN,
+    (assignment) =>
+      checkContents
+        ? neutralizePlaceholderAssignment(assignment)
+        : 'placeholder=example',
+  );
+  const material = findSecretMaterialRule(neutralized);
+  if (material !== null) return material;
+  if (SECRET_ENV_ASSIGNMENT_PATTERN.test(neutralized)) return 'env_assignment';
+  if (containsUserInfoCredential(text, checkContents)) return 'url_credentials';
+  return null;
+}
+
 /** Whether text carries a credential once named placeholders are neutralized. */
 export function sharedContainerDefinitionTextContainsCredential(
   text: string,
+  options: SharedCredentialCheckOptions = {},
 ): boolean {
-  const neutralized = text.replace(
-    SECRET_PLACEHOLDER_ASSIGNMENT_PATTERN,
-    'placeholder=example',
-  );
-  return (
-    containsSecretMaterial(neutralized) ||
-    SECRET_ENV_ASSIGNMENT_PATTERN.test(neutralized) ||
-    containsUserInfoCredential(text)
-  );
+  return findSharedTextCredentialRule(text, options) !== null;
 }
 
 /** Whether a record value under a secret-named key carries a credential. */
@@ -397,14 +452,15 @@ function scanStrings(
   path: string,
   errors: string[],
   seen: { credential: boolean; machinePath: boolean },
+  options: SharedCredentialCheckOptions,
 ): void {
   if (typeof value === 'string') {
-    if (
-      !seen.credential &&
-      sharedContainerDefinitionTextContainsCredential(value)
-    ) {
+    const rule = seen.credential
+      ? null
+      : findSharedTextCredentialRule(value, options);
+    if (rule !== null) {
       seen.credential = true;
-      errors.push(`${path} may contain a credential`);
+      errors.push(credentialError(path, rule));
     }
     if (
       !seen.machinePath &&
@@ -417,23 +473,94 @@ function scanStrings(
   }
   if (Array.isArray(value)) {
     value.forEach((item, index) =>
-      scanStrings(item, `${path}[${index}]`, errors, seen),
+      scanStrings(item, `${path}[${index}]`, errors, seen, options),
     );
     return;
   }
   if (isRecord(value)) {
     for (const [key, item] of Object.entries(value)) {
+      const keyPath = `${path}.${credentialPathSegment(key)}`;
       if (
         !seen.credential &&
         typeof item === 'string' &&
         isSecretKeyedValue(key, item)
       ) {
         seen.credential = true;
-        errors.push(`${path}.${key} may contain a credential`);
+        errors.push(credentialError(keyPath));
       }
-      scanStrings(item, `${path}.${key}`, errors, seen);
+      scanStrings(item, keyPath, errors, seen, options);
     }
   }
+}
+
+const CREDENTIAL_ERROR_INFIX = ' may contain a credential. ';
+
+/** What to do about a credential in a field, in a plain sentence. */
+export const CREDENTIAL_PLACEHOLDER_NEXT_STEP =
+  'Replace it with a placeholder such as ${{ secrets.NAME }}.';
+
+/**
+ * What to do about a credential in an authorization header. A placeholder
+ * there is still refused (CAN-7314), so the advice is to drop the value.
+ */
+export const CREDENTIAL_HEADER_NEXT_STEP =
+  'Remove the header line, or say which header to send without writing its value.';
+
+/** The next step a credential refusal gives, by the rule that matched. */
+export function credentialNextStep(
+  rule: SharedTextCredentialRule | null,
+): string {
+  return rule === 'auth_header'
+    ? CREDENTIAL_HEADER_NEXT_STEP
+    : CREDENTIAL_PLACEHOLDER_NEXT_STEP;
+}
+
+/**
+ * An object key as it may appear in a reported field path. A key that itself
+ * looks like a secret is never echoed: it reads as [redacted key] (CAN-7226).
+ */
+export function credentialPathSegment(key: string): string {
+  return findSecretMaterialRule(key) === null ? key : '[redacted key]';
+}
+
+/** A credential finding names the field and asks for a placeholder, never the value. */
+function credentialError(
+  path: string,
+  rule: SharedTextCredentialRule | null = null,
+): string {
+  return `${path}${CREDENTIAL_ERROR_INFIX}${credentialNextStep(rule)}`;
+}
+
+function parseCredentialError(
+  error: string,
+): { field: string; nextStep: string } | null {
+  for (const nextStep of [
+    CREDENTIAL_PLACEHOLDER_NEXT_STEP,
+    CREDENTIAL_HEADER_NEXT_STEP,
+  ]) {
+    const suffix = `${CREDENTIAL_ERROR_INFIX}${nextStep}`;
+    if (error.endsWith(suffix))
+      return { field: error.slice(0, -suffix.length), nextStep };
+  }
+  return null;
+}
+
+/** The next step a definition credential error gives, or null. */
+export function sharedContainerCredentialErrorNextStep(
+  error: string,
+): string | null {
+  return parseCredentialError(error)?.nextStep ?? null;
+}
+
+/**
+ * The field a definition validation error says may hold a credential, or
+ * null when the error is about something else, such as a malformed or
+ * machine-specific document (CAN-7226).
+ */
+export function sharedContainerCredentialErrorField(
+  error: string,
+): string | null {
+  return parseCredentialError(error)?.field ?? null;
 }
 
 function validateReferences(
@@ -1273,6 +1400,7 @@ function stableStringify(value: unknown): string {
  */
 export function validateSharedContainerDefinitionDocument(
   value: unknown,
+  options: SharedCredentialCheckOptions = { placeholderContents: 'ignored' },
 ): SharedContainerDefinitionValidationResult {
   if (!isRecord(value))
     return { ok: false, errors: ['Definition document must be an object'] };
@@ -1314,10 +1442,13 @@ export function validateSharedContainerDefinitionDocument(
       break;
   }
   if (document) {
-    scanStrings(document, value.kind, errors, {
-      credential: false,
-      machinePath: false,
-    });
+    scanStrings(
+      document,
+      value.kind,
+      errors,
+      { credential: false, machinePath: false },
+      options,
+    );
     if (
       utf8ByteLength(stableStringify(document)) >
       MAX_SHARED_CONTAINER_DEFINITION_DOCUMENT_BYTES
@@ -1372,6 +1503,7 @@ export function encodeSharedContainerDefinitionDocument(
  */
 export function parseSharedContainerDefinitionDocument(
   bytes: Uint8Array,
+  options: SharedCredentialCheckOptions = { placeholderContents: 'ignored' },
 ): SharedContainerDefinitionValidationResult {
   if (bytes.byteLength > MAX_SHARED_CONTAINER_DEFINITION_DOCUMENT_BYTES)
     return {
@@ -1388,7 +1520,7 @@ export function parseSharedContainerDefinitionDocument(
   } catch {
     return { ok: false, errors: ['Definition document is not UTF-8 JSON'] };
   }
-  const validated = validateSharedContainerDefinitionDocument(parsed);
+  const validated = validateSharedContainerDefinitionDocument(parsed, options);
   if (!validated.ok) return validated;
   if (stableStringify(validated.value) !== text)
     return { ok: false, errors: ['Definition document is not canonical'] };

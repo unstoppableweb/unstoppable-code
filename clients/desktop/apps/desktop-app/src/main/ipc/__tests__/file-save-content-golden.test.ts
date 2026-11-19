@@ -104,6 +104,7 @@ import {
   acquireSplitLock,
   releaseSplitLock,
 } from '../../services/split-lock-service';
+import { useFakeSplitLockKeys } from '../../__tests__/split-lock-key-fixture';
 import {
   createDesktopRuntime,
   type DesktopCanopyDispatcher,
@@ -213,6 +214,7 @@ const OLD_TIME = new Date('2020-01-02T03:04:05.000Z');
 
 let tempRoot = '';
 
+useFakeSplitLockKeys();
 beforeEach(async () => {
   tempRoot = await fs.realpath(
     await fs.mkdtemp(join(tmpdir(), 'file-save-content-golden-')),
@@ -619,7 +621,7 @@ describe('single-repository worktree', () => {
   // Deliberate difference (CAN-4100): `worker.filesystem.file.write` refuses
   // a worktree locked by a Split PR, as the explorer's create does.
   it('refuses a worktree held by a Split PR lock', async () => {
-    acquireSplitLock('project-1', 'wt-1');
+    await acquireSplitLock('project-1', 'wt-1');
     try {
       await expect(
         failure({ ...scope, absolutePath: file, content: 'locked\n' }),

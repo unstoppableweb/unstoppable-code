@@ -1148,7 +1148,7 @@ async function splitTemporaryWorkspaceWorktreeAdmitted(
   const destinationWorkspaceLeaseReleases: Array<() => void> = [];
   const reservedRecords: SplitDestinationReservation[] = [];
   try {
-    acquireSplitLock(request.workspaceId, request.worktreeId);
+    await acquireSplitLock(request.workspaceId, request.worktreeId);
     lockAcquired = true;
     const { worktree, repos } = await loadSplitSourceContext(
       request.workspaceId,

@@ -47,8 +47,10 @@ import {
 } from '../revisioned-commands';
 import {
   CHAT_STATE_COMMAND_FAILED_NOTICE,
+  CHAT_STATE_UNCONFIRMED_NOTICE,
   CHAT_STATE_CONFLICT_NOTICE,
 } from '../revisioned-copy';
+import { isUnknownWriteError } from '@canopy/app-state/core-cowork';
 import {
   applyCanonicalChanges,
   applyRuntimeStatusesToTabs,
@@ -1303,6 +1305,14 @@ export const createRevisionedSlice: StateCreator<
         )
           showUnavailableNotice(key, error.message);
         return 'rejected';
+      }
+      // A cloud change whose answer never came may have landed: the view is
+      // read again and says so, never "Try again." (CAN-7196).
+      if (isUnknownWriteError(error)) {
+        if (options?.callerReportsFailure !== true)
+          setNotice('unconfirmed', CHAT_STATE_UNCONFIRMED_NOTICE);
+        getController().forceRefresh(scope.projectId, scope.worktreeId);
+        return 'transport_failed';
       }
       if (options?.callerReportsFailure !== true)
         setNotice('command_failed', CHAT_STATE_COMMAND_FAILED_NOTICE);

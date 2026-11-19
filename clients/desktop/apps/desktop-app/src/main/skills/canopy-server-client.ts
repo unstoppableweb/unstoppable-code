@@ -24,6 +24,10 @@ import {
   PIPELINE_PACKAGE_VERSION_HEADER,
 } from '@canopy/protocol/pipelines';
 import {
+  scanSharedSkillForSecrets,
+  sharedSkillSecretMessage,
+} from '@canopy/protocol/skills';
+import {
   assertCanopyCloudCapability,
   type CanopyCloudCredentialContext,
   requestCanopyCloudJson,
@@ -35,7 +39,11 @@ import {
   assertResourceShareTransition,
 } from '../lib/resource-share-context';
 import { assertShareScopeTarget } from '../lib/share-scope-target';
-import { ShareOperationError } from '../sharing/share-operation-result';
+import {
+  ShareOperationError,
+  SkillSecretDetectedError,
+} from '../sharing/share-operation-result';
+import { parseFrontmatter } from '../lib/frontmatter';
 
 const API_PREFIX = `/api/v1/${BRAND.web.apiNamespace}`;
 
@@ -175,6 +183,36 @@ async function authorizedSkillSource(
     : readRawSkill(sourceSkillId);
 }
 
+/** The name the server gives a skill: frontmatter `name`, else the first heading. */
+function sharedSkillDisplayName(rawSkill: string): string {
+  const name = parseFrontmatter<Record<string, unknown>>(rawSkill)?.['name'];
+  if (typeof name === 'string' && name.trim()) return name.trim();
+  for (const line of rawSkill.split(/\r?\n/)) {
+    const heading = line.match(/^#{1,6}\s+(.+?)\s*#*\s*$/)?.[1]?.trim();
+    if (heading) return heading;
+  }
+  return 'Untitled skill';
+}
+
+/**
+ * Refuses to upload SKILL.md text that looks like it holds a secret (CAN-7226).
+ * It runs on the exact text that would be sent, before the POST or PUT is
+ * built, so the request that would carry it is never sent; reads before it
+ * carry no skill text. The message names the skill, file and rule, never the
+ * match.
+ */
+function assertSkillHoldsNoSecret(rawSkill: string): void {
+  const finding = scanSharedSkillForSecrets({
+    skillName: sharedSkillDisplayName(rawSkill),
+    files: [{ path: 'SKILL.md', text: rawSkill }],
+  });
+  if (finding !== null)
+    throw new SkillSecretDetectedError(
+      sharedSkillSecretMessage(finding),
+      'access',
+    );
+}
+
 /** An installed-source skill's copy is private only (CAN-6943). */
 function assertInstalledSourceScope(
   shareScope: string | undefined,
@@ -219,6 +257,7 @@ export async function createSharedSkill(
     );
   }
   assertCheckedSource(rawSkill, request.expectedSourceSha256);
+  assertSkillHoldsNoSecret(rawSkill);
   const body: {
     rawSkill: string;
     shareScope?: CreateSharedSkillRequest['shareScope'];
@@ -262,9 +301,13 @@ export async function updateSharedSkill(
   assertShareScopeTarget(request, 'a skill');
   assertInstalledSourceScope(request.shareScope, options, false);
   let rawSkill = request.rawSkill;
+  let storedContentHash = request.expectedContentHash;
+  let currentOwner: SharedSkillDetail['owner'] | undefined;
   if (skillResourceContextEnabled()) {
     // The caller's account, so a switch mid-update can't read another's copy.
     const current = await getSharedSkill(request.skillId, credentialContext);
+    storedContentHash = current.contentHash;
+    currentOwner = current.owner;
     const destination = request.shareScope
       ? await assertResourceShareDestination(request)
       : undefined;
@@ -288,6 +331,25 @@ export async function updateSharedSkill(
     );
   }
   assertCheckedSource(rawSkill, request.expectedSourceSha256);
+  // As on the server, new text, or the same text reaching a team or
+  // organization that doesn't own it now, is a share. Making it private or
+  // resending it unchanged isn't, so a skill stored before this check can
+  // still be taken down (CAN-7226). An unknown stored hash or owner counts as
+  // new.
+  const keepsOwner =
+    (request.shareScope === 'team' &&
+      currentOwner?.type === 'team' &&
+      currentOwner.id === request.teamId) ||
+    (request.shareScope === 'organization' &&
+      currentOwner?.type === 'organization' &&
+      currentOwner.id === request.organizationId);
+  if (
+    (request.shareScope !== undefined &&
+      request.shareScope !== 'private' &&
+      !keepsOwner) ||
+    createHash('sha256').update(rawSkill).digest('hex') !== storedContentHash
+  )
+    assertSkillHoldsNoSecret(rawSkill);
   beforeWrite?.();
   return requestCanopyCloudJson<SharedSkillDetail>(
     `${API_PREFIX}/skills/${encodeURIComponent(request.skillId)}`,

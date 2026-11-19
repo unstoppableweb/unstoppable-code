@@ -42,6 +42,18 @@ export class ShareOperationError extends Error {
 }
 
 /**
+ * A skill being shared or carried in a package looks like it holds a secret
+ * (CAN-7226). It fails like any unavailable share, and lets a flow with its
+ * own refusals (a cloud publish) tell it apart from an unreachable cloud.
+ */
+export class SkillSecretDetectedError extends ShareOperationError {
+  constructor(message: string, stage: ShareFailureStage) {
+    super('unavailable', message, stage);
+    this.name = 'SkillSecretDetectedError';
+  }
+}
+
+/**
  * A blocked analysis: a file it can't take, or a dependency it can't
  * resolve. Still `dependency-review` for shares; a cloud copy tells it apart
  * from an analysis that went stale (CAN-6176).

@@ -752,6 +752,19 @@ export class DefaultClaudeWorkerSessionService {
         workspaceRoot: record.request.cwd,
         mode: record.request.approvalMode ?? 'ask',
         sessionRules: [
+          // Discovery is native and side-effect-free. MCP calls retain their
+          // separate approval checks after their schemas have been found.
+          ...(record.request.permission?.allowedTools?.includes('ToolSearch')
+            ? [
+                {
+                  id: randomUUID(),
+                  behavior: 'allow',
+                  target: { kind: 'tool', toolName: 'ToolSearch' },
+                  createdAt: new Date().toISOString(),
+                  origin: 'settings',
+                } satisfies ApprovalRule,
+              ]
+            : []),
           ...(record.schema
             ? [allowWorkerMcpTool('ReportStructuredResult')]
             : []),

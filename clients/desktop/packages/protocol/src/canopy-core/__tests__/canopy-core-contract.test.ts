@@ -17,6 +17,9 @@ import {
   CanopyCallerDescriptorSchema,
   CanopyErrorPayloadSchema,
   CanopyRequestMetadataSchema,
+  CanopyQueryRequestMetadataSchema,
+  CanopyUnkeyedInstructionRequestMetadataSchema,
+  CANOPY_HOST_RESERVED_METADATA,
   composeCanopyQueryRegistries,
   composeCanopyInstructionRegistries,
   composeCanopyStreamRegistries,
@@ -77,6 +80,7 @@ import {
   TRANSCRIPT_BOUNDED_BLOCK_PAGE_BYTES,
 } from '../core';
 import {
+  WORKER_INSTRUCTION_DEFINITIONS,
   WORKER_QUERY_DEFINITIONS,
   WorkerFilesystemDirectoryListParamsSchema,
   WorkerFilesystemDirectoryListResultSchema,
@@ -118,6 +122,7 @@ type _QueryNamesAreExact = Expect<
     | 'worker.codeGraph.query'
     | 'worker.codeGraph.snapshot.export'
     | 'worker.codeGraph.languages.validate'
+    | 'worker.operation.receipt.get'
     | 'core.chat.snapshot.get'
     | 'core.chat.list'
     | 'core.chat.locate'
@@ -210,6 +215,7 @@ type _WorkerNamesAreExact = Expect<
     | 'worker.codeGraph.query'
     | 'worker.codeGraph.snapshot.export'
     | 'worker.codeGraph.languages.validate'
+    | 'worker.operation.receipt.get'
   >
 >;
 type _CoreNamesAreExact = Expect<
@@ -1528,6 +1534,7 @@ describe('universal Canopy query registry', () => {
       'worker.codeGraph.query',
       'worker.codeGraph.snapshot.export',
       'worker.codeGraph.languages.validate',
+      'worker.operation.receipt.get',
     ]);
     expect(CANOPY_QUERY_DEFINITIONS).toEqual({
       ...CORE_QUERY_DEFINITIONS,
@@ -1679,7 +1686,38 @@ describe('universal Canopy query registry', () => {
       requiredGrants: ['core.workspace.write'],
     });
 
+    // The receipt lookup declares no grant of its own: its handler requires
+    // every grant of the instruction it looks up (CAN-4733), and it answers
+    // from the worker that holds the receipts.
+    expect(
+      WORKER_QUERY_DEFINITIONS['worker.operation.receipt.get'],
+    ).toMatchObject({
+      kind: 'query',
+      plane: 'worker',
+      domain: 'operation',
+      version: 1,
+      placement: 'worker-only',
+      idempotency: 'inherent',
+      requiredGrants: [],
+    });
+
+    // The seal is a write: an instruction with no grant of its own, whose
+    // handler requires the sealed instruction's grants and refuses one gated
+    // only by read grants (CAN-4733).
+    expect(
+      WORKER_INSTRUCTION_DEFINITIONS['worker.operation.receipt.seal'],
+    ).toMatchObject({
+      kind: 'instruction',
+      plane: 'worker',
+      domain: 'operation',
+      version: 1,
+      placement: 'worker-only',
+      idempotency: 'inherent',
+      requiredGrants: [],
+    });
+
     for (const [name, definition] of Object.entries(WORKER_QUERY_DEFINITIONS)) {
+      if (name === 'worker.operation.receipt.get') continue;
       const domain = name.split('.')[1];
       expect(definition).toMatchObject({
         kind: 'query',
@@ -2213,6 +2251,21 @@ describe('common request and error contracts', () => {
       CanopyRequestMetadataSchema.safeParse({ ...metadata, requestId: 'nope' })
         .success,
     ).toBe(false);
+
+    // CAN-4733: the report-only dispatch tag is host-reserved metadata that
+    // only instructions carry; queries and streams refuse it.
+    expect(CANOPY_HOST_RESERVED_METADATA).toEqual(['dispatchId']);
+    expect(
+      CanopyRequestMetadataSchema.safeParse({ dispatchId: 'tag' }).success,
+    ).toBe(true);
+    expect(
+      CanopyUnkeyedInstructionRequestMetadataSchema.safeParse({
+        dispatchId: 'tag',
+      }).success,
+    ).toBe(true);
+    expect(
+      CanopyQueryRequestMetadataSchema.safeParse({ dispatchId: 'tag' }).success,
+    ).toBe(false);
   });
 
   it('round-trips stable errors and rejects non-JSON details', () => {
@@ -2410,6 +2463,7 @@ describe('common request and error contracts', () => {
       'worker.git.worktree.add',
       'worker.git.worktree.prune',
       'worker.git.worktree.remove',
+      'worker.operation.receipt.seal',
       'worker.pipeline.execution.cancel',
       // CAN-4141: the recovery controls.
       'worker.pipeline.execution.resume',

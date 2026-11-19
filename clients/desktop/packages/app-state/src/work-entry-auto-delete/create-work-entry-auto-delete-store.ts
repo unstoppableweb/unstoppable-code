@@ -22,7 +22,9 @@ export interface WorkEntryAutoDeleteState {
   readonly workspaces: Readonly<
     Record<string, Readonly<Record<string, WorkEntryAutoDeleteRowState>>>
   >;
-  readonly question: AutoDeleteTarget | null;
+  readonly question:
+    | (AutoDeleteTarget & { readonly confirmationId?: string })
+    | null;
   readonly busy: boolean;
   readonly error: string | null;
   readonly notice:
@@ -62,7 +64,10 @@ export function createWorkEntryAutoDeleteStore(
         if (!canManage(target)) return;
         const row = get().workspaces[target.workspaceId]?.[target.targetId];
         if (row?.state === 'awaiting-branch-confirmation') {
-          set({ question: target, error: null });
+          set({
+            question: { ...target, confirmationId: row.confirmationId },
+            error: null,
+          });
         } else if (row) {
           void get().disarm(target);
         }
@@ -118,6 +123,7 @@ export function createWorkEntryAutoDeleteStore(
             workspaceId: target.workspaceId,
             targetId: target.targetId,
             answer,
+            confirmationId: target.confirmationId,
           });
           if (!disposed) set({ question: null, busy: false });
         } catch {
@@ -148,8 +154,10 @@ export function createWorkEntryAutoDeleteStore(
         },
         question:
           state.question?.workspaceId === snapshot.workspaceId &&
-          snapshot.targets[state.question.targetId]?.state !==
-            'awaiting-branch-confirmation'
+          (snapshot.targets[state.question.targetId]?.state !==
+            'awaiting-branch-confirmation' ||
+            snapshot.targets[state.question.targetId]?.confirmationId !==
+              state.question.confirmationId)
             ? null
             : state.question,
       }));

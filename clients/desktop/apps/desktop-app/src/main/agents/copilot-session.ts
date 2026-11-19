@@ -275,7 +275,7 @@ export class CopilotProvider implements AgentProvider {
         ).createManagedDelegationSession({
           harness: 'copilot',
           sessionKey: key,
-          getWindow,
+          interfacePort,
           currentTurn: () => currentTurn,
           currentOptions: () => ({
             ...opts,

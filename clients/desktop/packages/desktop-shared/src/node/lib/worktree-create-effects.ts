@@ -25,6 +25,7 @@ import type {
 } from '../../types';
 import type { CreateWorktreeServiceOptions } from './worktree-service';
 import { readCanopyJson, writeCanopyJson } from './canopy-json';
+import { refuseOptionLikeWorktreePath } from './worktree-path-refusal';
 import {
   isProjectInstructionFileReadable,
   resolveProjectInstructionFile,
@@ -78,7 +79,7 @@ async function addGitWorktree(
   const startPoint = baseBranch ?? 'HEAD';
   try {
     await runGit(
-      ['worktree', 'add', '-b', branchName, worktreePath, startPoint],
+      ['worktree', 'add', '-b', branchName, '--', worktreePath, startPoint],
       repoPath,
       signal,
     );
@@ -284,8 +285,12 @@ export async function removeGitWorktree(
   repoPath: string,
   worktreePath: string,
 ): Promise<void> {
+  refuseOptionLikeWorktreePath(worktreePath);
   try {
-    await runGit(['worktree', 'remove', '--force', worktreePath], repoPath);
+    await runGit(
+      ['worktree', 'remove', '--force', '--', worktreePath],
+      repoPath,
+    );
   } catch {
     await rm(worktreePath, { recursive: true, force: true });
   }

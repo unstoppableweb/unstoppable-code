@@ -730,7 +730,10 @@ function ToastStackHost({
         />
       )}
       {report && (
-        <ReportActionBoundary key={report.error.referenceId}>
+        <ReportActionBoundary
+          key={report.error.referenceId}
+          referenceId={report.error.referenceId}
+        >
           <DesktopReportEligibility>
             {(eligible): ReactNode =>
               eligible ? (

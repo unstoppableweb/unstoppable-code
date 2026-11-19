@@ -25,7 +25,6 @@ import { basename, dirname, join } from 'node:path';
 import {
   CODE_REVIEW_CHAT_PROJECT_ID,
   PLAN_EXPLORE_CHAT_PROJECT_ID,
-  SHARED_CONTAINER_VIEWER_PROJECT_ID,
 } from '@canopy/desktop-shared/types';
 import { ChatStorageV2 } from '../lib/chat-storage-v2';
 import { getDataDir } from '../lib/paths';
@@ -127,8 +126,6 @@ export interface ChatFormat4SweepCandidate {
   readonly format: ChatFormat4SweepFormat;
   readonly bytes: number;
   readonly usedAt: number;
-  /** Scopes the sweep leaves alone until their owners rule (CAN-7178). */
-  readonly excluded: boolean;
 }
 
 export interface ChatFormat4SweepInventory {
@@ -145,18 +142,6 @@ export interface ChatFormat4SweepPassResult {
 
 const PLAN_EXPLORE_NAMESPACE = 'plan-explore-chats';
 const MANIFESTS = 'chat-storage-manifests';
-
-/**
- * Viewer scopes never promote (`promotable()`), and code-review scopes wait
- * for their namespace's admission work (CAN-6848). Neither is opened by the
- * sweep, but a stored one below format 4 still keeps the sweep incomplete.
- */
-function excludedScope(scope: ChatScopeKey): boolean {
-  return (
-    scope.projectId === SHARED_CONTAINER_VIEWER_PROJECT_ID ||
-    scope.projectId === CODE_REVIEW_CHAT_PROJECT_ID
-  );
-}
 
 export function chatFormat4SweepKey(directory: string): string {
   return createHash('sha256').update(directory).digest('hex').slice(0, 16);
@@ -315,14 +300,10 @@ export async function listChatFormat4SweepCandidates(
     } catch {
       format = 'unknown';
     }
-    if (format === 'v1' && !(await legacyScopeFiles(legacyPaths))) return;
     // A legacy scope with no tabs file left (only its tabs backup, archived
-    // tabs or journal) is counted, so the sweep can't report itself complete
-    // over it, but never offered: migration removes every legacy file once
-    // version 2 validates, before format 4 exists, so these wait for a
-    // follow-up that keeps them until format 4 verifies (SWAN, 17 Nov).
-    const tabsMissing =
-      format === 'v1' && !(await legacyTabsPresent(legacyPaths[0]));
+    // tabs or journal) is offered like any other: its legacy files now stay
+    // until its format 4 copy reads back (SWAN, 17 Nov).
+    if (format === 'v1' && !(await legacyScopeFiles(legacyPaths))) return;
     candidates.push({
       scope,
       key: chatFormat4SweepKey(store.directory),
@@ -334,7 +315,6 @@ export async function listChatFormat4SweepCandidates(
           : (await treeBytes(store.directory)) +
             (await legacyBytes(legacyPaths)),
       usedAt: await latestMtime([store.manifestPath, ...legacyPaths]),
-      excluded: excludedScope(scope) || tabsMissing,
     });
   };
 
@@ -410,11 +390,6 @@ async function legacyScopeFiles(paths: readonly string[]): Promise<boolean> {
   } catch {
     return true;
   }
-}
-
-/** Whether the scope's own tabs file is there; its backup alone doesn't count. */
-async function legacyTabsPresent(path: string | undefined): Promise<boolean> {
-  return path !== undefined && present(path);
 }
 
 function missing(error: unknown): boolean {
@@ -775,8 +750,8 @@ export class ChatFormat4Sweep {
 
   /**
    * One pass over every stored scope below format 4. The done marker is
-   * written only when the pass finds none left, nothing unmapped and nothing
-   * excluded below format 4; otherwise any old marker is removed.
+   * written only when the pass finds none left and nothing unmapped;
+   * otherwise any old marker is removed.
    */
   public async runPass(): Promise<ChatFormat4SweepPassResult> {
     const { target, dataDir, resolveStore } = this.options;
@@ -789,10 +764,7 @@ export class ChatFormat4Sweep {
       resolveStore,
     );
     const below = inventory.candidates.filter((item) => item.format !== 'v4');
-    const blocked = below.filter((item) => item.excluded).length;
-    const pending = orderChatFormat4SweepCandidates(
-      below.filter((item) => !item.excluded),
-    );
+    const pending = orderChatFormat4SweepCandidates(below);
     let promoted = 0;
     let left = pending.length;
     for (const candidate of pending) {
@@ -801,7 +773,7 @@ export class ChatFormat4Sweep {
       if (!(await this.waitForIdle())) break;
       if (!target.promotionAllowed()) {
         this.pause('switch_off');
-        return { status: 'withheld', promoted, remaining: left + blocked };
+        return { status: 'withheld', promoted, remaining: left };
       }
       if (!(await this.hasRoom(candidate))) {
         this.pause('disk');
@@ -842,7 +814,7 @@ export class ChatFormat4Sweep {
         }
         case 'withheld':
           this.pause('switch_off');
-          return { status: 'withheld', promoted, remaining: left + blocked };
+          return { status: 'withheld', promoted, remaining: left };
         case 'failed':
           await this.recordFailure(candidate, attempt.reason);
           break;
@@ -856,8 +828,7 @@ export class ChatFormat4Sweep {
         this.controller.signal,
       );
     }
-    if (this.stopped)
-      return { status: 'stopped', promoted, remaining: left + blocked };
+    if (this.stopped) return { status: 'stopped', promoted, remaining: left };
     // The marker trusts the disk, not the answers: read every manifest again.
     const after = await listChatFormat4SweepCandidates(dataDir, resolveStore);
     // A scope that left the inventory, or reached format 4, needs no retry.
@@ -907,15 +878,35 @@ export function resolveChatFormat4SweepStore(
   );
 }
 
-/** The repository's sweep admission, with a failure's cause reduced to its code. */
+/** What the sweep asks before it offers a scope to the repository. */
+export interface ChatFormat4SweepAdmission {
+  /** The chat state service is deleting the scope. */
+  isScopeDeleting?(scope: ChatScopeKey): boolean;
+  /** The Code Review namespace qualified for the current routing (CAN-6848). */
+  codeReviewQualified?(): boolean;
+}
+
+/**
+ * The repository's sweep admission, with a failure's cause reduced to its
+ * code. A scope being deleted, or a code-review scope whose namespace hasn't
+ * qualified, is held without a read or a write and offered again later.
+ */
 export function repositoryChatFormat4SweepTarget(
   repository: Pick<ChatStateV2Repository, 'sweepFormat4'>,
   promotionAllowed: () => boolean,
+  admission: ChatFormat4SweepAdmission = {},
 ): ChatFormat4SweepTarget {
   return {
     promotionAllowed,
     async sweepFormat4(scope): Promise<ChatFormat4SweepAttempt> {
-      const attempt = await repository.sweepFormat4(scope);
+      // Checked again under the scope's lease, just before its load, so a
+      // namespace that stopped qualifying meanwhile still holds the scope.
+      const admit = (): boolean =>
+        admission.isScopeDeleting?.(scope) !== true &&
+        (scope.projectId !== CODE_REVIEW_CHAT_PROJECT_ID ||
+          admission.codeReviewQualified?.() === true);
+      if (!admit()) return { outcome: 'held' };
+      const attempt = await repository.sweepFormat4(scope, { admit });
       return attempt.outcome === 'failed'
         ? { outcome: 'failed', reason: rootFailureReason(attempt.cause) }
         : attempt;
@@ -952,9 +943,19 @@ export const CHAT_FORMAT4_SWEEP_COMPILED_ON = false;
 export function startChatFormat4Sweep(
   repository: Pick<ChatStateV2Repository, 'sweepFormat4'>,
   promotionAllowed: () => boolean,
+  isScopeDeleting: (scope: ChatScopeKey) => boolean = (): boolean => false,
   compiledOn: boolean = CHAT_FORMAT4_SWEEP_COMPILED_ON,
 ): ChatFormat4Sweep | undefined {
   if (!compiledOn) return undefined;
+  // Unknown until the module loads: code-review scopes are held meanwhile.
+  let codeReviewQualified = (): boolean => false;
+  void import('../lib/code-review-storage-admission').then(
+    ({ getCodeReviewNamespaceGuardrail }) => {
+      codeReviewQualified = (): boolean =>
+        getCodeReviewNamespaceGuardrail().qualified;
+    },
+    () => undefined,
+  );
   let power:
     | Pick<Electron.PowerMonitor, 'getSystemIdleTime' | 'isOnBatteryPower'>
     | undefined;
@@ -966,7 +967,10 @@ export function startChatFormat4Sweep(
   );
   const sweep = new ChatFormat4Sweep({
     dataDir: getDataDir(),
-    target: repositoryChatFormat4SweepTarget(repository, promotionAllowed),
+    target: repositoryChatFormat4SweepTarget(repository, promotionAllowed, {
+      isScopeDeleting,
+      codeReviewQualified: (): boolean => codeReviewQualified(),
+    }),
     resolveStore: resolveChatFormat4SweepStore,
     report: recordChatFormat4Outcome,
     conditions: {

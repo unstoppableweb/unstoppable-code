@@ -226,32 +226,19 @@ function loadedCollectionOf(
 }
 
 /**
- * Harnesses the host runs that the cloud runner can't start yet (CAN-7235).
- * The runner gives its host no Codex environment or MCP launcher, so a Codex
- * step fails to start and the run ends `host_lost` partway through. Until it
- * can, preflight lists every Codex step for a replacement before the run
- * starts. `CLOUD_MODEL_ACTION_HARNESSES` stays equal to the host's table.
- */
-const CLOUD_RUNNER_UNSTARTED_HARNESSES: ReadonlySet<CloudModelHarness> =
-  new Set<CloudModelHarness>(['codex']);
-
-/**
- * The harnesses `step` runs on in the cloud: its action's, without the ones
- * the cloud runner can't start yet (`CLOUD_RUNNER_UNSTARTED_HARNESSES`), and
- * without Codex when the model step runs with `permission_preset: none`,
- * which the step runner refuses on the Codex harness because Codex can't
- * disable its native tools, or when it loads a plugin collection, whose
- * plugins the host loads in Claude steps only (CAN-6012). A composite that
- * fixes its model step's preset ignores the step's.
+ * The harnesses `step` runs on in the cloud: its action's, without Codex
+ * when the model step runs with `permission_preset: none`, which the step
+ * runner refuses on the Codex harness because Codex can't disable its native
+ * tools, or when it loads a plugin collection, whose plugins the host loads
+ * in Claude steps only (CAN-6012). A composite that fixes its model step's
+ * preset ignores the step's.
  */
 function harnessesFor(
   step: Step,
   runs: StepModelAction,
   loadsCollection: boolean,
 ): readonly CloudModelHarness[] {
-  const harnesses = (CLOUD_MODEL_ACTION_HARNESSES[runs.action] ?? []).filter(
-    (harness) => !CLOUD_RUNNER_UNSTARTED_HARNESSES.has(harness),
-  );
+  const harnesses = CLOUD_MODEL_ACTION_HARNESSES[runs.action] ?? [];
   const preset = runs.ownPermissionPreset
     ? step.with?.permission_preset
     : undefined;

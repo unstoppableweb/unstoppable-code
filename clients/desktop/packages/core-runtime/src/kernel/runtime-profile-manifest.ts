@@ -7,6 +7,7 @@ import {
   CORE_VAULT_INSTRUCTION_DEFINITIONS,
   CORE_TRANSPORT_INSTRUCTION_DEFINITIONS,
   CORE_MIGRATION_INSTRUCTION_DEFINITIONS,
+  CORE_MUTATION_FENCE_INSTRUCTION_DEFINITIONS,
   CORE_W5_RECOVERY_INSTRUCTIONS,
   CORE_TRANSPORT_STREAM_DEFINITIONS,
   CORE_WORKSPACE_COMMAND_INSTRUCTION_DEFINITIONS,
@@ -57,6 +58,9 @@ const CATALOG = {
     ...CORE_W5_RECOVERY_INSTRUCTIONS,
     ...CORE_VAULT_INSTRUCTION_DEFINITIONS,
     ...CORE_WORKSPACE_RECORDS_INSTRUCTION_DEFINITIONS,
+    // Admission only: the desktop owner's split-lock fences (CAN-4730 E2-G);
+    // the daemon installs this, never Electron, and no interface profile.
+    ...CORE_MUTATION_FENCE_INSTRUCTION_DEFINITIONS,
     // The W5 metadata commands the qualification daemon composes (W7a-3);
     // their own registries, not re-listed.
     'core.workspace.update':

@@ -1,9 +1,12 @@
 import {
+  WORKER_FILESYSTEM_ENTRY_INSTRUCTION_DEFINITIONS,
   WORKER_QUERY_DEFINITIONS,
   type CanopyCallerDescriptor,
+  type CanopyJsonRpcMessage,
 } from '@canopy/protocol/canopy-core';
 import { createCanopyDispatcher } from '../dispatcher';
 import { createInProcessWorkerBinding } from '../in-process-worker-binding';
+import { connectLocalWorkerBinding } from '../local-worker-binding-client';
 import { CanopyOperationError } from '../errors';
 import type { CanopyDispatcherHandlerMap } from '../types';
 import { serializingWorkerPair } from './serializing-worker-pair';
@@ -74,6 +77,9 @@ function build(
             throw new Error('Not exercised.');
           },
           'worker.git.diff.get': (): never => {
+            throw new Error('Not exercised.');
+          },
+          'worker.operation.receipt.get': (): never => {
             throw new Error('Not exercised.');
           },
           'worker.script.execution.get': (): never => {
@@ -528,3 +534,155 @@ it.each([
     ).rejects.toThrow();
   },
 );
+
+/**
+ * A core-end connection the test answers by hand: nothing runs a handler, so
+ * only what the worker says (or its exit) can settle a call (CAN-4730 E2-G).
+ */
+function handAnsweredConnection(): {
+  connection: Parameters<typeof connectLocalWorkerBinding>[0]['connection'];
+  sent: CanopyJsonRpcMessage[];
+  deliver(message: CanopyJsonRpcMessage): void;
+} {
+  const sent: CanopyJsonRpcMessage[] = [];
+  const inbox: CanopyJsonRpcMessage[] = [];
+  const waiting: Array<{
+    resolve(message: CanopyJsonRpcMessage): void;
+    reject(error: Error): void;
+  }> = [];
+  const lifetime = new AbortController();
+  lifetime.signal.addEventListener('abort', () => {
+    for (const waiter of waiting.splice(0))
+      waiter.reject(new Error('The connection closed.'));
+  });
+  return {
+    sent,
+    deliver: (message): void => {
+      const waiter = waiting.shift();
+      if (waiter) waiter.resolve(message);
+      else inbox.push(message);
+    },
+    connection: {
+      signal: lifetime.signal,
+      send: (message): Promise<void> => {
+        sent.push(message);
+        return Promise.resolve();
+      },
+      receive: (): Promise<CanopyJsonRpcMessage> => {
+        const next = inbox.shift();
+        if (next) return Promise.resolve(next);
+        return new Promise((resolve, reject) => {
+          waiting.push({ resolve, reject });
+        });
+      },
+      close: (): void => lifetime.abort(),
+    },
+  };
+}
+
+describe('settling a keyed instruction whose binding stops (CAN-4730 E2-G)', () => {
+  const writer: CanopyCallerDescriptor = {
+    ...caller,
+    grants: ['worker.filesystem.write'],
+  };
+  const definitions = {
+    queries: {},
+    instructions: WORKER_FILESYSTEM_ENTRY_INSTRUCTION_DEFINITIONS,
+    streams: {},
+  };
+  const remove = {
+    scope: params.scope,
+    fileRootId: 'root',
+    relativePath: 'a.txt',
+    expectedVersion: null,
+    recursive: false,
+    disposition: 'permanent',
+    _meta: { idempotencyKey: 'delete-1' },
+  };
+  const turns = async (): Promise<void> => {
+    for (let turn = 0; turn < 20; turn += 1)
+      await new Promise((resolve) => setImmediate(resolve));
+  };
+
+  /** Sends a keyed delete; `settled` flips once the binding counts it settled. */
+  function sendDelete(workerExited?: Promise<unknown>): {
+    hand: ReturnType<typeof handAnsweredConnection>;
+    client: ReturnType<typeof connectLocalWorkerBinding>;
+    state: { settled: boolean };
+  } {
+    const hand = handAnsweredConnection();
+    const client = connectLocalWorkerBinding({
+      definitions,
+      caller: writer,
+      connection: hand.connection,
+      ...(workerExited && { workerExited }),
+    });
+    const state = { settled: false };
+    void client.forwarders.instructions['worker.filesystem.entry.delete'](
+      remove,
+      {
+        metadata: { idempotencyKey: 'delete-1' },
+        signal: new AbortController().signal,
+        workerSettlement: (settled) => {
+          void settled.then(() => {
+            state.settled = true;
+          });
+        },
+      },
+    ).catch(() => undefined);
+    return { hand, client, state };
+  }
+
+  it('counts nothing settled when the binding stops without an exit to wait for', async () => {
+    const { client, state, hand } = sendDelete();
+    await turns();
+    expect(hand.sent).toMatchObject([
+      { method: 'worker.filesystem.entry.delete' },
+    ]);
+    client.close();
+    await turns();
+    expect(state.settled).toBe(false);
+  });
+
+  it("counts a stopped binding's instruction settled only once the worker has exited", async () => {
+    let exit: () => void = () => undefined;
+    const exited = new Promise<void>((resolve) => {
+      exit = resolve;
+    });
+    const { client, state, hand } = sendDelete(exited);
+    await turns();
+    expect(hand.sent).toMatchObject([
+      { method: 'worker.filesystem.entry.delete' },
+    ]);
+    client.close();
+    await turns();
+    expect(state.settled).toBe(false);
+    exit();
+    await turns();
+    expect(state.settled).toBe(true);
+  });
+  it.each([
+    ['killed by a signal', { kind: 'crashed', code: null, signal: 'SIGKILL' }],
+    ['exiting non-zero', { kind: 'exited', code: 1, signal: null }],
+  ])(
+    "counts a stopped binding's instruction settled once the worker crashes mid-handler, %s",
+    async (_how, outcome) => {
+      let exit: (value: unknown) => void = () => undefined;
+      const exited = new Promise<unknown>((resolve) => {
+        exit = resolve;
+      });
+      const { client, state, hand } = sendDelete(exited);
+      await turns();
+      expect(hand.sent).toMatchObject([
+        { method: 'worker.filesystem.entry.delete' },
+      ]);
+      client.close();
+      await turns();
+      expect(state.settled).toBe(false);
+      // The process outcome never rejects: a crash resolves it too.
+      exit({ ...outcome, output: 'complete' });
+      await turns();
+      expect(state.settled).toBe(true);
+    },
+  );
+});

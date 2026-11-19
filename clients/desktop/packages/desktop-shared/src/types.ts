@@ -2038,7 +2038,9 @@ export type CloudChatAttachmentUploadResult =
         | 'unauthenticated'
         | 'too_large'
         | 'rejected'
-        | 'offline';
+        | 'offline'
+        /** Sent, and its answer never came: it may be stored (CAN-7196). */
+        | 'unknown';
       /** The web core's own words for a refusal it explained (CAN-6369). */
       message?: string;
     };

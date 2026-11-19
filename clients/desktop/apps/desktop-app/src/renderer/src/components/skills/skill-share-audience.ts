@@ -45,6 +45,33 @@ export function skillShareUpdateAudience(
   return { expectedAudience: loaded ? skillAudience(loaded) : 'private' };
 }
 
+/**
+ * Whether an update only takes a linked skill down to "Only me" with its
+ * stored text unchanged (CAN-7226). Such an update keeps the package the
+ * cloud already holds instead of committing one, so nothing uploads and a
+ * skill shared before the secret check can still be taken down. A skill
+ * already private narrows nothing, so it still commits and its supporting
+ * files reach the cloud; without a loaded copy the update commits too.
+ */
+export function skillShareKeepsStoredPackage(input: {
+  readonly scope: ShareAudience;
+  readonly linked: boolean;
+  readonly outgoingRawSkill: string;
+  readonly stored: Pick<
+    SharedSkillDetail,
+    'rawSkill' | 'shareScope' | 'publicShare'
+  > | null;
+}): boolean {
+  const { stored } = input;
+  return (
+    input.linked &&
+    input.scope === 'private' &&
+    stored !== null &&
+    skillAudience(stored) !== 'private' &&
+    input.outgoingRawSkill === stored.rawSkill
+  );
+}
+
 // CAN-7037: the wording is for the security reviewer to confirm.
 export const SKILL_SHARE_AUDIENCE_WIDER_MESSAGE =
   "This skill is already in your cloud account and shared by link, with a team or with an organization, so sharing it with only you can't use it. Stop sharing it in the cloud, or change this skill, then share it again.";

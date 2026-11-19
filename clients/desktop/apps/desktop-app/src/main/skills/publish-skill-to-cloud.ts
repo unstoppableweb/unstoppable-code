@@ -11,9 +11,11 @@ import {
 } from '@canopy/protocol/canopy-core';
 import type { PipelinePackageRef } from '@canopy/protocol/pipelines';
 import type { ShareRemoteMetadata } from '@canopy/protocol/sharing';
-import type {
-  InstalledSkillInfo,
-  SharedSkillDetail,
+import {
+  scanSharedSkillForSecrets,
+  sharedSkillSecretMessage,
+  type InstalledSkillInfo,
+  type SharedSkillDetail,
 } from '@canopy/protocol/skills';
 import {
   CanopyCloudClientError,
@@ -27,6 +29,7 @@ import type {
 import {
   PackageAnalysisBlockedError,
   ShareOperationError,
+  SkillSecretDetectedError,
 } from '../sharing/share-operation-result';
 import type { CloudCopyAudience } from '@canopy/desktop-shared/types';
 import {
@@ -247,10 +250,11 @@ const sha256 = (text: string): string =>
 function cloudRefusal(error: unknown): CatalogHostRefusedError {
   if (error instanceof CatalogHostRefusedError) return error;
   return new CatalogHostRefusedError(
-    // The package commit and the share client refuse a blocked analysis,
-    // and an expired or outdated one or a SKILL.md edited since the check,
-    // locally.
-    error instanceof PackageAnalysisBlockedError
+    // The package commit and the share client refuse a blocked analysis, a
+    // skill that looks like it holds a secret, and an expired or outdated
+    // one or a SKILL.md edited since the check, locally.
+    error instanceof PackageAnalysisBlockedError ||
+      error instanceof SkillSecretDetectedError
       ? 'publish-package-blocked'
       : error instanceof ShareOperationError &&
           error.kind === 'dependency-review'
@@ -313,6 +317,17 @@ export async function publishSkillToCloud(
     installed === null
       ? await deps.readRawSkill(localId)
       : await deps.readInstalledSkill(localId);
+  // The package carries SKILL.md, so a secret-looking one is refused before
+  // the commit and every other request, not only at the create (CAN-7226).
+  const secret = scanSharedSkillForSecrets({
+    skillName,
+    files: [{ path: 'SKILL.md', text: rawSkill }],
+  });
+  if (secret !== null)
+    throw new CatalogHostRefusedError(
+      'publish-package-blocked',
+      new SkillSecretDetectedError(sharedSkillSecretMessage(secret), 'prepare'),
+    );
   const checked = sha256(rawSkill);
   const analysed = await deps.analysisSubject(pkg.analysisId);
   if (

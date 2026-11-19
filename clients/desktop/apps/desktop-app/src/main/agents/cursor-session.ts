@@ -335,7 +335,7 @@ export class CursorProvider implements AgentProvider {
         const created = await createManagedDelegationSession({
           harness: 'cursor',
           sessionKey: key,
-          getWindow,
+          interfacePort,
           currentTurn: () => currentTurn,
           currentOptions: () => ({
             ...opts,

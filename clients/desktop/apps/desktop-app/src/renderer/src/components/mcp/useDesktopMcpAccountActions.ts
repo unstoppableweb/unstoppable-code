@@ -1,5 +1,6 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { newAccountMcpInstanceConfigId } from '@canopy/protocol/mcp-servers';
+import { AccountMcpConnectionError } from '@canopy/execution-engine/types/mcp-servers';
 import type { McpAccountActionsPort } from '@canopy/ui-app/capability';
 import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import {
@@ -14,6 +15,41 @@ const REMOVE_UNSUPPORTED =
   "Your cloud account can't remove accounts yet, so it was only signed out. Try again after it updates.";
 const CATALOG_LOADING =
   'The connector’s setup is still loading. Try again in a moment.';
+const ACCOUNT_CHANGED = new AccountMcpConnectionError('account-changed')
+  .message;
+// The same words a setup step uses when no cloud account is signed in.
+const SIGN_IN_REQUIRED = 'Sign in to connect account servers.';
+/** The configuration a person's first account of a server uses. */
+const DEFAULT_CONFIG_ID = 'default';
+
+/**
+ * Whether the person holds no cloud account of `serverKey`, read when Add is
+ * submitted rather than from the list the detail last loaded, so a
+ * connection made elsewhere meanwhile is never taken over as the first
+ * account. Any row counts, finished or not. An unreadable list counts as
+ * holding one, so the account then gets its own configuration.
+ */
+async function holdsNoCloudAccount(serverKey: string): Promise<boolean> {
+  try {
+    const connections = await window.mcpServers.listAccountConnections();
+    return !connections.some(
+      (connection) => connection.serverKey === serverKey,
+    );
+  } catch (error) {
+    reportClientAppError(error);
+    return false;
+  }
+}
+
+/** The signed-in cloud account, or undefined when it can't be read. */
+async function cloudAccountId(): Promise<string | undefined> {
+  try {
+    return (await window.api?.loadCanopyCloudAccount?.())?.account?.id;
+  } catch (error) {
+    reportClientAppError(error);
+    return undefined;
+  }
+}
 
 /**
  * The desktop's account controls for one curated connector (CAN-6226). Add
@@ -22,14 +58,18 @@ const CATALOG_LOADING =
  * in their browser; Rename and Make default edit the cloud connection in
  * place, and Remove deletes it from the account. `signIn` carries the setup
  * dialogs and the sign-in's failure, which the host renders once beside the
- * controls.
+ * controls. The first account (beside a device copy, `firstOpen`) signs in
+ * to the `default` configuration, so refs that name it reach it.
  */
 export function useDesktopMcpAccountActions({
   serverKey,
+  firstOpen,
   refresh,
 }: {
   /** The curated key; null when the detail is not a curated account server. */
   serverKey: string | null;
+  /** The detail last saw no cloud account beside a device copy. */
+  firstOpen: boolean;
   refresh: () => Promise<void>;
 }): {
   actions: McpAccountActionsPort | null;
@@ -39,6 +79,17 @@ export function useDesktopMcpAccountActions({
 } {
   const signIn = useAccountMcpSignIn(refresh, { enabled: serverKey !== null });
   const [addPending, setAddPending] = useState(false);
+  // An Add still reading the account list when the detail closes must not
+  // start a sign-in afterwards.
+  const mounted = useRef(true);
+  // The cloud account the Add dialog opened under, read as it opens.
+  const openedUnder = useRef<Promise<string | undefined> | null>(null);
+  useEffect(() => {
+    mounted.current = true;
+    return (): void => {
+      mounted.current = false;
+    };
+  }, []);
   const actions = useMemo((): McpAccountActionsPort | null => {
     if (!serverKey) return null;
     const update = async (
@@ -61,26 +112,45 @@ export function useDesktopMcpAccountActions({
     return {
       // The name dialog closes once the sign-in starts; its setup dialogs and
       // any failure show through `signIn`, like Connect's.
-      addAccount: (label: string): Promise<string | null> => {
+      beginAddAccount: (): void => {
+        openedUnder.current = cloudAccountId();
+      },
+      addAccount: async (label: string): Promise<string | null> => {
+        // The account the name was typed under, read as its dialog opened: an
+        // unknown one can't be bound, a switch since then (or during the
+        // lookup) stops the Add, and every start of its sign-in is bound to it.
+        const accountId = await (openedUnder.current ?? cloudAccountId());
+        if (!accountId) return SIGN_IN_REQUIRED;
+        if ((await cloudAccountId()) !== accountId) return ACCOUNT_CHANGED;
+        // An account beside another gets its own configuration; the first
+        // (beside a device copy) takes `default`, as Connect's would.
+        const first = firstOpen && (await holdsNoCloudAccount(serverKey));
+        if (!mounted.current) return null;
+        if ((await cloudAccountId()) !== accountId) return ACCOUNT_CHANGED;
+        if (!mounted.current) return null;
         const target = {
           curatedKey: serverKey,
-          configId: newAccountMcpInstanceConfigId(),
+          configId: first ? DEFAULT_CONFIG_ID : newAccountMcpInstanceConfigId(),
         };
-        if (signIn.waitsForCatalog(target))
-          return Promise.resolve(CATALOG_LOADING);
+        if (signIn.waitsForCatalog(target)) return CATALOG_LOADING;
         // The person's browser, as Connect uses: the start still asks the
-        // provider to let them choose the account (prompt=select_account),
+        // provider to let them choose an added account (prompt=select_account),
         // so it doesn't sign straight in as the one the browser holds. A
-        // sign-in that is cancelled or fails takes its new row with it.
-        // Add waits until this sign-in settles, so a retry can't start a
-        // second one under the same name.
+        // sign-in that is cancelled or fails takes its new row with it, so an
+        // abandoned first account leaves the connector open for it again.
+        // For the first account only the row its own start named goes:
+        // `default` is shared, so a row found by configuration may be
+        // another sign-in's. Add waits until this sign-in settles, so a retry
+        // can't start a second one under the same name.
         setAddPending(true);
         signIn.connect(target, {
           label,
+          expectedAccountId: accountId,
           discardOnAbandon: true,
+          discardNamedRowOnly: first,
           onSettled: (): void => setAddPending(false),
         });
-        return Promise.resolve(null);
+        return null;
       },
       renameAccount: (connectionId, label) => update(connectionId, { label }),
       makeDefault: (connectionId) => update(connectionId, { isDefault: true }),
@@ -120,6 +190,6 @@ export function useDesktopMcpAccountActions({
         }
       },
     };
-  }, [refresh, serverKey, signIn]);
+  }, [firstOpen, refresh, serverKey, signIn]);
   return { actions, signIn, addPending };
 }

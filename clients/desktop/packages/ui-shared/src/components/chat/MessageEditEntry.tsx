@@ -315,6 +315,8 @@ export function MessageEditNotice({
 export interface UnsavedMessageEdit {
   readonly id: string;
   readonly text: string;
+  /** The save's answer never came, so it may have saved (CAN-7196). */
+  readonly unconfirmed?: boolean;
 }
 
 export interface UnsavedMessageEditsProps {
@@ -323,6 +325,9 @@ export interface UnsavedMessageEditsProps {
   /** Puts the text back in the composer, on hosts that can (CAN-6799). */
   readonly onRestore?: (draft: UnsavedMessageEdit) => void;
 }
+
+/** The card's label for an edit whose save may have landed (CAN-7196). */
+export const UNCONFIRMED_EDIT_LABEL = "Couldn't confirm this edit";
 
 /** Keeps each interrupted edit's text readable until the user dismisses it. */
 export function UnsavedMessageEdits({
@@ -336,9 +341,11 @@ export function UnsavedMessageEdits({
         <MessageEditCard
           key={draft.id}
           dataTestId="queued-message-unsaved-edit"
-          label="Unsaved edit"
+          label={draft.unconfirmed ? UNCONFIRMED_EDIT_LABEL : 'Unsaved edit'}
           readOnly
-          ariaLabel="Unsaved edit"
+          ariaLabel={
+            draft.unconfirmed ? UNCONFIRMED_EDIT_LABEL : 'Unsaved edit'
+          }
           inputTestId="queued-message-unsaved-edit-text"
           value={draft.text}
           actions={

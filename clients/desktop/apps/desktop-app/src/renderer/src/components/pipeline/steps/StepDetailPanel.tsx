@@ -19,6 +19,10 @@ import { ToggleField } from '../shared/ToggleField';
 import { KeyValueEditor } from '../shared/KeyValueEditor';
 import { PipelineDetailPanelShell } from './PipelinePanelPrimitives';
 import { AutomationSidebarGroupPicker } from '../../automations/AutomationSidebarGroupPicker';
+import {
+  AutomationSendAs,
+  type AutomationSendAsConnector,
+} from '@canopy/ui-app/capability';
 import { pt } from '@/lib/platform-text';
 import { uiText } from '@/lib/ui-text';
 import {
@@ -48,6 +52,18 @@ interface StepDetailPanelProps {
    * schedule's (CAN-5782), to resolve a create step's project.
    */
   inputValues?: Readonly<Record<string, string>>;
+  /** A send step's "Send as" (CAN-7186), when the host offers it. */
+  sendAs?: StepSendAsField | undefined;
+}
+
+/** A send step's "Send as" choice, as the workflow page reads it. */
+export interface StepSendAsField {
+  readonly connectors: readonly AutomationSendAsConnector[];
+  readonly onChange: (serverKey: string, configId: string) => void;
+  /** The choice can't be made here yet; `notes` say why. */
+  readonly disabled: boolean;
+  /** Where the choice applies, or why it can't be made yet. */
+  readonly notes: readonly string[];
 }
 
 type StepMode = 'action' | 'script';
@@ -108,6 +124,7 @@ export function StepDetailPanel({
   onClose,
   readonly = false,
   inputValues,
+  sendAs,
 }: StepDetailPanelProps): JSX.Element {
   const mode = getMode(step);
   const headerLabel = step.id || `Step ${stepIndex + 1}`;
@@ -276,6 +293,28 @@ export function StepDetailPanel({
                   )}
                 </FormField>
               )}
+
+              {sendAs &&
+                (sendAs.connectors.length > 0 || sendAs.notes.length > 0) && (
+                  <Stack gap="inline">
+                    {sendAs.connectors.length > 0 && (
+                      <AutomationSendAs
+                        connectors={sendAs.connectors}
+                        onChange={sendAs.onChange}
+                        disabled={readonly || sendAs.disabled}
+                        subject="step"
+                      />
+                    )}
+                    {sendAs.notes.map((note) => (
+                      <p
+                        key={note}
+                        className="text-xs fg-secondary text-pretty"
+                      >
+                        {note}
+                      </p>
+                    ))}
+                  </Stack>
+                )}
 
               <Stack gap="inline">
                 <Heading level={4} variant="label">

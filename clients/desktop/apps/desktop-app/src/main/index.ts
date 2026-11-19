@@ -176,6 +176,8 @@ import {
   type RendererOriginRecordStore,
 } from './renderer-origin/renderer-origin-migration';
 import { shutdownCloneJobs } from './services/clone-jobs-host';
+import { installSplitLockKeyResolver } from './services/split-lock-keys';
+import { installSplitLockFencePublisher } from './canopy-runtime/daemon-split-lock-fences';
 import { getForeignActivityCarryoverService } from './services/foreign-activity-carryover-service';
 import {
   disposeLabsExperimentsService,
@@ -759,6 +761,8 @@ if (hasSingleInstanceLock) {
   configureLinuxDesktopIdentity(app);
   initializeMainProcessLogging();
   installDesktopCodeGraphResources();
+  installSplitLockKeyResolver();
+  installSplitLockFencePublisher();
 
   installCoreChatProjections({
     search: () => getChatSearchService(),

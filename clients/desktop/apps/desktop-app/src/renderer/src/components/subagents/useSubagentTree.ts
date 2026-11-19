@@ -10,12 +10,18 @@ import { useShallow } from 'zustand/shallow';
 import type { AgentUsage, SubagentTree } from '@canopy/agent-transcript';
 import type { ManagedDelegationTreeEntry } from '@canopy/desktop-shared/types';
 import type { SubagentTreeLoadState } from '@canopy/ui-app/subagents';
+import {
+  chatsOwnDelegationIds,
+  useCloudDelegationLiveState,
+} from '@/cloud-chats/cloud-delegation-stop';
+import { isWebCoreScope } from '@/lib/chat-authority';
 import { getChatTabLabel } from '@/lib/chatTabLabel';
 import { extractIpcErrorMessage } from '@/lib/errors';
 import { useChatStore, type ChatMessage } from '@/stores/chatStore';
 import { hydratedKeys } from '@/stores/chat/hydration';
 import { flushChatInterest } from '@/lib/chat-interest';
 import { catchUpStaleChat } from '@/stores/chat/stale-catch-up';
+import { localTurnActivity } from '@/stores/chat/turn-activity';
 import {
   loadChatTranscriptPage,
   TRANSCRIPT_PAGE_LOAD_ERROR,
@@ -24,6 +30,7 @@ import {
   acquireSubagentTree,
   getSubagentTreeSnapshot,
   subscribeSubagentTree,
+  updateSubagentTreeLiveSnapshots,
   updateSubagentTreeRootChat,
 } from './subagent-tree-store';
 import type { SubagentHostScope } from './subagent-scope';
@@ -46,6 +53,12 @@ export interface UseSubagentTreeOptions {
    * so a background consumer reloading would only be evicted again.
    */
   readonly reloadEvictedTranscript?: boolean;
+  /**
+   * A cloud root's delegates' live state may be read from the web core: its
+   * scope serves it (`delegationStop`, CAN-7245). Its cards keep their first
+   * state, so the tree reads the live one over them (CAN-7133).
+   */
+  readonly liveReads?: boolean;
 }
 
 interface RootChatProjection {
@@ -56,6 +69,11 @@ interface RootChatProjection {
   readonly needsTranscriptReload: boolean;
   readonly transcriptStale: boolean;
   readonly title: string;
+  /**
+   * The root's turn is streaming or dispatching, as its chat view reads it:
+   * its agent may start a new run on a settled delegate meanwhile.
+   */
+  readonly turnActive: boolean;
 }
 
 const EMPTY_PROJECTION: RootChatProjection = {
@@ -65,9 +83,16 @@ const EMPTY_PROJECTION: RootChatProjection = {
   needsTranscriptReload: false,
   transcriptStale: false,
   title: '',
+  turnActive: false,
 };
 
 const NOOP_UNSUBSCRIBE = (): void => undefined;
+
+function isTurnRunning(
+  activity: ReturnType<typeof localTurnActivity>,
+): boolean {
+  return activity === 'streaming' || activity === 'dispatching';
+}
 
 /** Reads one root chat without subscribing to unrelated worktree chat updates. */
 export function useSubagentTree(
@@ -113,6 +138,17 @@ export function useSubagentTree(
           rootChatOpen && tab !== undefined && tab.transcriptLoaded === false,
         transcriptStale: rootChatOpen && tab?.transcriptStale === true,
         title: rootChatOpen && tab ? getChatTabLabel(tab) : (rootChatId ?? ''),
+        turnActive:
+          rootChatOpen &&
+          tab !== undefined &&
+          rootChatId !== null &&
+          isTurnRunning(
+            localTurnActivity(
+              tab,
+              Date.now(),
+              state.runtimeByChatId[rootChatId],
+            ),
+          ),
       };
     }),
   );
@@ -201,6 +237,38 @@ export function useSubagentTree(
     if (!enabled || !scope || !rootChatId) return;
     updateSubagentTreeRootChat(scope, rootChatId, projection);
   }, [enabled, projectId, projection, rootChatId, scope, worktreeId]);
+
+  // A cloud root's cards keep their first state; the web core reads their
+  // delegates' current one while its scope serves it (CAN-7133).
+  const liveReads = options.liveReads === true;
+  const liveTarget = useMemo(
+    () =>
+      enabled &&
+      liveReads &&
+      projectId !== undefined &&
+      worktreeId !== undefined &&
+      rootChatId !== null &&
+      isWebCoreScope(projectId)
+        ? { projectId, worktreeId, chatId: rootChatId }
+        : null,
+    [enabled, liveReads, projectId, rootChatId, worktreeId],
+  );
+  const ownDelegationIds = useMemo(
+    () =>
+      liveTarget === null || projection.messages === null
+        ? []
+        : Array.from(chatsOwnDelegationIds(projection.messages)).sort(),
+    [liveTarget, projection.messages],
+  );
+  const live = useCloudDelegationLiveState(liveTarget, ownDelegationIds, {
+    parentActive: projection.turnActive,
+    changeKey: String(projection.messages?.length ?? 0),
+  });
+  const liveSnapshots = live?.snapshots ?? null;
+  useEffect(() => {
+    if (!enabled || !scope || !rootChatId) return;
+    updateSubagentTreeLiveSnapshots(scope, rootChatId, liveSnapshots);
+  }, [enabled, liveSnapshots, rootChatId, scope]);
 
   // Until an evicted root's rows are back, its tree is incomplete: report it
   // loading so views keep their focus, or the failure so they can retry.

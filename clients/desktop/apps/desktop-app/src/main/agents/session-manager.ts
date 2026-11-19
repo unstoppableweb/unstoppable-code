@@ -48,6 +48,7 @@ import {
 } from '@canopy/desktop-shared/types';
 import { isBotProjectId } from '@canopy/protocol/chat-targets';
 import type { ActivityLiveBgTask } from '@canopy/desktop-shared/types/activity-panel';
+import type { InterruptedChatRecord } from '../lib/usage-limited-chats-registry';
 import { recordStaleWork } from '@canopy/desktop-shared/node/work-counters';
 import {
   isGatewayOnlyModel,
@@ -1081,7 +1082,7 @@ let authenticationRecovery: {
   targets: Set<string>;
   suppressed: Set<string>;
 } | null = null;
-let pendingShutdownEntries: UsageLimitedChatEntry[] = [];
+let pendingShutdownEntries: InterruptedChatRecord[] = [];
 
 const pendingSessionCreations = new Map<symbol, AgentSessionOptions>();
 
@@ -2413,17 +2414,25 @@ export async function destroyAllSessions(
         entry.activeBackgroundTaskIds.size > 0 ||
         Boolean(entry.codexContinuationRevivalTurn),
     )
-    .map(([key, entry]) => ({
-      entry,
-      interruptedChat: {
-        ...parseSessionKey(key),
-        provider: entry.providerType,
-        detectedAt: Date.now(),
-        resumeReason: 'app_shutdown' as const,
-        workspaceName: '',
-        chatTitle: '',
-      },
-    }));
+    .map(([key, entry]) => {
+      // Resume recognizes its own accepted prompt only by the interrupted turn.
+      const interruptedUserMessageId = providerTurnUserMessageId(key, entry);
+      return {
+        entry,
+        interruptedChat: {
+          ...parseSessionKey(key),
+          provider: entry.providerType,
+          ...(interruptedUserMessageId ? { interruptedUserMessageId } : {}),
+          ...(entry.turnStartedAt !== undefined
+            ? { turnStartedAt: entry.turnStartedAt }
+            : {}),
+          detectedAt: Date.now(),
+          resumeReason: 'app_shutdown' as const,
+          workspaceName: '',
+          chatTitle: '',
+        },
+      };
+    });
   const pendingCreations = Array.from(pendingSessionCreations.values()).map(
     (opts) => ({
       projectId: opts.projectId,
@@ -2609,9 +2618,11 @@ export function pauseCodexSessionsForAuthentication(attemptId: string): {
         entry.codexContinuationRevivalTurn
       ) {
         const target = parseSessionKey(key);
+        const interruptedUserMessageId = providerTurnUserMessageId(key, entry);
         interrupted.push({
           ...target,
           provider: entry.providerType,
+          ...(interruptedUserMessageId ? { interruptedUserMessageId } : {}),
           detectedAt: Date.now(),
           resumeReason: 'provider_sign_in',
           authenticationAttemptId: attemptId,

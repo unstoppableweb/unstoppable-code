@@ -451,6 +451,7 @@ export {
   type CuratedPipelineCatalogProps,
 } from './CuratedPipelineCatalog';
 export * from './CuratedCatalogNotice';
+export * from './SyncedInventoryPausedNotice';
 export * from './HarnessCatchUpNotice';
 export * from './CuratedPipelinePreviewDialog';
 export * from './PipelineTemplatesSection';

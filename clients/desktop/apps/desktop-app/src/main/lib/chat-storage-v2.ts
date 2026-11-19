@@ -8,11 +8,20 @@ import {
   open,
   readFile,
   readdir,
+  realpath,
   rename,
   rm,
   stat,
+  unlink,
 } from 'node:fs/promises';
-import { basename, dirname, join, sep } from 'node:path';
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative as relativeTo,
+  sep,
+} from 'node:path';
 import type {
   ArchivedChatEntry,
   ChatTabsFile,
@@ -80,6 +89,7 @@ import {
 } from '@canopy/desktop-shared/node/work-counters';
 import { fsyncDirectory } from './fsync-directory';
 import { writeJsonValuesCooperatively } from './cooperative-json';
+import { classifyError } from '@canopy/protocol/app-errors/classification';
 import { isErrnoException, isRecord } from './type-guards';
 
 export interface ChatIndexEntry extends Omit<
@@ -114,7 +124,11 @@ export interface ChatRecoveryIndex {
   removedMessageKeys?: string[];
   /** First-block ownership fences for staged visuals; absent when empty. */
   visualOwnersByChatId?: Record<string, Record<string, VisualOwnerFence>>;
-  /** Unreadable sources retained as evidence, outside all legacy file families. */
+  /**
+   * Legacy files retained as evidence: unreadable sources, and family files
+   * migration read but did not use or never reads (a superseded snapshot, the
+   * journal backup), so legacy cleanup may remove the originals.
+   */
   legacyEvidence?: Array<{
     relativePath: string;
     byteLength: number;
@@ -277,6 +291,13 @@ export interface ChatMigrationSource {
   index: Omit<ChatLiveIndex, 'version' | 'tabs' | 'revision'>;
   recovery: Omit<ChatRecoveryIndex, 'version'>;
   evidence?: readonly string[];
+  /**
+   * Files kept as evidence when they can be copied. One that can't be copied
+   * stays where it is, and legacy cleanup refuses to remove it.
+   */
+  optionalEvidence?: readonly string[];
+  /** The legacy family files this source was built from. */
+  consumedSources?: readonly string[];
   assertUnchanged?: () => Promise<void>;
   /** The caller holds a settled scope lease until migration finishes. */
   chats: AsyncIterable<ChatMigrationEntry>;
@@ -307,6 +328,9 @@ const ACTIVE_STATUSES = new Set([
 // lease excluding active turns and ordinary writes across source conversion.
 const migrationTails = new Map<string, Promise<void>>();
 
+/** The legacy family files a version 2 store was migrated from. */
+const LEGACY_SOURCES_FILE = 'legacy-sources.json';
+
 async function writeJson(path: string, value: unknown): Promise<void> {
   const temporary = `${path}.${randomUUID()}.tmp`;
   await mkdir(dirname(path), { recursive: true });
@@ -320,6 +344,13 @@ async function writeJson(path: string, value: unknown): Promise<void> {
   } finally {
     if (!renamed) await rm(temporary, { force: true });
   }
+}
+
+function isMissing(error: unknown): boolean {
+  return (
+    isErrnoException(error) &&
+    (error.code === 'ENOENT' || error.code === 'ENOTDIR')
+  );
 }
 
 async function exists(path: string): Promise<boolean> {
@@ -362,6 +393,30 @@ async function hashFile(
     byteLength += chunk.length;
   }
   return { byteLength, sha256: hash.digest('hex') };
+}
+
+/** Copy one evidence file, verify the copy byte for byte, and sync it. */
+async function copyEvidence(
+  path: string,
+  target: string,
+): Promise<{ byteLength: number; sha256: string }> {
+  const original = await hashFile(path);
+  await copyFile(path, target);
+  const copied = await hashFile(target);
+  if (
+    original.sha256 !== copied.sha256 ||
+    original.byteLength !== copied.byteLength
+  )
+    throw new Error('Legacy recovery evidence changed during copy');
+  const handle = await open(target, 'r+');
+  try {
+    await handle.sync();
+    recordChatStorageFileWrite(target, original.byteLength, false);
+    recordChatStorageFileSync(target);
+  } finally {
+    await handle.close();
+  }
+  return original;
 }
 
 async function* treeFiles(root: string, relative = ''): AsyncGenerator<string> {
@@ -912,10 +967,12 @@ export class ChatStorageV2 {
     sourceFactory: () => Promise<ChatMigrationSource>,
     checkpoint: (point: ChatMigrationCheckpoint) => Promise<void> = () =>
       Promise.resolve(),
+    options: { retainLegacy?: boolean } = {},
   ): Promise<void> {
+    const retainLegacy = options.retainLegacy ?? false;
     const tail = (migrationTails.get(this.directory) ?? Promise.resolve())
       .catch(() => undefined)
-      .then(() => this.migrateLocked(sourceFactory, checkpoint));
+      .then(() => this.migrateLocked(sourceFactory, checkpoint, retainLegacy));
     migrationTails.set(this.directory, tail);
     try {
       await tail;
@@ -925,19 +982,29 @@ export class ChatStorageV2 {
     }
   }
 
+  /**
+   * `retainLegacy` keeps the legacy files after version 2 validates, for a
+   * scope that will promote to format 4; `completeLegacyCleanup` removes them
+   * once that copy reads back. Without it they go as soon as version 2
+   * validates, as before.
+   */
   private async migrateLocked(
     sourceFactory: () => Promise<ChatMigrationSource>,
     checkpoint: (point: ChatMigrationCheckpoint) => Promise<void>,
+    retainLegacy: boolean,
   ): Promise<void> {
     const prior = await this.manifest();
     if (prior) {
       if (selectJournal(prior)) throw ChatStorageV2.newerFormat();
-      // Cleanup is a one-time migration operation. Afterwards each chat owns
-      // its validation, and writes may legitimately advance beyond this digest.
+      // Validation is a one-time migration operation. Afterwards each chat
+      // owns its validation, and writes may legitimately advance beyond this
+      // digest. `cleanupComplete` records that validation; a retained legacy
+      // copy stays until the scope's format 4 copy reads back.
       if (prior.cleanupComplete) return;
       await this.prepareStorageRoots();
       await this.validate(this.directory, prior.sourceDigest);
-      await this.cleanup(prior);
+      if (retainLegacy) await this.markValidated(prior);
+      else await this.cleanup(prior);
       return;
     }
     const source = await sourceFactory();
@@ -970,36 +1037,40 @@ export class ChatStorageV2 {
     const chatDigests = new Map<string, string>();
     const ids = new Set<string>();
     try {
-      if (source.evidence?.length) {
+      const evidence = [
+        ...(source.evidence ?? []).map((path) => ({ path, required: true })),
+        ...(source.optionalEvidence ?? [])
+          .filter((path) => !source.evidence?.includes(path))
+          .map((path) => ({ path, required: false })),
+      ];
+      if (evidence.length) {
         const directory = join(staging, 'recovery-evidence');
         await mkdir(directory, { recursive: true });
         recovery.legacyEvidence = [];
-        for (const [index, path] of Array.from(source.evidence.entries())) {
-          const relativePath = `recovery-evidence/${index}.bin`;
-          const original = await hashFile(path);
-          await copyFile(path, join(staging, relativePath));
-          const copied = await hashFile(join(staging, relativePath));
-          if (
-            original.sha256 !== copied.sha256 ||
-            original.byteLength !== copied.byteLength
-          )
-            throw new Error('Legacy recovery evidence changed during copy');
-          const handle = await open(join(staging, relativePath), 'r+');
+        for (const { path, required } of evidence) {
+          const relativePath = `recovery-evidence/${recovery.legacyEvidence.length}.bin`;
           try {
-            await handle.sync();
-            recordChatStorageFileWrite(
-              join(staging, relativePath),
-              original.byteLength,
-              false,
-            );
-            recordChatStorageFileSync(join(staging, relativePath));
-          } finally {
-            await handle.close();
+            recovery.legacyEvidence.push({
+              relativePath,
+              ...(await copyEvidence(path, join(staging, relativePath))),
+            });
+          } catch (error) {
+            if (required) throw error;
+            await rm(join(staging, relativePath), { force: true });
           }
-          recovery.legacyEvidence.push({ relativePath, ...original });
         }
         await fsyncDirectory(directory);
       }
+      if (source.consumedSources)
+        await writeJson(join(staging, LEGACY_SOURCES_FILE), {
+          version: 1,
+          consumed: await Promise.all(
+            source.consumedSources.map(async (path) => ({
+              path: relativeTo(this.workspaceRoot, path),
+              ...(await hashFile(path)),
+            })),
+          ),
+        });
       for await (const chat of source.chats) {
         const id = chat.metadata.id;
         assertTranscriptIdentity(id);
@@ -1083,7 +1154,8 @@ export class ChatStorageV2 {
       await writeJson(this.manifestPath, manifest);
       await checkpoint('manifest');
       await this.validate(this.directory, sourceDigest);
-      await this.cleanup(manifest);
+      if (retainLegacy) await this.markValidated(manifest);
+      else await this.cleanup(manifest);
       await checkpoint('cleaned');
     } finally {
       await rm(staging, { recursive: true, force: true });
@@ -1516,24 +1588,270 @@ export class ChatStorageV2 {
     };
   }
 
+  private async markValidated(manifest: StorageManifest): Promise<void> {
+    if (manifest.cleanupComplete) return;
+    await writeJson(this.manifestPath, { ...manifest, cleanupComplete: true });
+  }
+
+  /**
+   * Validated version 2 without a retained copy: the six legacy files go now,
+   * through the same contained removal as after format 4. Anything else the
+   * legacy folders hold for this scope was copied into the recovery evidence
+   * and stays where it is.
+   */
   private async cleanup(manifest: StorageManifest): Promise<void> {
     if (manifest.cleanupComplete) return;
-    for (const path of this.legacyPaths) {
-      const directory = dirname(path);
-      const primary = basename(path);
-      let names: string[];
+    await this.removeLegacyFiles();
+    await writeJson(this.manifestPath, { ...manifest, cleanupComplete: true });
+  }
+
+  /**
+   * Before a scope's authority is removed, remove its legacy files, so a
+   * deleted scope can never reopen from them. The user is deleting this
+   * scope's chats and its evidence goes in the same step, so files migration
+   * neither used nor kept go too. Fails closed on a link or a file outside
+   * the scope: nothing is removed and the error says how to fix it.
+   */
+  public async removeLegacyFilesForDeletion(): Promise<void> {
+    const { refused } = await this.removeLegacyFiles({
+      allOrNothing: true,
+      onlyBuiltOrKept: false,
+    });
+    if (refused > 0)
+      throw classifyError(
+        new Error(
+          'Chat scope legacy files could not be removed safely; the scope is kept',
+        ),
+        'external.chat_history_link_outside',
+      );
+  }
+
+  /**
+   * Remove the scope's legacy files and their backups once its format 4 copy
+   * has been read back; any other format keeps them. Only the six enumerated
+   * paths go, each only while it is a regular file in a folder that resolves
+   * inside the scope's own root. A link or anything else is left in place.
+   */
+  public async completeLegacyCleanup(): Promise<{
+    format4: boolean;
+    removed: number;
+    refused: number;
+  }> {
+    if ((await this.manifest())?.version !== 4)
+      return { format4: false, removed: 0, refused: 0 };
+    return { format4: true, ...(await this.removeLegacyFiles()) };
+  }
+
+  private async removeLegacyFiles(
+    options: { allOrNothing?: boolean; onlyBuiltOrKept?: boolean } = {},
+  ): Promise<{
+    removed: number;
+    refused: number;
+  }> {
+    let root: string | undefined;
+    try {
+      root = await realpath(this.workspaceRoot);
+    } catch (error) {
+      if (!isMissing(error)) throw error;
+    }
+    // A family file goes only when migration built the store from those very
+    // bytes, or kept a verified copy of them as evidence. A store migrated
+    // before that record existed treats every member but the journal's
+    // backup, which migration never reads, as built from. Both records are
+    // read only once a family file is left, and an evidence copy is hashed
+    // only when its recorded hash matches that file's bytes.
+    type Recorded = { sha256: string; byteLength: number };
+    let consumed:
+      | Promise<Array<Recorded & { path: string }> | undefined>
+      | undefined;
+    let recorded:
+      | Promise<Array<Recorded & { relativePath: string }>>
+      | undefined;
+    const journal = this.legacyPaths[2];
+    const unread = new Set(journal === undefined ? [] : [`${journal}.bak`]);
+    const eligible: string[] = [];
+    let refused = 0;
+    for (const path of this.legacyPaths.flatMap((family) => [
+      family,
+      `${family}.bak`,
+    ])) {
+      let status: Awaited<ReturnType<typeof lstat>>;
       try {
-        names = await readdir(directory);
+        status = await lstat(path);
       } catch (error) {
-        if (isErrnoException(error) && error.code === 'ENOENT') continue;
+        if (isMissing(error)) continue;
         throw error;
       }
-      for (const name of names) {
-        if (name === primary || name.startsWith(`${primary}.`))
-          await rm(join(directory, name));
+      if (
+        !status.isFile() ||
+        root === undefined ||
+        !(await this.folderInsideRoot(dirname(path), root))
+      ) {
+        refused += 1;
+        continue;
       }
-      await fsyncDirectory(directory);
+      if (options.onlyBuiltOrKept === false) {
+        eligible.push(path);
+        continue;
+      }
+      const bytes = await hashFile(path);
+      const same = (copy: { sha256: string; byteLength: number }): boolean =>
+        copy.sha256 === bytes.sha256 && copy.byteLength === bytes.byteLength;
+      const sources = await (consumed ??= this.legacySources());
+      const built =
+        sources === undefined
+          ? !unread.has(path)
+          : sources
+              .filter(
+                (entry) => entry.path === relativeTo(this.workspaceRoot, path),
+              )
+              .some(same);
+      if (
+        built ||
+        (await this.evidenceVerified(
+          (await (recorded ??= this.evidenceEntries())).filter(same),
+        ))
+      )
+        eligible.push(path);
+      else refused += 1;
     }
-    await writeJson(this.manifestPath, { ...manifest, cleanupComplete: true });
+    if (refused > 0 && options.allOrNothing) return { removed: 0, refused };
+    // Every legacy folder inside the scope is synced, not only those this
+    // attempt deleted from, so a retry also makes an earlier attempt's
+    // deletions durable before anything relies on them.
+    const folders: string[] = [];
+    for (const folder of new Set(
+      this.legacyPaths.map((family) => dirname(family)),
+    ))
+      if (root !== undefined && (await this.folderInsideRoot(folder, root)))
+        folders.push(folder);
+    let removed = 0;
+    try {
+      for (const path of eligible) {
+        try {
+          await unlink(path);
+        } catch (error) {
+          if (isMissing(error)) continue;
+          throw error;
+        }
+        removed += 1;
+      }
+    } finally {
+      for (const folder of folders) await fsyncDirectory(folder);
+    }
+    return { removed, refused };
+  }
+
+  /** The consumed-file record migration wrote, or undefined before it existed. */
+  private async legacySources(): Promise<
+    Array<{ path: string; sha256: string; byteLength: number }> | undefined
+  > {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(
+        await readFile(join(this.directory, LEGACY_SOURCES_FILE), 'utf8'),
+      );
+    } catch (error) {
+      if (isMissing(error)) return undefined;
+      throw error;
+    }
+    if (!isRecord(parsed) || !Array.isArray(parsed.consumed)) return [];
+    return parsed.consumed.flatMap((entry: unknown) =>
+      isRecord(entry) &&
+      typeof entry.path === 'string' &&
+      typeof entry.sha256 === 'string' &&
+      typeof entry.byteLength === 'number'
+        ? [
+            {
+              path: entry.path,
+              sha256: entry.sha256,
+              byteLength: entry.byteLength,
+            },
+          ]
+        : [],
+    );
+  }
+
+  /** The recovery-evidence copies the store's indexes record, unverified. */
+  private async evidenceEntries(): Promise<
+    Array<{ relativePath: string; sha256: string; byteLength: number }>
+  > {
+    const entries = new Map<
+      string,
+      { relativePath: string; sha256: string; byteLength: number }
+    >();
+    const add = (list: unknown): void => {
+      if (!Array.isArray(list)) return;
+      for (const entry of list)
+        if (
+          isRecord(entry) &&
+          typeof entry.relativePath === 'string' &&
+          /^recovery-evidence\/\d+\.bin$/.test(entry.relativePath) &&
+          typeof entry.sha256 === 'string' &&
+          typeof entry.byteLength === 'number'
+        )
+          entries.set(`${entry.relativePath}:${entry.sha256}`, {
+            relativePath: entry.relativePath,
+            sha256: entry.sha256,
+            byteLength: entry.byteLength,
+          });
+    };
+    try {
+      add((await this.indexes()).recovery.legacyEvidence);
+    } catch {
+      // The on-disk index below still names the migration's copies.
+    }
+    try {
+      const recovery: unknown = JSON.parse(
+        await readFile(join(this.directory, 'recovery-index.json'), 'utf8'),
+      );
+      if (isRecord(recovery)) add(recovery.legacyEvidence);
+    } catch {
+      // No on-disk index: only the store's own indexes count.
+    }
+    return [...entries.values()];
+  }
+
+  /** Whether any of these recorded copies still holds its recorded bytes. */
+  private async evidenceVerified(
+    candidates: ReadonlyArray<{
+      relativePath: string;
+      sha256: string;
+      byteLength: number;
+    }>,
+  ): Promise<boolean> {
+    for (const entry of candidates) {
+      try {
+        const copy = await hashFile(join(this.directory, entry.relativePath));
+        if (
+          copy.sha256 === entry.sha256 &&
+          copy.byteLength === entry.byteLength
+        )
+          return true;
+      } catch {
+        // A missing or unreadable copy is no copy.
+      }
+    }
+    return false;
+  }
+
+  /** The folder is inside the scope root, with no link anywhere between. */
+  private async folderInsideRoot(
+    folder: string,
+    root: string,
+  ): Promise<boolean> {
+    const relativePath = relativeTo(this.workspaceRoot, folder);
+    if (
+      relativePath === '..' ||
+      relativePath.startsWith(`..${sep}`) ||
+      isAbsolute(relativePath)
+    )
+      return false;
+    try {
+      return (await realpath(folder)) === join(root, relativePath);
+    } catch (error) {
+      if (isMissing(error)) return false;
+      throw error;
+    }
   }
 }

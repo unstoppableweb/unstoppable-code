@@ -1,3 +1,4 @@
+import { CoreCoworkOutcomeUnknownError } from '@canopy/app-state/core-cowork';
 import { webCoreLocalId } from '@/lib/chat-authority';
 import { webCoreServesTaskDelete } from '@/lib/web-core-served-operations';
 import { useChatStore } from '@/stores/chatStore';
@@ -12,6 +13,17 @@ export const CLOUD_TASK_ARCHIVE_FAILED =
 
 /** What a confirmation says when the web core didn't delete the task. */
 export const CLOUD_TASK_DELETE_FAILED = "Couldn't delete the task. Try again.";
+
+/**
+ * What a confirmation says when an archive rejects: one that may have
+ * landed, which no listing settled, says it couldn't confirm it, never that
+ * it failed (CAN-7196).
+ */
+export function cloudTaskArchiveFailure(error: unknown): string {
+  return error instanceof CoreCoworkOutcomeUnknownError
+    ? error.message
+    : CLOUD_TASK_ARCHIVE_FAILED;
+}
 
 /**
  * Archives a cloud task through the web core (CAN-6511): its own chat closes

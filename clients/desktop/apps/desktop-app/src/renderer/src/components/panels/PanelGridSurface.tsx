@@ -1,6 +1,7 @@
 import { useLabsExperimentEnabled } from '@/stores/labsExperimentsStore';
 import { ActivityCardToggle } from '@/components/activity/ActivityCardControl';
 import { useChatTabRename } from '@/components/chat/ChatTabRenameDialog';
+import { useTerminalRename } from '@canopy/ui-app/terminal-core';
 import { PanelAddTabMenu } from '@/components/panels/PanelAddTabMenu';
 import { ExportSessionConfirmationModal } from '@/components/shared/ExportSessionConfirmationModal';
 import { ShareRunModal } from '@/components/shared/ShareRunModal';
@@ -11,7 +12,7 @@ import {
 } from '@canopy/ui-shared/components';
 import {
   archiveCloudTask,
-  CLOUD_TASK_ARCHIVE_FAILED,
+  cloudTaskArchiveFailure,
 } from '@/cloud-chats/archive-cloud-task';
 import { POSTHOG_REPLAY_MASK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { useCanopyDesktopStartPageEnabled } from '@/hooks/useCanopyDesktopStartPageEnabled';
@@ -57,7 +58,6 @@ import { initModPanePanelSync } from '@/lib/panels/mod-pane-panel-sync';
 import { getPanelDefinition, renderPanelContent } from '@/lib/panels/registry';
 import { isSharedContainerViewerLayout } from '@/lib/panels/shared-container-viewer-layout';
 import {
-  panelTabDisplayTitle,
   renderPanelTabAccessibleStatus,
   renderPanelTabAttention,
   renderPanelCollapsedTabIcon,
@@ -65,6 +65,7 @@ import {
   renderPanelTabLabel,
   renderPanelTabTooltip,
   renderPanelTabTrailing,
+  usePanelTabTitleResolvers,
 } from '@/lib/panels/tab-display';
 import {
   requestRevealedTerminalPanelSpawn,
@@ -308,6 +309,7 @@ export function PanelGridSurface({
   const [archiveTaskStatus, setArchiveTaskStatus] = useState<
     'idle' | 'busy' | 'failed'
   >('idle');
+  const [archiveTaskFailure, setArchiveTaskFailure] = useState('');
   const rootChatArchiveAction = useMemo(
     () =>
       rootChatTabKept && rootChatId !== null && !readOnly
@@ -589,6 +591,9 @@ export function PanelGridSurface({
   );
 
   const chatTabRename = useChatTabRename();
+  const terminalRename = useTerminalRename(projectId, worktreeId);
+  const tabTitles = usePanelTabTitleResolvers();
+  const openTerminalRename = terminalRename.open;
   const openChatTabRename = chatTabRename.open;
   const handleRenameChat = useCallback(
     (chatTabId: string, ownerDocument?: Document): void => {
@@ -675,7 +680,7 @@ export function PanelGridSurface({
         if (phase === 'start') noteChatIntent(target, source);
         else endChatIntent(target);
       },
-      getTabTitle: panelTabDisplayTitle,
+      ...tabTitles,
       renderTabAccessibleStatus: renderPanelTabAccessibleStatus,
       renderTabAttention: renderPanelTabAttention,
       renderTabTooltip: renderPanelTabTooltip,
@@ -822,6 +827,10 @@ export function PanelGridSurface({
           ? handleExportSession
           : undefined,
       onRenameChat: readOnly ? undefined : handleRenameChat,
+      onRenameTerminal:
+        readOnly || scopeCapabilities.terminalRename !== true
+          ? undefined
+          : openTerminalRename,
       getTabArchiveAction: rootChatArchiveAction,
       // Not gated on read-only: viewers may mark chats read and unread.
       getChatReadState: chatReadState?.getChatReadState,
@@ -886,6 +895,9 @@ export function PanelGridSurface({
       handleAddChatTab,
       handleExportSession,
       handleRenameChat,
+      openTerminalRename,
+      scopeCapabilities.terminalRename,
+      tabTitles,
       chatReadState,
       handleShareSession,
       canShareSession,
@@ -956,6 +968,7 @@ export function PanelGridSurface({
         />
       )}
       {chatTabRename.dialog}
+      {terminalRename.dialog}
       {archiveTaskTitle !== null && (
         <ConfirmDialog
           title={
@@ -977,7 +990,7 @@ export function PanelGridSurface({
           confirmTestId="cloud-task-archive-confirm-button"
           busy={archiveTaskStatus === 'busy'}
           errorMessage={
-            archiveTaskStatus === 'failed' ? CLOUD_TASK_ARCHIVE_FAILED : null
+            archiveTaskStatus === 'failed' ? archiveTaskFailure : null
           }
           onCancel={(): void => {
             setArchiveTaskStatus('idle');
@@ -990,7 +1003,10 @@ export function PanelGridSurface({
                 setArchiveTaskStatus('idle');
                 setArchiveTaskTitle(null);
               },
-              () => setArchiveTaskStatus('failed'),
+              (error: unknown) => {
+                setArchiveTaskFailure(cloudTaskArchiveFailure(error));
+                setArchiveTaskStatus('failed');
+              },
             );
           }}
         />

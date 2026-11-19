@@ -30,6 +30,7 @@ import {
   PickerMenuSearchHeader,
 } from '../PickerMenu';
 import { TitlebarIconButton } from '../TitlebarIconButton';
+import { REPLAY_MASK_CLASS } from '../../lib/replay-privacy';
 
 /** A list longer than this gets a search field. */
 const TAB_LIST_SEARCH_THRESHOLD = 8;
@@ -46,6 +47,8 @@ export interface PanelTabListButtonProps {
   readonly renderLabel: (tab: PanelTabModel) => ReactNode;
   readonly renderTrailing?: (tab: PanelTabModel) => ReactNode;
   readonly getTitle: (tab: PanelTabModel) => string;
+  /** Replay-masks the close button's label, which names the tab. */
+  readonly isTitlePrivate?: (tab: PanelTabModel) => boolean;
   /** The button's root, which the bar measures as room the tabs could use. */
   readonly rootRef?: RefObject<HTMLDivElement | null>;
   /** Hidden while every tab fits (fill rows); it stays mounted and measured. */
@@ -86,6 +89,7 @@ export function PanelTabListButton({
   renderLabel,
   renderTrailing,
   getTitle,
+  isTitlePrivate,
   rootRef,
   hidden = false,
   unreadOutOfView = false,
@@ -263,6 +267,8 @@ export function PanelTabListButton({
             ) : null}
             {rows.map(({ tab, position }, index) => {
               const title = getTitle(tab);
+              const privateTitle = isTitlePrivate?.(tab) === true;
+              const closeLabelId = `${idBase}-close-${tab.panelId}`;
               const closable = canCloseTab ? canCloseTab(tab) : true;
               const selected = tab.panelId === activePanelId;
               return (
@@ -321,22 +327,42 @@ export function PanelTabListButton({
                       </span>
                     ) : null}
                     {closable ? (
-                      <ControlButton
-                        type="button"
-                        presentation="panel-tab-list-close"
-                        aria-label={`Close ${title}`}
-                        data-testid={`panel-tab-list-close-${tab.panelId}`}
-                        tabIndex={-1}
-                        // Keeps focus in the search field, so typing carries on.
-                        onPointerDown={(event): void => event.preventDefault()}
-                        onClick={(event): void => {
-                          // Closing keeps the list open on the next tab.
-                          event.stopPropagation();
-                          onCloseTab(groupId, tab.panelId);
-                        }}
+                      // The mask covers the close label, which names the tab.
+                      // A private one is a masked label, not `aria-label`,
+                      // which click events copy past the mask.
+                      <span
+                        className={
+                          privateTitle
+                            ? `contents ${REPLAY_MASK_CLASS}`
+                            : 'contents'
+                        }
                       >
-                        <CloseMediumIcon size="sm" />
-                      </ControlButton>
+                        <ControlButton
+                          type="button"
+                          presentation="panel-tab-list-close"
+                          {...(privateTitle
+                            ? { 'aria-labelledby': closeLabelId }
+                            : { 'aria-label': `Close ${title}` })}
+                          data-testid={`panel-tab-list-close-${tab.panelId}`}
+                          tabIndex={-1}
+                          // Keeps focus in the search field, so typing carries on.
+                          onPointerDown={(event): void =>
+                            event.preventDefault()
+                          }
+                          onClick={(event): void => {
+                            // Closing keeps the list open on the next tab.
+                            event.stopPropagation();
+                            onCloseTab(groupId, tab.panelId);
+                          }}
+                        >
+                          <CloseMediumIcon size="sm" />
+                        </ControlButton>
+                        {privateTitle ? (
+                          <span className="sr-only" id={closeLabelId}>
+                            Close {title}
+                          </span>
+                        ) : null}
+                      </span>
                     ) : null}
                   </span>
                 </div>

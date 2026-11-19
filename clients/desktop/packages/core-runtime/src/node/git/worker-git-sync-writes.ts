@@ -123,6 +123,16 @@ function typedError<Code extends WorkerGitSyncErrorCode>(
           },
           error.hostCause ?? error,
         );
+  // CAN-7169: a branch name Git would not accept never reaches the pull.
+  if (error instanceof GitBranchWriteRefusal && error.reason === 'invalid-name')
+    return new CanopyOperationError(
+      {
+        kind: 'invalid_argument',
+        message: error.message.slice(0, 4_096),
+        retry: { kind: 'never' },
+      },
+      error,
+    );
   if (
     error instanceof GitBranchWriteRefusal &&
     error.reason === 'head-changed' &&

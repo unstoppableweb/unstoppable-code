@@ -25,6 +25,21 @@ export type WorkerExecutorReceipt =
   | { state: 'completed'; result?: CanopyJsonValue }
   | { state: 'failed'; error: CanopyErrorPayload };
 
+/**
+ * What a lookup answers (CAN-4733): never received this run, still running,
+ * settled, or received but no longer kept.
+ */
+export type WorkerExecutorReceiptView =
+  | { state: 'absent' }
+  | { state: 'running' }
+  | { state: 'forgotten' }
+  | {
+      state: 'settled';
+      outcome:
+        | { status: 'completed'; result?: CanopyJsonValue }
+        | { status: 'failed'; error: CanopyErrorPayload };
+    };
+
 /** A receipt that crossed the worker pair, or undefined when malformed. */
 export function parseWorkerExecutorReceipt(
   value: unknown,
@@ -95,7 +110,9 @@ export interface WorkerExecutorReplay {
 export type WorkerExecutorReplayRefusal =
   | 'key-reused'
   | 'not-retained'
-  | 'keys-exhausted';
+  | 'keys-exhausted'
+  | 'tag-reused'
+  | 'not-started';
 
 const REFUSALS: Record<
   WorkerExecutorReplayRefusal,
@@ -114,6 +131,15 @@ const REFUSALS: Record<
     kind: 'resource_exhausted',
     message:
       'This worker accepts no more keyed requests of this kind until it restarts.',
+  },
+  'tag-reused': {
+    kind: 'conflict',
+    message: 'This dispatch tag was already used for another dispatch.',
+  },
+  'not-started': {
+    kind: 'failed_precondition',
+    message:
+      'This dispatch tag was sealed before the dispatch arrived, so it was refused before it ran. Send it again with a new tag.',
   },
 };
 
@@ -160,10 +186,37 @@ export interface WorkerExecutorReceipts {
   ): Promise<WorkerExecutorReceipt | null>;
   /** The core recorded this outcome; the worker forgets it. */
   release(principalId: string, operation: string, idempotencyKey: string): void;
+  /**
+   * How one dispatch stands, without waiting, replaying or recording
+   * anything: by a keyed request's idempotency key or by its report-only
+   * dispatch tag. Absent may still be a dispatch on its way.
+   */
+  lookup(
+    principalId: string,
+    operation: string,
+    lookup: { idempotencyKey: string } | { dispatchId: string },
+  ): WorkerExecutorReceiptView;
+  /**
+   * How one tagged dispatch stands, sealing the tag when the worker never
+   * received it: in the same synchronous step a dispatch records its tag, so
+   * a dispatch carrying it that arrives later is refused before it runs, and
+   * absent is final for this worker run. Past the tag bound nothing can be
+   * sealed, so an unknown tag answers forgotten.
+   */
+  seal(
+    principalId: string,
+    operation: string,
+    dispatchId: string,
+  ): WorkerExecutorReceiptView;
 }
 
 const keyOf = (principalId: string, operation: string, key: string): string =>
   JSON.stringify([principalId, operation, key]);
+const dispatchKeyOf = (
+  principalId: string,
+  operation: string,
+  dispatchId: string,
+): string => JSON.stringify([principalId, operation, 'dispatch', dispatchId]);
 
 /**
  * The executor half of shared idempotency (`execution-targets.yaml`
@@ -181,6 +234,8 @@ export function createWorkerExecutorReceipts(
     replay?: WorkerExecutorReplay;
     maxReplayedKeys?: number;
     maxReplayResults?: number;
+    /** Flat digests of forgotten keys and tags; without it they are kept verbatim. */
+    digest?: (text: string) => string;
   } = {},
 ): WorkerExecutorReceipts {
   const max = options.max ?? WORKER_EXECUTOR_RECEIPTS_MAX;
@@ -198,13 +253,44 @@ export function createWorkerExecutorReceipts(
   const forgotten = new Set<string>();
   // Replayed keys accepted this run; bounds `forgotten`.
   let replayedKeys = 0;
-  const digestOf = (id: string): string => (replay ? replay.keyDigest(id) : id);
+  const digest: ((text: string) => string) | undefined =
+    options.digest ??
+    (replay ? (text: string): string => replay.keyDigest(text) : undefined);
+  const digestOf = (id: string): string => (digest ? digest(id) : id);
+  // Keys of other keyed operations whose receipt is gone, oldest first; only
+  // what a lookup reports, since those operations never replay. Once one is
+  // dropped, an unknown key reads forgotten: absent must mean never received.
+  const lapsed = new Set<string>();
+  let lapsedOverflowed = false;
+  const rememberLapsed = (digest: string): void => {
+    lapsed.add(digest);
+    while (lapsed.size > maxReplayedKeys) {
+      const oldest = lapsed.values().next().value;
+      if (oldest === undefined) break;
+      lapsed.delete(oldest);
+      lapsedOverflowed = true;
+    }
+  };
   const forget = (id: string): void => {
     const entry = entries.get(id);
     entries.delete(id);
     settledOrder.delete(id);
     if (entry?.replayResult) replayResultsSize -= entry.replayResult.size;
     if (entry?.fingerprint !== undefined) forgotten.add(digestOf(id));
+    else if (entry) rememberLapsed(digestOf(id));
+  };
+  // Report-only receipts by dispatch tag, for every instruction (CAN-4733).
+  const dispatches = new Map<string, Entry>();
+  const dispatchOrder = new Set<string>();
+  const forgottenDispatches = new Set<string>();
+  // Tags sealed while absent; a dispatch carrying one is refused unrun.
+  const sealedDispatches = new Set<string>();
+  // Tags dispatched or sealed this run; bounds both sets.
+  let dispatchTags = 0;
+  const forgetDispatch = (id: string): void => {
+    dispatches.delete(id);
+    dispatchOrder.delete(id);
+    forgottenDispatches.add(digestOf(id));
   };
   const replayed = async (
     entry: Entry,
@@ -215,8 +301,10 @@ export function createWorkerExecutorReceipts(
       await new Promise<void>((resolve, reject) => {
         const onAbort = (): void =>
           reject(
+            // The earlier request may still commit, so this answer never says
+            // whether it did: unavailable, as a lost reply reads (CAN-7196).
             new CanopyOperationError({
-              kind: 'cancelled',
+              kind: 'unavailable',
               message:
                 'The request stopped waiting for the earlier request with its idempotency key.',
               retry: { kind: 'same_idempotency_key' },
@@ -240,6 +328,71 @@ export function createWorkerExecutorReceipts(
     throw replayRefusal('not-retained');
   };
   const run = (
+    name: string,
+    handler: InstructionHandler,
+    params: unknown,
+    context: CanopyHandlerContext,
+  ): unknown => {
+    const tag = context.metadata.dispatchId;
+    const definition = definitions[name];
+    if (tag === undefined || definition === undefined)
+      return runKeyed(name, handler, params, context);
+    const id = dispatchKeyOf(context.caller.principalId, name, tag);
+    if (dispatches.has(id) || forgottenDispatches.has(digestOf(id)))
+      return Promise.reject(replayRefusal('tag-reused'));
+    if (sealedDispatches.has(digestOf(id)))
+      return Promise.reject(replayRefusal('not-started'));
+    if (dispatchTags >= maxReplayedKeys)
+      return Promise.reject(replayRefusal('keys-exhausted'));
+    dispatchTags += 1;
+    let markSettled: () => void = () => undefined;
+    const entry: Entry = {
+      settled: new Promise<void>((resolve) => {
+        markSettled = resolve;
+      }),
+      receipt: { state: 'running' },
+    };
+    dispatches.set(id, entry);
+    const settle = (receipt: WorkerExecutorReceipt): void => {
+      entry.receipt = receipt;
+      dispatchOrder.add(id);
+      while (dispatchOrder.size > max) {
+        const oldest = dispatchOrder.values().next().value;
+        if (oldest === undefined) break;
+        forgetDispatch(oldest);
+      }
+      markSettled();
+    };
+    return Promise.resolve()
+      .then(() => runKeyed(name, handler, params, context))
+      .then(
+        (raw) => {
+          const parsed = safeParseCanopySchema(definition.result, raw);
+          const json = parsed.success
+            ? CanopyJsonValueSchema.safeParse(parsed.data)
+            : undefined;
+          settle(
+            !parsed.success
+              ? {
+                  state: 'failed',
+                  error: canopyInvalidHandlerResultError().payload,
+                }
+              : json?.success
+                ? { state: 'completed', result: json.data }
+                : { state: 'completed' },
+          );
+          return raw;
+        },
+        (error: unknown) => {
+          settle({
+            state: 'failed',
+            error: translateCanopyHandlerError(definition, error).payload,
+          });
+          throw error;
+        },
+      );
+  };
+  const runKeyed = (
     name: string,
     handler: InstructionHandler,
     params: unknown,
@@ -369,5 +522,52 @@ export function createWorkerExecutorReceipts(
       if (!entry || entry.receipt.state === 'running') return;
       forget(id);
     },
+    lookup: (principalId, operation, lookup): WorkerExecutorReceiptView => {
+      if ('dispatchId' in lookup) {
+        const id = dispatchKeyOf(principalId, operation, lookup.dispatchId);
+        const entry = dispatches.get(id);
+        if (entry) return viewOf(entry.receipt);
+        return forgottenDispatches.has(digestOf(id))
+          ? { state: 'forgotten' }
+          : { state: 'absent' };
+      }
+      const id = keyOf(principalId, operation, lookup.idempotencyKey);
+      const entry = entries.get(id);
+      if (entry) return viewOf(entry.receipt);
+      const gone = digestOf(id);
+      return forgotten.has(gone) ||
+        lapsed.has(gone) ||
+        (lapsedOverflowed && !replay?.operations.has(operation))
+        ? { state: 'forgotten' }
+        : { state: 'absent' };
+    },
+    seal: (principalId, operation, dispatchId): WorkerExecutorReceiptView => {
+      const id = dispatchKeyOf(principalId, operation, dispatchId);
+      const entry = dispatches.get(id);
+      if (entry) return viewOf(entry.receipt);
+      const gone = digestOf(id);
+      if (forgottenDispatches.has(gone)) return { state: 'forgotten' };
+      if (sealedDispatches.has(gone)) return { state: 'absent' };
+      if (dispatchTags >= maxReplayedKeys) return { state: 'forgotten' };
+      sealedDispatches.add(gone);
+      dispatchTags += 1;
+      return { state: 'absent' };
+    },
+  };
+}
+
+function viewOf(receipt: WorkerExecutorReceipt): WorkerExecutorReceiptView {
+  if (receipt.state === 'running') return { state: 'running' };
+  if (receipt.state === 'failed')
+    return {
+      state: 'settled',
+      outcome: { status: 'failed', error: receipt.error },
+    };
+  return {
+    state: 'settled',
+    outcome:
+      'result' in receipt
+        ? { status: 'completed', result: receipt.result }
+        : { status: 'completed' },
   };
 }

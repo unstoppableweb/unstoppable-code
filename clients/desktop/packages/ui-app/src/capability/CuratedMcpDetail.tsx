@@ -453,8 +453,14 @@ function McpLayoutDetail<T extends McpDetailEntry>({
           description={entry.longDescription ?? entry.shortDescription}
           facts={{
             status: statusContent,
-            // Health, then Placement, from the shared management card.
-            health: !providerOnly ? management : undefined,
+            // Health, then Placement, from the shared management card. The
+            // fact list is a two-column grid and this is not a DetailFact, so
+            // the grid item spans both columns here: a host's own wrapper or
+            // the card inside it would not be the grid item.
+            health:
+              !providerOnly && management ? (
+                <div className="col-span-2">{management}</div>
+              ) : undefined,
             website: website ? (
               <DetailWebsiteFact href={website} testId="mcp-detail-website" />
             ) : undefined,

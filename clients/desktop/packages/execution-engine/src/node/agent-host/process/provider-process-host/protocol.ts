@@ -2,7 +2,7 @@ import {
   isProviderProcessOwner,
   type ProviderProcessOwner,
   type ProviderProcessStdin,
-} from '@canopy/desktop-shared/node/provider-process/spawn';
+} from '@canopy/execution-engine/node/provider-process/spawn';
 
 export const PROVIDER_PROCESS_HOST_ENTRY = 'provider-process-host-worker.js';
 export const PROVIDER_PROCESS_HOST_SERVICE = 'provider-process-host';

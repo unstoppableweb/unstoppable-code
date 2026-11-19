@@ -1458,6 +1458,9 @@ async function leasedKernel(): Promise<LeasedKernel> {
             'worker.git.diff.get': (): never => {
               throw new Error('Not exercised.');
             },
+            'worker.operation.receipt.get': (): never => {
+              throw new Error('Not exercised.');
+            },
             'worker.script.execution.get': (): never => {
               throw new Error('Not exercised.');
             },
@@ -1566,6 +1569,7 @@ posix('lease-bound operations', () => {
       readonly clock?: CanopyDaemonClock;
       readonly grants?: readonly CanopyCallerDescriptor['grants'][number][];
       readonly sameKeyFencedOperations?: readonly string[];
+      readonly leaseBoundOperations?: readonly string[];
     } = {},
   ): Promise<
     Awaited<ReturnType<typeof controlPlane>> & {
@@ -1579,6 +1583,9 @@ posix('lease-bound operations', () => {
       dispatcher: kernel.runtime.dispatcher,
       operations: kernel.runtime.operations,
       leaseBoundOperations: Object.keys(WORKER_QUERY_DEFINITIONS),
+      ...(options.leaseBoundOperations && {
+        leaseBoundOperations: options.leaseBoundOperations,
+      }),
       ...(options.sameKeyFencedOperations && {
         sameKeyFencedOperations: options.sameKeyFencedOperations,
       }),
@@ -1699,6 +1706,87 @@ posix('lease-bound operations', () => {
     }
   });
 
+  // CAN-4730 E2-G: a handler binds state to the lease its call was
+  // admitted under, so only the lease fence may name it.
+  it('hands a lease-bound handler the admitting lease, and no other call any lease', async () => {
+    const branchParams = {
+      scope: { workspaceId: 'v', worktreeId: 'w' },
+      repository: { kind: 'checkout' },
+    };
+    const leasedOnly = await leasedPlane({
+      grants: [...grants, 'worker.git.read'],
+    });
+    try {
+      const peer = await leasedOnly.open();
+      const leaseId = leaseIdOf(await acquire(peer, 'admitting'));
+      expect(
+        (await peer.request('worker.git.branch.list', branchParams)).error,
+      ).toBeUndefined();
+      expect(leasedOnly.branchCalls[0]?.context.lease).toEqual({ leaseId });
+    } finally {
+      await leasedOnly.close();
+    }
+    const unbound = await leasedPlane({
+      grants: [...grants, 'worker.git.read'],
+      leaseBoundOperations: Object.keys(WORKER_QUERY_DEFINITIONS).filter(
+        (name) => name !== 'worker.git.branch.list',
+      ),
+    });
+    try {
+      // A leased peer's call that is not lease-bound, and an unleased one.
+      const leasedPeer = await unbound.open();
+      await acquire(leasedPeer, 'not-bound');
+      const unleasedPeer = await unbound.open();
+      for (const peer of [leasedPeer, unleasedPeer])
+        expect(
+          (await peer.request('worker.git.branch.list', branchParams)).error,
+        ).toBeUndefined();
+      expect(unbound.branchCalls).toHaveLength(2);
+      for (const { context } of unbound.branchCalls)
+        expect(context).not.toHaveProperty('lease');
+    } finally {
+      await unbound.close();
+    }
+  });
+
+  it('never takes the lease from a payload claim: a forged lease id never reaches the handler', async () => {
+    const daemon = await leasedPlane({
+      grants: [...grants, 'worker.git.read'],
+    });
+    try {
+      const peer = await daemon.open();
+      const leaseId = leaseIdOf(await acquire(peer, 'real'));
+      const branchParams = {
+        scope: { workspaceId: 'v', worktreeId: 'w' },
+        repository: { kind: 'checkout' },
+      };
+      const forged = {
+        lease: { leaseId: 'forged-lease' },
+        leaseId: 'forged-lease',
+        workerSettlement: 'forged',
+      };
+      // Each is refused as a parameter, before the handler; the envelope
+      // schema refuses one under _meta before it is even sent, and the
+      // dispatcher refuses it in metadata.
+      for (const [field, value] of Object.entries(forged))
+        expect(
+          refusal(
+            await peer.request('worker.git.branch.list', {
+              ...branchParams,
+              [field]: value,
+            }),
+          ),
+        ).toMatchObject({ kind: 'invalid_argument' });
+      expect(daemon.branchCalls).toHaveLength(0);
+      // The context carries only the lease the connection holds.
+      await peer.request('worker.git.branch.list', branchParams);
+      expect(daemon.branchCalls[0]?.context.lease).toEqual({ leaseId });
+      expect(daemon.branchCalls[0]?.params).toEqual(branchParams);
+    } finally {
+      await daemon.close();
+    }
+  });
+
   it('advertises the read at initialize and admits it only on a leased connection', async () => {
     const daemon = await leasedPlane();
     try {
@@ -1713,6 +1801,7 @@ posix('lease-bound operations', () => {
             'worker.filesystem.link.resolve',
             'worker.filesystem.roots.list',
             'worker.filesystem.search',
+            'worker.operation.receipt.get',
             'core.client.lease.acquire',
             'core.client.lease.renew',
             'core.client.lease.release',

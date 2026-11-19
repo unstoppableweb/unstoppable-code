@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { AutoDeleteAttention } from '@canopy/protocol/remote-control/shell/auto-delete-attention';
 import { AutoDeleteInspectionError } from '../auto-delete-inspection-error';
 import {
@@ -44,14 +45,13 @@ import { createElectronExecutionRuntime } from '../../pipelines/execution-runtim
 import { getAppAdvisorWatcherService } from '../../app-advisor/watchers';
 import { readAllSidebarItems } from '../sidebar-items';
 import { readWorkEntriesFile } from '../cowork-work-entries-file';
-import { readWorkspaceConfig } from '../workspace-persistence';
 import { readPreferencesFile } from '../preferences-store';
-import { readLocalBranchMergeState, getCurrentBranch } from '../git';
-import { resolveWorkspaceReferenceRepoPath } from '../workspace-reference-repo';
+import { readLocalBranchMergeState } from '../git';
 import {
-  getWorkspaceWorktreeRepoDir,
-  getWorkspaceWorktreeRootRepoDir,
-} from '../paths';
+  autoArchiveBranchesMatch,
+  readAutoArchiveBranches,
+} from '../auto-archive-branches';
+import { resolveWorkspaceReferenceRepoPath } from '../workspace-reference-repo';
 import { validateId } from '../validation';
 import { sendToAllWindows } from '../window-send';
 import { subscribeTrackedScriptsChanged } from '../script-runner';
@@ -327,6 +327,7 @@ async function snapshot(
       state: arm.state,
       ...(title ? { armedByChatTitle: title } : {}),
       waitingFor: await waitingFor(candidate),
+      confirmationId: arm.confirmationId,
       ...(arm.unmergedBranches
         ? { unmergedBranches: arm.unmergedBranches }
         : {}),
@@ -447,6 +448,21 @@ export async function setWorkEntryAutoDeleteFromAgent(
     const previous = (await readArms(input.workspaceId)).find(
       (arm) => arm.targetId === input.targetId,
     );
+    const forceBranchPins =
+      input.unmergedLocalBranchDelete === 'force' &&
+      (candidate.surface === 'single-repo' ||
+        candidate.surface === 'multi-repo')
+        ? (
+            await readAutoArchiveBranches(
+              input.workspaceId,
+              input.targetId,
+              candidate.surface,
+              candidate.worktree,
+            )
+          ).flatMap(({ repoId, branchName }) =>
+            branchName === undefined ? [] : [{ repoId, branchName }],
+          )
+        : undefined;
     const arm: WorkEntryAutoDeleteArm = {
       targetId: input.targetId,
       targetKind: candidate.worktree ? 'worktree' : 'work-entry',
@@ -457,6 +473,7 @@ export async function setWorkEntryAutoDeleteFromAgent(
         DEFAULT_WORK_ENTRY_AUTO_DELETE_UNMERGED_BRANCH,
       state: 'armed',
       armedAt: new Date().toISOString(),
+      forceBranchPins,
       armedBy: { chatId: input.chatId, ...crossScope },
       identity: {
         createdAt: candidate.createdAt,
@@ -545,6 +562,24 @@ export async function resolveWorkEntryAutoDeleteBranch(
       (arm) => arm.targetId === request.targetId,
     );
     if (!arm || arm.state !== 'awaiting-branch-confirmation') return;
+    if (!arm.confirmationId || arm.confirmationId !== request.confirmationId) {
+      // Legacy arms get a fresh prompt. A response to an older prompt cannot
+      // authorize the current prompt's targets.
+      if (!arm.confirmationId) {
+        await replaceArm(
+          request.workspaceId,
+          {
+            ...arm,
+            state: 'armed',
+            branchAnswer: undefined,
+            unmergedBranches: undefined,
+          },
+          request.targetId,
+        );
+        requestEvaluation?.();
+      }
+      throw new Error('The branch confirmation changed. Review it again.');
+    }
     await replaceArm(
       request.workspaceId,
       {
@@ -560,74 +595,50 @@ export async function resolveWorkEntryAutoDeleteBranch(
 }
 
 async function branchPolicy(
-  candidate: AutoArchiveCandidate,
   arm: WorkEntryAutoDeleteArm,
-): Promise<WorkspaceTargetRemovalPolicy['branch'] | string[]> {
+  branches: Awaited<ReturnType<typeof readAutoArchiveBranches>>,
+): Promise<
+  | WorkspaceTargetRemovalPolicy['branch']
+  | { kind: 'ask'; unmerged: { repoId: string; branchName: string }[] }
+> {
   if (
-    !candidate.worktree ||
-    !(await readPreferencesFile()).deleteBranchOnArchive
+    branches.length === 0 ||
+    branches.some(({ branchName }) => branchName === undefined) ||
+    !(await readPreferencesFile()).deleteBranchOnArchive ||
+    arm.branchAnswer === 'keep-branch'
   )
     return { kind: 'keep' };
-  if (arm.branchAnswer === 'keep-branch') return { kind: 'keep' };
-  const config = await readWorkspaceConfig(candidate.workspaceId);
-  const repositories: Array<{ path: string; branch: string }> = [];
-  if (candidate.surface === 'single-repo') {
-    if (!config.repoPath)
-      throw new Error('The main checkout is unavailable for branch preflight');
-    repositories.push({
-      path: await resolveWorkspaceReferenceRepoPath(config.repoPath),
-      branch: candidate.worktree.branchName,
-    });
-  } else {
-    for (const repo of config.repos) {
-      if (
-        candidate.worktree.includedRepoIds &&
-        !candidate.worktree.includedRepoIds.includes(repo.id)
-      )
-        continue;
-      const branch = await getCurrentBranch(
-        getWorkspaceWorktreeRepoDir(
-          candidate.workspaceId,
-          candidate.targetId,
-          repo.id,
-        ),
-      );
-      if (branch)
-        repositories.push({
-          path: await resolveWorkspaceReferenceRepoPath(repo.repoPath),
-          branch,
-        });
-    }
-    if (config.sourceRepoPath) {
-      const branch = await getCurrentBranch(
-        getWorkspaceWorktreeRootRepoDir(
-          candidate.workspaceId,
-          candidate.targetId,
-        ),
-      );
-      if (branch)
-        repositories.push({
-          path: await resolveWorkspaceReferenceRepoPath(config.sourceRepoPath),
-          branch,
-        });
-    }
-  }
-  const unmerged: string[] = [];
-  for (const repo of repositories) {
-    const state = await readLocalBranchMergeState(repo.path, repo.branch);
-    if (state.exists && !state.merged) unmerged.push(repo.branch);
+  const unmerged: { repoId: string; branchName: string }[] = [];
+  for (const repo of branches) {
+    if (repo.branchName == null) continue;
+    const referenceRepo = await resolveWorkspaceReferenceRepoPath(
+      repo.referenceRepoPath,
+    );
+    const state = await readLocalBranchMergeState(
+      referenceRepo,
+      repo.branchName,
+    );
+    if (state.exists && !state.merged)
+      unmerged.push({ repoId: repo.repoId, branchName: repo.branchName });
   }
   if (!unmerged.length) return { kind: 'preference' };
   if (
-    arm.branchAnswer === 'delete-branch' ||
-    arm.unmergedLocalBranchDelete === 'force'
+    arm.unmergedLocalBranchDelete === 'force' &&
+    arm.forceBranchPins &&
+    autoArchiveBranchesMatch(arm.forceBranchPins, branches)
   )
-    return { kind: 'force' };
+    return { kind: 'confirmed', forceBranches: unmerged };
+  if (
+    arm.branchAnswer === 'delete-branch' &&
+    arm.branchConfirmation &&
+    autoArchiveBranchesMatch(arm.branchConfirmation, unmerged)
+  )
+    return { kind: 'confirmed', forceBranches: unmerged };
   if (arm.unmergedLocalBranchDelete === 'error')
     throw new Error(
-      `branch ${unmerged.map((name) => `“${name}”`).join(', ')} is not fully merged and unmergedLocalBranchDelete is error`,
+      `branch ${unmerged.map(({ branchName }) => `“${branchName}”`).join(', ')} is not fully merged and unmergedLocalBranchDelete is error`,
     );
-  return [...new Set(unmerged)];
+  return { kind: 'ask', unmerged };
 }
 
 async function evaluate(
@@ -681,11 +692,19 @@ async function evaluate(
           idleSince.delete(key);
           return;
         }
+        let confirmedBranches:
+          | Awaited<ReturnType<typeof readAutoArchiveBranches>>
+          | undefined;
         if (
           current.surface === 'single-repo' ||
           current.surface === 'multi-repo'
         ) {
-          const recovery = await inspectAutoDeleteRecovery(current, arm.mode);
+          const { recovery, obsolete, recoveringQuarantine } =
+            await inspectAutoDeleteRecovery(current, arm.mode);
+          if (obsolete) {
+            await replaceArm(workspaceId, undefined, arm.targetId);
+            return;
+          }
           if (
             recovery &&
             ((!recovery.actions.retry.eligible &&
@@ -707,15 +726,30 @@ async function evaluate(
             }
             return;
           }
+          if (
+            !recoveringQuarantine &&
+            !recovery?.actions.finishArchive.eligible
+          )
+            confirmedBranches = await readAutoArchiveBranches(
+              workspaceId,
+              arm.targetId,
+              current.surface,
+              current.worktree,
+            );
         }
-        const branch = await branchPolicy(current, arm);
-        if (Array.isArray(branch)) {
+        const branch = await branchPolicy(arm, confirmedBranches ?? []);
+        if (branch.kind === 'ask') {
           await replaceArm(
             workspaceId,
             {
               ...arm,
               state: 'awaiting-branch-confirmation',
-              unmergedBranches: branch,
+              unmergedBranches: [
+                ...new Set(branch.unmerged.map(({ branchName }) => branchName)),
+              ],
+              branchAnswer: undefined,
+              confirmationId: randomUUID(),
+              branchConfirmation: branch.unmerged,
             },
             arm.targetId,
           );
@@ -739,6 +773,7 @@ async function evaluate(
               mode: arm.mode,
               teardown: arm.teardown,
               branch,
+              confirmedBranches,
             },
             'agent',
           );

@@ -173,7 +173,9 @@ import { taskCreationSettled } from '../web-core/task-creations';
 import { isWebCoreScope } from '@/lib/chat-authority';
 import { CoreCoworkRequestError } from '@canopy/app-state/core-cowork';
 import {
+  WEB_CORE_SEND_UNKNOWN_NOTICE,
   WebCoreSendRefusedError,
+  WebCoreSendUnknownError,
   isAccountChangedRefusal,
 } from '../web-core/send-refusal';
 import {
@@ -3460,6 +3462,39 @@ export const createMessagingSlice: StateCreator<
           if (options?.throwOnDispatchFailure === true) throw err;
           return;
         }
+      }
+      // A cloud send that may have landed keeps its message and the tab's
+      // state: no failed status, no error message, and no Retry, since it
+      // is never sent twice (CAN-6273). The transcript shows it if it did.
+      // Its caller still hears it wasn't taken, as before: New task keeps
+      // its outbox entry for the receipt to settle (CAN-6798).
+      if (
+        isWebCoreScope(sel.projectId) &&
+        err instanceof WebCoreSendUnknownError
+      ) {
+        clearPendingUserPresentation();
+        // A sign-out, account change or disconnect cleared this chat while
+        // its receipt was read: nothing of it shows in the next session.
+        if (get().worktreeChats[key] === undefined) {
+          if (options?.throwOnDispatchFailure === true) throw err;
+          return;
+        }
+        const { meta, onClick } = getChatToastAttribution({
+          projectId: sel.projectId,
+          worktreeId: sel.worktreeId,
+          chatId,
+        });
+        // The notice is the only word of it, so it shows even with in-app
+        // notifications off (CAN-7196).
+        useGitHubStore
+          .getState()
+          .addToast(WEB_CORE_SEND_UNKNOWN_NOTICE, 'info', onClick, {
+            ...meta,
+            forceInApp: true,
+          });
+        if (!cancelledSendNotified) options?.onDispatchRejected?.();
+        if (options?.throwOnDispatchFailure === true) throw err;
+        return;
       }
       clearPendingUserPresentation();
       await reconcileRejectedPlanExit();

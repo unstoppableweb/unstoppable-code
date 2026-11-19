@@ -1,11 +1,74 @@
 import { CLOUD_ATTACHMENT_MAX_BYTES } from '@canopy/protocol/cloud-attachments';
 import { CanopyClientError } from '@canopy/core-client';
+import type * as CoreClient from '@canopy/core-client';
+import { KEYED_WRITE_OUTCOME_SHAPES } from '@canopy/app-state/core-cowork';
 import {
   CoreChatAttachmentUploadParamsSchema,
   WorkerArtifactUploadWriteParamsSchema,
 } from '@canopy/protocol/canopy-core';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import { IPC_REMOTE_DISPOSITIONS } from '@canopy/desktop-shared/remote-control/channel-dispositions';
+import { createInMemoryFramedPair } from '@canopy/core-transport';
+import type { CoreRuntimeInitializeResult } from '@canopy/protocol/canopy-core';
+
+/** A web core that advertises the upload, as main's real client needs. */
+const UPLOAD_CORE_INITIALIZE: CoreRuntimeInitializeResult = {
+  runtime: {
+    runtimeId: 'runtime-1',
+    hostId: 'host-1',
+    authorityId: 'authority-1',
+    profile: 'core+worker',
+    daemonEpoch: 'epoch-1',
+    protocolVersions: [1],
+    state: 'ready',
+    buildVersion: '0.0.0-test',
+  },
+  selectedProtocolVersion: 1,
+  capabilities: {
+    operations: ['core.chat.attachment.upload'],
+    events: [],
+    streams: [],
+  },
+  limits: {},
+  authentication: { required: true, methods: [] },
+};
+
+/**
+ * A web core main's real client talks to over an in-memory connection, so a
+ * golden reaches the client's own validation (CAN-7196). It advertises
+ * `operations` and answers each request with `answer`; `methods` lists them.
+ */
+async function serveUploadCore(
+  operations: string[],
+  answer: (method: string, params: unknown) => unknown,
+): Promise<{ methods: string[]; done: Promise<void> }> {
+  const { client, server } = await createInMemoryFramedPair();
+  const methods: string[] = [];
+  const initialize: CoreRuntimeInitializeResult = {
+    ...UPLOAD_CORE_INITIALIZE,
+    capabilities: { operations, events: [], streams: [] },
+  };
+  const done = (async (): Promise<void> => {
+    for (;;) {
+      const message = await server.receive().catch(() => null);
+      if (!message) return;
+      if (!('method' in message) || !('id' in message)) continue;
+      methods.push(message.method);
+      await server
+        .send({
+          jsonrpc: '2.0',
+          id: message.id,
+          result:
+            message.method === 'core.runtime.initialize'
+              ? initialize
+              : answer(message.method, message.params),
+        })
+        .catch(() => undefined);
+    }
+  })();
+  mockConnectWebCore.mockImplementationOnce(() => Promise.resolve(client));
+  return { methods, done };
+}
 
 const mockIpcHandlers = new Map<
   string,
@@ -44,7 +107,7 @@ const mockConnectFilesWake = jest.fn<Promise<unknown>, unknown[]>(() =>
 /** The cloud chats the asking window follows on its relay session. */
 const mockFollows = jest.fn<boolean, [unknown, string]>(() => false);
 const mockBridgeFetch = jest.fn();
-const mockState = { flagEnabled: true };
+const mockState = { flagEnabled: true, realClient: false };
 
 /** Each upload's lease calls, in order, beside its instruction calls. */
 const mockCalls: string[] = [];
@@ -57,6 +120,11 @@ jest.mock('@canopy/core-client', () => ({
     };
   }): Promise<unknown> => {
     mockClientDefinitions.push(options.definitions);
+    // The real client, validation included, over the connection main opened.
+    if (mockState.realClient)
+      return jest
+        .requireActual<typeof CoreClient>('@canopy/core-client')
+        .createCanopyClient(options as never);
     return Promise.resolve({
       instruction: mockInstruction,
       query: mockQuery,
@@ -120,6 +188,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { app, BrowserWindow, dialog } from 'electron';
 import { registerCloudChatsHandlers } from '../../ipc/cloud-chats';
+import { logMainProcessWarn } from '../../lib/main-process-logging';
 import type { DesktopAppWindow } from '../../canopy-runtime/desktop-ipc-caller';
 import type { RendererRelayEvent } from '../../canopy-runtime/renderer-relay/relay';
 import { resolveTrustedRelaySurface } from '../../canopy-runtime/renderer-relay/trusted-surface';
@@ -334,7 +403,6 @@ describe('cloud chat attachment upload through main (CAN-5972, CAN-5988)', () =>
       [refusal('not_found'), { reason: 'rejected', message: 'refused' }],
       // An error the client raised itself keeps the composer's own words.
       [refusal('internal'), { reason: 'rejected' }],
-      [refusal('unavailable'), { reason: 'offline' }],
     ];
     for (const [error, expected] of cases) {
       mockInstruction.mockImplementationOnce(() => Promise.reject(error));
@@ -343,6 +411,153 @@ describe('cloud chat attachment upload through main (CAN-5972, CAN-5988)', () =>
         ...expected,
       });
     }
+  });
+
+  // SWAN guardrail (CAN-7196): a sent upload reads as unknown only when its
+  // answer never came: lost and never retried, or a same-key retry, as the
+  // client's own deadline after dispatch arrives. Every error the web core
+  // answered stays a refusal, and nothing is sent again on its own.
+  it.each([
+    ['lost, never retried', 'unavailable', { kind: 'never' }, 'unknown'],
+    [
+      'a same-key retry',
+      'unavailable',
+      { kind: 'same_idempotency_key' },
+      'unknown',
+    ],
+    [
+      "the client's own deadline after dispatch",
+      'deadline_exceeded',
+      { kind: 'same_idempotency_key' },
+      'unknown',
+    ],
+    ['busy, same request', 'unavailable', { kind: 'same_request' }, 'offline'],
+    [
+      "the web core's own deadline",
+      'deadline_exceeded',
+      { kind: 'never' },
+      'offline',
+    ],
+    ['cancelled', 'cancelled', { kind: 'never' }, 'offline'],
+    [
+      'a running rebuild, before any post',
+      'unavailable',
+      { kind: 'same_idempotency_key' },
+      'offline',
+      'cloud-worktree-recovery-in-progress',
+    ],
+    [
+      'a same-key retry with a code that only starts like the rebuild’s',
+      'unavailable',
+      { kind: 'same_idempotency_key' },
+      'unknown',
+      'cloud-worktree-recovery-in-progress-later',
+    ],
+  ] as const)(
+    'answers a sent upload read as %s (a %s error) with its pinned reason, sent once (CAN-7196)',
+    async (...row) => {
+      const [, kind, retry, reason] = row;
+      const cloudCode = row.length === 5 ? row[4] : undefined;
+      mockCalls.length = 0;
+      mockInstruction.mockImplementationOnce(() => {
+        mockCalls.push('upload');
+        return Promise.reject(
+          new CanopyClientError({
+            kind,
+            message: 'Answered.',
+            retry,
+            ...(cloudCode === undefined ? {} : { details: { cloudCode } }),
+          }),
+        );
+      });
+      await expect(upload(MAIN, 'web-core:chat-1', file())).resolves.toEqual({
+        ok: false,
+        reason,
+      });
+      expect(mockCalls.filter((call) => call === 'upload')).toHaveLength(1);
+    },
+  );
+
+  // CAN-7196: main reads every shape of the shared table as app-state's
+  // check does, each sent once.
+  it.each(KEYED_WRITE_OUTCOME_SHAPES.map((row) => [row.name, row] as const))(
+    'answers a sent upload answered as %s as the shared check reads it (CAN-7196)',
+    async (_name, row) => {
+      mockCalls.length = 0;
+      mockInstruction.mockImplementationOnce(() => {
+        mockCalls.push('upload');
+        return Promise.reject(new CanopyClientError(row.payload));
+      });
+      const result = await upload(MAIN, 'web-core:chat-1', file());
+      if (row.unknown) expect(result).toEqual({ ok: false, reason: 'unknown' });
+      else expect(result).not.toEqual({ ok: false, reason: 'unknown' });
+      expect(mockCalls.filter((call) => call === 'upload')).toHaveLength(1);
+    },
+  );
+
+  it('reads an answer the client itself finds malformed as develop does, rejected: known debt for the S7c flip, sent once (CAN-7196)', async () => {
+    const core = await serveUploadCore(
+      ['core.chat.attachment.upload'],
+      () => '<html>proxy page PAGE-BODY</html>',
+    );
+    jest.mocked(logMainProcessWarn).mockClear();
+    mockState.realClient = true;
+    try {
+      // Core-client refuses the answer as `internal` with retry `never`
+      // before main sees it, so it reads `rejected`, as on develop. Reading it
+      // unknown needs a typed mark from the client: the S7c flip owns it.
+      await expect(upload(MAIN, 'web-core:chat-1', file())).resolves.toEqual({
+        ok: false,
+        reason: 'rejected',
+      });
+    } finally {
+      mockState.realClient = false;
+    }
+    await core.done;
+    expect(core.methods).toEqual([
+      'core.runtime.initialize',
+      'core.chat.attachment.upload',
+    ]);
+    expect(jest.mocked(logMainProcessWarn)).not.toHaveBeenCalled();
+  });
+
+  it('keeps a busy upload slot rejected, as develop reads it, sent once (CAN-7196)', async () => {
+    mockCalls.length = 0;
+    mockInstruction.mockImplementationOnce(() => {
+      mockCalls.push('upload');
+      return Promise.reject(
+        new CanopyClientError({
+          kind: 'resource_exhausted',
+          code: 'core.chat.attachment.busy',
+          message: 'Three uploads are already running.',
+          retry: { kind: 'same_idempotency_key', delayMs: 1000 },
+        }),
+      );
+    });
+    await expect(upload(MAIN, 'web-core:chat-1', file())).resolves.toEqual({
+      ok: false,
+      reason: 'rejected',
+      message: 'Three uploads are already running.',
+    });
+    expect(mockCalls.filter((call) => call === 'upload')).toHaveLength(1);
+  });
+
+  it('answers an upload whose connection never opened as offline, never unknown (CAN-7196)', async () => {
+    mockCalls.length = 0;
+    mockConnectWebCore.mockImplementationOnce(() =>
+      Promise.reject(
+        new CanopyClientError({
+          kind: 'unavailable',
+          message: 'The connection closed.',
+          retry: { kind: 'never' },
+        }),
+      ),
+    );
+    await expect(upload(MAIN, 'web-core:chat-1', file())).resolves.toEqual({
+      ok: false,
+      reason: 'offline',
+    });
+    expect(mockCalls).not.toContain('upload');
   });
 
   it("uploads beyond the web's three slots wait instead of failing", async () => {
@@ -813,9 +1028,11 @@ describe("a cloud project's workspace file upload through main (CAN-7008)", () =
     storageState: 'available',
     createdAt: '2026-11-17T12:00:00.000Z',
   };
+  // Each upload gets its own operation id unless a case names one: main
+  // remembers an id whose upload ended unknown (CAN-7196).
   const request = (extra: Record<string, unknown> = {}): unknown => ({
     workspaceId: WORKSPACE,
-    operationId: OPERATION,
+    operationId: crypto.randomUUID(),
     name: 'notes.txt',
     mimeType: 'text/plain',
     bytes: BYTES,
@@ -888,7 +1105,9 @@ describe("a cloud project's workspace file upload through main (CAN-7008)", () =
   });
 
   it('adds the picked bytes in chunks under their operation id, on a leased connection of its own', async () => {
-    await expect(uploadFile(MAIN, request())).resolves.toEqual({
+    await expect(
+      uploadFile(MAIN, request({ operationId: OPERATION })),
+    ).resolves.toEqual({
       ok: true,
       fileId: FILE_ID,
     });
@@ -1023,4 +1242,442 @@ describe("a cloud project's workspace file upload through main (CAN-7008)", () =
       message: 'This file has a newer version.',
     });
   });
+
+  // CAN-7196: the commit stores the file and is inherent, not keyed, so a
+  // lost reply to it (a closed connection, or the upload's own timeout) can't
+  // be told from an answered transient one: it is unknown. A write before it
+  // stored nothing, so a busy write keeps its kind.
+  it.each([
+    [
+      'the connection closed',
+      {
+        kind: 'unavailable',
+        message: 'The connection closed.',
+        retry: { kind: 'same_request' },
+      },
+    ],
+    [
+      'the upload timed out',
+      {
+        kind: 'cancelled',
+        message: 'The operation was cancelled.',
+        retry: { kind: 'never' },
+      },
+    ],
+    [
+      'an internal error',
+      {
+        kind: 'internal',
+        message: 'Something broke.',
+        retry: { kind: 'never' },
+      },
+    ],
+  ] as const)(
+    'answers a commit whose reply was lost as %s as unknown, sent once (CAN-7196)',
+    async (_case, payload) => {
+      mockCalls.length = 0;
+      answering({
+        'worker.artifact.upload.commit': () =>
+          Promise.reject(new CanopyClientError(payload)),
+      });
+      await expect(uploadFile(MAIN, request())).resolves.toEqual({
+        ok: false,
+        reason: 'unknown',
+      });
+      expect(
+        mockCalls.filter((call) => call === 'worker.artifact.upload.commit'),
+      ).toHaveLength(1);
+    },
+  );
+
+  // CAN-7196 (SWAN 05:33): once the commit is sent, only a refusal proven to
+  // come before the store keeps its kind; any other answer, a conflict
+  // included, may follow a stored file and reads unknown.
+  it.each([
+    [
+      'a conflict',
+      {
+        kind: 'conflict',
+        code: 'worker.artifact.upload.revisionConflict',
+        message: 'Conflict.',
+        retry: { kind: 'never' },
+      },
+      { ok: false, reason: 'unknown' },
+    ],
+    [
+      'too large',
+      {
+        kind: 'resource_exhausted',
+        code: 'worker.artifact.upload.tooLarge',
+        message: 'Too large.',
+        retry: { kind: 'never' },
+      },
+      { ok: false, reason: 'unknown' },
+    ],
+    [
+      'an unsupported type',
+      {
+        kind: 'invalid_argument',
+        code: 'worker.artifact.upload.unsupportedType',
+        message: 'Unsupported.',
+        retry: { kind: 'never' },
+      },
+      { ok: false, reason: 'unknown' },
+    ],
+    [
+      'a busy store',
+      {
+        kind: 'resource_exhausted',
+        code: 'worker.artifact.upload.busy',
+        message: 'Busy.',
+        retry: { kind: 'same_request' },
+      },
+      { ok: false, reason: 'unknown' },
+    ],
+    [
+      'an upload not found',
+      {
+        kind: 'not_found',
+        code: 'worker.artifact.upload.notFound',
+        message: 'Gone.',
+        retry: { kind: 'never' },
+      },
+      { ok: false, reason: 'unknown' },
+    ],
+    [
+      'a workspace that cannot take files',
+      {
+        kind: 'failed_precondition',
+        code: 'worker.artifact.upload.invalidState',
+        message: 'No.',
+        retry: { kind: 'never' },
+      },
+      { ok: false, reason: 'unknown' },
+    ],
+    [
+      'a digest mismatch',
+      {
+        kind: 'invalid_argument',
+        code: 'worker.artifact.upload.digestMismatch',
+        message: "The file's size or digest doesn't match its bytes.",
+        retry: { kind: 'never' },
+      },
+      {
+        ok: false,
+        reason: 'rejected',
+        message: "The file's size or digest doesn't match its bytes.",
+      },
+    ],
+    [
+      'workspace files switched off',
+      {
+        kind: 'capability_unavailable',
+        message: 'Not served.',
+        retry: { kind: 'never' },
+      },
+      { ok: false, reason: 'disabled' },
+    ],
+  ] as const)(
+    'answers a commit refused as %s as only a refusal before the store may read, sent once (CAN-7196)',
+    async (_case, payload, expected) => {
+      mockCalls.length = 0;
+      answering({
+        'worker.artifact.upload.commit': () =>
+          Promise.reject(new CanopyClientError(payload)),
+      });
+      await expect(uploadFile(MAIN, request())).resolves.toEqual(expected);
+      expect(
+        mockCalls.filter((call) => call === 'worker.artifact.upload.commit'),
+      ).toHaveLength(1);
+    },
+  );
+
+  it('never says a commit stored before its reply was lost was refused, when the re-commit is answered with a conflict (CAN-7196)', async () => {
+    const operationId = '66666666-6666-4666-8666-666666666666';
+    answering({
+      'worker.artifact.upload.commit': () =>
+        Promise.reject(
+          new CanopyClientError({
+            kind: 'unavailable',
+            message: 'The connection closed.',
+            retry: { kind: 'same_request' },
+          }),
+        ),
+    });
+    await expect(uploadFile(MAIN, request({ operationId }))).resolves.toEqual({
+      ok: false,
+      reason: 'unknown',
+    });
+    // Try again: the file is stored, so Core's write answers a conflict.
+    answering({
+      'worker.artifact.upload.commit': () =>
+        Promise.reject(
+          new CanopyClientError({
+            kind: 'conflict',
+            code: 'worker.artifact.upload.revisionConflict',
+            message: 'This file has a newer version.',
+            retry: { kind: 'never' },
+          }),
+        ),
+    });
+    const retried = await uploadFile(MAIN, request({ operationId }));
+    expect(retried).toEqual({ ok: false, reason: 'unknown' });
+    expect(retried).not.toMatchObject({ reason: 'conflict' });
+  });
+
+  it('keeps a busy write before the commit offline, since nothing was stored (CAN-7196)', async () => {
+    mockCalls.length = 0;
+    answering({
+      'worker.artifact.upload.write': () =>
+        Promise.reject(
+          new CanopyClientError({
+            kind: 'unavailable',
+            message: 'Busy.',
+            retry: { kind: 'same_request' },
+          }),
+        ),
+    });
+    await expect(uploadFile(MAIN, request())).resolves.toEqual({
+      ok: false,
+      reason: 'offline',
+    });
+    expect(mockCalls).not.toContain('worker.artifact.upload.commit');
+  });
+
+  // CAN-7196: Try again resends the same operation id. Once an attempt under
+  // it ended unknown, the retry stays unknown however it is answered; a fresh
+  // upload the web core refuses keeps its kind.
+  it('keeps a refused retry of an unknown upload unknown, while a fresh refusal keeps its kind (CAN-7196)', async () => {
+    // An answered refusal that asks for nothing again.
+    const rateLimited = (): Promise<never> =>
+      Promise.reject(
+        new CanopyClientError({
+          kind: 'conflict',
+          message: 'Too many uploads.',
+          retry: { kind: 'never' },
+        }),
+      );
+    mockCalls.length = 0;
+    answering({ 'worker.artifact.upload.open': rateLimited });
+    await expect(
+      uploadFile(
+        MAIN,
+        request({ operationId: '55555555-5555-4555-8555-555555555555' }),
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      reason: 'conflict',
+      message: 'Too many uploads.',
+    });
+
+    answering({
+      'worker.artifact.upload.commit': () =>
+        Promise.reject(
+          new CanopyClientError({
+            kind: 'unavailable',
+            message: 'The connection closed.',
+            retry: { kind: 'never' },
+          }),
+        ),
+    });
+    await expect(
+      uploadFile(MAIN, request({ operationId: OPERATION })),
+    ).resolves.toEqual({
+      ok: false,
+      reason: 'unknown',
+    });
+    mockCalls.length = 0;
+    answering({ 'worker.artifact.upload.open': rateLimited });
+    await expect(
+      uploadFile(MAIN, request({ operationId: OPERATION })),
+    ).resolves.toEqual({
+      ok: false,
+      reason: 'unknown',
+    });
+    expect(
+      mockCalls.filter((call) => call === 'worker.artifact.upload.open'),
+    ).toHaveLength(1);
+  });
+
+  it("reads a workspace file write whose answer the client finds malformed as rejected, without the client's own words, sent once (CAN-7196)", async () => {
+    const core = await serveUploadCore(
+      ['worker.artifact.upload.open', 'worker.artifact.upload.write'],
+      (method) =>
+        method === 'worker.artifact.upload.open'
+          ? {
+              artifact: { ...stored, storageState: 'pending' },
+              uploadId: 'upload-1',
+              chunkSizeBytes: 4,
+              nextOffset: 0,
+            }
+          : '<html>proxy page PAGE-BODY</html>',
+    );
+    let result: unknown;
+    mockState.realClient = true;
+    try {
+      result = await uploadFile(MAIN, request());
+    } finally {
+      mockState.realClient = false;
+    }
+    // No message, so the card shows its own "Couldn't save the workspace
+    // file.", and the client's words appear nowhere in what main answers.
+    expect(result).toEqual({ ok: false, reason: 'rejected' });
+    expect(JSON.stringify(result)).not.toContain('returned an invalid result');
+    await core.done;
+    expect(
+      core.methods.filter(
+        (method) => method === 'worker.artifact.upload.write',
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('reads a workspace file commit whose answer the client finds malformed as unknown, sent once (CAN-7196)', async () => {
+    jest.mocked(logMainProcessWarn).mockClear();
+    const core = await serveUploadCore(
+      [
+        'worker.artifact.upload.open',
+        'worker.artifact.upload.write',
+        'worker.artifact.upload.commit',
+      ],
+      (method, params) => {
+        if (method === 'worker.artifact.upload.open')
+          return {
+            artifact: { ...stored, storageState: 'pending' },
+            uploadId: 'upload-1',
+            chunkSizeBytes: 4,
+            nextOffset: 0,
+          };
+        if (method === 'worker.artifact.upload.write') {
+          const { offset, data } =
+            WorkerArtifactUploadWriteParamsSchema.parse(params);
+          return {
+            nextOffset: offset + Buffer.from(data, 'base64').byteLength,
+          };
+        }
+        return '<html>proxy page PAGE-BODY</html>';
+      },
+    );
+    mockState.realClient = true;
+    try {
+      // The client refuses the commit's answer as `internal` before main sees
+      // it; once the commit is sent, only a refusal proven to come before the
+      // store keeps its kind, so it reads unknown.
+      await expect(uploadFile(MAIN, request())).resolves.toEqual({
+        ok: false,
+        reason: 'unknown',
+      });
+    } finally {
+      mockState.realClient = false;
+    }
+    await core.done;
+    expect(
+      core.methods.filter(
+        (method) => method === 'worker.artifact.upload.commit',
+      ),
+    ).toHaveLength(1);
+    expect(core.methods[0]).toBe('core.runtime.initialize');
+  });
+
+  // CAN-7196: the keyed open reads every shape of the shared table as
+  // app-state's check does, and goes once.
+  it.each(KEYED_WRITE_OUTCOME_SHAPES.map((row) => [row.name, row] as const))(
+    'answers a sent workspace file upload answered as %s as the shared check reads it (CAN-7196)',
+    async (_name, row) => {
+      mockCalls.length = 0;
+      answering({
+        'worker.artifact.upload.open': () =>
+          Promise.reject(new CanopyClientError(row.payload)),
+      });
+      const result = await uploadFile(MAIN, request());
+      if (row.unknown) expect(result).toEqual({ ok: false, reason: 'unknown' });
+      else expect(result).not.toEqual({ ok: false, reason: 'unknown' });
+      expect(
+        mockCalls.filter((call) => call === 'worker.artifact.upload.open'),
+      ).toHaveLength(1);
+    },
+  );
+
+  // CAN-7196: once sent, `unknown` only when the answer never came: lost and
+  // never retried, or a same-key retry, as the client's own deadline arrives.
+  // A running rebuild's refusal (its exact code only) and every other error
+  // the web core answered keep their kind, and nothing is sent again.
+  it.each([
+    ['lost, never retried', 'unavailable', { kind: 'never' }, {}, 'unknown'],
+    [
+      'a same-key retry',
+      'unavailable',
+      { kind: 'same_idempotency_key' },
+      {},
+      'unknown',
+    ],
+    [
+      "the client's own deadline after dispatch",
+      'deadline_exceeded',
+      { kind: 'same_idempotency_key' },
+      {},
+      'unknown',
+    ],
+    [
+      'a same-key retry with another code',
+      'unavailable',
+      { kind: 'same_idempotency_key' },
+      { cloudCode: 'cloud-worktree-recovery-needed' },
+      'unknown',
+    ],
+    [
+      'a same-key retry with a code that only starts like the rebuild’s',
+      'unavailable',
+      { kind: 'same_idempotency_key' },
+      { cloudCode: 'cloud-worktree-recovery-in-progress-later' },
+      'unknown',
+    ],
+    [
+      'a running rebuild, before any post',
+      'unavailable',
+      { kind: 'same_idempotency_key' },
+      { cloudCode: 'cloud-worktree-recovery-in-progress' },
+      'offline',
+    ],
+    [
+      'busy, same request',
+      'unavailable',
+      { kind: 'same_request' },
+      {},
+      'offline',
+    ],
+    [
+      "the core's own deadline",
+      'deadline_exceeded',
+      { kind: 'never' },
+      {},
+      'offline',
+    ],
+    ['cancelled by the core', 'cancelled', { kind: 'never' }, {}, 'offline'],
+    ['internal', 'internal', { kind: 'never' }, {}, 'rejected'],
+  ] as const)(
+    'answers a sent workspace file upload answered as %s (a %s error) with its pinned reason, sent once (CAN-7196)',
+    async (_case, kind, retry, details, reason) => {
+      mockCalls.length = 0;
+      answering({
+        'worker.artifact.upload.open': () =>
+          Promise.reject(
+            new CanopyClientError({
+              kind,
+              message: 'The core said no.',
+              retry,
+              ...(Object.keys(details).length === 0 ? {} : { details }),
+            }),
+          ),
+      });
+      // An internal error can be the client's own, in developer words: it
+      // never reaches the renderer, as an attachment upload's never does.
+      await expect(uploadFile(MAIN, request())).resolves.toEqual({
+        ok: false,
+        reason,
+      });
+      expect(
+        mockCalls.filter((call) => call === 'worker.artifact.upload.open'),
+      ).toHaveLength(1);
+    },
+  );
 });

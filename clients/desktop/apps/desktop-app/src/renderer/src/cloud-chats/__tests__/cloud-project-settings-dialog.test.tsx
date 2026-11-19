@@ -105,6 +105,43 @@ class FakeWebCore implements CoreCoworkInvoker {
   egressAllowedHosts: string[] = [];
   /** The sandbox's routes answer, or null for a refused read. */
   sandboxRoutes: Record<string, unknown> | null = null;
+  /** The stored description, default model and Trash retention (PR C). */
+  description = 'Field research.';
+  defaultModel: string | null = 'model-a';
+  deletionRetentionDays = 30;
+  /** The hosted model catalog the snapshot answers; null for none. */
+  cloudModels: Record<string, unknown> | null = {
+    models: [
+      {
+        id: 'model-a',
+        label: 'Model A',
+        provider: 'vendor',
+        family: null,
+        familyLabel: null,
+        libraryEligibility: 'available',
+      },
+      {
+        id: 'model-b',
+        label: 'Model B',
+        provider: 'vendor',
+        family: null,
+        familyLabel: null,
+      },
+      {
+        id: 'model-locked',
+        label: 'Model locked',
+        provider: 'vendor',
+        family: null,
+        familyLabel: null,
+        libraryEligibility: 'locked',
+      },
+    ],
+    modelHarnesses: {},
+    defaultModelId: 'model-a',
+    defaultModelBlocked: false,
+  };
+  /** Answers the next Cowork settings saves give, in order. */
+  readonly coworkReplies: CanopyCoreRelayLikeReply[] = [];
 
   request(
     method: string,
@@ -135,6 +172,9 @@ class FakeWebCore implements CoreCoworkInvoker {
                   defaultAgentInstructions: this.instructions,
                   defaultPluginSelections: this.defaults,
                   defaultPluginSelectionsRevision: this.defaultsRevision,
+                  description: this.description,
+                  defaultModelDefinitionId: this.defaultModel,
+                  deletionRetentionDays: this.deletionRetentionDays,
                 },
               },
             },
@@ -159,8 +199,24 @@ class FakeWebCore implements CoreCoworkInvoker {
           revision: 1,
           entries: this.catalogEntries,
           generatedAt: '2026-11-17T00:00Z',
+          ...(this.cloudModels === null
+            ? {}
+            : { cloudModels: this.cloudModels }),
         },
       });
+    if (method === 'core.workspace.cowork.update') {
+      const reply = this.coworkReplies.shift() ?? { ok: true, value: {} };
+      const settings = params.settings as Record<string, unknown>;
+      if (reply.ok) {
+        if (typeof settings.description === 'string')
+          this.description = settings.description;
+        if (settings.defaultModel !== undefined)
+          this.defaultModel = settings.defaultModel as string | null;
+        if (typeof settings.deletionRetentionDays === 'number')
+          this.deletionRetentionDays = settings.deletionRetentionDays;
+      }
+      return Promise.resolve(reply);
+    }
     if (method === 'core.workspace.plugins.update')
       return Promise.resolve(
         this.pluginRefusals.shift() ?? { ok: true, value: {} },
@@ -1180,5 +1236,335 @@ describe("a cloud project's egress hosts and host settings on desktop (CAN-7053)
     expect(normalize(desktopHost)).toContain(sharedHost);
     act(() => sharedRoot.unmount());
     shared.remove();
+  });
+});
+
+describe("a cloud project's description, default model and Trash retention on desktop (CAN-7053)", () => {
+  const coworkSaves = (core: FakeWebCore): Record<string, unknown>[] =>
+    core.calls
+      .filter((call) => call.method === 'core.workspace.cowork.update')
+      .map((call) => call.params);
+
+  /** The model picker's options, value and whether each can be chosen. */
+  async function modelChoices(): Promise<
+    { readonly value: string | null; readonly disabled: boolean }[]
+  > {
+    const trigger = byTestId('cloud-project-settings-default-model');
+    if (!(trigger instanceof HTMLElement)) throw new Error('No model picker');
+    await click(trigger);
+    const options = [...document.querySelectorAll('[role="option"]')].map(
+      (option) => ({
+        value: option.getAttribute('data-value'),
+        disabled: option instanceof HTMLButtonElement && option.disabled,
+      }),
+    );
+    await click(trigger);
+    return options;
+  }
+
+  async function chooseModel(value: string): Promise<void> {
+    const trigger = byTestId('cloud-project-settings-default-model');
+    if (!(trigger instanceof HTMLElement)) throw new Error('No model picker');
+    await click(trigger);
+    const option = document.querySelector(
+      `[role="option"][data-value="${value}"]`,
+    );
+    if (!(option instanceof HTMLElement)) throw new Error(`No ${value} option`);
+    await click(option);
+  }
+
+  const field = (id: string): HTMLInputElement | HTMLTextAreaElement => {
+    const element = byTestId(id);
+    if (
+      !(element instanceof HTMLInputElement) &&
+      !(element instanceof HTMLTextAreaElement)
+    )
+      throw new Error(`No ${id}`);
+    return element;
+  };
+
+  /** What the error's `Copy details` hands to the clipboard. */
+  async function copiedDetails(): Promise<string> {
+    const writeText = jest.fn<Promise<void>, [string]>(() => Promise.resolve());
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true,
+    });
+    try {
+      const button = [...document.querySelectorAll('button')].find(
+        (candidate) => candidate.textContent === 'Copy details',
+      );
+      if (!button) throw new Error('No Copy details');
+      await click(button);
+      expect(writeText).toHaveBeenCalledTimes(1);
+      return writeText.mock.calls[0]?.[0] ?? '';
+    } finally {
+      Object.defineProperty(navigator, 'clipboard', {
+        value: undefined,
+        configurable: true,
+      });
+    }
+  }
+
+  it("shows the stored description, default model and retention in General, with the project's models as the web lists them", async () => {
+    const core = new FakeWebCore();
+    core.description = 'Notes for the team.';
+    core.defaultModel = 'model-b';
+    core.deletionRetentionDays = 14;
+    await render({ invoker: core });
+    expect(field('cloud-project-settings-description').value).toBe(
+      'Notes for the team.',
+    );
+    expect(
+      byTestId('cloud-project-settings-default-model')?.getAttribute(
+        'data-value',
+      ),
+    ).toBe('model-b');
+    expect(field('cloud-project-settings-retention').value).toBe('14');
+    // The account default, then every hosted model in the catalog's order;
+    // a model the library keeps locked is listed but can't be chosen.
+    expect(await modelChoices()).toEqual([
+      { value: '', disabled: false },
+      { value: 'model-a', disabled: false },
+      { value: 'model-b', disabled: false },
+      { value: 'model-locked', disabled: true },
+    ]);
+    // One snapshot read serves the plugins and the models.
+    expect(
+      core.calls.filter((call) => call.method === 'core.catalog.snapshot.get'),
+    ).toHaveLength(1);
+    expect(core.writes()).toEqual([]);
+  });
+
+  it("saves them first, in one core.workspace.cowork.update guarded by the dialog's read revision, then the project fields and the instructions", async () => {
+    const core = new FakeWebCore();
+    core.revision = 5;
+    const order: string[] = [];
+    const onUpdateProject = jest.fn(
+      (
+        _patch: CoreCoworkProjectPatch,
+        options: { readonly expectedRevision?: number },
+      ): Promise<CoreCoworkProjectSaved> => {
+        order.push(`project@${String(options.expectedRevision)}`);
+        return SAVED([], 6);
+      },
+    );
+    await render({ invoker: core, onUpdateProject });
+    await type(field('cloud-project-settings-description'), '  New notes.  ');
+    await chooseModel('model-b');
+    await type(field('cloud-project-settings-name'), 'Field notes');
+    await click(tab('Instructions'));
+    await type(field('cloud-project-settings-instructions'), 'Cite sources.');
+    await save();
+    // The Cowork fields go first, trimmed as the web stores them, and
+    // revision 1, since the retention didn't change.
+    expect(coworkSaves(core)).toEqual([
+      {
+        workspaceId: WORKSPACE,
+        expectedRevision: 5,
+        settings: { description: 'New notes.', defaultModel: 'model-b' },
+        _meta: { idempotencyKey: expect.any(String) as unknown },
+      },
+    ]);
+    expect(core.writes()).toEqual([
+      'core.workspace.cowork.update',
+      'core.workspace.instructions.update',
+    ]);
+    // These fields don't move the revision, so the project save still
+    // names the one the dialog read.
+    expect(order).toEqual(['project@5']);
+    expect(byTestId('cloud-project-settings-error')).toBeNull();
+    // What landed is the baseline: an unchanged Save sends nothing.
+    await save();
+    expect(coworkSaves(core)).toHaveLength(1);
+    expect(onUpdateProject).toHaveBeenCalledTimes(1);
+  });
+
+  it('a Trash retention change is revision 2, and choosing the account default clears the default model', async () => {
+    const core = new FakeWebCore();
+    await render({ invoker: core });
+    await type(field('cloud-project-settings-retention'), '60');
+    await chooseModel('');
+    await save();
+    expect(coworkSaves(core)).toEqual([
+      {
+        workspaceId: WORKSPACE,
+        revision: 2,
+        settings: { defaultModel: null, deletionRetentionDays: 60 },
+        _meta: { idempotencyKey: expect.any(String) as unknown },
+      },
+    ]);
+    expect(core.deletionRetentionDays).toBe(60);
+    expect(core.defaultModel).toBeNull();
+  });
+
+  it('a refused model stops every later step and says the save failed; the retry sends it again with the rest', async () => {
+    const core = new FakeWebCore();
+    core.coworkReplies.push({
+      ok: false,
+      error: {
+        kind: 'invalid_argument',
+        message: "Model model-b isn't available to this project.",
+        retry: { kind: 'never' },
+      },
+    });
+    const onUpdateProject = jest.fn(() => SAVED());
+    await render({ invoker: core, onUpdateProject });
+    await chooseModel('model-b');
+    await type(field('cloud-project-settings-name'), 'Field notes');
+    await click(tab('Instructions'));
+    await type(field('cloud-project-settings-instructions'), 'Cite sources.');
+    await save();
+    expect(byTestId('cloud-project-settings-error')?.textContent).toContain(
+      "Couldn't save the project.",
+    );
+    // The web core's words repeat the model this Save sent, so the details
+    // carry only the refusal's kind.
+    const copied = await copiedDetails();
+    expect(copied).not.toContain('model-b');
+    expect(copied).toBe('The cloud refused the save. (invalid_argument)');
+    expect(core.writes()).toEqual(['core.workspace.cowork.update']);
+    expect(onUpdateProject).not.toHaveBeenCalled();
+    expect(core.defaultModel).toBe('model-a');
+
+    // Nothing landed, so the retry sends every step, each once.
+    await save();
+    expect(core.writes()).toEqual([
+      'core.workspace.cowork.update',
+      'core.workspace.cowork.update',
+      'core.workspace.instructions.update',
+    ]);
+    expect(onUpdateProject).toHaveBeenCalledTimes(1);
+    expect(core.defaultModel).toBe('model-b');
+  });
+
+  it('a save refused after the Cowork fields landed keeps them as the baseline, says the save failed, and logs none of their values', async () => {
+    const consoleCalls = (
+      ['log', 'info', 'warn', 'error', 'debug'] as const
+    ).map((level) =>
+      jest.spyOn(console, level).mockImplementation(() => undefined),
+    );
+    try {
+      const core = new FakeWebCore();
+      let projectRefused = true;
+      const onUpdateProject = jest.fn(() =>
+        projectRefused
+          ? Promise.reject(
+              new CoreCoworkRequestError({
+                kind: 'invalid_argument',
+                message: 'That name is taken.',
+                retry: { kind: 'never' },
+              }),
+            )
+          : SAVED(),
+      );
+      await render({ invoker: core, onUpdateProject });
+      await type(field('cloud-project-settings-description'), 'Private notes.');
+      await chooseModel('model-b');
+      await type(field('cloud-project-settings-retention'), '60');
+      await type(field('cloud-project-settings-name'), 'Field notes');
+      await click(tab('Instructions'));
+      await type(field('cloud-project-settings-instructions'), 'Cite sources.');
+      await save();
+      // The Cowork fields landed; the project save was refused, so the
+      // instructions after it weren't sent.
+      expect(core.writes()).toEqual(['core.workspace.cowork.update']);
+      expect(onUpdateProject).toHaveBeenCalledTimes(1);
+      expect(core.description).toBe('Private notes.');
+      expect(core.defaultModel).toBe('model-b');
+      expect(core.deletionRetentionDays).toBe(60);
+      expect(byTestId('cloud-project-settings-error')?.textContent).toContain(
+        "Couldn't save the project.",
+      );
+      // The details hold no submitted value: the project refusal's own words
+      // pass through unchanged.
+      const copied = await copiedDetails();
+      expect(copied).toBe('That name is taken.');
+      for (const value of ['Private notes.', 'model-b'])
+        expect(copied).not.toContain(value);
+
+      // What landed is the baseline: the retry doesn't resend the Cowork
+      // fields, only the refused step and the ones after it.
+      projectRefused = false;
+      await save();
+      expect(coworkSaves(core)).toHaveLength(1);
+      expect(onUpdateProject).toHaveBeenCalledTimes(2);
+      expect(core.writes()).toEqual([
+        'core.workspace.cowork.update',
+        'core.workspace.instructions.update',
+      ]);
+      expect(byTestId('cloud-project-settings-error')).toBeNull();
+
+      // No field value reaches a log line.
+      const logged = JSON.stringify(consoleCalls.map((spy) => spy.mock.calls));
+      for (const value of ['Private notes.', 'model-b', 'Cite sources.'])
+        expect(logged).not.toContain(value);
+    } finally {
+      for (const spy of consoleCalls) spy.mockRestore();
+    }
+  });
+
+  it('a refusal that repeats a description with regex characters still carries only its kind and code', async () => {
+    const core = new FakeWebCore();
+    core.coworkReplies.push({
+      ok: false,
+      error: {
+        kind: 'invalid_argument',
+        code: 'core.workspace.settingsRefused',
+        message: 'The description "notes (v2)" was refused.',
+        retry: { kind: 'never' },
+      },
+    });
+    await render({ invoker: core });
+    await type(field('cloud-project-settings-description'), 'notes (v2)');
+    await save();
+    // A plain substring match, not a pattern: the brackets are matched as
+    // written.
+    const copied = await copiedDetails();
+    expect(copied).not.toContain('notes (v2)');
+    expect(copied).toBe(
+      'The cloud refused the save. (invalid_argument, core.workspace.settingsRefused)',
+    );
+  });
+
+  it('a Cowork save answered with warnings is resent by the next Save until it lands without them', async () => {
+    const core = new FakeWebCore();
+    core.coworkReplies.push({
+      ok: true,
+      value: { warnings: ["The ports didn't reach the running sandbox."] },
+    });
+    await render({ invoker: core });
+    await type(field('cloud-project-settings-description'), 'New notes.');
+    await save();
+    expect(byTestId('cloud-project-settings-error')?.textContent).toContain(
+      "The ports didn't reach the running sandbox.",
+    );
+    await save();
+    expect(coworkSaves(core)).toHaveLength(2);
+    expect(coworkSaves(core)[1]).toMatchObject({
+      settings: { description: 'New notes.' },
+    });
+    await save();
+    expect(coworkSaves(core)).toHaveLength(2);
+  });
+
+  it("says when the models couldn't load, keeps the saved model, and still saves the other fields", async () => {
+    const core = new FakeWebCore();
+    core.cloudModels = null;
+    await render({ invoker: core });
+    expect(document.body.textContent).toContain(
+      "Couldn't load models. Reopen settings to retry.",
+    );
+    // The saved model stays chosen, shown as unavailable, and isn't sent.
+    expect(
+      byTestId('cloud-project-settings-default-model')?.getAttribute(
+        'data-value',
+      ),
+    ).toBe('model-a');
+    await type(field('cloud-project-settings-description'), 'New notes.');
+    await save();
+    expect(coworkSaves(core)).toEqual([
+      expect.objectContaining({ settings: { description: 'New notes.' } }),
+    ]);
   });
 });

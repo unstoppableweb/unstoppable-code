@@ -10,15 +10,25 @@ import type {
   BackgroundProcess,
   ManagedDelegationRootEntry,
 } from '@canopy/desktop-shared/types';
+import { isLiveDelegationSnapshot } from '@canopy/app-state/core-cowork';
 import type { SubagentRootChatSummary } from '@canopy/ui-app/subagents';
 import {
   forgetSubagentDrafts,
   useSubagentViewStateStore,
 } from '@canopy/ui-app/subagents';
+import { currentLiveSnapshot } from '@/cloud-chats/cloud-delegation-cards';
+import {
+  heldCloudDelegationSnapshots,
+  subscribeHeldCloudDelegations,
+} from '@/cloud-chats/cloud-delegation-stop';
+import { isWebCoreScope } from '@/lib/chat-authority';
 import { getChatTabLabel } from '@/lib/chatTabLabel';
 import { useChatStore, type ChatTab } from '@/stores/chatStore';
 import { hydratedKeys } from '@/stores/chat/hydration';
-import { subagentRootSummary } from '@/stores/chat/transcript-residency';
+import {
+  ownDelegationRunsOf,
+  subagentRootSummary,
+} from '@/stores/chat/transcript-residency';
 import { useActivityStore } from '@/stores/activityStore';
 import { useDelegationActivityStore } from '@/stores/delegationActivityStore';
 import {
@@ -49,6 +59,8 @@ interface RootChatsStoreSnapshot {
 interface MutableRootChatsRecord {
   readonly key: string;
   readonly scope: SubagentHostScope;
+  /** A cloud scope: main holds none of its delegates (CAN-7133). */
+  readonly cloud: boolean;
   readonly listeners: Set<() => void>;
   readonly previouslyListedRootIds: Set<string>;
   snapshot: RootChatsStoreSnapshot;
@@ -139,6 +151,7 @@ function ensureRecord(scope: SubagentHostScope): MutableRootChatsRecord {
   const record: MutableRootChatsRecord = {
     key,
     scope,
+    cloud: isWebCoreScope(scope.projectId),
     listeners: new Set(),
     previouslyListedRootIds: new Set(),
     snapshot: EMPTY_SNAPSHOT,
@@ -220,6 +233,12 @@ async function readRoots(record: MutableRootChatsRecord): Promise<void> {
     record.followUpQueued = true;
     return;
   }
+  if (record.cloud) {
+    // A cloud root's delegates are its own cards, counted from its tab.
+    record.snapshot = { ...record.snapshot, roots: [], loading: false };
+    publish(record);
+    return;
+  }
   record.inFlight = true;
   try {
     const roots = await window.api.managedDelegation.roots({
@@ -287,11 +306,51 @@ function acquireRoots(scope: SubagentHostScope): () => void {
 
 const EMPTY_PROCESSES: readonly BackgroundProcess[] = [];
 
+/**
+ * A cloud root's delegates: the ones on its own cards (CAN-7133). A card
+ * keeps its first state, so a delegate counts live only by a snapshot the
+ * window already holds for that chat, and only one no older than its newest
+ * card, as the tree reads it; nothing here starts a read.
+ */
+interface CloudRootDelegates {
+  readonly total: number;
+  readonly live: number;
+  readonly lastActivityAt?: number;
+}
+
+function cloudRootDelegates(
+  scope: SubagentHostScope,
+  tab: ChatTab,
+): CloudRootDelegates | undefined {
+  // An evicted transcript's own cards are kept with its summary.
+  const runs = Object.entries(ownDelegationRunsOf(tab));
+  if (runs.length === 0) return undefined;
+  const held = heldCloudDelegationSnapshots({ ...scope, chatId: tab.id });
+  let live = 0;
+  for (const [id, latestCardRun] of runs) {
+    const snapshot = currentLiveSnapshot(latestCardRun, held?.get(id));
+    if (snapshot !== undefined && isLiveDelegationSnapshot(snapshot)) live += 1;
+  }
+  return { total: runs.length, live };
+}
+
+/** What the held cloud snapshots add to a scope's root counts, as a key. */
+function heldCloudLiveKey(
+  scope: SubagentHostScope,
+  tabs: readonly ChatTab[],
+): string {
+  return tabs
+    .map((tab) => `${tab.id}:${cloudRootDelegates(scope, tab)?.live ?? 0}`)
+    .join('\n');
+}
+
 function toRootChatSummary(
+  scope: SubagentHostScope,
   tabs: readonly ChatTab[],
   snapshot: RootChatsStoreSnapshot,
   processes: readonly BackgroundProcess[],
 ): readonly SubagentRootChatSummary[] {
+  const cloud = isWebCoreScope(scope.projectId);
   // A background Claude task is live while its process is queued or running.
   const backgroundStatuses = new Map(
     processes.map((process) => [
@@ -305,14 +364,16 @@ function toRootChatSummary(
   const summaries: SubagentRootChatSummary[] = [];
   for (const tab of tabs) {
     if (tab.kind === 'file') continue;
-    const {
-      native,
-      hasWorkflowLaunches: hasWorkflowLaunch,
-      workflowLocations,
-    } = subagentRootSummary(tab, (toolUseId) =>
+    const summary = subagentRootSummary(tab, (toolUseId) =>
       backgroundStatuses.get(`${tab.id}\u0000${toolUseId}`),
     );
-    const managed = rootsByChat.get(tab.id);
+    const { native } = summary;
+    // Workflow runs are pipelines on this computer; a cloud root has none.
+    const hasWorkflowLaunch = !cloud && summary.hasWorkflowLaunches;
+    const workflowLocations = cloud ? [] : summary.workflowLocations;
+    const managed = cloud
+      ? cloudRootDelegates(scope, tab)
+      : rootsByChat.get(tab.id);
     if (
       !(managed && managed.total > 0) &&
       !native.hasNativeAgentBlocks &&
@@ -437,8 +498,20 @@ export function useSubagentRootChats(
     return acquireRoots(scope);
   }, [enabled, scope, scopeId]);
 
+  const cloud = isWebCoreScope(scope.projectId);
+  const getHeldLiveKey = useCallback(
+    (): string =>
+      enabled && cloud ? heldCloudLiveKey(scope, loaded.tabs) : '',
+    [cloud, enabled, loaded.tabs, scope],
+  );
+  const heldLiveKey = useSyncExternalStore(
+    subscribeHeldCloudDelegations,
+    getHeldLiveKey,
+    getHeldLiveKey,
+  );
+
   const workflowLocations = useMemo((): readonly WorkflowRunLocation[] => {
-    if (!enabled || !loaded.hydrated) return [];
+    if (!enabled || !loaded.hydrated || cloud) return [];
     const locations = new Map<string, WorkflowRunLocation>();
     for (const tab of loaded.tabs) {
       if (tab.kind === 'file') continue;
@@ -448,7 +521,7 @@ export function useSubagentRootChats(
       }
     }
     return Array.from(locations.values());
-  }, [enabled, loaded.hydrated, loaded.tabs]);
+  }, [cloud, enabled, loaded.hydrated, loaded.tabs]);
   const workflowLocationKeys = useMemo(
     () =>
       JSON.stringify(
@@ -476,16 +549,20 @@ export function useSubagentRootChats(
         : EMPTY_PROCESSES,
   );
   const rootChats = useMemo((): readonly SubagentRootChatSummary[] => {
-    // Summaries read the workflow run cache; a new version recounts them.
+    // Summaries read the workflow run cache and the held cloud snapshots; a
+    // new version of either recounts them.
     void workflowCacheVersion;
+    void heldLiveKey;
     return enabled && loaded.hydrated
-      ? toRootChatSummary(loaded.tabs, snapshot, backgroundProcesses)
+      ? toRootChatSummary(scope, loaded.tabs, snapshot, backgroundProcesses)
       : [];
   }, [
     backgroundProcesses,
     enabled,
+    heldLiveKey,
     loaded.hydrated,
     loaded.tabs,
+    scope,
     snapshot,
     workflowCacheVersion,
   ]);

@@ -2,6 +2,7 @@ import {
   acquireSplitLock,
   releaseSplitLock,
 } from '../services/split-lock-service';
+import { useFakeSplitLockKeys } from './split-lock-key-fixture';
 import { beginExclusiveGitAction } from '../services/git-action-exclusion';
 import {
   finishGitActionCancellationScope,
@@ -224,6 +225,7 @@ afterAll(async () => {
   for (const [key, value] of originalGitEnv) process.env[key] = value;
   rmSync(dir, { recursive: true, force: true });
 });
+useFakeSplitLockKeys();
 beforeEach(() => {
   jest.mocked(requestRefresh).mockClear();
   jest.mocked(enqueueFastRefresh).mockClear();
@@ -426,7 +428,7 @@ it('skips same or missing tracked base without events', async () => {
 it('keeps source Split exclusion and Git-action locking ahead of every merge', async () => {
   const { base } = fixture('locked');
   const tip = git(base, ['rev-parse', 'HEAD']);
-  acquireSplitLock(SINGLE, 'locked');
+  await acquireSplitLock(SINGLE, 'locked');
   try {
     await expect(merge('locked')).rejects.toThrow(
       'This worktree is locked while a Split PR is in progress; running a Git action is unavailable until it finishes.',

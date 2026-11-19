@@ -256,6 +256,12 @@ export type InstalledItemSnapshotState =
        * time it was synced (CAN-6037). Live reads leave it unset.
        */
       readonly syncedAt?: string;
+      /**
+       * Set when the synced copy's desktop has paused syncing (CAN-7262), so
+       * the snapshot may be out of date. Only the web sets it; live reads
+       * and desktop leave it unset.
+       */
+      readonly syncPaused?: { readonly deviceName: string | null };
     };
 
 /** One catalog row's status, as the status picker and Status row render it. */

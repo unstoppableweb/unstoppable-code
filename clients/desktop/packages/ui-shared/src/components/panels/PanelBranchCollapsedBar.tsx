@@ -8,6 +8,7 @@ import type {
 } from '../../panels/registry-types';
 import { TitlebarIconButton } from '../TitlebarIconButton';
 import { Tooltip } from '../Tooltip';
+import { REPLAY_MASK_CLASS } from '../../lib/replay-privacy';
 import {
   ChevronRightMediumIcon,
   ChevronDownMediumIcon,
@@ -22,6 +23,7 @@ export interface PanelBranchCollapsedBarProps {
   callbacks: PanelIntentCallbacks;
   renderTabIcon?: (tab: PanelTabModel) => ReactNode;
   getTabTitle?: (tab: PanelTabModel) => string;
+  isTabTitlePrivate?: (tab: PanelTabModel) => boolean;
   renderTabAccessibleStatus?: (tab: PanelTabModel) => ReactNode;
   renderTabTooltip?: (tab: PanelTabModel) => ReactNode | null;
 }
@@ -33,6 +35,7 @@ export function PanelBranchCollapsedBar({
   callbacks,
   renderTabIcon,
   getTabTitle,
+  isTabTitlePrivate,
   renderTabAccessibleStatus,
   renderTabTooltip,
 }: PanelBranchCollapsedBarProps): JSX.Element {
@@ -62,12 +65,28 @@ export function PanelBranchCollapsedBar({
           .map((tab) => getTabTitle?.(tab) ?? tab.title)
           .join(', ');
         const label = tabTitles || 'Empty panel group';
+        // The group's labels list every title, so one private title masks
+        // them all; the group shows only icons.
+        const mask = group.tabs.some((tab) => isTabTitlePrivate?.(tab) === true)
+          ? ` ${REPLAY_MASK_CLASS}`
+          : '';
+        // Masked names are labels, not `aria-label` values, which click
+        // events copy past the mask.
+        const nameId = (part: string): string =>
+          `${statusIdPrefix}-${group.groupId}-${part}`;
+        const name = (
+          part: string,
+          text: string,
+        ): { 'aria-label': string } | { 'aria-labelledby': string } =>
+          mask === ''
+            ? { 'aria-label': text }
+            : { 'aria-labelledby': nameId(part) };
         return (
           <div
             key={group.groupId}
             role="group"
-            aria-label={label}
-            className="ring-[length:var(--border-hairline)] ring-inset ring-line-base"
+            {...name('label', label)}
+            className={`ring-[length:var(--border-hairline)] ring-inset ring-line-base${mask}`}
             style={{
               display: 'flex',
               flexDirection: vertical ? 'column' : 'row',
@@ -116,25 +135,58 @@ export function PanelBranchCollapsedBar({
               callbacks.onMovePanel(dragged.panelId, group.groupId, 'center');
             }}
           >
+            {mask === '' ? null : (
+              <>
+                <span className="sr-only" id={nameId('label')}>
+                  {label}
+                </span>
+                <span className="sr-only" id={nameId('expand')}>
+                  Expand {label}
+                </span>
+                {group.tabs.map((tab) => (
+                  <span
+                    key={tab.panelId}
+                    className="sr-only"
+                    id={nameId(`tab-${tab.panelId}`)}
+                  >
+                    {getTabTitle?.(tab) ?? tab.title}
+                  </span>
+                ))}
+              </>
+            )}
             <TitlebarIconButton
               surface="panelChrome"
               icon={ExpandIcon}
               data-testid={`panel-branch-expand-${group.groupId}`}
-              aria-label={`Expand ${label}`}
+              {...name('expand', `Expand ${label}`)}
+              {...(mask === ''
+                ? {}
+                : {
+                    tooltipLabel: (
+                      <span className={REPLAY_MASK_CLASS}>Expand {label}</span>
+                    ),
+                  })}
               onClick={() => callbacks.onCollapseGroup?.(group.groupId, false)}
             />
             {group.tabs.map((tab) => (
               <Tooltip
                 key={tab.panelId}
                 label={
-                  renderTabTooltip?.(tab) ?? getTabTitle?.(tab) ?? tab.title
+                  renderTabTooltip?.(tab) ?? (
+                    <span className={mask.trim() || undefined}>
+                      {getTabTitle?.(tab) ?? tab.title}
+                    </span>
+                  )
                 }
               >
                 <ControlButton
                   type="button"
                   presentation="panel-collapsed-tab"
                   data-testid={`panel-branch-tab-${tab.panelId}`}
-                  aria-label={getTabTitle?.(tab) ?? tab.title}
+                  {...name(
+                    `tab-${tab.panelId}`,
+                    getTabTitle?.(tab) ?? tab.title,
+                  )}
                   aria-describedby={
                     renderTabAccessibleStatus
                       ? `${statusIdPrefix}-${tab.panelId}`

@@ -1,3 +1,7 @@
+import {
+  readAutoArchiveBranches,
+  type AutoArchiveBranchPin,
+} from './auto-archive-branches';
 import { lstat } from 'node:fs/promises';
 import { getWorkspaceWorktreeDir } from './paths';
 import { isErrnoException } from './type-guards';
@@ -524,7 +528,11 @@ export async function isAutoArchiveRuntimeBusy(
 export interface WorkspaceTargetRemovalPolicy {
   mode: 'delete' | 'archive';
   teardown: 'error' | 'force';
-  branch: { kind: 'preference' } | { kind: 'force' } | { kind: 'keep' };
+  branch:
+    | { kind: 'preference' }
+    | { kind: 'keep' }
+    | { kind: 'confirmed'; forceBranches: readonly AutoArchiveBranchPin[] };
+  confirmedBranches?: readonly AutoArchiveBranchPin[];
 }
 
 export type WorkspaceTargetRemovalOutcome =
@@ -538,6 +546,7 @@ export type WorkspaceTargetRemovalOutcome =
 
 interface AutoDeleteTransition {
   obsolete: boolean;
+  recoveringQuarantine: boolean;
   recovery: WorktreeRecoveryDescription | null;
   generations: readonly AutoDeleteAttentionGeneration[];
   completedBefore?: readonly string[];
@@ -588,8 +597,10 @@ async function inspectAutoDeleteTransition(
   const result = (
     recovery: WorktreeRecoveryDescription | null,
     obsolete = false,
+    recoveringQuarantine = false,
   ): AutoDeleteTransition => ({
     recovery,
+    recoveringQuarantine,
     obsolete,
     generations,
     completedBefore,
@@ -741,7 +752,14 @@ async function inspectAutoDeleteTransition(
           candidate.surface,
         )) === undefined
       )
-        return result(null);
+        return result(
+          null,
+          false,
+          journal.steps.some(
+            (step) =>
+              step.phase === 'checkout-quarantine' && step.state === 'done',
+          ),
+        );
     }
     // Fresh executor evidence supersedes the standing explanation even when its
     // journal was withdrawn; otherwise its completion baseline stays stale.
@@ -809,10 +827,9 @@ async function inspectAutoDeleteTransition(
 export async function inspectAutoDeleteRecovery(
   candidate: AutoArchiveCandidate,
   intent: 'archive' | 'delete',
-): Promise<WorktreeRecoveryDescription | null> {
-  return withArchivedWorkspaceOperationLock(
-    candidate.workspaceId,
-    async () => (await inspectAutoDeleteTransition(candidate, intent)).recovery,
+): Promise<AutoDeleteTransition> {
+  return withArchivedWorkspaceOperationLock(candidate.workspaceId, () =>
+    inspectAutoDeleteTransition(candidate, intent),
   );
 }
 
@@ -951,6 +968,17 @@ export async function removeWorkspaceTarget(
       !prior.actions.finishArchive.eligible)
   )
     return recordCurrentAutoDeleteAttention(candidate, policy.mode);
+  const recoveringQuarantine = transition.recoveringQuarantine;
+  const expectedAutoArchiveBranches =
+    recoveringQuarantine || prior?.actions.finishArchive.eligible
+      ? undefined
+      : (policy.confirmedBranches ??
+        (await readAutoArchiveBranches(
+          candidate.workspaceId,
+          candidate.targetId,
+          candidate.surface,
+          candidate.worktree,
+        )));
   const warnings: string[] = [];
   let result: Awaited<ReturnType<typeof archive>>;
   try {
@@ -964,15 +992,14 @@ export async function removeWorkspaceTarget(
           worktreeId: candidate.targetId,
           expectedCreatedAt: candidate.createdAt,
           ...touchedPin,
-          ...(candidate.worktree?.branchName
-            ? { expectedBranchName: candidate.worktree.branchName }
-            : {}),
+          expectedAutoArchiveBranches,
+          resumeRecordedBranchDeletion: recoveringQuarantine,
+          forceConfirmedBranches:
+            policy.branch.kind === 'confirmed'
+              ? policy.branch.forceBranches
+              : undefined,
           deleteBranch:
-            policy.branch.kind === 'force'
-              ? true
-              : policy.branch.kind === 'keep'
-                ? false
-                : candidate.deleteBranch,
+            policy.branch.kind === 'keep' ? false : candidate.deleteBranch,
           revalidateAutoArchivePolicy,
           runAutoArchiveTeardown: () =>
             withWorkspaceTargetAutoArchiveTeardown(

@@ -677,6 +677,58 @@ export const REMOTE_CONTROL_COMMAND_TYPES_SET: ReadonlySet<string> =
   /*#__PURE__*/ new Set(REMOTE_CONTROL_COMMAND_TYPES);
 
 /**
+ * Prefixes a saved command type may carry while Remote Control command types
+ * move from `portal.` to `remote_control.` (CAN-7297). Hosted MCP write
+ * receipts may hold either spelling for up to 30 days around the writer
+ * switch; drop the legacy spelling 30 days or more after deploy 2.
+ */
+const REMOTE_CONTROL_TYPE_PREFIXES = ['portal.', 'remote_control.'] as const;
+
+function remoteControlTypeSuffix(value: string): string | null {
+  for (const prefix of REMOTE_CONTROL_TYPE_PREFIXES) {
+    if (value.startsWith(prefix)) return value.slice(prefix.length);
+  }
+  return null;
+}
+
+/**
+ * CAN-7297 deploy 1 reader: map either prefix spelling of a known command to
+ * the writer's current literal. Matching is exact (no trimming or case
+ * folding) and strips one prefix once; anything else returns `null`.
+ * Lookups run inside the body so browser imports of unrelated helpers do not
+ * retain the command catalog.
+ */
+export function parseRemoteControlCommandType(
+  value: unknown,
+): RemoteControlCommandType | null {
+  if (typeof value !== 'string') return null;
+  const suffix = remoteControlTypeSuffix(value);
+  if (suffix === null || suffix.length === 0) return null;
+  return (
+    REMOTE_CONTROL_COMMAND_TYPES.find(
+      (type) => remoteControlTypeSuffix(type) === suffix,
+    ) ?? null
+  );
+}
+
+/**
+ * Every accepted spelling of a command type, the given literal first, so a
+ * saved digest computed over either prefix still verifies (CAN-7297).
+ */
+export function remoteControlCommandTypeSpellings(
+  type: RemoteControlCommandType,
+): readonly string[] {
+  const suffix = remoteControlTypeSuffix(type);
+  if (suffix === null) return [type];
+  return [
+    type,
+    ...REMOTE_CONTROL_TYPE_PREFIXES.map(
+      (prefix) => `${prefix}${suffix}`,
+    ).filter((spelling) => spelling !== type),
+  ];
+}
+
+/**
  * Compile-time parity guards for the closed command enum. The union, the
  * runtime array, and the payload map are maintained by hand in three places;
  * a command registered in the payload map but missing from the union/array is

@@ -47,6 +47,7 @@ import {
 } from './componentsLabCustomize';
 import { CuratedWorkflowsSpecimen } from './componentsLabCurated';
 import { CreditsNoticesSpecimen } from './componentsLabCredits';
+import { SyncedInventoryPausedSpecimen } from './componentsLabSyncedInventory';
 import { ProviderRowsSpecimen } from './componentsLabProviderRows';
 import { TurnNoticesSpecimen } from './componentsLabTurnNotices';
 import { CopyMcpServerSpecimen } from './componentsLabCopyMcpServer';
@@ -398,6 +399,15 @@ export const COMPONENTS_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
     source: 'packages/ui-shared/src/components/CreditsRecoveryNotice.tsx',
     prs: [],
     View: CreditsNoticesSpecimen,
+  },
+  {
+    id: 'synced-inventory-paused-notice',
+    name: 'Synced inventory paused notice',
+    group: 'Unified',
+    note: 'The web notice for synced lists from a computer that paused syncing, with a named computer, no name, and a long name that wraps.',
+    source: 'packages/ui-shared/src/components/SyncedInventoryPausedNotice.tsx',
+    prs: [10129],
+    View: SyncedInventoryPausedSpecimen,
   },
   {
     id: 'provider-choice-rows',

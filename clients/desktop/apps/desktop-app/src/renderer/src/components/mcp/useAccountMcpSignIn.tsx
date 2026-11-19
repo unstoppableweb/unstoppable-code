@@ -77,8 +77,16 @@ export interface AccountMcpSignInFlow {
    * with every start this sign-in makes, through its setup and retries.
    */
   readonly label?: string;
+  /**
+   * The cloud account the sign-in was asked for under; every start it makes
+   * is refused (account-changed) once another is signed in. A setup dialog's
+   * own captured account still takes precedence.
+   */
+  readonly expectedAccountId?: string;
   /** See `AccountMcpConnectOptions.discardOnAbandon`. */
   readonly discardOnAbandon?: boolean;
+  /** See `AccountMcpConnectOptions.discardNamedRowOnly`. */
+  readonly discardNamedRowOnly?: boolean;
   readonly onAuthorizing?: (embeddedUrl: string | undefined) => void;
   readonly onSettled?: (outcome: AccountMcpSignInOutcome) => void;
 }
@@ -107,7 +115,11 @@ function attemptOptions(
     ...(attempt.key ? { pendingKey: attempt.key } : {}),
     ...(attempt.flow.browser ? { browser: attempt.flow.browser } : {}),
     ...(attempt.flow.label ? { label: attempt.flow.label } : {}),
+    ...(attempt.flow.expectedAccountId
+      ? { expectedAccountId: attempt.flow.expectedAccountId }
+      : {}),
     ...(attempt.flow.discardOnAbandon ? { discardOnAbandon: true } : {}),
+    ...(attempt.flow.discardNamedRowOnly ? { discardNamedRowOnly: true } : {}),
     ...(attempt.flow.onAuthorizing
       ? { onAuthorizing: attempt.flow.onAuthorizing }
       : {}),
@@ -461,7 +473,13 @@ export function useAccountMcpSignIn(
     const accountId = capturedAccountId.current;
     setupAttempt.current = undefined;
     closeSetup();
-    if (!accountId) failSetup(attempt, ACCOUNT_CHANGED);
+    // A sign-in asked for under one account must not continue under the one
+    // the dialog opened under, should they differ (CAN-6226).
+    const expected = attempt?.flow.expectedAccountId;
+    if (!accountId || (expected !== undefined && accountId !== expected)) {
+      failSetup(attempt, ACCOUNT_CHANGED);
+      return undefined;
+    }
     return accountId;
   };
 

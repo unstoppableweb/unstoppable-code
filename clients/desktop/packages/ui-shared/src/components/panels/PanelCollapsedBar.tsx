@@ -8,6 +8,7 @@ import type {
 } from '../../panels/registry-types';
 import { TitlebarIconButton } from '../TitlebarIconButton';
 import { Tooltip } from '../Tooltip';
+import { REPLAY_MASK_CLASS } from '../../lib/replay-privacy';
 import {
   ChevronDownMediumIcon,
   ChevronLeftMediumIcon,
@@ -45,6 +46,7 @@ export interface PanelCollapsedBarProps {
   renderTabIcon?: (tab: PanelTabModel) => ReactNode;
   /** Plain-string title resolver for icon tooltips. */
   getTabTitle?: (tab: PanelTabModel) => string;
+  isTabTitlePrivate?: (tab: PanelTabModel) => boolean;
   renderTabAccessibleStatus?: (tab: PanelTabModel) => ReactNode;
   /**
    * Optional per-tab RICH tooltip renderer (same seam as the tab bar). A
@@ -113,6 +115,7 @@ export function PanelCollapsedBar({
   addTab,
   renderTabIcon,
   getTabTitle,
+  isTabTitlePrivate,
   renderTabAccessibleStatus,
   renderTabTooltip,
   tabStripAccessory,
@@ -179,40 +182,58 @@ export function PanelCollapsedBar({
         const title = getTabTitle?.(tab) ?? tab.title;
         const icon = renderTabIcon?.(tab);
         const customTooltip = renderTabTooltip?.(tab) ?? null;
+        const mask =
+          isTabTitlePrivate?.(tab) === true ? REPLAY_MASK_CLASS : undefined;
 
         return (
           <Tooltip
             key={tab.panelId}
-            label={customTooltip ?? title}
+            label={customTooltip ?? <span className={mask}>{title}</span>}
             placement={tooltipPlacement}
           >
-            <ControlButton
-              type="button"
-              presentation="panel-collapsed-tab"
-              data-testid={`panel-collapsed-tab-${tab.panelId}`}
-              data-active-tab={
-                tab.panelId === group.activePanelId ? 'true' : 'false'
-              }
-              aria-label={title}
-              aria-describedby={
-                renderTabAccessibleStatus
-                  ? `${statusIdPrefix}-${tab.panelId}`
-                  : undefined
-              }
-              onClick={(): void => {
-                callbacks.onExpandGroupToTab?.(group.groupId, tab.panelId);
-              }}
-            >
-              {icon ?? <FallbackTabGlyph />}
-              {renderTabAccessibleStatus ? (
+            {/* A private title names the button through a masked label, not
+                `aria-label`, which click events copy past the mask. */}
+            <span className={mask ? `contents ${mask}` : 'contents'}>
+              <ControlButton
+                type="button"
+                presentation="panel-collapsed-tab"
+                data-testid={`panel-collapsed-tab-${tab.panelId}`}
+                data-active-tab={
+                  tab.panelId === group.activePanelId ? 'true' : 'false'
+                }
+                {...(mask
+                  ? {
+                      'aria-labelledby': `${statusIdPrefix}-${tab.panelId}-title`,
+                    }
+                  : { 'aria-label': title })}
+                aria-describedby={
+                  renderTabAccessibleStatus
+                    ? `${statusIdPrefix}-${tab.panelId}`
+                    : undefined
+                }
+                onClick={(): void => {
+                  callbacks.onExpandGroupToTab?.(group.groupId, tab.panelId);
+                }}
+              >
+                {icon ?? <FallbackTabGlyph />}
+                {renderTabAccessibleStatus ? (
+                  <span
+                    className="sr-only"
+                    id={`${statusIdPrefix}-${tab.panelId}`}
+                  >
+                    {renderTabAccessibleStatus(tab)}
+                  </span>
+                ) : null}
+              </ControlButton>
+              {mask ? (
                 <span
                   className="sr-only"
-                  id={`${statusIdPrefix}-${tab.panelId}`}
+                  id={`${statusIdPrefix}-${tab.panelId}-title`}
                 >
-                  {renderTabAccessibleStatus(tab)}
+                  {title}
                 </span>
               ) : null}
-            </ControlButton>
+            </span>
           </Tooltip>
         );
       })}

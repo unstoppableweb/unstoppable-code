@@ -27,6 +27,7 @@
     "./node/plans": "./src/node/plans/index.ts",
     "./node/review": "./src/node/review/index.ts",
     "./node/git": "./src/node/git/index.ts",
+    "./node/git/ref-name": "./src/node/git/ref-name.ts",
     "./node/github": "./src/node/github/index.ts",
     "./node/terminal": "./src/node/terminal/index.ts",
     "./node/terminal/host": "./src/node/terminal/host/index.ts",

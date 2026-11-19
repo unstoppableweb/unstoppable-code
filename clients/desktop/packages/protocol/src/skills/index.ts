@@ -368,3 +368,23 @@ export {
   type SkillDependencyExtractionOptions,
   type SkillDependencyKind,
 } from './dependencies';
+
+export {
+  SHARED_SKILL_SECRET_DETECTED_CODE,
+  DEFINITION_CREDENTIAL_RULE,
+  findPackageEntryCredential,
+  findPackageFileCredentialRule,
+  packageDefinitionDocumentEntry,
+  type PackageEntryCredentialFinding,
+  type PackageEntryCredentialRule,
+  type SecretRuleId,
+  findPackageTextCredentialRule,
+  scanSharedSkillForSecrets,
+  sharedSkillSecretMessage,
+  sharedSkillSecretRuleLabel,
+  templateInstallSkillSecretMessage,
+  collectionSkillSecretMessage,
+  packagedSkillSecretMessage,
+  type SharedSkillFile,
+  type SharedSkillSecretFinding,
+} from './secret-scan';

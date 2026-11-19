@@ -173,6 +173,7 @@ import {
   releaseSplitLock,
   SplitLockError,
 } from '../../services/split-lock-service';
+import { useFakeSplitLockKeys } from '../split-lock-key-fixture';
 import {
   closeTestInitiatedWork,
   readyTestInitiatedWork,
@@ -230,6 +231,7 @@ afterAll(() => {
   closeTestInitiatedWork();
 });
 
+useFakeSplitLockKeys();
 beforeEach(() => {
   jest.clearAllMocks();
 });
@@ -419,7 +421,7 @@ describe('CAN-5062 golden: manual hook run gates', () => {
   } as const;
 
   it('refuses a split-locked worktree before reading anything', async () => {
-    acquireSplitLock('p-1', 'w-1');
+    await acquireSplitLock('p-1', 'w-1');
     try {
       const refusal = runHookCommand(request);
       await expect(refusal).rejects.toThrow(SplitLockError);

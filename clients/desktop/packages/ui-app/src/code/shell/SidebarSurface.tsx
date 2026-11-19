@@ -61,6 +61,7 @@ import {
   ConfirmDialog,
   TitlebarIconButton,
   PipelinePickerDialog,
+  SyncedInventoryPausedNotice,
   WorkspaceIconDisclosureSwap,
   ProjectAvatarBadge,
   type SpaceNotificationMenuChoice,
@@ -870,6 +871,15 @@ export interface SidebarSurfaceProps {
     workspaceLocalId: string,
     worktreeLocalId: string,
   ) => readonly SidebarPipelineEntry[];
+  /**
+   * Set when the row's pipeline list holds synced entries from a computer
+   * that has paused syncing, so the picker says the list may be out of date
+   * (CAN-7262). A host without synced lists leaves it unset.
+   */
+  readonly getPipelineSyncPause?: (
+    workspaceLocalId: string,
+    worktreeLocalId: string,
+  ) => { readonly deviceName: string | null } | null;
   /**
    * Launch availability and progress for a row. The workspace id is passed
    * for hosts whose worktree ids are only unique within a workspace.
@@ -3687,8 +3697,16 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
     }
     const close = (): void => setWorktreeDialog(null);
     if (worktreeDialog.mode === 'pipeline') {
+      const syncPause =
+        props.getPipelineSyncPause?.(workspace.localId, worktree.localId) ??
+        null;
       return (
         <PipelinePickerDialog
+          notice={
+            syncPause ? (
+              <SyncedInventoryPausedNotice deviceName={syncPause.deviceName} />
+            ) : undefined
+          }
           entries={(
             props.getPipelineEntries?.(workspace.localId, worktree.localId) ??
             []

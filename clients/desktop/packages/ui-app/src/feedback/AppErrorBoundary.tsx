@@ -248,7 +248,10 @@ export class AppErrorBoundary extends Component<
       recovering,
       reportAction:
         host && appError ? (
-          <ReportActionBoundary key={appError.referenceId}>
+          <ReportActionBoundary
+            key={appError.referenceId}
+            referenceId={appError.referenceId}
+          >
             <ReportActionSlot
               host={host}
               appError={appError}
@@ -261,6 +264,7 @@ export class AppErrorBoundary extends Component<
       host && appError ? (
         <ReportActionBoundary
           key={appError.referenceId}
+          referenceId={appError.referenceId}
           fallback={<ErrorFallback {...display} />}
         >
           <PresentationSlot host={host} appError={appError} display={display} />

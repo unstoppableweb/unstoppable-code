@@ -2,7 +2,7 @@ import { hostPlatformOperatingSystem } from '@canopy/core-platform';
 import type {
   ConnectedExecutionHostChannel,
   ExecutionHostChannel,
-} from '@canopy/desktop-shared/node/execution-host/channel';
+} from '@canopy/core-platform/execution-host/channel';
 import {
   killProcessGroupByPid,
   signalExitedProcessGroup,
@@ -12,7 +12,7 @@ import {
   type ProviderProcess,
   type ProviderProcessOwner,
   type ProviderProcessSpawner,
-} from '@canopy/desktop-shared/node/provider-process/spawn';
+} from '@canopy/execution-engine/node/provider-process/spawn';
 import {
   isProviderProcessHostRequest,
   PROVIDER_PROCESS_STDERR_LIMIT_BYTES,

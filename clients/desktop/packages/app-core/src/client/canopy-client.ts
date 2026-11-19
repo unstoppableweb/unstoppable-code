@@ -14,6 +14,8 @@ import type {
   WorktreeRecoveryResolveResult,
   WorktreeRecoveryFinishParams,
   WorktreeRecoveryFinishResult,
+  CatalogInvocableRow,
+  CatalogInvocablesListParams,
 } from '@canopy/protocol/canopy-core';
 import type {
   WorkEntryAutoDeleteWorkspaceSnapshot,
@@ -54,6 +56,7 @@ import type {
   SidebarItemGroupMoveRequest,
 } from '@canopy/protocol/sidebar';
 import type {
+  RemoteControlChatTabPluginSelections,
   RemoteControlWorktreeBranchesListPayload,
   RemoteControlWorktreeBranchesListResult,
   RemoteControlChatInputDeliveryPayload,
@@ -245,6 +248,24 @@ export interface ChatAttachmentUploadArgs {
   readonly bytes: Uint8Array;
   /** Lowercase hex SHA-256 of `bytes`, for the composer's duplicate check. */
   readonly contentSha256: string;
+  /** Cancels an in-flight upload where the host can; never sent over a wire. */
+  readonly signal?: AbortSignal;
+}
+
+/**
+ * A slash inventory for the composer's `/` menu. A project's read carries its
+ * default selections, parsed (null when it has none); a chat's carries none.
+ */
+export interface CatalogInvocablesList {
+  readonly rows: readonly CatalogInvocableRow[];
+  readonly defaultPluginSelections?: RemoteControlChatTabPluginSelections | null;
+}
+
+/** One unsent composer attachment for `chat.attachments.delete`. */
+export interface ChatAttachmentDeleteArgs {
+  readonly workspaceLocalId: string;
+  readonly chatId: string;
+  readonly attachmentId: string;
 }
 
 /** Optional project/worktree scope applied after the host lists live PTYs. */
@@ -274,6 +295,20 @@ export interface QueryMap
   'worktree.baseBranches': {
     args: RemoteControlWorktreeBranchesListPayload;
     result: RemoteControlWorktreeBranchesListResult;
+  };
+  /**
+   * A cloud chat's or project's slash-invocable inventory
+   * (`core.catalog.invocables.list`, CAN-6111), for the composer's `/` menu.
+   * Served where capabilities report `chatInvocableCatalog`; a directly
+   * controlled computer keeps `editor.slashCommands` / `editor.invocables`.
+   */
+  'catalog.invocables.list': {
+    /** `workspaceLocalId` routes the read; `''` before a project is chosen. */
+    args: {
+      readonly workspaceLocalId: string;
+      readonly params: CatalogInvocablesListParams;
+    };
+    result: CatalogInvocablesList;
   };
   /** Read the authoritative managed-delegation allowance for one worktree. */
   'delegation.lifetimeStatus': {
@@ -794,16 +829,23 @@ export interface CommandMap
     result: void;
   };
   /**
-   * Store one composer attachment on the paired computer before the send
-   * that carries it (CAN-5985). The reference goes in the send's
-   * `cloudAttachments`; only the client that minted it can send it. Served by
-   * clients whose capabilities report `chatAttachments` without their own
-   * attachment route (a directly controlled computer); Portal and cloud
-   * composers keep their storage routes.
+   * Store one composer attachment before the send that carries it: on a
+   * directly controlled computer (CAN-5985) or in a cloud chat's attachment
+   * storage (CAN-5386). The reference goes in the send's `cloudAttachments`;
+   * only the client that minted it can send it.
    */
   'chat.attachments.upload': {
     args: ChatAttachmentUploadArgs;
     result: RemoteControlChatCloudAttachmentRef;
+  };
+  /**
+   * Drop an uploaded attachment the composer will not send. A host whose
+   * stored copy expires on its own (a directly controlled computer) answers
+   * without doing anything.
+   */
+  'chat.attachments.delete': {
+    args: ChatAttachmentDeleteArgs;
+    result: void;
   };
   /**
    * Activity actions (Scripts / Hooks sections). Fire-and-forget mutations: the

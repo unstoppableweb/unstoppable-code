@@ -5,6 +5,7 @@ import {
   type InstalledItemStatusSource,
 } from '@canopy/ui-shared';
 import { SKILLS_CHANGED_EVENT } from '@/lib/skillsChanged';
+import { useWorkspaceContextStore } from '@/stores/workspaceContextStore';
 
 /**
  * Desktop transport for installed-item status (CAN-4255): the preload
@@ -31,7 +32,16 @@ function desktopInstalledItemSource(): InstalledItemStatusSource | null {
       );
       const onSkillsChanged = (): void => onChange();
       window.addEventListener(SKILLS_CHANGED_EVENT, onSkillsChanged);
+      // An org or context switch changes what the main process will report;
+      // current rows stay while the shared hook re-reads.
+      const unsubscribeContext = useWorkspaceContextStore.subscribe(
+        (state, previous) => {
+          if (state.appliedGeneration !== previous.appliedGeneration)
+            onChange();
+        },
+      );
       return () => {
+        unsubscribeContext();
         window.removeEventListener(SKILLS_CHANGED_EVENT, onSkillsChanged);
         unsubscribe();
         unsubscribePreferences?.();

@@ -95,6 +95,13 @@ export interface PipelineEditorSessionOptions {
   runWithoutGuard?: (navigate: () => void) => void;
   /** Called after every successful save, with the stored pipeline. */
   onSaved?: (saved: PipelineInfo, context: { wasDraft: boolean }) => void;
+  /**
+   * Handles the `pipeline.save` command (an agent's or App Advisor's save of
+   * the open pipeline) instead of the editor's own definition save, so a host
+   * whose Save does more (the Workflow page's "Send as", CAN-7186) runs the
+   * same checks and writes for it.
+   */
+  saveCommand?: () => void;
 }
 
 export interface PipelineEditorSession {
@@ -225,6 +232,7 @@ export function usePipelineEditorSession(
     bindSaveShortcut = bindShortcuts,
     runWithoutGuard,
     onSaved,
+    saveCommand,
   }: PipelineEditorSessionOptions = {},
 ): PipelineEditorSession {
   const [editorTarget, setEditorTarget] = useState<PipelineEditorTarget>({
@@ -569,10 +577,17 @@ export function usePipelineEditorSession(
     ],
   );
 
+  const saveCommandRef = useRef(saveCommand);
+  saveCommandRef.current = saveCommand;
   useEffect(() => {
-    window.addEventListener('canopy:pipeline-save-active', handleSave);
+    const onSaveCommand = (): void => {
+      const host = saveCommandRef.current;
+      if (host) host();
+      else handleSave();
+    };
+    window.addEventListener('canopy:pipeline-save-active', onSaveCommand);
     return (): void => {
-      window.removeEventListener('canopy:pipeline-save-active', handleSave);
+      window.removeEventListener('canopy:pipeline-save-active', onSaveCommand);
     };
   }, [handleSave]);
 

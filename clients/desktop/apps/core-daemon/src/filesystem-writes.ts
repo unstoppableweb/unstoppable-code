@@ -8,6 +8,27 @@ import {
   type FilesystemScopeResolver,
 } from '@canopy/core-runtime/node';
 
+/**
+ * A Files scope refusal under the codes every write instruction declares.
+ * Scope readers emit only notFound/invalidState; their kind and retry stay.
+ */
+export function asWriteScopeError(error: unknown): unknown {
+  // A catalog the system refused to read is not a missing root.
+  if (isFilesystemSnapshotUnavailable(error))
+    return filesystemSnapshotFailure(error);
+  if (
+    !(error instanceof CanopyOperationError) ||
+    !/^worker\.filesystem\.(roots|directory)\.(notFound|invalidState)$/.test(
+      error.payload.code ?? '',
+    )
+  )
+    return error;
+  return new CanopyOperationError(
+    { ...error.payload, code: 'worker.filesystem.root.notFound' },
+    error.runtimeCause,
+  );
+}
+
 /** Trusted roots; admission stays closed until split locks and holds are shared. */
 export function createDaemonFilesystemWriteHost(
   resolveScope: FilesystemScopeResolver,
@@ -27,21 +48,7 @@ export function createDaemonFilesystemWriteHost(
         excludedDescendantRoots: root.excludedDescendantRoots,
       }));
     } catch (error) {
-      // A catalog the system refused to read is not a missing root.
-      if (isFilesystemSnapshotUnavailable(error))
-        throw filesystemSnapshotFailure(error);
-      if (
-        !(error instanceof CanopyOperationError) ||
-        !/^worker\.filesystem\.(roots|directory)\.(notFound|invalidState)$/.test(
-          error.payload.code ?? '',
-        )
-      )
-        throw error;
-      // Scope readers emit only notFound/invalidState; retain their kind and retry.
-      throw new CanopyOperationError(
-        { ...error.payload, code: 'worker.filesystem.root.notFound' },
-        error.runtimeCause,
-      );
+      throw asWriteScopeError(error);
     }
   };
   return {

@@ -116,6 +116,16 @@ async function normalizeMigrationTab(
   }
 }
 
+async function exists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch (error) {
+    if (isErrnoException(error) && error.code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
 /** Recovers the same v1 revision/component semantics without retaining bodies. */
 export async function loadLegacyChatMigrationSource(
   input: LegacyChatInput,
@@ -218,6 +228,11 @@ export async function loadLegacyChatMigrationSource(
     if (!(isErrnoException(error) && error.code === 'ENOENT')) throw error;
   }
 
+  // Which family files the source below is built from, and which it read
+  // but set aside for a newer copy; cleanup removes only the former, or a
+  // file whose bytes migration kept as evidence.
+  const consumed = new Set<string>();
+  const superseded = new Set<string>();
   const snapshot = async <T extends { revision?: number }>(
     path: string,
     validate: (value: unknown) => value is T,
@@ -240,7 +255,10 @@ export async function loadLegacyChatMigrationSource(
     const primary = await read(path);
     const backup = await read(path + '.bak');
     if (!primary.value) {
-      if (backup.value) return { value: backup.value, present: true };
+      if (backup.value) {
+        consumed.add(path + '.bak');
+        return { value: backup.value, present: true };
+      }
       if (primary.error || backup.error)
         throw Object.assign(
           new Error('Unable to recover legacy chat snapshot'),
@@ -255,8 +273,13 @@ export async function loadLegacyChatMigrationSource(
       persistedFileRevision(backup.value) >
         persistedFileRevision(primary.value) &&
       maxJournalRevision >= persistedFileRevision(backup.value)
-    )
+    ) {
+      consumed.add(path + '.bak');
+      superseded.add(path);
       return { value: backup.value, present: true };
+    }
+    consumed.add(path);
+    if (backup.value) superseded.add(path + '.bak');
     return { value: primary.value, present: true };
   };
   const {
@@ -553,6 +576,19 @@ export async function loadLegacyChatMigrationSource(
         }
       : {}),
     evidence: Array.from(evidence),
+    // The journal has no backup fallback, so migration never reads its .bak;
+    // a snapshot copy set aside for a newer one is read but not used. Keep a
+    // verified copy of each before legacy cleanup may remove it.
+    optionalEvidence: [
+      ...superseded,
+      ...((await exists(`${paths.journal}.bak`))
+        ? [`${paths.journal}.bak`]
+        : []),
+    ],
+    consumedSources: [
+      ...consumed,
+      ...((await exists(paths.journal)) ? [paths.journal] : []),
+    ],
     assertUnchanged: async (): Promise<void> => {
       const current = await fingerprints();
       if (
@@ -616,21 +652,26 @@ function transcriptArray(
 export async function migrateLegacyChatScope(
   store: ChatStorageV2,
   paths: LegacyChatScopePaths,
+  options: { retainLegacy?: boolean } = {},
 ): Promise<LegacyChatMigrationReport> {
   let scratch: string | undefined;
   let input: LegacyChatInput | undefined;
   let revisionGapRecovery: LegacyChatRevisionGapRecovery | undefined;
   try {
-    await store.migrate(async () => {
-      await mkdir(dirname(dirname(paths.tabs)), { recursive: true });
-      scratch = await mkdtemp(
-        join(dirname(dirname(paths.tabs)), '.chat-migration-'),
-      );
-      input = await LegacyChatInput.create(scratch);
-      const source = await loadLegacyChatMigrationSource(input, paths);
-      revisionGapRecovery = source.revisionGapRecovery;
-      return source;
-    });
+    await store.migrate(
+      async () => {
+        await mkdir(dirname(dirname(paths.tabs)), { recursive: true });
+        scratch = await mkdtemp(
+          join(dirname(dirname(paths.tabs)), '.chat-migration-'),
+        );
+        input = await LegacyChatInput.create(scratch);
+        const source = await loadLegacyChatMigrationSource(input, paths);
+        revisionGapRecovery = source.revisionGapRecovery;
+        return source;
+      },
+      undefined,
+      options,
+    );
     return revisionGapRecovery ? { revisionGapRecovery } : {};
   } finally {
     await input?.close();

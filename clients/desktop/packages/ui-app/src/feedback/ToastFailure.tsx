@@ -59,7 +59,10 @@ export function ToastFailureReportButton(
   props: ToastFailureReportButtonProps,
 ): JSX.Element {
   return (
-    <ReportActionBoundary key={props.error.referenceId}>
+    <ReportActionBoundary
+      key={props.error.referenceId}
+      referenceId={props.error.referenceId}
+    >
       <ReportButton {...props} />
     </ReportActionBoundary>
   );

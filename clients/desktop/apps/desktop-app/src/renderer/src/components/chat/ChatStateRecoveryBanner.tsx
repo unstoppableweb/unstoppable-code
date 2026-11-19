@@ -6,6 +6,7 @@ import { useChatStore } from '@/stores/chatStore';
 import {
   CHAT_STATE_COMMAND_FAILED_TITLE,
   CHAT_STATE_CONFLICT_TITLE,
+  CHAT_STATE_UNCONFIRMED_TITLE,
   CHAT_STATE_REFRESHING_TOAST,
   CHAT_STATE_REFRESH_ERROR_HEADING,
   CHAT_STATE_REFRESH_ERROR_HELPER,
@@ -126,12 +127,16 @@ export function ChatStateRecoveryBanner({
           data-testid={
             notice.kind === 'conflict'
               ? 'chat-state-conflict-notice'
-              : 'chat-state-command-failed-notice'
+              : notice.kind === 'unconfirmed'
+                ? 'chat-state-unconfirmed-notice'
+                : 'chat-state-command-failed-notice'
           }
           title={
             notice.kind === 'conflict'
               ? CHAT_STATE_CONFLICT_TITLE
-              : CHAT_STATE_COMMAND_FAILED_TITLE
+              : notice.kind === 'unconfirmed'
+                ? CHAT_STATE_UNCONFIRMED_TITLE
+                : CHAT_STATE_COMMAND_FAILED_TITLE
           }
           onDismiss={(): void => {
             dismissChatStateNotice(projectId, worktreeId);

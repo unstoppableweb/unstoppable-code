@@ -89,6 +89,7 @@ import {
   acquireSplitLock,
   releaseSplitLock,
 } from '../../services/split-lock-service';
+import { useFakeSplitLockKeys } from '../../__tests__/split-lock-key-fixture';
 import {
   agentCoreOperations,
   AgentToolOperationRefusedError,
@@ -272,6 +273,7 @@ const MULTI_PRS = {
   lastCheckedAt: '2026-11-08T00:00:00.000Z',
 } as unknown as WorktreePrStatus;
 
+useFakeSplitLockKeys();
 beforeEach(() => {
   mockRequestRendererTool.mockClear();
   mockUpdateWorktree.mockClear();
@@ -508,7 +510,7 @@ describe('SetBaseBranch in main (CAN-6024)', () => {
   });
 
   it('an update-PR change is refused while a split runs', async () => {
-    acquireSplitLock('proj', 'wt');
+    await acquireSplitLock('proj', 'wt');
     try {
       const recorded = fakePorts({
         readPrStatus: () => Promise.resolve(openPr()),

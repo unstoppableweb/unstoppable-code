@@ -4232,6 +4232,7 @@ export function PluginsPage({
                           void useAutomationsStore.getState().hydrate();
                           void reloadMarketplaces();
                           void refreshSkills();
+                          installedStatuses.refresh();
                           void refreshServers();
                           void capabilityInventory.refreshPipelines();
                           void refreshCollectionList().catch(() => {

@@ -239,13 +239,26 @@ export function CustomizeWorksWithChips({
 }
 
 /**
+ * The harnesses a host reaches right now, from its own live reading (the
+ * desktop's signed-in Claude and Codex, and an enabled Cursor): `true` live,
+ * `false` not, `null` still checking. A harness left out is one the host
+ * cannot read.
+ */
+export type CustomizeLiveHarnesses = Partial<
+  Readonly<Record<CustomizeDiscoveryHarness, boolean | null>>
+>;
+
+/**
  * A detail page's Works with rows, from the same selector as the tile's
  * chips: the entry's harness rows when it has them, else every harness with
- * whether this item works there (installed items read Installed).
+ * whether this item works there (installed items read Installed). Without
+ * compatibility metadata, a harness `live` reports reachable works too: the
+ * published fallback cannot know a custom server reaches Cursor.
  */
 export function customizeWorksWithRows(
   entry: Parameters<typeof CustomizeWorksWithChips>[0]['entry'] &
-    Pick<UnifiedPluginEntry, 'state'>,
+    Pick<UnifiedPluginEntry, 'state' | 'harnessInstalls'>,
+  live?: CustomizeLiveHarnesses,
 ): PluginWorksWithRow[] {
   const rows = customizeEntryHarnessRows(entry);
   if (rows !== undefined) {
@@ -270,11 +283,36 @@ export function customizeWorksWithRows(
           : row.installation,
     }));
   }
+  const listings = [entry, ...(entry.marketplaceListings ?? [])];
+  // Compatibility metadata on any copy is authoritative; only without it
+  // does the host's live reading add harnesses.
+  const liveHarnesses = listings.some(
+    (listing) => listing.harnessCompatibility !== undefined,
+  )
+    ? undefined
+    : live;
   const supported = new Set(customizeWorksWithHarnesses(entry));
+  // The live reading is device-wide, so a harness it alone adds reads Not
+  // installed when this item's own install there failed (no copy landed it).
+  const failedLive = new Set<CustomizeDiscoveryHarness>();
+  for (const { value } of CUSTOMIZE_DISCOVERY_HARNESS_OPTIONS) {
+    if (liveHarnesses?.[value] !== true || supported.has(value)) continue;
+    supported.add(value);
+    if (
+      listings.some((listing) =>
+        listing.harnessInstalls?.failed.some(
+          (failure) => failure.harness === value,
+        ),
+      ) &&
+      !listings.some((listing) =>
+        listing.harnessInstalls?.installed.some((harness) => harness === value),
+      )
+    )
+      failedLive.add(value);
+  }
   // Not added, and no copy's files read: only the marketplace's own
   // harness is known, so the others are unknown rather than unsupported.
   // Per harness: compatibility may cover only some of them.
-  const listings = [entry, ...(entry.marketplaceListings ?? [])];
   const copyRead =
     entry.state !== 'available' ||
     listings.some(
@@ -303,10 +341,14 @@ export function customizeWorksWithRows(
     id: value,
     name: CHIP_NAMES[value],
     installation: !supported.has(value)
-      ? verified(value)
-        ? 'Not supported'
-        : 'Unknown until added'
-      : entry.state !== 'available' || installedVia.has(value)
+      ? // A harness still being read is not known to be unsupported yet.
+        liveHarnesses?.[value] === null
+        ? 'Checking…'
+        : verified(value)
+          ? 'Not supported'
+          : 'Unknown until added'
+      : installedVia.has(value) ||
+          (entry.state !== 'available' && !failedLive.has(value))
         ? 'Installed'
         : 'Not installed',
   }));
@@ -316,12 +358,15 @@ export function customizeWorksWithRows(
 export function CustomizeEntryWorksWith({
   entry,
   checking = false,
+  liveHarnesses,
 }: {
   readonly entry: Parameters<typeof customizeWorksWithRows>[0];
   /** A preview of the plugin's files is being read: unknown rows say so. */
   readonly checking?: boolean;
+  /** The host's live harness reading, for entries without compatibility. */
+  readonly liveHarnesses?: CustomizeLiveHarnesses;
 }): JSX.Element | null {
-  const rows = customizeWorksWithRows(entry);
+  const rows = customizeWorksWithRows(entry, liveHarnesses);
   return (
     <PluginWorksWith
       rows={

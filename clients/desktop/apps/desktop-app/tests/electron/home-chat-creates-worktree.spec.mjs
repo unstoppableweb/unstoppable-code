@@ -796,10 +796,24 @@ test.describe('Home chat send', () => {
       const branch = window.getByRole('option').filter({
         has: window.getByText('origin/feature-x', { exact: true }),
       });
+      const branchesError = window.getByTestId(
+        'home-base-branch-picker-branches-error',
+      );
       await picker.press('Enter');
-      await expect(
-        window.getByTestId('home-base-branch-picker-branches-error'),
-      ).toBeVisible();
+      // The Home composer issues its own first catalogue read at boot, which
+      // can land before or after the failure is armed, and opening the picker
+      // skips its reload while that read is in flight. Wait for a visible end
+      // state (the generic skeleton hides the loading test ID, so its absence
+      // proves nothing); if the read succeeded without consuming the failure,
+      // reopen so the open-time refresh issues a read that hits it.
+      await expect(branchesError.or(branch).first()).toBeVisible();
+      if (!(await branchesError.isVisible())) {
+        await window.keyboard.press('Escape');
+        await expect(search).toBeHidden();
+        await picker.focus();
+        await picker.press('Enter');
+      }
+      await expect(branchesError).toBeVisible();
       await window
         .getByTestId('home-base-branch-picker-branches-retry')
         .click();

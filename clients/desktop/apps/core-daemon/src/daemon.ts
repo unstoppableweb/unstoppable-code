@@ -61,6 +61,7 @@ import {
   type CanopyControlConnectionIdentity,
   type CanopyControlStreamSession,
   type CanopyObligationRegistry,
+  worktreeFenceKey,
 } from '@canopy/core-runtime/node';
 import {
   createRecordedWorkerGitHosts,
@@ -103,14 +104,23 @@ import {
 } from '@canopy/core-transport/node';
 import {
   CANOPY_IN_PROCESS_WORKER_TARGET_ID,
+  CORE_MUTATION_FENCE_INSTRUCTION_DEFINITIONS,
   CORE_TRANSPORT_QUERY_DEFINITIONS,
   CORE_WORKSPACE_METADATA_GRANTS,
   WORKER_FILESYSTEM_ENTRY_INSTRUCTION_DEFINITIONS,
   WORKER_GIT_GRANTS,
   type CanopyCallerDescriptor,
   type CanopyRuntimeDescriptor,
+  MUTATION_FENCE_GRANTS,
 } from '@canopy/protocol/canopy-core';
 import type { CanopyDaemonArguments } from './arguments';
+import {
+  awaitingOwnerLogLine,
+  createMutationFenceGuard,
+  createMutationFenceModule,
+  createMutationFenceRegistry,
+  daemonWorktreeRootLookup,
+} from './mutation-fence';
 import type { DaemonFilesystemWatchOptions } from './filesystem-watch';
 import { flushDirectory } from '@canopy/core-platform/directory-flush';
 import type { ExecutionHostShellCommand } from '@canopy/core-platform/execution-host';
@@ -290,7 +300,13 @@ function ownerConnectionCaller(
     clientInstanceId: lease?.clientInstanceId ?? connectionId,
     authorityId,
     interfaceKind: 'desktop',
-    grants: ['core.runtime.read', 'core.client.manage', ...pipelineOwnerGrants],
+    grants: [
+      'core.runtime.read',
+      'core.client.manage',
+      // CAN-4730 E2-G: only the proven owner publishes its split-lock fences.
+      MUTATION_FENCE_GRANTS.publish,
+      ...pipelineOwnerGrants,
+    ],
   };
 }
 
@@ -853,6 +869,29 @@ async function startOwnedDaemon(
       paths: { join, resolve, isAbsolute, sep, basename },
       rootIdentity: readNativeRootIdentity,
     });
+    // CAN-4730 E2-G: one fence key per worktree, checked on the core before
+    // any write reaches a bundled or split worker.
+    const lookupWorktreeRoot = daemonWorktreeRootLookup(resolveScope);
+    const mutationFence = createMutationFenceRegistry(
+      (target) =>
+        worktreeFenceKey(
+          target.workspaceId,
+          target.worktreeId,
+          lookupWorktreeRoot,
+        ),
+      {
+        // No native UI in the daemon: a lost owner shows in the log.
+        onAwaitingOwnerOverdue: (waitedMs) =>
+          process.stderr.write(awaitingOwnerLogLine('overdue', waitedMs)),
+        onAwaitingOwnerRecovered: (waitedMs) =>
+          process.stderr.write(awaitingOwnerLogLine('recovered', waitedMs)),
+      },
+    );
+    const mutationFenceGuard = createMutationFenceGuard({
+      registry: mutationFence,
+      lookupWorktreeRoot,
+    });
+    const mutationFenceModule = createMutationFenceModule(mutationFence);
     checkStartup();
     await prepareCanopyDaemonRuntimeDirectory(canonicalDataRoot, platform);
     checkStartup();
@@ -1047,6 +1086,8 @@ async function startOwnedDaemon(
         worker: route,
         vault: vaultModule,
         credentials: credentialsModule,
+        mutationFence: mutationFenceModule,
+        instructionGuard: mutationFenceGuard,
         services: [...services, supervisor.service],
       });
     } else {
@@ -1231,6 +1272,8 @@ async function startOwnedDaemon(
         identity,
         vault: vaultModule,
         credentials: credentialsModule,
+        mutationFence: mutationFenceModule,
+        instructionGuard: mutationFenceGuard,
         filesystem: {
           os,
           ...(platform.trash && { trash: platform.trash }),
@@ -1369,6 +1412,11 @@ async function startOwnedDaemon(
             W5_RECORD_PORT_OPERATIONS.includes(name) ||
             W5_HOSTED_METADATA_OPERATIONS.includes(name) ||
             CORE_OPERATION_OPERATIONS.includes(name) ||
+            // CAN-4730 E2-G: each fence set belongs to its publishing lease.
+            Object.prototype.hasOwnProperty.call(
+              CORE_MUTATION_FENCE_INSTRUCTION_DEFINITIONS,
+              name,
+            ) ||
             CORE_PIPELINE_DEFINITION_OPERATIONS.includes(name),
         )
         .map(({ name }) => name),
@@ -1392,6 +1440,12 @@ async function startOwnedDaemon(
     pipelineObligations.current = controlPlane.obligations;
     let migration: CanopyControlStreamSession | undefined;
     undo.push(() => controlPlane.close());
+    // An ended owner lease keeps its fences until a live owner publishes;
+    // only the lease that published a set ends it.
+    const offFenceOwners = controlPlane.leases.onEnd((lease) =>
+      mutationFence.ownerLeaseEnded(lease.leaseId),
+    );
+    undo.push(() => Promise.resolve(offFenceOwners()));
     if (options.migration) {
       migration = await options.migration(controlPlane.obligations);
       undo.push(() => migration?.close() ?? Promise.resolve());

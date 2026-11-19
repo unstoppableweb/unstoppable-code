@@ -2174,7 +2174,13 @@ export type PipelineExecutionStartResult =
       error: string;
       errorCode?:
         | 'shared_pipeline_changed'
-        | typeof PIPELINE_NOW_OWNED_ERROR_CODE;
+        | typeof PIPELINE_NOW_OWNED_ERROR_CODE
+        // CAN-7308: the definition's interrupted update is still being
+        // undone (retryable), couldn't be undone in this process, or was a
+        // workflow the undone install had added.
+        | 'pipeline_definition_restoring'
+        | 'pipeline_definition_unconfirmed'
+        | 'pipeline_definition_removed';
     };
 
 export interface ProjectPipelineRequest {

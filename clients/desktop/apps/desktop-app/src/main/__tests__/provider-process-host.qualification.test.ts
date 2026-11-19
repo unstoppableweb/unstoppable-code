@@ -26,18 +26,18 @@ import {
   startProviderProcessHost,
   type ProviderProcessHostChildSnapshot,
   type ProviderProcessHostHandle,
-} from '../agent-runs/provider-process-host/host';
+} from '@canopy/execution-engine/node/agent-host/process/provider-process-host/host';
 import {
   isProviderProcessHostRequest,
   isProviderProcessHostResponse,
   PROVIDER_PROCESS_STDERR_LIMIT_BYTES,
   PROVIDER_PROCESS_STDOUT_WINDOW_BYTES,
   type ProviderProcessHostRequest,
-} from '../agent-runs/provider-process-host/protocol';
+} from '@canopy/execution-engine/node/agent-host/process/provider-process-host/protocol';
 import {
   createProviderProcessHostClient,
   type ProviderProcessHostClient,
-} from '../agent-runs/provider-process-host/runner';
+} from '@canopy/execution-engine/node/agent-host/process/provider-process-host/runner';
 import { startOwnedProviderProcessHost } from './helpers/owned-provider-process-host';
 
 // The provider process host qualified in process (a fake parent port, as the

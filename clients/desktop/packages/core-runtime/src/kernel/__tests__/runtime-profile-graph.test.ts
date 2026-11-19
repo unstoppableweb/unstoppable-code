@@ -138,6 +138,9 @@ const files = (): RuntimeModule =>
         'worker.codeGraph.languages.validate': (): never => {
           throw new Error('Not exercised.');
         },
+        'worker.operation.receipt.get': (): never => {
+          throw new Error('Not exercised.');
+        },
       },
     },
   });
@@ -560,6 +563,210 @@ it('cannot bypass a failed binding to reach worker instruction or stream handler
     expect(writeHandler).not.toHaveBeenCalled();
     expect(eventsHandler).not.toHaveBeenCalled();
   } finally {
+    await graph.shutdown('test');
+  }
+});
+
+/**
+ * A bundled graph whose guard admits every forwarded instruction and records
+ * each release, with a worker write that runs until `finish` and ignores its
+ * cancellation, as a write past its point of no return does (CAN-4730 E2-G).
+ */
+function guardedSlowWrite(): {
+  graph: ReturnType<typeof createRuntimeProfileGraph>;
+  pair: ReturnType<typeof serializingWorkerPair>;
+  release: jest.Mock;
+  entered: Promise<void>;
+  finish(): void;
+  start(signal?: AbortSignal): Promise<string>;
+} {
+  const pair = serializingWorkerPair();
+  const release = jest.fn();
+  let enter: () => void = () => undefined;
+  const entered = new Promise<void>((resolve) => {
+    enter = resolve;
+  });
+  let finish: () => void = () => undefined;
+  const finished = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  const graph = createRuntimeProfileGraph({
+    profile: 'core+worker',
+    modules: [
+      example({
+        write: async (params) => {
+          enter();
+          await finished;
+          return params;
+        },
+      }),
+    ],
+    workerCaller: exampleCaller,
+    workerBinding: pair,
+    identity: { runtimeId: 'runtime', hostId: 'host', authorityId: null },
+    phaseDeadlineMs: 1000,
+    shutdownTimeoutMs: 50,
+    instructionGuard: () => release,
+  });
+  return {
+    graph,
+    pair,
+    release,
+    entered,
+    finish,
+    start: (signal) =>
+      kind(
+        graph.dispatcher.instruction('worker.example.write', write, {
+          caller: exampleCaller,
+          metadata: keyed,
+          ...(signal && { signal }),
+        }),
+      ),
+  };
+}
+const settle = async (): Promise<void> => {
+  for (let turn = 0; turn < 20; turn += 1)
+    await new Promise((resolve) => setImmediate(resolve));
+};
+
+it('holds a guarded instruction admitted after its caller cancels, until the worker settles it', async () => {
+  const run = guardedSlowWrite();
+  try {
+    const cancel = new AbortController();
+    const outcome = run.start(cancel.signal);
+    await run.entered;
+    cancel.abort();
+    expect(await outcome).toBe('cancelled');
+    await settle();
+    // The worker is still writing: admission stays held, so a fence waits.
+    expect(run.release).not.toHaveBeenCalled();
+    run.finish();
+    await settle();
+    expect(run.release).toHaveBeenCalledTimes(1);
+  } finally {
+    await run.graph.shutdown('test');
+  }
+});
+
+it('keeps a guarded instruction admitted after its binding closes while the worker still runs it, with or without a cancel first', async () => {
+  for (const cancelFirst of [true, false]) {
+    const run = guardedSlowWrite();
+    try {
+      const cancel = new AbortController();
+      const outcome = run.start(cancel.signal);
+      await run.entered;
+      if (cancelFirst) {
+        cancel.abort();
+        expect(await outcome).toBe('cancelled');
+        await settle();
+        expect(run.release).not.toHaveBeenCalled();
+      }
+      // The core's end of the binding is gone, but the worker's write is
+      // still running. An in-process worker gives no exit to wait for, so
+      // the write stays admitted: a fence over it can never be acknowledged.
+      run.pair.client.close();
+      if (!cancelFirst) expect(await outcome).toBe('unavailable');
+      await settle();
+      expect(run.release).not.toHaveBeenCalled();
+      run.finish();
+      await settle();
+      expect(run.release).not.toHaveBeenCalled();
+    } finally {
+      run.finish();
+      await run.graph.shutdown('test');
+    }
+  }
+});
+
+it('keeps a cancelled instruction admitted while its receipt lookup is refused at capacity, until the worker settles', async () => {
+  const pair = serializingWorkerPair();
+  const deliver = pair.client.send.getMockImplementation();
+  if (!deliver) throw new Error('The test pair has no send.');
+  // Each write request is delivered at once, but its send stays open, so
+  // the binding counts it in flight and refuses further requests.
+  const heldSends: Array<() => void> = [];
+  let holding = true;
+  pair.client.send.mockImplementation(async (message) => {
+    await deliver(message);
+    if (
+      holding &&
+      'method' in message &&
+      message.method === 'worker.example.write'
+    )
+      await new Promise<void>((resolve) => heldSends.push(resolve));
+  });
+  const releases = new Map<number, jest.Mock>();
+  let enterTarget: () => void = () => undefined;
+  const targetEntered = new Promise<void>((resolve) => {
+    enterTarget = resolve;
+  });
+  let finish: () => void = () => undefined;
+  const finished = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  const graph = createRuntimeProfileGraph({
+    profile: 'core+worker',
+    modules: [
+      example({
+        write: async (params) => {
+          if (params.sequence === 0) enterTarget();
+          await finished;
+          return params;
+        },
+      }),
+    ],
+    workerCaller: exampleCaller,
+    workerBinding: pair,
+    identity: { runtimeId: 'runtime', hostId: 'host', authorityId: null },
+    phaseDeadlineMs: 1000,
+    shutdownTimeoutMs: 50,
+    instructionGuard: (_operation, params) => {
+      const release = jest.fn();
+      releases.set((params as typeof write).sequence, release);
+      return release;
+    },
+  });
+  const run = (sequence: number, signal?: AbortSignal): Promise<string> =>
+    kind(
+      graph.dispatcher.instruction(
+        'worker.example.write',
+        { daemonEpoch: 'epoch', sequence },
+        {
+          caller: exampleCaller,
+          metadata: { idempotencyKey: `key-${sequence}` },
+          ...(signal && { signal }),
+        },
+      ),
+    );
+  try {
+    const cancel = new AbortController();
+    const target = run(0, cancel.signal);
+    await targetEntered;
+    const others = Array.from({ length: 127 }, (_, index) => run(index + 1));
+    await settle();
+    cancel.abort();
+    expect(await target).toBe('cancelled');
+    await settle();
+    // The receipt lookup is refused at capacity: nothing proves it settled.
+    expect(releases.get(0)).not.toHaveBeenCalled();
+    holding = false;
+    heldSends.splice(0).forEach((resolve) => resolve());
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    // The lookup now reaches the worker, which is still running it.
+    expect(releases.get(0)).not.toHaveBeenCalled();
+    finish();
+    for (
+      let wait = 0;
+      wait < 100 && !releases.get(0)?.mock.calls.length;
+      wait += 1
+    )
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(releases.get(0)).toHaveBeenCalledTimes(1);
+    await Promise.all(others);
+  } finally {
+    holding = false;
+    heldSends.splice(0).forEach((resolve) => resolve());
+    finish();
     await graph.shutdown('test');
   }
 });

@@ -260,7 +260,11 @@ function finalizeDocument(
 ):
   | { ok: true; bytes: Uint8Array }
   | { ok: false; reason: 'not_portable'; detail: string } {
-  const validated = validateSharedContainerDefinitionDocument(document);
+  // Written for sharing, so a real value in placeholder brackets is refused
+  // (CAN-7226); stored definitions are read with the default and still load.
+  const validated = validateSharedContainerDefinitionDocument(document, {
+    placeholderContents: 'checked',
+  });
   if (!validated.ok)
     return {
       ok: false,

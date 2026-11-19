@@ -1,4 +1,5 @@
 import {
+  CanopyJsonRpcMessageSchema,
   CANOPY_QUERY_DEFINITIONS,
   CANOPY_INSTRUCTION_DEFINITIONS,
   WORKER_QUERY_DEFINITIONS,
@@ -68,6 +69,7 @@ type WorkerQueryHandlers = Pick<
   | 'worker.codeGraph.query'
   | 'worker.codeGraph.snapshot.export'
   | 'worker.codeGraph.languages.validate'
+  | 'worker.operation.receipt.get'
 >;
 
 function handlers(
@@ -137,6 +139,9 @@ function handlers(
       throw new Error('Not exercised.');
     },
     'worker.codeGraph.languages.validate': (): never => {
+      throw new Error('Not exercised.');
+    },
+    'worker.operation.receipt.get': (): never => {
       throw new Error('Not exercised.');
     },
   };
@@ -313,6 +318,81 @@ describe('createCanopyDispatcher', () => {
     },
   );
 
+  // CAN-4730 E2-G: a handler's lease comes only from the host transport
+  // that checked it; no caller field can name one or a worker settlement.
+  const FORGED_CONTEXT_FIELDS = {
+    lease: { leaseId: 'forged-lease' },
+    leaseId: 'forged-lease',
+    workerSettlement: 'forged',
+  };
+  it.each(
+    Object.entries(FORGED_CONTEXT_FIELDS).flatMap(([field, value]) => [
+      { field, value, where: 'params' as const },
+      { field, value, where: '_meta' as const },
+    ]),
+  )(
+    'refuses a caller-named $field in $where before the handler',
+    async ({ field, value, where }) => {
+      const handler = jest.fn(() => rootsResult);
+      const dispatcher = createDispatcher(handler);
+      const call =
+        where === 'params'
+          ? dispatcher.query(
+              'worker.filesystem.roots.list',
+              { ...rootsParams, [field]: value },
+              { caller },
+            )
+          : dispatcher.query('worker.filesystem.roots.list', rootsParams, {
+              caller,
+              metadata: { [field]: value },
+            });
+      await expect(call).rejects.toMatchObject({
+        payload: { kind: 'invalid_argument' },
+      });
+      expect(handler).not.toHaveBeenCalled();
+      if (where === '_meta')
+        // The wire envelope refuses it too, before it is ever sent.
+        expect(
+          CanopyJsonRpcMessageSchema.safeParse({
+            jsonrpc: '2.0',
+            id: 1,
+            method: 'worker.filesystem.roots.list',
+            params: { ...rootsParams, _meta: { [field]: value } },
+          }).success,
+        ).toBe(false);
+    },
+  );
+
+  it('takes the lease only from the host call options, never from a caller', async () => {
+    const seen: CanopyHandlerContext[] = [];
+    const dispatcher = createDispatcher((_params, context) => {
+      seen.push(context);
+      return rootsResult;
+    });
+    // Call options other than the host's lease never reach the context.
+    const untrusted: Record<string, unknown> = {
+      caller,
+      leaseId: 'forged-lease',
+      workerSettlement: (): void => undefined,
+    };
+    await dispatcher.query('worker.filesystem.roots.list', rootsParams, {
+      caller,
+      ...untrusted,
+    });
+    expect(seen[0]).not.toHaveProperty('lease');
+    expect(seen[0]).not.toHaveProperty('workerSettlement');
+    expect(seen[0]).not.toHaveProperty('leaseId');
+    // The host's lease reaches it as a frozen copy.
+    const lease = { leaseId: 'host-lease' };
+    await dispatcher.query('worker.filesystem.roots.list', rootsParams, {
+      caller,
+      lease,
+    });
+    expect(seen[1]?.lease).toEqual(lease);
+    expect(seen[1]?.lease).not.toBe(lease);
+    expect(Object.isFrozen(seen[1]?.lease)).toBe(true);
+  });
+
   it('rejects idempotency keys on inherently idempotent read queries', async () => {
     const handler = jest.fn(() => rootsResult);
     const dispatcher = createDispatcher(handler);
@@ -323,6 +403,24 @@ describe('createCanopyDispatcher', () => {
         metadata: { idempotencyKey: 'not-a-keyed-operation' },
       }),
     ).rejects.toMatchObject({ payload: { kind: 'invalid_argument' } });
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('refuses a dispatch tag on queries, which only instructions carry (CAN-4733)', async () => {
+    const handler = jest.fn(() => rootsResult);
+    const dispatcher = createDispatcher(handler);
+    await expect(
+      dispatcher.query('worker.filesystem.roots.list', rootsParams, {
+        caller,
+        // @ts-expect-error Queries and streams do not accept a dispatch tag.
+        metadata: { dispatchId: 'tag' },
+      }),
+    ).rejects.toMatchObject({
+      payload: {
+        kind: 'invalid_argument',
+        message: 'Invalid request metadata.',
+      },
+    });
     expect(handler).not.toHaveBeenCalled();
   });
 

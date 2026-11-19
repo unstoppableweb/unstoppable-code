@@ -148,6 +148,7 @@ export async function runArchiveGit(args: {
   signal: AbortSignal;
   child: ArchiveChildObserver;
   timeoutMs?: number;
+  preserveWhitespace?: boolean;
 }): Promise<string> {
   if (args.signal.aborted) throw new Error('Archive I/O request cancelled.');
   return new Promise<string>((resolvePromise, reject) => {
@@ -227,7 +228,8 @@ export async function runArchiveGit(args: {
           ),
         );
       } else {
-        finish(undefined, stdout.toString('utf8').trim());
+        const output = stdout.toString('utf8');
+        finish(undefined, args.preserveWhitespace ? output : output.trim());
       }
     });
   });
@@ -483,11 +485,19 @@ export async function captureArchiveGit(args: {
                 parentCommit: indexSnapshotCommit,
                 message: 'Archived working tree snapshot',
               });
-        const branchName = await runArchiveGit({
+        const branchRef = await runArchiveGit({
           ...args,
           cwd: input.worktreeRepoPath,
-          arguments: ['symbolic-ref', '--quiet', '--short', 'HEAD'],
-        }).catch(() => undefined);
+          arguments: ['symbolic-ref', '--quiet', 'HEAD'],
+          preserveWhitespace: true,
+        }).catch((error: unknown) => {
+          if (error instanceof ArchiveGitCommandError && error.exitCode === 1)
+            return undefined;
+          throw error;
+        });
+        const branchName = branchRef?.startsWith('refs/heads/')
+          ? branchRef.slice('refs/heads/'.length).replace(/\r?\n$/, '')
+          : undefined;
         let comparisonBaseCommit = input.comparisonBaseCommit || headCommit;
         let baseBranchCommit = input.baseBranchCommit;
         for (const candidate of input.comparisonBaseRefs ?? []) {
@@ -757,7 +767,7 @@ export async function removeArchiveWorktree(args: {
       await runArchiveGit({
         ...args,
         cwd: args.referenceRepoPath,
-        arguments: ['worktree', 'remove', '--force', args.worktreePath],
+        arguments: ['worktree', 'remove', '--force', '--', args.worktreePath],
         timeoutMs: getWorktreeDeleteTimeoutMs(args.git.env),
       });
     } catch (error) {

@@ -43,6 +43,7 @@ export function registerWorkEntryAutoDeleteHandlers(): void {
       return resolveWorkEntryAutoDeleteBranch({
         ...identity,
         answer: request.answer,
+        confirmationId: request.confirmationId,
       });
     },
   );

@@ -22,6 +22,7 @@ import type {
 } from '@canopy/execution-engine/types/pipeline';
 import { CanopyOperationError } from '@canopy/core-runtime';
 import type { PipelineDefinitionInstall } from '@canopy/core-runtime/node/pipeline';
+import { SHARED_AUTOMATION_ACTION_PIPELINE_KEY } from '@canopy/protocol/automations';
 import {
   AUTOMATION_PIPELINE_TREE_ENTRY_PATH,
   buildPackagedPipelineId,
@@ -72,8 +73,10 @@ import * as localPipelineService from './pipeline-service';
  * - `reused`: an existing local pipeline is used. Either the recorded one,
  *   rewritten in place with the new YAML because the share changed it
  *   upstream (an update; its local copy still matched what was installed),
- *   or one already linked to this package and hash (a retried Stage A), or
- *   an unlinked local pipeline with identical YAML.
+ *   or one already linked to this package and hash (a retried Stage A), or,
+ *   for a dependency, an unlinked local pipeline with identical YAML. The
+ *   automation's own action pipeline never reuses an unlinked one: the
+ *   automation owns it and deletes it with itself (CAN-7285).
  * - `created`: a new user pipeline was saved. Project pipelines install as
  *   user pipelines with the same name.
  *
@@ -572,6 +575,11 @@ async function planPipelineInstall(
       rewrite: false,
     };
   }
+  // CAN-7285: the automation owns the pipeline its action runs and deletes
+  // it with itself, so that one is never a local pipeline the person
+  // already had; only a dependency reuses one.
+  if (document.key === SHARED_AUTOMATION_ACTION_PIPELINE_KEY)
+    return { outcome: 'created' };
   const unlinked = await findReusableUnlinkedPipeline(
     document.pipelineContentHash,
     taken,

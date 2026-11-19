@@ -1,3 +1,4 @@
+import type { AutoArchiveBranchPin } from './auto-archive-branches';
 import {
   matchesRecordedDirectoryIdentity,
   directoryStatIdentity,
@@ -79,6 +80,7 @@ import {
 import {
   getFileDiffBetweenTreesWithPaths,
   getGitCommonDir,
+  getCurrentBranch,
   removeWindowsWorktreeReparsePoints,
 } from './git';
 import { fetchArchivedPullRequestMetadata } from './github-pr';
@@ -182,6 +184,7 @@ export interface ArchivedContainerBranchDeletion {
   repositoryIdentity: string;
   branchName: string;
   expectedTip: string;
+  mode?: ArchivedContainerBranchDeletionMode;
 }
 
 export interface ArchivedGitCapturingStagedDescriptor {
@@ -491,7 +494,10 @@ function isTeardownJournal(
           typeof deletion.branchName === 'string' &&
           deletion.branchName.length > 0 &&
           typeof deletion.expectedTip === 'string' &&
-          GIT_OBJECT_ID_RE.test(deletion.expectedTip),
+          GIT_OBJECT_ID_RE.test(deletion.expectedTip) &&
+          (deletion.mode === undefined ||
+            deletion.mode === 'force' ||
+            deletion.mode === 'merged-only'),
       ));
   return (
     isRecord(value) &&
@@ -1438,6 +1444,7 @@ export async function captureArchivedContainerGitState(args: {
   persistedWorktree: WorktreeData;
   /** Root-only multi-repo archives may contain files but no Git checkout. */
   allowEmptyRepositories?: boolean;
+  verifyCapturedBranches?: boolean;
 }): Promise<{
   gitState: ArchivedGitState;
   gitChanges: ArchivedGitChangesSummary;
@@ -1502,6 +1509,7 @@ export async function captureArchivedContainerGitState(args: {
         !(await snapshotsMatchAtPath({
           repositories: existing.repositories,
           rootPath: canonicalPath,
+          verifyCapturedBranches: args.verifyCapturedBranches,
         }))
       ) {
         throw new Error('The staged archived Git state is stale.');
@@ -1784,9 +1792,9 @@ async function persistPendingBranchDeletions(
   requestedMode?: ArchivedContainerBranchDeletionMode,
 ): Promise<ArchivedGitStagedDescriptor> {
   if (!descriptor.teardown) return descriptor;
-  const branchDeletionTargets = await buildBranchDeletionTargets(
-    descriptor.repositories,
-  );
+  const branchDeletionTargets =
+    descriptor.teardown.branchDeletionTargets ??
+    (await buildBranchDeletionTargets(descriptor.repositories));
   const branchDeletionMode =
     descriptor.teardown.branchDeletionMode ?? requestedMode ?? 'force';
   const teardown = { ...descriptor.teardown };
@@ -1831,6 +1839,7 @@ async function clearPendingBranchDeletions(
   }
   if (
     !descriptor.teardown.pendingBranchDeletions?.length &&
+    descriptor.teardown.branchDeletionTargets === undefined &&
     descriptor.teardown.branchDeletionMode === undefined &&
     descriptor.teardown.preserveBranches === true
   ) {
@@ -1838,6 +1847,7 @@ async function clearPendingBranchDeletions(
   }
   const teardown = { ...descriptor.teardown };
   delete teardown.branchDeletionMode;
+  delete teardown.branchDeletionTargets;
   const updated: ArchivedGitStagedDescriptor = {
     ...descriptor,
     teardown: {
@@ -1882,6 +1892,7 @@ function capturedRepositoryDefinitions(
 async function snapshotsMatchAtPath(args: {
   repositories: ArchivedGitRepositoryState[];
   rootPath: string;
+  verifyCapturedBranches?: boolean;
 }): Promise<boolean> {
   for (const repository of args.repositories) {
     const repoPath =
@@ -1912,7 +1923,10 @@ async function snapshotsMatchAtPath(args: {
       if (
         head !== repository.headCommit ||
         indexTree !== expectedIndexTree ||
-        worktreeTree !== expectedWorktreeTree
+        worktreeTree !== expectedWorktreeTree ||
+        (args.verifyCapturedBranches &&
+          (await getCurrentBranch(repoPath)) !==
+            (repository.branchName ?? 'HEAD'))
       ) {
         return false;
       }
@@ -2338,6 +2352,9 @@ export async function prepareArchivedContainerTeardown(args: {
   workspaceType: 'single-repo' | 'multi-repo';
   gitState: ArchivedGitState;
   deleteBranches?: boolean;
+  resumeRecordedBranchDeletion?: boolean;
+  verifyCapturedBranches?: boolean;
+  forceConfirmedBranches?: readonly AutoArchiveBranchPin[];
   branchDeletionMode?: ArchivedContainerBranchDeletionMode;
   workspaceRootCapture?: {
     managedRepoIds: readonly string[];
@@ -2368,9 +2385,17 @@ export async function prepareArchivedContainerTeardown(args: {
     throw new Error('Archived Git state is not ready for teardown.');
   }
   let descriptor: ArchivedGitStagedDescriptor = loadedDescriptor;
-  const requestedBranchDeletionMode =
-    args.branchDeletionMode ??
-    (args.deleteBranches === true ? ('force' as const) : undefined);
+  if (args.resumeRecordedBranchDeletion && !descriptor.teardown) {
+    throw new Error('The recorded archive teardown is unavailable.');
+  }
+  // A resumed quarantine owns the branch targets and their deletion mode.
+  const deleteBranches = args.resumeRecordedBranchDeletion
+    ? undefined
+    : args.deleteBranches;
+  const requestedBranchDeletionMode = args.resumeRecordedBranchDeletion
+    ? undefined
+    : (args.branchDeletionMode ??
+      (deleteBranches === true ? ('force' as const) : undefined));
   assertStateMatchesDefinitions({
     workspaceId: args.workspaceId,
     containerId: args.containerId,
@@ -2399,7 +2424,8 @@ export async function prepareArchivedContainerTeardown(args: {
       );
     }
     if (
-      args.deleteBranches !== false &&
+      !args.resumeRecordedBranchDeletion &&
+      deleteBranches !== false &&
       descriptor.teardown.pendingBranchDeletions?.length
     ) {
       descriptor = await persistPendingBranchDeletions(
@@ -2427,13 +2453,13 @@ export async function prepareArchivedContainerTeardown(args: {
       quarantinePath,
       expectedCreatedAt: args.expectedCreatedAt,
     });
-    if (args.deleteBranches === false) {
+    if (deleteBranches === false) {
       descriptor = await clearPendingBranchDeletions(
         args.workspaceId,
         args.containerId,
         descriptor,
       );
-    } else if (args.deleteBranches === true) {
+    } else if (deleteBranches === true) {
       descriptor = await persistPendingBranchDeletions(
         args.workspaceId,
         args.containerId,
@@ -2522,6 +2548,7 @@ export async function prepareArchivedContainerTeardown(args: {
         !(await snapshotsMatchAtPath({
           repositories: descriptor.repositories,
           rootPath: quarantinePath,
+          verifyCapturedBranches: args.verifyCapturedBranches,
         })) ||
         (args.workspaceRootCapture !== undefined &&
           !(await workspaceRootPayloadMatchesAtPath({
@@ -2576,6 +2603,15 @@ export async function prepareArchivedContainerTeardown(args: {
     const branchDeletionTargets = requestedBranchDeletionMode
       ? await buildBranchDeletionTargets(descriptor.repositories)
       : undefined;
+    for (const target of branchDeletionTargets ?? []) {
+      if (
+        args.forceConfirmedBranches?.some(
+          ({ repoId, branchName }) =>
+            target.repoId === repoId && target.branchName === branchName,
+        )
+      )
+        target.mode = 'force';
+    }
     descriptor = {
       ...descriptor,
       teardown: {
@@ -2635,6 +2671,7 @@ export async function prepareArchivedContainerTeardown(args: {
       !(await snapshotsMatchAtPath({
         repositories: descriptor.repositories,
         rootPath: quarantinePath,
+        verifyCapturedBranches: args.verifyCapturedBranches,
       })) ||
       (args.workspaceRootCapture !== undefined &&
         !(await workspaceRootPayloadMatchesAtPath({
@@ -2677,13 +2714,13 @@ export async function prepareArchivedContainerTeardown(args: {
     quarantinePath,
     expectedCreatedAt: args.expectedCreatedAt,
   });
-  if (args.deleteBranches === false) {
+  if (deleteBranches === false) {
     descriptor = await clearPendingBranchDeletions(
       args.workspaceId,
       args.containerId,
       descriptor,
     );
-  } else if (args.deleteBranches === true) {
+  } else if (deleteBranches === true) {
     descriptor = await persistPendingBranchDeletions(
       args.workspaceId,
       args.containerId,

@@ -287,6 +287,10 @@ import {
   admitStoredRunDefinition,
 } from './run-definition-admission';
 import {
+  pipelineDefinitionRecoveryRefusal,
+  type PipelineDefinitionRecoveryRefusal,
+} from './pipeline-install-intents';
+import {
   setPipelineExecutionFanOut,
   settlePipelineExecutionEvent,
   type PipelineControlSettlement,
@@ -557,6 +561,22 @@ function pipelineAssetIdentity(input: {
 
 function formatPipelineExecutionError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+type InstallRecoveryRefusal = PipelineDefinitionRecoveryRefusal & {
+  success: false;
+};
+
+/**
+ * CAN-7308: a run never starts against a definition an interrupted install
+ * is still restoring, or couldn't restore in this process. It waits for the
+ * definition's rollback first, up to its bound.
+ */
+async function installRecoveryRefusal(
+  definitionId: string,
+): Promise<InstallRecoveryRefusal | null> {
+  const refusal = await pipelineDefinitionRecoveryRefusal(definitionId);
+  return refusal ? { success: false, ...refusal } : null;
 }
 
 function isProjectPipelineRequest(
@@ -2422,6 +2442,8 @@ export async function startPipelineExecutionFromMain(args: {
 }): Promise<PipelineExecutionStartResult> {
   const speedError = pipelineSpeedError(args.options.modelConfig);
   if (speedError) return { success: false, error: speedError };
+  const recoveryRefusal = await installRecoveryRefusal(args.options.pipelineId);
+  if (recoveryRefusal) return recoveryRefusal;
   // A global start is refused before any reservation, owner binding, scratch
   // folder, or watcher exists, including when its owner checks can't read.
   const globalRefusal = await preflightGlobalStart(args.pipeline, args.options);
@@ -2512,7 +2534,8 @@ type RetryPipelineExecutionArgs = {
 
 type ReplayResult =
   | { success: true; data: ExecutionState }
-  | { success: false; error: string };
+  | { success: false; error: string }
+  | InstallRecoveryRefusal;
 
 /**
  * Run a replay entry point's host side as a recovery control through core
@@ -2526,6 +2549,11 @@ async function replayThroughLocalWorker(
     const stored = await readStoredPipelineExecution(
       control.params.executionId,
     );
+    // A replay reads the definition's live supporting files.
+    if (stored) {
+      const refusal = await installRecoveryRefusal(stored.pipeline_id);
+      if (refusal) return refusal;
+    }
     const secretBindings = await buildPipelineSecretBindings({
       workspaceId: stored?.project_id,
     });

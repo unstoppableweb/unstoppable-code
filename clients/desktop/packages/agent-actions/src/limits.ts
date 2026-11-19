@@ -19,6 +19,7 @@ export type AgentActionLimitKind =
   | 'chat.send_message'
   | 'fork'
   | 'experiments.set_enabled'
+  | 'inventory_sync.set_enabled'
   /** Keys pipeline.run receipts; its family takes no limits reservation. */
   | 'pipeline.run'
   /** Key chat control receipts; stopping work takes no reservation. */

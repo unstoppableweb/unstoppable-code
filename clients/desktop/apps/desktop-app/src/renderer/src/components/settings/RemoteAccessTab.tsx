@@ -61,6 +61,8 @@ const INVENTORY_SYNC_HELPER =
 // isn't read as syncing now.
 const INVENTORY_SYNC_PAUSED =
   "Paused while your other devices can't control this computer.";
+// The agent approval card repeats this message and the dialog's title from
+// main: keep main/agent-actions/desktop-inventory-sync-port.ts in step.
 const INVENTORY_SYNC_TURN_OFF_MESSAGE =
   "This computer's synced plugin, MCP server and pipeline lists are removed from the web. Turn it back on to sync them again.";
 // One status covers both failure paths: a transient failure retries on a

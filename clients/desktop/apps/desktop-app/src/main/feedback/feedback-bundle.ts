@@ -97,6 +97,7 @@ import {
 import { resolveCoworkWorkspaceId } from '../lib/cowork-migration-map';
 import { listWorkEntryIds } from '../lib/cowork-work-entries';
 import { isCoworkWorkspace } from '../lib/workspace-registry';
+import { isErrnoException } from '../lib/type-guards';
 import { validateId } from '../lib/validation';
 import { flushMainProcessLogging } from '../lib/main-process-logging';
 import type { MainLogFlushResult } from '../lib/async-main-log-sink';
@@ -397,6 +398,12 @@ const STALE_FEEDBACK_AGE_MS = 60 * 60 * 1000;
 const feedbackFilenamePattern = new RegExp(
   `^${BRAND.internalName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-feedback-\\d{8}T\\d{9}Z(?:-[1-9]\\d?)?\\.zip$`,
 );
+
+/** The chat detail collectors, for goldens that read what a bundle includes. */
+export const feedbackChatDetailsForTests = {
+  includeWorktreeChatDetails,
+  includeStandaloneChatDetails,
+};
 
 export function releaseTemporaryFeedbackBundle(outputPath: string): void {
   activeTemporaryOutputs.delete(outputPath);
@@ -1466,6 +1473,28 @@ async function includeCanonicalChatDetails(
   );
 }
 
+/**
+ * A scope with an authority manifest never reads its legacy tabs file again,
+ * so a copy left beside it is stale and stays out of the bundle.
+ */
+async function addLegacyChatTabsIfCurrent(
+  builder: FeedbackBundleBuilder,
+  root: string,
+  scopeId: string,
+  tabsPath: string,
+): Promise<void> {
+  try {
+    await lstat(join(root, 'chat-storage-manifests', `${scopeId}.json`));
+    return;
+  } catch (error) {
+    if (!isErrnoException(error) || error.code !== 'ENOENT') return;
+  }
+  await builder.addFileIfSafe(tabsPath, dataRelativeZipPath(tabsPath), {
+    sourceRoot: getDataDir(),
+    allowChatContent: true,
+  });
+}
+
 async function includeWorktreeChatDetails(
   builder: FeedbackBundleBuilder,
   selections: FeedbackWorkspaceSelection[],
@@ -1492,12 +1521,15 @@ async function includeWorktreeChatDetails(
             ),
             worktreeId,
           );
-          await builder.addFileIfSafe(
-            getWorkspaceChatTabsFilePath(selection.workspaceId, worktreeId),
-            dataRelativeZipPath(
-              getWorkspaceChatTabsFilePath(selection.workspaceId, worktreeId),
+          await addLegacyChatTabsIfCurrent(
+            builder,
+            dirname(
+              dirname(
+                getWorkspaceChatTabsFilePath(selection.workspaceId, worktreeId),
+              ),
             ),
-            { sourceRoot: dataDir, allowChatContent: true },
+            worktreeId,
+            getWorkspaceChatTabsFilePath(selection.workspaceId, worktreeId),
           );
           await builder.addFileIfSafe(
             getWorktreeSummaryFilePath(selection.workspaceId, worktreeId),
@@ -1832,7 +1864,6 @@ async function includeStandaloneChatDetails(
   builder: FeedbackBundleBuilder,
   chatProjectIds: string[],
 ): Promise<void> {
-  const dataDir = getDataDir();
   await Promise.all(
     chatProjectIds.map(async (chatProjectId) => {
       const workspaceId = resolveCoworkWorkspaceId(chatProjectId);
@@ -1851,10 +1882,11 @@ async function includeStandaloneChatDetails(
           dirname(dirname(chatTabsFilePath)),
           worktreeId,
         );
-        await builder.addFileIfSafe(
+        await addLegacyChatTabsIfCurrent(
+          builder,
+          dirname(dirname(chatTabsFilePath)),
+          worktreeId,
           chatTabsFilePath,
-          dataRelativeZipPath(chatTabsFilePath),
-          { sourceRoot: dataDir, allowChatContent: true },
         );
       }
       await includeStandaloneChatHistory(builder, chatProjectId);

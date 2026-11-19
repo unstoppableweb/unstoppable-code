@@ -27,6 +27,7 @@
  */
 import { Surface } from '@canopy/ui-shared/components';
 import { useChatTabRename } from '@/components/chat/ChatTabRenameDialog';
+import { useTerminalRename } from '@canopy/ui-app/terminal-core';
 import { acquirePanelContentElement } from '@/components/panels/PanelContentRoot';
 import {
   PanelTabContextMenu,
@@ -66,19 +67,20 @@ import { createAuxWindowBoundsWatcher } from '@/lib/panels/persistence-bridge';
 import { renderPanelContent } from '@/lib/panels/registry';
 import { splitGroupMovingActiveTab } from '@/lib/panels/split-active-tab';
 import {
-  panelTabDisplayTitle,
   renderPanelTabAccessibleStatus,
   renderPanelTabAttention,
   renderPanelCollapsedTabIcon,
   renderPanelTabIcon,
   renderPanelTabLabel,
   renderPanelTabTrailing,
+  usePanelTabTitleResolvers,
 } from '@/lib/panels/tab-display';
 import {
   requestRevealedTerminalPanelSpawn,
   requestSelectedTerminalPanelFocus,
 } from '@/lib/panels/terminal-panel-activation';
 import { useWorkspaceIsReadOnly } from '@/lib/workspace-access';
+import { useScopeCapabilities } from '@/hooks/useScopeCapabilities';
 import { useChatStore } from '@/stores/chatStore';
 import { useNavigationMode } from '@/stores/navigationModeStore';
 import { isLocalFileActionAvailable } from '@/lib/file-reveal';
@@ -588,6 +590,15 @@ export function AuxPanelWindow({
     },
     [openChatTabRename, ownerSelection],
   );
+  // Only offered with an owner selection, so the empty ids are never saved.
+  const terminalRename = useTerminalRename(
+    ownerSelection?.projectId ?? '',
+    ownerSelection?.worktreeId ?? '',
+  );
+  const tabTitles = usePanelTabTitleResolvers();
+  const terminalRenameAllowed =
+    useScopeCapabilities({ projectId: ownerSelection?.projectId ?? '' })
+      .terminalRename === true;
 
   if (container === null || viewModel === null || controller === null) {
     return null;
@@ -670,7 +681,7 @@ export function AuxPanelWindow({
             renderTabIcon={renderPanelTabIcon}
             renderCollapsedTabIcon={renderPanelCollapsedTabIcon}
             renderTabLabel={renderPanelTabLabel}
-            getTabTitle={panelTabDisplayTitle}
+            {...tabTitles}
             renderTabAccessibleStatus={renderPanelTabAccessibleStatus}
             renderTabAttention={renderPanelTabAttention}
             renderTabTrailing={renderPanelTabTrailing}
@@ -705,6 +716,11 @@ export function AuxPanelWindow({
             onRenameChat={
               ownerSelection && !readOnly ? handleRenameChat : undefined
             }
+            onRenameTerminal={
+              ownerSelection && !readOnly && terminalRenameAllowed
+                ? terminalRename.open
+                : undefined
+            }
             getChatReadState={chatReadState?.getChatReadState}
             onSetChatUnread={chatReadState?.onSetChatUnread}
             ownerDocument={childWindow.document}
@@ -712,6 +728,7 @@ export function AuxPanelWindow({
           />
         )}
         {chatTabRename.dialog}
+        {terminalRename.dialog}
       </Surface>
     </PanelHostContext.Provider>,
     container,

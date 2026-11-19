@@ -270,6 +270,7 @@ export function createDaemonWorkerSupervisor(
         definitions: options.definitions,
         caller: daemonWorkerCaller(options.authorityId),
         connection,
+        workerExited: child.outcome,
       });
       generation.client = client;
       worker.attach(client);

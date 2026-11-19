@@ -131,6 +131,25 @@ export async function stopAllCloudDelegations(
   }
 }
 
+/**
+ * The live snapshots the window already holds for a cloud chat's delegates,
+ * read by whichever view watches it, or null for any other chat. Never
+ * starts a read (CAN-7133).
+ */
+export function heldCloudDelegationSnapshots(
+  target: CloudDelegationChatTarget,
+): ReadonlyMap<string, AgentDelegationSnapshot> | null {
+  const scope = cloudDelegationChatScope(target);
+  return scope === null ? null : store.view(scope).snapshots;
+}
+
+/** Calls `listener` whenever any cloud chat's held live state changes. */
+export function subscribeHeldCloudDelegations(
+  listener: () => void,
+): () => void {
+  return store.subscribe(listener);
+}
+
 /** A cloud chat's delegates as the web core last read them. */
 export interface CloudDelegationLiveState {
   readonly snapshots: ReadonlyMap<string, AgentDelegationSnapshot>;

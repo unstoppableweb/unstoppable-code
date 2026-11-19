@@ -1083,6 +1083,8 @@ async function resolveSend(
   target: SendTarget,
   agentOriginated: boolean,
   grant: PipelineNativeGrant | undefined,
+  /** A resumed attempt whose message may already be in (past `creating`). */
+  resuming = false,
 ): Promise<ResolvedSend> {
   const { settings } = inputs;
   // D11: the orchestration's `changesAuthority` is the backstop, and also
@@ -1283,6 +1285,19 @@ async function resolveSend(
           ...(target.chatId !== undefined ? { chatId: target.chatId } : {}),
         },
       });
+    } catch (error) {
+      throw new PipelineHostRefusal('target_not_ready', messageOf(error));
+    }
+  } else if (!resuming) {
+    // A run a person started keeps the attended rule, but an account the
+    // step names ("Send as") that is gone or not connected stops it rather
+    // than leaving the connector out of the turn (CAN-7186). A resumed
+    // attempt replays its journaled IDs instead: its message may already
+    // be accepted, so it is never reported as unsent.
+    const { assertWorkflowStepAccountsReady } =
+      await import('../automations/automation-account-preflight');
+    try {
+      await assertWorkflowStepAccountsReady(settings.pluginSelections);
     } catch (error) {
       throw new PipelineHostRefusal('target_not_ready', messageOf(error));
     }
@@ -1831,6 +1846,14 @@ async function runOperation(
     target,
     trusted.agentOrigin !== undefined,
     grant,
+    // From `sending` on, the message may already be in: replay recovers it
+    // by its journaled IDs. Before that nothing was sent, so it is checked.
+    // Accepted trade-off (CAN-7186): an attempt that stopped after writing
+    // `sending` but before acceptance resumes unchecked, since neither the
+    // transcript (a queued message isn't in it) nor the chat port can prove
+    // the message was never accepted, and a refusal then could hide one that
+    // was.
+    read.kind === 'present' && read.record.phase !== 'creating',
   );
 
   const settled: Settled = {};

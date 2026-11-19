@@ -39,3 +39,4 @@ export {
 export type { TerminalPanelHost } from './code/terminal/terminal-panel-host';
 
 export { terminalPanelIdFor } from './code/terminal/terminal-panel-identity';
+export { useTerminalRename } from './code/terminal/TerminalRenameDialog';

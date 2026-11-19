@@ -22,6 +22,7 @@ import {
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import { useCanopyDesktopCloudChatsEnabled } from '@/hooks/useCanopyDesktopCloudChatsEnabled';
 import { useCapabilities } from '@canopy/app-state/CanopyClientProvider';
+import { useCustomizeDiscoveryEnabled } from '@canopy/ui-app/customize-discovery';
 import { withIpcErrorMessage } from '@/lib/ipcErrorMessage';
 import {
   accountMcpConnectionKey,
@@ -131,6 +132,7 @@ export function DesktopMcpManagementSections({
   // R5) makes its own Add to cloud the main entry point (CAN-6176 PR 4b).
   const { cloudCapabilityLinks } = useCapabilities();
   const cloudChatsEnabled = useCanopyDesktopCloudChatsEnabled();
+  const newCustomize = useCustomizeDiscoveryEnabled();
   const [credential, setCredential] = useState<{
     accountId: string;
     kind: AccountMcpCredentialKind;
@@ -242,7 +244,10 @@ export function DesktopMcpManagementSections({
           ? CLOUD_SINGLE_CONFIG_REQUIRED
           : !isCloudReadyUrl(server.definition.url ?? '')
             ? (cloudUrlProblem(server.definition.url ?? '') ??
-              'Enter an HTTPS URL in Advanced configuration first.')
+              // New Customize names the configuration button Edit.
+              (newCustomize
+                ? 'Choose Edit and enter an HTTPS URL first.'
+                : 'Enter an HTTPS URL in Advanced configuration first.'))
             : cloudHeadersProblem(
                 cloudMcpHeaders(server.definition.headers, server.configs),
               )))
@@ -502,6 +507,11 @@ export function DesktopMcpManagementSections({
                             ? { connection: deleteConnection }
                             : {}),
                           ...(expectedAccountId ? { expectedAccountId } : {}),
+                          // New Customize hides Uninstall beside this Delete,
+                          // so Delete prunes saved selections as it would.
+                          ...(newCustomize
+                            ? { uninstallDeviceServer: true }
+                            : {}),
                         });
                       } catch (error) {
                         // Older clouds can sign out while declining removal.

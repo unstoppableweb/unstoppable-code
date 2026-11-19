@@ -23,6 +23,20 @@ const REFUSAL_KINDS: ReadonlySet<CanopyErrorPayload['kind']> = new Set([
 export class WebCoreSendRefusedError extends CoreCoworkRequestError {}
 
 /**
+ * A cloud send whose answer never came and that no receipt names: it may
+ * have landed, so it is never shown as failed and never sent again
+ * (CAN-6273, CAN-7196).
+ */
+export class WebCoreSendUnknownError extends CoreCoworkRequestError {}
+
+/** What the composer says about a cloud send that may have landed (CAN-7196). */
+export const WEB_CORE_SEND_UNKNOWN_NOTICE =
+  "Your message may have sent. It'll show here if it did.";
+
+/** Whether a keyed write's answer may have applied (CAN-7196). */
+export { isUnknownKeyedWriteOutcome } from '@canopy/app-state/core-cowork';
+
+/**
  * Whether the web core refused a send because it was pressed under another
  * account (CAN-6828): its text belongs to neither chat now, so it is neither
  * sent nor put back in any composer.

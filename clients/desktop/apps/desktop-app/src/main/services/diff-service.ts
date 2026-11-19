@@ -314,7 +314,10 @@ async function resolveUpstreamDiffBase(
   if (!upstream) {
     return null;
   }
-  const mergeBase = await git(['merge-base', upstream, 'HEAD'], cwd)
+  const mergeBase = await git(
+    ['merge-base', '--end-of-options', upstream, 'HEAD'],
+    cwd,
+  )
     .then((value) => value.trim())
     .catch(() => '');
   if (!mergeBase) {
@@ -361,7 +364,10 @@ async function resolveCommittedDiffBase(
         ? branch
         : null;
     if (baseRef) {
-      const mergeBase = await git(['merge-base', baseRef, 'HEAD'], cwd)
+      const mergeBase = await git(
+        ['merge-base', '--end-of-options', baseRef, 'HEAD'],
+        cwd,
+      )
         .then((value) => value.trim())
         .catch(() => '');
       if (mergeBase) {

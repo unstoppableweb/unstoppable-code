@@ -546,6 +546,7 @@ export function createTerminalStore(
 
     setTerminalName: (projectId, worktreeId, terminalId, name): void => {
       const sanitized = sanitizeCustomName(name);
+      let shouldPersist = false;
       set((state) => {
         const next = { ...state.terminalCustomNames };
         if (sanitized === null) {
@@ -559,9 +560,16 @@ export function createTerminalStore(
           }
           next[terminalId] = sanitized;
         }
+        // Before the worktree state loads, a save would overwrite the saved
+        // layout and the other terminals' names with this near-empty one.
+        shouldPersist =
+          state.worktrees[worktreeKey(projectId, worktreeId)]?.hydrated ===
+          true;
         return { terminalCustomNames: next };
       });
-      persistWorktreeState(projectId, worktreeId);
+      if (shouldPersist) {
+        persistWorktreeState(projectId, worktreeId);
+      }
     },
 
     setGroupName: (projectId, worktreeId, groupId, name): void => {
@@ -1100,6 +1108,21 @@ function groupIdForTerminal(
     }
   }
   return found;
+}
+
+/**
+ * Whether a loaded worktree has the terminal outside every group. Desktop
+ * saves names only for grouped terminals, so such a terminal can't be renamed.
+ */
+export function isUngroupedTerminal(
+  state: Pick<TerminalState, 'worktrees'>,
+  terminalId: string,
+): boolean {
+  return Object.values(state.worktrees).some(
+    (bucket) =>
+      bucket.sessions[terminalId] !== undefined &&
+      !bucket.groups.some((group) => group.terminalIds.includes(terminalId)),
+  );
 }
 
 /** Return the bucket for a worktree, or `undefined` if none exists yet. */

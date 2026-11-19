@@ -29,10 +29,28 @@ export const CanopyRequestMetadataSchema = z.strictObject({
   deadlineAt: z.iso.datetime({ offset: true }).optional(),
   traceparent: z.string().min(1).max(512).optional(),
   tracestate: z.string().min(1).max(2048).optional(),
+  /**
+   * An instruction's report-only dispatch tag (CAN-4733): the worker keeps
+   * the dispatch's settlement under it for `worker.operation.receipt.get`
+   * and never replays it. Host-reserved, so catalog pages do not list it
+   * (`CANOPY_HOST_RESERVED_METADATA`); `_meta` is never fingerprinted.
+   */
+  dispatchId: z.string().min(1).max(512).optional(),
 });
 
-// Read queries do not negotiate keyed replay; the operation catalog omits it.
+/** `_meta` members every instruction admits that catalog pages leave out (CAN-4733). */
+export const CANOPY_HOST_RESERVED_METADATA = ['dispatchId'] as const;
+
+// Read queries do not negotiate keyed replay or carry a dispatch tag; the
+// operation catalog omits both.
 export const CanopyQueryRequestMetadataSchema =
+  CanopyRequestMetadataSchema.omit({
+    idempotencyKey: true,
+    dispatchId: true,
+  });
+
+/** An unkeyed instruction's metadata: no idempotency key, but a dispatch tag. */
+export const CanopyUnkeyedInstructionRequestMetadataSchema =
   CanopyRequestMetadataSchema.omit({
     idempotencyKey: true,
   });

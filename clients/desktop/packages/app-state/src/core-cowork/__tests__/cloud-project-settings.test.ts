@@ -3,10 +3,11 @@ import type {
   CatalogEntry,
 } from '@canopy/protocol/canopy-core';
 import type { RemoteControlChatTabPluginSelections } from '@canopy/protocol/remote-control/shell';
-import { readCloudProjectPluginCatalog } from '../cloud-chat-catalog';
+import { readCloudProjectCatalog } from '../cloud-chat-catalog';
 import {
   readCloudProjectSandboxRoutes,
   readCloudProjectSettings,
+  saveCloudProjectCoworkSettings,
   saveCloudProjectDefaultPlugins,
   saveCloudProjectInstructions,
 } from '../cloud-project-settings';
@@ -172,6 +173,9 @@ describe('cloud project settings over the web core (CAN-7053)', () => {
       hostPorts: [],
       egressAllowedHosts: [],
       instructions: '',
+      description: '',
+      defaultModelDefinitionId: null,
+      deletionRetentionDays: undefined,
       defaultPluginSelections: null,
       defaultPluginSelectionsRevision: undefined,
       unavailable: [],
@@ -224,6 +228,114 @@ describe('cloud project settings over the web core (CAN-7053)', () => {
     await expect(readCloudProjectSettings(core, 'ws-1')).rejects.toBeInstanceOf(
       CoreCoworkRequestError,
     );
+  });
+
+  it("reads the project's description, default model and Trash retention from the same cloud settings", async () => {
+    const core = new FakeWebCore();
+    core.handlers.set('core.workspace.get', () => ({
+      ok: true,
+      value: {
+        revision: 6,
+        cloudSettings: {
+          description: 'Notes for the team',
+          defaultModelDefinitionId: 'model-a',
+          deletionRetentionDays: 14,
+          defaultAgentInstructions: null,
+          defaultPluginSelections: null,
+        },
+      },
+    }));
+    const settings = await readCloudProjectSettings(core, 'ws-1');
+    expect(core.calls).toHaveLength(1);
+    expect(settings).toMatchObject({
+      description: 'Notes for the team',
+      defaultModelDefinitionId: 'model-a',
+      deletionRetentionDays: 14,
+    });
+
+    // None stored, or a value of the wrong type, reads as none: no
+    // description, the account's default model, and the web's default
+    // retention, which the dialog fills in.
+    core.handlers.set('core.workspace.get', () => ({
+      ok: true,
+      value: {
+        cloudSettings: {
+          description: 7,
+          defaultModelDefinitionId: 9,
+          deletionRetentionDays: 'forever',
+          defaultAgentInstructions: null,
+          defaultPluginSelections: null,
+        },
+      },
+    }));
+    expect(await readCloudProjectSettings(core, 'ws-1')).toMatchObject({
+      description: '',
+      defaultModelDefinitionId: null,
+      deletionRetentionDays: undefined,
+    });
+  });
+
+  it('saves the description, default model and Trash retention in one keyed core.workspace.cowork.update, at revision 2 only with the retention, guarded by the read revision', async () => {
+    const core = new FakeWebCore();
+    core.handlers.set('core.workspace.cowork.update', () => ({
+      ok: true,
+      value: { workspaceId: 'ws-1', warnings: ['Sync pending', 7] },
+    }));
+    await expect(
+      saveCloudProjectCoworkSettings(
+        core,
+        'ws-1',
+        { description: 'Notes', defaultModel: 'model-a' },
+        6,
+      ),
+    ).resolves.toEqual(['Sync pending']);
+    await saveCloudProjectCoworkSettings(
+      core,
+      'ws-1',
+      { defaultModel: null, deletionRetentionDays: 30 },
+      undefined,
+    );
+    const [described, retained] = core.calls;
+    expect(described).toEqual({
+      method: 'core.workspace.cowork.update',
+      params: {
+        workspaceId: 'ws-1',
+        expectedRevision: 6,
+        settings: { description: 'Notes', defaultModel: 'model-a' },
+        _meta: { idempotencyKey: ANY_KEY },
+      },
+    });
+    // The retention is revision 2's field; null clears the default model.
+    expect(retained).toEqual({
+      method: 'core.workspace.cowork.update',
+      params: {
+        workspaceId: 'ws-1',
+        revision: 2,
+        settings: { defaultModel: null, deletionRetentionDays: 30 },
+        _meta: { idempotencyKey: ANY_KEY },
+      },
+    });
+    expect(JSON.stringify(described?.params._meta)).not.toBe(
+      JSON.stringify(retained?.params._meta),
+    );
+
+    // A refusal is the save's error.
+    core.handlers.set('core.workspace.cowork.update', () => ({
+      ok: false,
+      error: {
+        kind: 'invalid_argument',
+        message: "This model isn't available.",
+        retry: { kind: 'never' },
+      },
+    }));
+    await expect(
+      saveCloudProjectCoworkSettings(
+        core,
+        'ws-1',
+        { defaultModel: 'model-b' },
+        6,
+      ),
+    ).rejects.toMatchObject({ payload: { kind: 'invalid_argument' } });
   });
 
   it('saves instructions as a whole overwrite at revision 2, and at revision 1 only when the web core rejects the revision', async () => {
@@ -324,7 +436,8 @@ describe('cloud project settings over the web core (CAN-7053)', () => {
         generatedAt: AT,
       },
     }));
-    const named = await readCloudProjectPluginCatalog(core, 'ws-1', SELECTIONS);
+    const named = (await readCloudProjectCatalog(core, 'ws-1', SELECTIONS))
+      .plugins;
     expect(core.calls[0]?.method).toBe('core.catalog.snapshot.get');
     expect(core.calls[0]?.params).toMatchObject({
       scope: { workspaceId: 'ws-1' },
@@ -336,8 +449,62 @@ describe('cloud project settings over the web core (CAN-7053)', () => {
     // Without the defaults naming it, a curated skill is offered through its
     // plugin only, as in a chat's picker.
     expect(
-      names(await readCloudProjectPluginCatalog(core, 'ws-1', null)),
+      names((await readCloudProjectCatalog(core, 'ws-1', null)).plugins),
     ).toEqual(['notes']);
+  });
+
+  it("offers the project's default models as the web's settings dialog does, from the same snapshot read", async () => {
+    const core = new FakeWebCore();
+    const model = (
+      id: string,
+      libraryEligibility?: string,
+    ): Record<string, unknown> => ({
+      id,
+      label: `Label ${id}`,
+      provider: 'vendor',
+      family: null,
+      familyLabel: null,
+      ...(libraryEligibility === undefined ? {} : { libraryEligibility }),
+    });
+    core.handlers.set('core.catalog.snapshot.get', () => ({
+      ok: true,
+      value: {
+        revision: 1,
+        entries: [teamSkill],
+        generatedAt: AT,
+        cloudModels: {
+          models: [
+            model('model-b', 'available'),
+            model('model-a'),
+            model('model-locked', 'locked'),
+          ],
+          modelHarnesses: {},
+          defaultModelId: 'model-a',
+          defaultModelBlocked: false,
+        },
+      },
+    }));
+    const catalog = await readCloudProjectCatalog(core, 'ws-1', null);
+    // One read serves the plugins and the models.
+    expect(core.calls).toHaveLength(1);
+    expect(catalog.plugins.skills).toHaveLength(1);
+    // Every hosted model in the catalog's order, a locked one listed but not
+    // choosable, as the web's picker lists them.
+    expect(catalog.models).toEqual([
+      { id: 'model-b', label: 'Label model-b', disabled: false },
+      { id: 'model-a', label: 'Label model-a', disabled: false },
+      { id: 'model-locked', label: 'Label model-locked', disabled: true },
+    ]);
+
+    // A web core that answers no hosted catalog offers no models, so the
+    // picker shows that they couldn't load, never an empty list to save.
+    core.handlers.set('core.catalog.snapshot.get', () => ({
+      ok: true,
+      value: { revision: 1, entries: [teamSkill], generatedAt: AT },
+    }));
+    expect((await readCloudProjectCatalog(core, 'ws-1', null)).models).toBe(
+      null,
+    );
   });
 
   it('retries the catalog read at the model-catalog revision only when the web core rejects the compatibility one', async () => {
@@ -350,7 +517,7 @@ describe('cloud project settings over the web core (CAN-7053)', () => {
             value: { revision: 1, entries: [teamSkill], generatedAt: AT },
           },
     );
-    const catalog = await readCloudProjectPluginCatalog(core, 'ws-1', null);
+    const catalog = (await readCloudProjectCatalog(core, 'ws-1', null)).plugins;
     expect(catalog.skills).toHaveLength(1);
     expect(core.calls).toHaveLength(2);
     expect(core.calls[0]?.params.revision).not.toBe(

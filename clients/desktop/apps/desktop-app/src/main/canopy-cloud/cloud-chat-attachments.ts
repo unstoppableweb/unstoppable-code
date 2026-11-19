@@ -20,7 +20,13 @@ import {
   createCanopyClientLease,
   type CanopyClient,
 } from '@canopy/core-client';
+import {
+  CanopyOutcomeUnknownError,
+  isCanopyOutcomeUnknown,
+} from '@canopy/core-client/outcome';
 import { CanopyTransportError } from '@canopy/core-transport';
+import { isUnknownKeyedWriteOutcome } from '@canopy/app-state/core-cowork';
+import { logMainProcessWarn } from '../lib/main-process-logging';
 import type {
   CloudChatAttachmentUploadResult,
   CloudChatUploadTarget,
@@ -182,14 +188,51 @@ export function createWebCoreAttachmentSender(
         },
         signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
       },
-      (client) => client.instruction('core.chat.attachment.upload', params),
+      (client) =>
+        client
+          .instruction('core.chat.attachment.upload', params)
+          .catch((error: unknown) => {
+            throw isUnconfirmedKeyedWrite(error)
+              ? new CanopyOutcomeUnknownError()
+              : error;
+          }),
     );
+}
+
+/**
+ * A sent keyed write whose answer never came: lost and never retried, or one
+ * the client asks to retry under the same key, as its own deadline after
+ * dispatch does. It may have been stored. Any error the web core answered,
+ * a running rebuild's refusal before any post included, is a refusal
+ * (CAN-7196).
+ */
+export function isUnconfirmedKeyedWrite(error: unknown): boolean {
+  return (
+    isCanopyOutcomeUnknown(error) ||
+    (error instanceof CanopyClientError &&
+      isUnknownKeyedWriteOutcome(error.payload))
+  );
+}
+
+/**
+ * A workspace file upload whose answer came back but main can't use, such as
+ * a write that didn't advance or an artifact outside the workspace, may have
+ * landed: it reads unknown and is never resent (CAN-7196). The log names only
+ * the reason, never the answer. An answer the client itself finds malformed
+ * arrives as its `internal` error instead, and isn't logged here.
+ */
+export function logUnreadableUploadAnswer(upload: 'workspace-file'): void {
+  logMainProcessWarn('[cloud-uploads] Upload outcome unknown', {
+    upload,
+    reason: 'malformed_response',
+  });
 }
 
 /** The renderer-facing reason for a refused or failed upload. */
 function failureReason(
   error: unknown,
 ): Exclude<CloudChatAttachmentUploadResult, { ok: true }>['reason'] {
+  if (error instanceof CanopyOutcomeUnknownError) return 'unknown';
   const payload =
     error instanceof CanopyClientError || error instanceof CanopyTransportError
       ? error.payload

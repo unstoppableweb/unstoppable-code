@@ -5,9 +5,11 @@ import type {
   CatalogEntry,
 } from '@canopy/protocol/canopy-core';
 import {
+  CATALOG_CHANGE_UNKNOWN,
   cloudChatPickerModels,
   createCloudChatCatalog,
 } from '../cloud-chat-catalog';
+import { CoreCoworkOutcomeUnknownError } from '../unknown-outcome';
 import type { CanopyCoreRelayLikeReply, CoreCoworkInvoker } from '../invoker';
 
 // A fake web core serving the catalog reads and `core.chat.update` the way
@@ -92,6 +94,16 @@ class FakeWebCore implements CoreCoworkInvoker {
   selectionRevision = 7;
   selectedItemIds: string[] = ['skill:curated/review'];
   updateRefusal: CanopyErrorPayload | null = null;
+  /** The chat's model as its snapshot reads it. */
+  modelId = 'claude-opus';
+  /**
+   * The next update loses its reply (CAN-7196): as a same-key retry, or as
+   * S7c's unavailable and never retried, applied or not.
+   */
+  lostUpdate: {
+    retry: 'same_idempotency_key' | 'never';
+    applies: boolean;
+  } | null = null;
   /** What a pluginSelections save answers beside its receipt (CAN-6092). */
   updateCapabilities: unknown = undefined;
 
@@ -141,7 +153,7 @@ class FakeWebCore implements CoreCoworkInvoker {
                   title: 'Chat',
                   kind: 'chat',
                   createdAt: AT,
-                  modelId: 'claude-opus',
+                  modelId: this.modelId,
                 },
               ],
             },
@@ -151,6 +163,30 @@ class FakeWebCore implements CoreCoworkInvoker {
           },
         });
       case 'core.chat.update': {
+        const lost = this.lostUpdate;
+        if (lost !== null) {
+          this.lostUpdate = null;
+          const action = Object(params.action) as Record<string, unknown>;
+          if (lost.applies && action.type === 'chat.set_model')
+            this.modelId = String(action.model);
+          if (lost.applies && action.type === 'chat.patch_tab_settings') {
+            const patch = Object(action.patch) as Record<string, unknown>;
+            const saved = Object(patch.pluginSelections) as {
+              skillRefs?: { sourceId: string; skillName: string }[];
+            };
+            this.selectedItemIds = (saved.skillRefs ?? []).map(
+              (ref) => `skill:${ref.sourceId}/${ref.skillName}`,
+            );
+          }
+          return Promise.resolve({
+            ok: false,
+            error: {
+              kind: 'unavailable',
+              message: 'The reply was lost.',
+              retry: { kind: lost.retry },
+            },
+          });
+        }
         if (this.updateRefusal !== null) {
           const error = this.updateRefusal;
           this.updateRefusal = null;
@@ -329,6 +365,51 @@ describe('cloud chat catalog over the web core (CAN-5972)', () => {
     );
     expect(catalog.store.getState().currentModel).toBe('claude-sonnet');
   });
+
+  it.each(['never', 'same_idempotency_key'] as const)(
+    'a model or selection change whose answer never came, with retry %s, is sent once and shows what the chat reads, never rolled back (CAN-7196)',
+    async (retry) => {
+      const core = new FakeWebCore();
+      const catalog = createCloudChatCatalog(core, SCOPE);
+      await catalog.refresh();
+      const updates = (): number =>
+        core.methods().filter((method) => method === 'core.chat.update').length;
+
+      // It landed: the chat reads the new model, so it stays.
+      core.lostUpdate = { retry, applies: true };
+      const landed = catalog.setModel('claude-sonnet');
+      await expect(landed).rejects.toBeInstanceOf(
+        CoreCoworkOutcomeUnknownError,
+      );
+      await expect(landed).rejects.toThrow(CATALOG_CHANGE_UNKNOWN);
+      expect(updates()).toBe(1);
+      expect(catalog.store.getState().currentModel).toBe('claude-sonnet');
+
+      // It never landed: the chat reads the model it kept.
+      core.lostUpdate = { retry, applies: false };
+      await expect(catalog.setModel('other')).rejects.toBeInstanceOf(
+        CoreCoworkOutcomeUnknownError,
+      );
+      expect(updates()).toBe(2);
+      expect(catalog.store.getState().currentModel).toBe('claude-sonnet');
+
+      // A selection that landed shows as the chat reads it.
+      core.lostUpdate = { retry, applies: true };
+      await expect(
+        catalog.setSelections({
+          collectionIds: [],
+          skillRefs: [{ sourceId: 'team/a', skillName: 'notes' }],
+          pluginRefs: [],
+          mcpServerRefs: [],
+        }),
+      ).rejects.toThrow(CATALOG_CHANGE_UNKNOWN);
+      expect(updates()).toBe(3);
+      expect(catalog.store.getState().selections.skillRefs).toEqual([
+        { sourceId: 'team/a', skillName: 'notes' },
+      ]);
+      expect(catalog.store.getState().selectionConflict).toBe(false);
+    },
+  );
 
   it('offers only entries the web core will run and keeps the refs of the rest', async () => {
     const core = new FakeWebCore();

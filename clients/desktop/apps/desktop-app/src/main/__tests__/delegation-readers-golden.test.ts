@@ -431,6 +431,7 @@ import {
   readManagedDelegationTranscriptForUser,
   readManagedDelegationTreeForUser,
 } from '../agents/delegation/service';
+import { windowAgentInterfacePort } from '../agents/agent-interface-port';
 import { closeDelegationScope } from '../agents/delegation/lifecycle';
 
 function transcript(
@@ -760,7 +761,7 @@ describe.each(['absent', 'production'])('%s composition', (composition) => {
       sessionKey: `${options.projectId}/${options.worktreeId}/${options.chatId}`,
       currentOptions: () => options,
       currentTurn: () => 'current-turn',
-      getWindow: () => null,
+      interfacePort: windowAgentInterfacePort(() => null),
     });
     mockTrace.expectedFreshSessionEpoch = prepared.parent.context(
       'trace',
@@ -773,7 +774,7 @@ describe.each(['absent', 'production'])('%s composition', (composition) => {
         sessionKey: `${options.projectId}/${options.worktreeId}/${options.chatId}`,
         currentOptions: () => options,
         currentTurn: () => 'current-turn',
-        getWindow: () => null,
+        interfacePort: windowAgentInterfacePort(() => null),
         onTranscript: (entry): void => {
           published.push(entry);
         },

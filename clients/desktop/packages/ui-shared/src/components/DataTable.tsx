@@ -206,12 +206,14 @@ export function DataTableFrame({
   }, [frameRef]);
   const scrollable = overflow !== 'none';
   // The card and the scroller are two boxes: the fade mask on the card would
-  // also erase its hairline ring, which is drawn outside the box.
+  // also erase its hairline border. The border is the card's own, inside its
+  // box, so an ancestor that clips at the card's edge cannot cut it (CAN-7361);
+  // `bg-clip-padding` keeps the translucent line over the page, not `bg-base`.
   return (
     <div
       data-testid={testId}
       className={joinClasses(
-        'min-w-0 overflow-hidden rounded-xl bg-base ring-[length:var(--border-hairline)] ring-line-base',
+        'min-w-0 overflow-hidden rounded-xl border border-line-base bg-base bg-clip-padding',
         fill && 'flex min-h-0 flex-1 flex-col',
         className,
       )}

@@ -92,6 +92,8 @@ export interface CanopyRuntimeDispatcherInput<
     queries: CanopyDispatcherHandlerMap<CanopyRuntimeQueries>;
     streams: CanopyDispatcherStreamHandlerMap<CanopyRuntimeStreams>;
   };
+  /** The epoch `core.runtime.initialize` reports for this runtime. */
+  daemonEpoch: string;
 }
 
 export interface CreateCanopyRuntimeOptions<
@@ -209,6 +211,7 @@ export function createCanopyRuntime<
   const dispatcher = options.createDispatcher({
     profile,
     definitions,
+    daemonEpoch: journal.epoch,
     runtimeHandlers: {
       queries: {
         [MANIFEST]: (params, context) => ({

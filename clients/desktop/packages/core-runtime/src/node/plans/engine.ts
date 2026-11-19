@@ -116,7 +116,9 @@ export interface PlanUpdateGuard {
 export type PlanCommit =
   | { kind: 'created'; plan: StoredPlan }
   | { kind: 'updated'; previous: StoredPlan; plan: StoredPlan }
-  | { kind: 'deleted'; planId: string };
+  | { kind: 'deleted'; planId: string }
+  | { kind: 'cleared' }
+  | { kind: 'installed' };
 
 export interface PlanEngineHost {
   /** The worktree's plans file, from the host's canonical path helper. */
@@ -165,6 +167,14 @@ export interface PlanEngine {
   ): Promise<StoredPlan | null>;
   /** False when the scope did not have the plan. */
   delete(scope: PlanScopeIds, planId: string): Promise<boolean>;
+  /** Removes every plan of the scope. */
+  clear(scope: PlanScopeIds): Promise<void>;
+  /**
+   * Replaces the scope's plans with `plans`, bound to the scope's ids and
+   * otherwise kept verbatim. The current file is not read, so one that can't
+   * be read is replaced too. An empty list changes nothing.
+   */
+  install(scope: PlanScopeIds, plans: readonly StoredPlan[]): Promise<void>;
 }
 
 const REVIEW_STATUSES: ReadonlySet<unknown> = new Set([
@@ -670,6 +680,30 @@ export function createPlanEngine(host: PlanEngineHost): PlanEngine {
         await commit(scope, path, next, { kind: 'deleted', planId });
         return true;
       });
+    },
+
+    async clear(scope): Promise<void> {
+      const path = host.statePath(scope);
+      await withPlanStateLock(path, () =>
+        commit(scope, path, [], { kind: 'cleared' }),
+      );
+    },
+
+    async install(scope, plans): Promise<void> {
+      if (plans.length === 0) return;
+      const path = host.statePath(scope);
+      await withPlanStateLock(path, () =>
+        commit(
+          scope,
+          path,
+          plans.map((plan) => ({
+            ...plan,
+            projectId: scope.projectId,
+            worktreeId: scope.worktreeId,
+          })),
+          { kind: 'installed' },
+        ),
+      );
     },
   };
 }

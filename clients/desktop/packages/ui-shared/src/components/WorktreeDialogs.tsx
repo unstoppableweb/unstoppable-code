@@ -189,6 +189,8 @@ export interface PipelinePickerDialogProps {
   readonly onClose: () => void;
   readonly returnFocusRef?: RefObject<HTMLButtonElement | null>;
   readonly testIds?: PipelinePickerDialogTestIds;
+  /** Optional notice above the list, such as a synced list's paused state. */
+  readonly notice?: ReactNode;
 }
 
 export function PipelinePickerDialog({
@@ -197,6 +199,7 @@ export function PipelinePickerDialog({
   onClose,
   returnFocusRef,
   testIds,
+  notice,
 }: PipelinePickerDialogProps): JSX.Element {
   const [running, setRunning] = useState(false);
   const titleId = useId();
@@ -214,6 +217,7 @@ export function PipelinePickerDialog({
         {...(returnFocusRef ? { restoreFocusRef: returnFocusRef } : {})}
       >
         <div className="flex flex-col gap-4 pt-3">
+          {notice}
           <Stack gap="tight">
             {entries.map((entry) => (
               <ListRow

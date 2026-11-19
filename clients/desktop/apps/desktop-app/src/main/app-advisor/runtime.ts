@@ -476,6 +476,12 @@ export function createAppAdvisorToolRuntime(
     // its own window.
     settingsWindow: () => surfaces.getMainWindow(),
     appAdvisorPipelineWindow: surfaces.getMainWindow,
+    // Approval cards a port asks for show where the Advisor's other cards
+    // do: its own window when open, else the main window (CAN-7262).
+    approvalWindow: () => {
+      const window = surfaces.getAppAdvisorWindow() ?? surfaces.getMainWindow();
+      return window && !window.isDestroyed() ? window : null;
+    },
     autoArchiveChat: {
       projectId: destination.projectId,
       worktreeId: destination.worktreeId,

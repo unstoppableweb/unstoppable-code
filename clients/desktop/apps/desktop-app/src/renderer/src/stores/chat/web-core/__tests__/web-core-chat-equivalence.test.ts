@@ -11,12 +11,34 @@ import {
   bindCloudChatThread,
   type CanopyCoreRelayLikeReply,
   type CoreCoworkInvoker,
+  CoreCoworkRequestError,
   type CoreCoworkStream,
+  KEYED_WRITE_OUTCOME_SHAPES,
   type ProjectCloudChatMessages,
 } from '@canopy/app-state/core-cowork';
+import { WebCoreQueueCommandUnsettledError } from '../queue-unconfirmed';
+import type * as Instrumentation from '@canopy/desktop-instrumentation/client';
+
+/** Every client error the backend reports, passed on as before (CAN-7196). */
+const mockReported = jest.fn();
+jest.mock('@canopy/desktop-instrumentation/client', () => {
+  const actual = jest.requireActual<typeof Instrumentation>(
+    '@canopy/desktop-instrumentation/client',
+  );
+  return {
+    ...actual,
+    reportClientAppError: (
+      ...args: Parameters<typeof actual.reportClientAppError>
+    ): ReturnType<typeof actual.reportClientAppError> => {
+      mockReported(...args);
+      return actual.reportClientAppError(...args);
+    },
+  };
+});
 import {
   CoreChatMessageSendParamsSchema,
   CoreChatSnapshotGetResultSchema,
+  type CanopyErrorPayload,
   type CoreChatMessageMeter,
 } from '@canopy/protocol/canopy-core';
 import {
@@ -56,6 +78,8 @@ import {
 } from '../../transcript-pages';
 import { runtimeRunsTurn } from '../../runtime-runs-turn';
 import { createLiveFollower } from '../live-follower';
+import { WebCoreSendUnknownError } from '../send-refusal';
+import { attachCloudSendCommand } from '../send-order';
 import {
   clearCloudTaskDeletions,
   forgetCloudTaskMark,
@@ -69,6 +93,7 @@ import {
 import {
   isPersistedChatMessage,
   parseEventItem,
+  transcriptDescriptor,
   translateChange,
   translateCommandResult,
 } from '../translate';
@@ -223,6 +248,10 @@ const core = {
   pageFailsFor: null as string | null,
   /** How the web core answers a queued prompt's cancel. */
   cancelOutcome: 'applied' as 'applied' | 'conflict',
+  /** Set to lose every queued prompt cancel's reply with this error (CAN-7196). */
+  queueCancelLost: null as CanopyErrorPayload | null,
+  /** Holds a queued prompt cancel's reply until released (CAN-7196). */
+  queueCancelGate: null as Promise<void> | null,
   /** Turn cancels the web core refuses as not found, as one from before CAN-6393 did. */
   turnCancelNotFound: 0,
   /** How the web core answers a queued prompt's edit, hold or run now (CAN-6651). */
@@ -243,6 +272,11 @@ const core = {
   sandbox: undefined as { state: string } | undefined,
   /** Rows per transcript page. */
   pageSize: 100,
+  /**
+   * Core rows behind each message a page shows: a cloud chat's positions
+   * count Core's rows, tool rows a reply folds in among them (REG-3112).
+   */
+  rowsPerMessage: 1,
   /** Set to make the web core refuse an archive with this reason. */
   archiveRefusal: null as string | null,
   /** Set to lose every send reply with a retryable failure. */
@@ -251,6 +285,16 @@ const core = {
   sendsDuringRebuild: 0,
   /** The Retry-After those refusals carry. */
   rebuildRetryMs: 1,
+  /** How a lost send reply comes back: flagged (same key) or S7c's unflagged shape. */
+  sendLostRetry: 'same_idempotency_key' as 'same_idempotency_key' | 'never',
+  /** A cloudCode the lost send reply carries, if any (CAN-7196). */
+  sendLostCloudCode: null as string | null,
+  /** An answered send refusal to reply with, if set (CAN-7196). */
+  sendAnswer: null as CanopyErrorPayload | null,
+  /** Set to lose the next fork's reply, read as this retry (CAN-7196). */
+  forkLostRetry: null as 'same_idempotency_key' | 'never' | null,
+  /** An answered fork error to reply with once, if set (CAN-7196). */
+  forkAnswer: null as CanopyErrorPayload | null,
   /** Every live chat's unanswered questions, as the task's snapshot carries them. */
   questions: [] as Record<string, unknown>[],
   /** Chats whose questions the snapshot could not read. */
@@ -629,27 +673,36 @@ function side(): Side {
                 },
               });
             {
+              const rows = core.rowsPerMessage;
               const end =
                 typeof params.before === 'number'
                   ? params.before
-                  : core.messages.length;
-              const start = Math.max(0, end - core.pageSize);
+                  : core.messages.length * rows;
+              const start = Math.max(0, end - core.pageSize * rows);
               const reply = ok({
-                messages: core.messages.slice(start, end),
-                totalMessages: core.messages.length,
+                messages: core.messages.slice(
+                  Math.ceil(start / rows),
+                  Math.ceil(end / rows),
+                ),
+                totalMessages: core.messages.length * rows,
                 transcriptRevision: core.revision,
                 ...(start > 0 ? { before: start } : {}),
               });
               return (core.pageGate ?? Promise.resolve()).then(() => reply);
             }
           case 'core.chat.message.send': {
+            if (core.sendAnswer !== null)
+              return Promise.resolve({ ok: false, error: core.sendAnswer });
             if (core.sendFailure) {
               const lost: CanopyCoreRelayLikeReply = {
                 ok: false,
                 error: {
                   kind: 'unavailable',
                   message: 'The reply was lost.',
-                  retry: { kind: 'same_idempotency_key' },
+                  retry: { kind: core.sendLostRetry },
+                  ...(core.sendLostCloudCode === null
+                    ? {}
+                    : { details: { cloudCode: core.sendLostCloudCode } }),
                 },
               };
               return (core.sendGate ?? Promise.resolve()).then(() => lost);
@@ -702,6 +755,15 @@ function side(): Side {
             return (core.cancelGate ?? Promise.resolve()).then(() => reply);
           }
           case 'core.chat.queue.entry.cancel':
+            if (core.queueCancelLost !== null) {
+              const lost: CanopyCoreRelayLikeReply = {
+                ok: false,
+                error: core.queueCancelLost,
+              };
+              return (core.queueCancelGate ?? Promise.resolve()).then(
+                () => lost,
+              );
+            }
             return Promise.resolve(
               ok({
                 commandId: String(Reflect.get(Object(params), 'commandId')),
@@ -794,9 +856,27 @@ function side(): Side {
             return (core.updateGate ?? Promise.resolve()).then(() =>
               lifecycle(method, params),
             );
+          case 'core.chat.fork':
+            if (core.forkAnswer !== null) {
+              const error = core.forkAnswer;
+              core.forkAnswer = null;
+              return Promise.resolve({ ok: false, error });
+            }
+            if (core.forkLostRetry !== null) {
+              const retry = core.forkLostRetry;
+              core.forkLostRetry = null;
+              return Promise.resolve({
+                ok: false,
+                error: {
+                  kind: 'unavailable',
+                  message: 'The reply was lost.',
+                  retry: { kind: retry },
+                },
+              });
+            }
+            return Promise.resolve(lifecycle(method, params));
           case 'core.chat.create':
           case 'core.chat.archive':
-          case 'core.chat.fork':
             return Promise.resolve(lifecycle(method, params));
           default:
             throw new Error(`unexpected ${method}`);
@@ -820,6 +900,12 @@ afterEach(() => {
   core.sendsDuringRebuild = 0;
   core.rebuildRetryMs = 1;
   core.setModelRefusal = null;
+  core.forkLostRetry = null;
+  core.forkAnswer = null;
+  core.sendLostCloudCode = null;
+  core.sendAnswer = null;
+  core.queueCancelLost = null;
+  core.snapshotFailsFor = null;
   core.model = undefined;
   core.harness = undefined;
   core.chatHarness = {};
@@ -948,6 +1034,8 @@ function desktopPath(
     }) => void;
     /** Whether the task's events carry sandbox.changed (CAN-6841). */
     readonly sandboxStatesServed?: () => boolean;
+    /** The backoff of a failed queue re-read (CAN-7196). */
+    readonly queueRereadMs?: { readonly base: number; readonly max: number };
   } = {},
 ): {
   readonly backend: ReturnType<typeof createWebCoreChatBackendCore>;
@@ -996,6 +1084,8 @@ function desktopPath(
     reopenDelayMs: 0,
     liveReopenDelayMs: 0,
     liveHoldMs: options.liveHoldMs ?? 60_000,
+    // A failed queue re-read is tried again within milliseconds here.
+    queueRereadMs: options.queueRereadMs ?? { base: 1, max: 4 },
     ...(options.echoWaitMs === undefined
       ? {}
       : { echoWaitMs: options.echoWaitMs }),
@@ -2178,6 +2268,38 @@ it('the desktop store recovers missed cloud messages, keeps tab choices and a re
     'u2',
     'a2',
   ]);
+
+  // A cloud chat counts positions in Core's rows (REG-3112): `before` stays
+  // an opaque token the store sends back, and totalMessages a count of the
+  // committed transcript.
+  core.rowsPerMessage = 3;
+  const newestRows = await desktop.backend.getTranscriptPage({
+    ...SCOPE,
+    chatId: CHAT_KEY,
+    view: 'turns',
+  });
+  expect(transcriptDescriptor(newestRows).committedMessageCount).toBe(12);
+  const rowsTab = installTranscriptPage(unloaded, newestRows, false);
+  expect(rowsTab.messages.map((message) => message.id)).toEqual(['u2', 'a2']);
+  expect(rowsTab.transcriptWindow?.before).toBe(6);
+  const olderRows = installTranscriptPage(
+    rowsTab,
+    await desktop.backend.getTranscriptPage({
+      ...SCOPE,
+      chatId: CHAT_KEY,
+      view: 'turns',
+      before: rowsTab.transcriptWindow?.before,
+    }),
+    true,
+  );
+  expect(olderRows.messages.map((message) => message.id)).toEqual([
+    'u1',
+    'a1',
+    'u2',
+    'a2',
+  ]);
+  expect(olderRows.transcriptWindow?.before).toBeUndefined();
+  core.rowsPerMessage = 1;
   core.pageSize = 100;
 });
 
@@ -2444,6 +2566,217 @@ it('drops a send stopped while a worktree rebuild holds it unsent, never posting
     jest.useRealTimers();
   }
 });
+
+// CAN-7196: a send whose answer never came, as S7c's unflagged shape or the
+// flagged same-key one, is asked for by its receipt, and with none it
+// rejects as an unknown outcome, never as a refusal, and is never resent.
+it.each(['never', 'same_idempotency_key'] as const)(
+  'reads a lost cloud send with retry %s as an unknown outcome, sent once (CAN-7196)',
+  async (retry) => {
+    core.revision = 50;
+    core.status = 'idle';
+    core.activeTurnId = undefined;
+    core.messages = [U1];
+    core.chats = [{ chatId: CHAT, title: 'Plan', state: 'idle' }];
+    const io = side();
+    const desktop = desktopPath(io);
+    await settle();
+    const count = (method: string): number =>
+      io.calls.filter((call) => call.method === method).length;
+    const sends = count('core.chat.message.send');
+    const receipts = count('core.chat.send.receipt');
+    core.sendFailure = true;
+    core.sendLostRetry = retry;
+    const error: unknown = await desktop.backend
+      .sendMessage({
+        ...SCOPE,
+        chatId: CHAT_KEY,
+        userMessageId: `desktop-unknown-${retry}`,
+        text: 'next',
+      })
+      .catch((caught: unknown) => caught);
+    core.sendFailure = false;
+    core.sendLostRetry = 'same_idempotency_key';
+    expect(error).toBeInstanceOf(WebCoreSendUnknownError);
+    expect(error).not.toBeInstanceOf(WebCoreSendRefusedError);
+    expect(count('core.chat.message.send')).toBe(sends + 1);
+    expect(count('core.chat.send.receipt')).toBe(receipts + 1);
+    await desktop.stop();
+  },
+);
+
+// CAN-7196: only the rebuild's exact code is a refusal before any post
+// (REG-3119, pinned above). A same-key reply with another code, or one that
+// only starts like it, may have landed: unknown, its receipt read once, and
+// never sent again on its own.
+it.each([
+  'cloud-worktree-recovery-needed',
+  'cloud-worktree-recovery-in-progress-later',
+])(
+  'reads a same-key send reply with code %s as an unknown outcome, sent once (CAN-7196)',
+  async (cloudCode) => {
+    core.revision = 50;
+    core.status = 'idle';
+    core.activeTurnId = undefined;
+    core.messages = [U1];
+    core.chats = [{ chatId: CHAT, title: 'Plan', state: 'idle' }];
+    const io = side();
+    const desktop = desktopPath(io);
+    await settle();
+    const count = (method: string): number =>
+      io.calls.filter((call) => call.method === method).length;
+    const sends = count('core.chat.message.send');
+    const receipts = count('core.chat.send.receipt');
+    core.sendFailure = true;
+    core.sendLostCloudCode = cloudCode;
+    const error: unknown = await desktop.backend
+      .sendMessage({
+        ...SCOPE,
+        chatId: CHAT_KEY,
+        userMessageId: `desktop-code-${cloudCode}`,
+        text: 'next',
+      })
+      .catch((caught: unknown) => caught);
+    core.sendFailure = false;
+    expect(error).toBeInstanceOf(WebCoreSendUnknownError);
+    expect(error).not.toBeInstanceOf(WebCoreSendRefusedError);
+    expect(count('core.chat.message.send')).toBe(sends + 1);
+    expect(count('core.chat.send.receipt')).toBe(receipts + 1);
+    await desktop.stop();
+  },
+);
+
+// CAN-7196 (SWAN 05:10, 05:23): a same-key answer is unknown unless an
+// allowlisted producer marked it not-applied, so a rate limit with no mark
+// may follow a write and reads unknown. A refusal that asks for nothing
+// again is the core's own words, its receipt never read. Once an attempt
+// under a command ended unknown, a later attempt under that command stays
+// unknown however it is answered.
+it('refuses a fresh send the core refused, reads an unmarked rate limit as unknown, and keeps a refused retry of an unknown send unknown (CAN-7196)', async () => {
+  core.revision = 50;
+  core.status = 'idle';
+  core.activeTurnId = undefined;
+  core.messages = [U1];
+  core.chats = [{ chatId: CHAT, title: 'Plan', state: 'idle' }];
+  const io = side();
+  const desktop = desktopPath(io);
+  await settle();
+  const count = (method: string): number =>
+    io.calls.filter((call) => call.method === method).length;
+  const unmarked: CanopyErrorPayload = {
+    kind: 'resource_exhausted',
+    message: 'Too many messages. Try again in a moment.',
+    retry: { kind: 'same_idempotency_key', delayMs: 2000 },
+  };
+  // An answered refusal that asks for nothing again: the core's own words.
+  const rateLimited: CanopyErrorPayload = {
+    kind: 'failed_precondition',
+    message: 'The web core refused this message.',
+    retry: { kind: 'never' },
+  };
+  const send = (messageId: string, commandId: string): Promise<unknown> => {
+    attachCloudSendCommand(messageId, commandId);
+    return desktop.backend
+      .sendMessage({
+        ...SCOPE,
+        chatId: CHAT_KEY,
+        userMessageId: messageId,
+        text: 'next',
+      })
+      .catch((caught: unknown) => caught);
+  };
+
+  // Fresh and refused: its own words, no receipt read.
+  let receipts = count('core.chat.send.receipt');
+  core.sendAnswer = rateLimited;
+  const fresh = await send('desktop-rate-fresh', 'command-rate-fresh');
+  expect(fresh).toBeInstanceOf(WebCoreSendRefusedError);
+  expect(count('core.chat.send.receipt')).toBe(receipts);
+
+  // Fresh and unmarked: it may have landed, so its receipt is read.
+  core.sendAnswer = unmarked;
+  const bare = await send('desktop-rate-bare', 'command-rate-bare');
+  expect(bare).toBeInstanceOf(WebCoreSendUnknownError);
+  expect(count('core.chat.send.receipt')).toBe(receipts + 1);
+
+  // Lost first, then the same command rate limited: still unknown.
+  core.sendAnswer = null;
+  core.sendFailure = true;
+  const lost = await send('desktop-rate-retry', 'command-rate-retry');
+  core.sendFailure = false;
+  expect(lost).toBeInstanceOf(WebCoreSendUnknownError);
+  receipts = count('core.chat.send.receipt');
+  const sends = count('core.chat.message.send');
+  core.sendAnswer = rateLimited;
+  const retried = await send('desktop-rate-retry', 'command-rate-retry');
+  expect(retried).toBeInstanceOf(WebCoreSendUnknownError);
+  expect(retried).not.toBeInstanceOf(WebCoreSendRefusedError);
+  // Sent once more, and read against its receipt.
+  expect(count('core.chat.message.send')).toBe(sends + 1);
+  expect(count('core.chat.send.receipt')).toBe(receipts + 1);
+  await desktop.stop();
+});
+
+// CAN-7196: a fork whose reply was lost, as S7c's unflagged shape or the
+// flagged same-key one, may have landed: it reads unknown, so Try again
+// sends the same claim, never refused, and nothing sends it on its own.
+it.each(['never', 'same_idempotency_key'] as const)(
+  'reads a fork whose reply was lost with retry %s as unknown, sent once (CAN-7196)',
+  async (retry) => {
+    const io = side();
+    const desktop = desktopPath(io);
+    await settle();
+    const forks = (): number =>
+      io.calls.filter((call) => call.method === 'core.chat.fork').length;
+    const before = forks();
+    core.forkLostRetry = retry;
+    const outcome = await desktop.backend.forkChat(
+      { ...SCOPE, chatId: CHAT_KEY },
+      crypto.randomUUID(),
+    );
+    core.forkLostRetry = null;
+    expect(outcome).toEqual({ kind: 'unknown' });
+    expect(forks()).toBe(before + 1);
+    await desktop.stop();
+  },
+);
+
+// CAN-7196 (review round 3): a fork reads every shape the shared check
+// calls unknown as unknown, whatever its kind, so Try again keeps the same
+// claim: a fork answered resource_exhausted with a same-key retry may have
+// landed (a relay reply cap, a client that failed closed). Only an answer
+// the check calls a refusal, outside the kinds a fork always leaves
+// unsettled, is refused.
+it.each(
+  KEYED_WRITE_OUTCOME_SHAPES.map((shape) => [shape.name, shape] as const),
+)(
+  'reads a fork answered %s as the shared check says, sent once (CAN-7196)',
+  async (_name, shape) => {
+    const io = side();
+    const desktop = desktopPath(io);
+    await settle();
+    const forks = (): number =>
+      io.calls.filter((call) => call.method === 'core.chat.fork').length;
+    const before = forks();
+    core.forkAnswer = shape.payload;
+    const outcome = await desktop.backend.forkChat(
+      { ...SCOPE, chatId: CHAT_KEY },
+      crypto.randomUUID(),
+    );
+    core.forkAnswer = null;
+    if (shape.unknown) expect(outcome).toEqual({ kind: 'unknown' });
+    else
+      expect(outcome.kind).toBe(
+        ['cancelled', 'deadline_exceeded', 'unavailable', 'internal'].includes(
+          shape.payload.kind,
+        )
+          ? 'unknown'
+          : 'refused',
+      );
+    expect(forks()).toBe(before + 1);
+    await desktop.stop();
+  },
+);
 
 it('the live follower expires a stopped reply by its turn and stops retrying a chat it no longer follows', async () => {
   let runs = true;
@@ -4006,6 +4339,331 @@ it("a cloud turn that ends while its events were missed reads the project's work
   expect(filesChanged).toEqual([SCOPE]);
   await desktop.backend.getState(SCOPE);
   expect(filesChanged).toEqual([SCOPE]);
+});
+
+// CAN-7196 (review round 5): a queued prompt's Cancel whose answer never
+// came answers only once its queue was read again, so the notice it raises
+// is true. A failed read is tried again on the web's backoff until one is in,
+// and the reads stop when the backend closes.
+it("reads a cloud queued prompt's queue again before a Cancel that may have landed answers, and on a backoff until a read is in (CAN-7196)", async () => {
+  const saved = { queues: core.queues, revision: core.revision };
+  const queued = (id: string, text: string): Record<string, unknown> => ({
+    id,
+    origin: 'portal',
+    enqueuedAtMs: 4_000,
+    revision: 1,
+    text,
+    clientRequestId: `desktop-${text}`,
+    messageId: `${text}-u`,
+    queueOrder: '2',
+    promptSource: 'human',
+  });
+  const wait = (ms: number): Promise<void> =>
+    new Promise((resolve) => setTimeout(resolve, ms));
+  try {
+    core.queues = { [CHAT]: [queued('t12', 'second')] };
+    const io = side();
+    const desktop = desktopPath(io);
+    await settle();
+    const updates: ChatQueueUpdatedEvent[] = [];
+    closers.push(
+      desktop.backend.onQueueUpdated((event) => updates.push(event)),
+    );
+    await desktop.backend.getState(SCOPE);
+    const reads = (): number =>
+      io.calls.filter(
+        (call) =>
+          call.method === 'core.chat.snapshot.get' &&
+          call.params.chatId === CHAT,
+      ).length;
+    const cancel = (): Promise<unknown> =>
+      desktop.backend
+        .cancelQueued({ ...SCOPE, chatId: CHAT_KEY, entryId: 't12' })
+        .then(
+          () => null,
+          (error: unknown) => error,
+        );
+    core.queueCancelLost = {
+      kind: 'unavailable',
+      message: 'The reply was lost.',
+      retry: { kind: 'never' },
+    };
+
+    // The read is in: the queue as it now stands shows before the Cancel
+    // answers, which waits on nothing more.
+    core.queues = { [CHAT]: [] };
+    core.revision += 1;
+    const answered = await cancel();
+    expect(answered).toBeInstanceOf(CoreCoworkRequestError);
+    expect(answered).toBeInstanceOf(WebCoreQueueCommandUnsettledError);
+    expect(updates.at(-1)).toMatchObject({ chatId: CHAT_KEY, queue: [] });
+    expect(
+      (answered as WebCoreQueueCommandUnsettledError).queueRead.installed,
+    ).toBe(true);
+
+    // The read fails: the Cancel answers waiting on the next one, and the
+    // queue is read again on the backoff, never the command sent again.
+    core.queues = { [CHAT]: [queued('t13', 'third')] };
+    core.revision += 1;
+    core.snapshotFailsFor = CHAT;
+    const before = reads();
+    const unread = await cancel();
+    expect(reads()).toBeGreaterThan(before);
+    expect(unread).toBeInstanceOf(WebCoreQueueCommandUnsettledError);
+    const { installed, shown } = (unread as WebCoreQueueCommandUnsettledError)
+      .queueRead;
+    expect(installed).toBe(false);
+    let landed = false;
+    void shown.then(() => {
+      landed = true;
+    });
+    await wait(30);
+    expect(reads()).toBeGreaterThan(before + 2);
+    expect(landed).toBe(false);
+    core.snapshotFailsFor = null;
+    await shown;
+    expect(updates.at(-1)).toMatchObject({
+      chatId: CHAT_KEY,
+      queue: [{ id: 't13' }],
+    });
+    const settled = reads();
+    await wait(30);
+    expect(reads()).toBe(settled);
+
+    // Closing the backend stops the reads; the notice never hears one is in.
+    core.snapshotFailsFor = CHAT;
+    const closing = await cancel();
+    let closedLanded = false;
+    void (closing as WebCoreQueueCommandUnsettledError).queueRead.shown.then(
+      () => {
+        closedLanded = true;
+      },
+    );
+    desktop.backend.closeAll();
+    const closedAt = reads();
+    core.snapshotFailsFor = null;
+    await wait(30);
+    expect(reads()).toBeLessThanOrEqual(closedAt + 1);
+    expect(closedLanded).toBe(false);
+    expect(
+      io.calls.filter((call) => call.method === 'core.chat.queue.entry.cancel'),
+    ).toHaveLength(3);
+  } finally {
+    core.queues = saved.queues;
+    core.revision = saved.revision;
+  }
+});
+
+describe("a queued prompt's queue re-read after a Cancel that may have landed (CAN-7196)", () => {
+  const queued = (id: string, text: string): Record<string, unknown> => ({
+    id,
+    origin: 'portal',
+    enqueuedAtMs: 4_000,
+    revision: 1,
+    text,
+    clientRequestId: `desktop-${text}`,
+    messageId: `${text}-u`,
+    queueOrder: '2',
+    promptSource: 'human',
+  });
+  const wait = (ms: number): Promise<void> =>
+    new Promise((resolve) => setTimeout(resolve, ms));
+  let saved = { queues: core.queues, revision: core.revision };
+  beforeEach(() => {
+    saved = { queues: core.queues, revision: core.revision };
+    core.queues = { [CHAT]: [queued('t12', 'second')] };
+    core.queueCancelLost = {
+      kind: 'unavailable',
+      message: 'The reply was lost.',
+      retry: { kind: 'never' },
+    };
+  });
+  afterEach(() => {
+    core.queues = saved.queues;
+    core.revision = saved.revision;
+    core.chatSnapshotGate = null;
+    core.queueCancelGate = null;
+  });
+
+  /** A desktop path whose Cancel answers lost while the chat's reads fail. */
+  async function unread(queueRereadMs: {
+    readonly base: number;
+    readonly max: number;
+  }): Promise<{
+    readonly desktop: ReturnType<typeof desktopPath>;
+    readonly reads: () => number;
+    readonly landed: () => boolean;
+  }> {
+    const io = side();
+    const desktop = desktopPath(io, { queueRereadMs });
+    await settle();
+    await desktop.backend.getState(SCOPE);
+    core.snapshotFailsFor = CHAT;
+    const error = await desktop.backend
+      .cancelQueued({ ...SCOPE, chatId: CHAT_KEY, entryId: 't12' })
+      .then(
+        () => null,
+        (failure: unknown) => failure,
+      );
+    expect(error).toBeInstanceOf(WebCoreQueueCommandUnsettledError);
+    const { queueRead } = error as WebCoreQueueCommandUnsettledError;
+    expect(queueRead.installed).toBe(false);
+    let landed = false;
+    void queueRead.shown.then(() => {
+      landed = true;
+    });
+    return {
+      desktop,
+      reads: (): number =>
+        io.calls.filter(
+          (call) =>
+            call.method === 'core.chat.snapshot.get' &&
+            call.params.chatId === CHAT,
+        ).length,
+      landed: (): boolean => landed,
+    };
+  }
+
+  it('reports only its first failed read, however many fail, and nothing once one is in', async () => {
+    mockReported.mockClear();
+    const lostReads = (): number =>
+      mockReported.mock.calls.filter(
+        ([error]: unknown[]) =>
+          error instanceof Error && error.message === 'The read was lost.',
+      ).length;
+    const path = await unread({ base: 1, max: 4 });
+    const before = path.reads();
+    await wait(30);
+    expect(path.reads()).toBeGreaterThan(before + 2);
+    expect(lostReads()).toBe(1);
+    core.snapshotFailsFor = null;
+    await wait(30);
+    expect(path.landed()).toBe(true);
+    expect(lostReads()).toBe(1);
+    path.desktop.backend.closeAll();
+  });
+
+  it('reads nothing for a Cancel whose reply lands after the backend closed, and reports nothing (round 6)', async () => {
+    mockReported.mockClear();
+    const io = side();
+    const desktop = desktopPath(io, { queueRereadMs: { base: 1, max: 4 } });
+    await settle();
+    await desktop.backend.getState(SCOPE);
+    core.snapshotFailsFor = CHAT;
+    let release = (): void => undefined;
+    core.queueCancelGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const answered = desktop.backend
+      .cancelQueued({ ...SCOPE, chatId: CHAT_KEY, entryId: 't12' })
+      .then(
+        () => null,
+        (failure: unknown) => failure,
+      );
+    await settle();
+    // A sign-out while the Cancel's reply is still out.
+    desktop.backend.closeAll();
+    const reads = (): number =>
+      io.calls.filter(
+        (call) =>
+          call.method === 'core.chat.snapshot.get' &&
+          call.params.chatId === CHAT,
+      ).length;
+    const closedAt = reads();
+    // From the close on, any timer the reply schedules is counted.
+    jest.useFakeTimers();
+    let error: unknown;
+    try {
+      release();
+      error = await answered;
+      for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
+      expect(jest.getTimerCount()).toBe(0);
+    } finally {
+      jest.useRealTimers();
+    }
+    expect(error).toBeInstanceOf(WebCoreQueueCommandUnsettledError);
+    const { queueRead } = error as WebCoreQueueCommandUnsettledError;
+    expect(queueRead.installed).toBe(false);
+    let landed = false;
+    void queueRead.shown.then(() => {
+      landed = true;
+    });
+    await wait(30);
+    expect(reads()).toBe(closedAt);
+    expect(landed).toBe(false);
+    expect(
+      mockReported.mock.calls.filter(
+        ([failure]: unknown[]) =>
+          failure instanceof Error && failure.message === 'The read was lost.',
+      ),
+    ).toHaveLength(0);
+    expect(
+      io.calls.filter((call) => call.method === 'core.chat.queue.entry.cancel'),
+    ).toHaveLength(1);
+  });
+
+  it('stops reading, still checking, once the backend stops following the scope', async () => {
+    const path = await unread({ base: 1, max: 4 });
+    await wait(20);
+    await path.desktop.backend.setStateScopes({ kind: 'scopes', scopes: [] });
+    const closedAt = path.reads();
+    core.snapshotFailsFor = null;
+    await wait(30);
+    expect(path.reads()).toBeLessThanOrEqual(closedAt + 1);
+    expect(path.landed()).toBe(false);
+  });
+
+  it('is not ended by a read sent before the Cancel answered, which may not show it', async () => {
+    const io = side();
+    const desktop = desktopPath(io, {
+      queueRereadMs: { base: 60_000, max: 60_000 },
+    });
+    await settle();
+    await desktop.backend.getState(SCOPE);
+    // A read of the chat is out, held, before the Cancel is sent.
+    let release = (): void => undefined;
+    core.chatSnapshotGate = {
+      chatId: CHAT,
+      gate: new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+    };
+    const earlier = desktop.backend.getQueue(SCOPE);
+    await settle();
+    core.snapshotFailsFor = CHAT;
+    const error = await desktop.backend
+      .cancelQueued({ ...SCOPE, chatId: CHAT_KEY, entryId: 't12' })
+      .then(
+        () => null,
+        (failure: unknown) => failure,
+      );
+    const { queueRead } = error as WebCoreQueueCommandUnsettledError;
+    expect(queueRead.installed).toBe(false);
+    let landed = false;
+    void queueRead.shown.then(() => {
+      landed = true;
+    });
+    release();
+    await earlier;
+    await settle();
+    expect(landed).toBe(false);
+    core.chatSnapshotGate = null;
+    desktop.backend.closeAll();
+  });
+
+  it('ends on a read another part of the backend sends, and sends no read of its own after it', async () => {
+    // Its own next read is a minute off: only the other read can end it.
+    const path = await unread({ base: 60_000, max: 60_000 });
+    const before = path.reads();
+    core.snapshotFailsFor = null;
+    await path.desktop.backend.getQueue(SCOPE);
+    await settle();
+    expect(path.landed()).toBe(true);
+    const after = path.reads();
+    expect(after).toBe(before + 1);
+    await wait(20);
+    expect(path.reads()).toBe(after);
+  });
 });
 
 it("a cloud chat's queued prompts show on desktop as the web shows them, in every tab, and Remove cancels one in Core (CAN-6644)", async () => {

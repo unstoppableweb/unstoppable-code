@@ -231,7 +231,7 @@ import {
   readSplitPrMap,
 } from '../lib/split-pr-persistence';
 import {
-  acquireSplitLock,
+  prepareSplitLock,
   releaseSplitLock,
   isSplitLocked,
   onSplitLockChange,
@@ -3889,6 +3889,12 @@ export function registerGitHubHandlers(
       validateId(request.worktreeId, 'worktreeId');
 
       const mode = request.mode ?? 'plan';
+      // Resolve the lock key first, so taking the lock below stays
+      // synchronous with the Git action check.
+      const splitLock = await prepareSplitLock(
+        request.projectId,
+        request.worktreeId,
+      );
 
       // In-flight blocker re-check BEFORE acquiring: refuse (typed
       // SplitStartBlockedError) if an active chat turn or a running pipeline
@@ -3900,7 +3906,7 @@ export function registerGitHubHandlers(
         request.worktreeId,
       );
 
-      // Keep this synchronous with acquireSplitLock. runCancellableGitAction
+      // Keep this synchronous with splitLock.acquire(). runCancellableGitAction
       // performs the inverse split-lock check synchronously with registering a
       // Git action, so a remote or desktop PR mutation cannot cross this seam.
       if (isGitActionActive(request)) {
@@ -3921,7 +3927,7 @@ export function registerGitHubHandlers(
       // window. A second concurrent start throws SplitLockError here; it must
       // NOT release the lock the first start holds, so this acquire is
       // intentionally outside the release-on-failure block below.
-      acquireSplitLock(request.projectId, request.worktreeId);
+      await splitLock.acquire();
       setSplitPrRuntimeProjection(
         request.projectId,
         request.worktreeId,

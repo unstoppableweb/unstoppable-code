@@ -1,3 +1,4 @@
+import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { ControlButton } from '@canopy/ui-shared/components';
 import { AttachedNotice } from '@canopy/ui-shared/components';
 import {
@@ -141,7 +142,9 @@ function InlineStepDetail({
           <div className="mb-0.5 text-2xs font-medium fg-destructive-strong">
             Error
           </div>
-          <div className="font-mono text-2xs fg-destructive-strong">
+          <div
+            className={`font-mono text-2xs fg-destructive-strong ${REPLAY_BLOCK_CLASS}`}
+          >
             {resolved.stepResult.error}
           </div>
         </AttachedNotice>
@@ -417,7 +420,9 @@ export function PipelineExecutionInlineDetail({
           intent="destructive"
           title="Execution error"
         >
-          <span className="whitespace-pre-wrap break-words font-mono">
+          <span
+            className={`whitespace-pre-wrap break-words font-mono ${REPLAY_BLOCK_CLASS}`}
+          >
             {state.error}
           </span>
         </Notice>

@@ -35,6 +35,12 @@ export interface McpAccountActionsPort {
    * sign in to); the existing accounts stay manageable.
    */
   readonly addAccount?: (label: string) => Promise<string | null>;
+  /**
+   * Runs as the Add name dialog opens, before {@link addAccount}, so a host
+   * can note what the person is adding under (their signed-in account) and
+   * refuse a submit made under another.
+   */
+  readonly beginAddAccount?: () => void;
   /** Renames an account; `null` clears the name. */
   readonly renameAccount: (
     connectionId: string,
@@ -224,7 +230,9 @@ function McpAccountRow({
  * projects), so an account's facts and actions sit inside its own row. The
  * desktop adds its device copy as one more row. Shown on desktop and web
  * wherever the connection detail is; it renders nothing when the person
- * holds no account.
+ * holds no account, unless their only connection is the copy on this device
+ * (`deviceCopy`): the list then offers Add a cloud account beside its row, so
+ * the connector can reach cloud chats and their other devices too.
  */
 export function McpAccountControls({
   serverName,
@@ -235,6 +243,7 @@ export function McpAccountControls({
   details,
   device = false,
   deviceEffects,
+  deviceCopy = false,
   disabled = false,
   addPending = false,
 }: {
@@ -253,6 +262,12 @@ export function McpAccountControls({
   device?: boolean;
   /** Notes on the accounts a device file named after the connector changes. */
   deviceEffects?: McpAccountDeviceEffects;
+  /**
+   * The person holds only a copy of the connector on this device, listed as
+   * its `device` row. With no account, the list then offers adding the first
+   * one beside it.
+   */
+  deviceCopy?: boolean;
   disabled?: boolean;
   /**
    * An added account is still signing in. Add another account waits for it,
@@ -265,8 +280,13 @@ export function McpAccountControls({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [rowError, setRowError] = useState<string | null>(null);
-  if (connections.length === 0) return null;
+  // Only a device copy: the first account is a cloud one, added beside it.
+  const firstBesideDevice = connections.length === 0 && deviceCopy;
+  if (connections.length === 0 && !(firstBesideDevice && actions)) return null;
   const several = connections.length > 1;
+  const addLabel = firstBesideDevice
+    ? 'Add a cloud account'
+    : 'Add another account';
   // One account is always the default: the flagged one, else the `default`
   // configuration, else the oldest, as the run itself picks it.
   const defaultAccount =
@@ -355,7 +375,12 @@ export function McpAccountControls({
             ? 'Finish signing in to the new account in your browser, or remove it to cancel.'
             : several
               ? 'New chats use the default account unless a project or chat picks another.'
-              : undefined
+              : firstBesideDevice
+                ? // Says what a cloud account adds over the device copy, which
+                  // stays as it is. Never "connected": the copy may not be
+                  // signed in yet.
+                  `Only on this device. Add a cloud account so cloud chats and your other devices can use ${serverName} too.`
+                : undefined
         }
         dataTestId="mcp-accounts-header"
         control={
@@ -367,10 +392,11 @@ export function McpAccountControls({
               data-testid="mcp-account-add"
               onClick={(): void => {
                 setError(null);
+                actions?.beginAddAccount?.();
                 setDialog({ kind: 'add' });
               }}
             >
-              Add another account
+              {addLabel}
             </Button>
           ) : undefined
         }
@@ -443,9 +469,14 @@ export function McpAccountControls({
         <RenameDialog
           // The name tells this account apart from the others, for example
           // its workspace; the person can rename it later.
-          title="Add another account"
+          title={addLabel}
           label="Account name"
-          initialValue={`${serverName} ${connections.length + 1}`}
+          // The first account needs no number to tell it apart.
+          initialValue={
+            firstBesideDevice
+              ? serverName
+              : `${serverName} ${connections.length + 1}`
+          }
           helperText={`Shown wherever this account is listed, such as its workspace name. You sign in to ${serverName} next.`}
           maxLength={ACCOUNT_MCP_LABEL_MAX_LENGTH}
           submitLabel="Continue"

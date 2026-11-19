@@ -25,6 +25,7 @@ import {
   preloadOrganizationTabPages,
   SettingsPageNoticeProvider,
 } from '@canopy/ui-app/settings/pages';
+import { lazyLoadErrorBoundaryHost } from '@/lib/desktop-error-boundary-host';
 import { openAuthenticatedCloudPage } from '@/lib/openAuthenticatedCloudPage';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { useNavigationStore } from '@/stores/navigationStore';
@@ -289,7 +290,11 @@ function SignedInHostedSettingsContent({
           ) : state === 'loading' ? (
             <HostedSettingsRouteLoading route={accountRoute} />
           ) : state === 'ready' ? (
-            <HostedSettingsPageContent route={route} recovery={recovery} />
+            <HostedSettingsPageContent
+              route={route}
+              errorBoundaryHost={lazyLoadErrorBoundaryHost}
+              recovery={recovery}
+            />
           ) : null}
         </AccountScopeShell>
       </SettingsPageNoticeProvider>
@@ -312,6 +317,7 @@ function SignedInHostedSettingsContent({
     <SettingsPageNoticeProvider notice={notice}>
       <HostedSettingsPage
         route={route}
+        errorBoundaryHost={lazyLoadErrorBoundaryHost}
         recovery={recovery}
         renderFrame={renderHostedPageFrame}
       />

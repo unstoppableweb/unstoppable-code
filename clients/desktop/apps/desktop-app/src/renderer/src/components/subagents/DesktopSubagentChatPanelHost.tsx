@@ -60,6 +60,9 @@ import {
   ManagedDelegationStopContext,
   type ManagedDelegationChatTarget,
 } from '@/components/chat/managed-delegation-stop';
+import { useCloudDelegationLiveState } from '@/cloud-chats/cloud-delegation-stop';
+import { isWebCoreScope } from '@/lib/chat-authority';
+import { CloudSubagentTranscript } from './CloudSubagentTranscript';
 import {
   interruptNativeSubagent,
   messageManagedSubagent,
@@ -218,6 +221,9 @@ function DesktopSubagentChatContent({
   );
   const [workflowTarget, setWorkflowTarget] =
     useState<WorkflowRunDialogTarget | null>(null);
+  // A cloud scope's delegates don't run here: their pages come from the web
+  // core and nothing reaches main with its ids (CAN-7133).
+  const cloud = isWebCoreScope(scope.projectId);
   const capabilities = useMemo(() => {
     const narrowed = subagentCapabilitiesForKind(baseCapabilities, node.kind);
     return subagentScopeShowsWorkspaceDetails(scope)
@@ -236,9 +242,19 @@ function DesktopSubagentChatContent({
     node,
     rootMessages,
     {
-      enabled: node.kind !== 'workflow-agent',
+      enabled: !cloud && node.kind !== 'workflow-agent',
     },
   );
+  // The delegate's lifecycle re-reads its open pages, as on its card; read
+  // only while its scope serves it (CAN-7245).
+  const cloudLive = useCloudDelegationLiveState(
+    cloud && baseCapabilities.stop && node.kind === 'managed'
+      ? { ...scope, chatId: rootChatId }
+      : null,
+    node.kind === 'managed' ? [node.id] : [],
+    { parentActive: rootChatBusy, changeKey: String(rootMessages.length) },
+  );
+  const cloudEpoch = cloudLive?.epochs.get(node.id) ?? 0;
   const workflowAgentIds =
     node.kind === 'workflow-agent' ? parseWorkflowAgentNodeId(node.id) : null;
   const workflowRunLocation = workflowAgentIds
@@ -341,7 +357,8 @@ function DesktopSubagentChatContent({
   const readToolOutput = useMemo<ToolOutputReader>(
     () =>
       async (identity, offset, signal): Promise<ChatToolOutputResponse> => {
-        if (identity.kind !== 'reference')
+        // A cloud chat's tool output isn't on this computer (CAN-7133).
+        if (identity.kind !== 'reference' || cloud)
           throw new Error("Couldn't load full output in this view.");
         const { messageId, toolUseId, reference } = identity;
         signal.throwIfAborted();
@@ -370,7 +387,7 @@ function DesktopSubagentChatContent({
           signal.removeEventListener('abort', cancel);
         }
       },
-    [rootChatId, scope.projectId, scope.worktreeId],
+    [cloud, rootChatId, scope.projectId, scope.worktreeId],
   );
   const stopTarget = useMemo<ManagedDelegationChatTarget>(
     () => ({ ...scope, chatId: rootChatId }),
@@ -503,21 +520,36 @@ function DesktopSubagentChatContent({
                       {WORKFLOW_AGENT_TRANSCRIPT_TRUNCATED_NOTICE}
                     </p>
                   ) : null}
-                  <SubagentChatTranscript
-                    items={
-                      node.kind === 'workflow-agent'
-                        ? workflowTranscriptItems
-                        : transcript.items
-                    }
-                    originChatTabId={rootChatId}
-                    receivingContext={receivingContext}
-                    streaming={
-                      node.kind === 'workflow-agent'
-                        ? workflowLive
-                        : node.status === 'running' ||
-                          node.status === 'approval'
-                    }
-                  />
+                  {cloud && node.kind === 'managed' ? (
+                    <CloudSubagentTranscript
+                      scope={scope}
+                      rootChatId={rootChatId}
+                      tree={tree}
+                      node={node}
+                      rootMessages={rootMessages}
+                      epoch={cloudEpoch}
+                      streaming={
+                        node.status === 'running' || node.status === 'approval'
+                      }
+                      receivingContext={receivingContext}
+                    />
+                  ) : (
+                    <SubagentChatTranscript
+                      items={
+                        node.kind === 'workflow-agent'
+                          ? workflowTranscriptItems
+                          : transcript.items
+                      }
+                      originChatTabId={rootChatId}
+                      receivingContext={receivingContext}
+                      streaming={
+                        node.kind === 'workflow-agent'
+                          ? workflowLive
+                          : node.status === 'running' ||
+                            node.status === 'approval'
+                      }
+                    />
+                  )}
                 </>
               }
               hasOlder={pages.hasOlder}
@@ -567,9 +599,11 @@ export function DesktopSubagentChatPanelHost({
   isVisible,
   isActive,
 }: DesktopSubagentChatPanelHostProps): JSX.Element {
+  const baseCapabilities = useSubagentViewerCapabilities(scope);
   const treeQuery = useSubagentTree(scope, rootChatId, {
     enabled: isVisible,
     reloadEvictedTranscript: true,
+    liveReads: baseCapabilities.stop,
   });
   const { treeState } = treeQuery;
   // Try again keeps the failure on screen, busy, until the reload settles, so
@@ -578,7 +612,6 @@ export function DesktopSubagentChatPanelHost({
   if (retriedError !== null && treeState.status !== 'loading') {
     setRetriedError(null);
   }
-  const baseCapabilities = useSubagentViewerCapabilities();
   const rootChat = useRootChatProjection(scope, rootChatId);
   const node = treeQuery.tree?.nodes.get(subagentId);
   const scopeKey = subagentScopeKey(scope);

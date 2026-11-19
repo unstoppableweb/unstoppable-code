@@ -268,6 +268,7 @@ import {
   type AgentActionCall,
   type AgentTranscriptReadOwner,
   type AgentExperimentWriteResult,
+  type AgentInventorySyncState,
   type AgentModelList,
 } from '@canopy/agent-actions';
 import {
@@ -305,6 +306,15 @@ import { createDesktopAgentActionSurface } from '../desktop-surface';
 import { desktopAgentActionCapabilities } from '../desktop-surface';
 import { desktopChatWatcherPort } from '../desktop-watcher-port';
 import { seedEmptyApprovalRuleSources } from '../../__tests__/helpers/approval-rule-sources';
+
+const inventorySyncState: AgentInventorySyncState = {
+  enabled: true,
+  allowIncoming: true,
+  signedIn: true,
+  syncing: true,
+  pausedReason: null,
+  deleteStatus: 'idle',
+};
 
 const CREATED_AT = '2026-01-01T00:00:00.000Z';
 
@@ -890,6 +900,25 @@ function makeDesktopHost(world: ConformanceWorld): {
               revisionAtCommit: 1,
             });
           },
+        },
+        // A signed-in computer syncing its lists; writing the current state
+        // is a no-op. This stub does not model the real port's turn-off
+        // prompt; it rejects any change.
+        inventorySync: {
+          getState: (): Promise<AgentInventorySyncState> =>
+            Promise.resolve(inventorySyncState),
+          setEnabled: (request) =>
+            request.enabled === inventorySyncState.enabled
+              ? Promise.resolve({
+                  changed: false,
+                  stateAtCommit: inventorySyncState,
+                })
+              : Promise.reject(
+                  new AgentPortError(
+                    'authorization_conflict',
+                    'The person declined turning off syncing.',
+                  ),
+                ),
         },
         settings,
         environment: holds.wrap(environment),

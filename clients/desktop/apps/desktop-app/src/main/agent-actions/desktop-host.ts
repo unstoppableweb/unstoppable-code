@@ -5,6 +5,7 @@ import {
 } from '@canopy/agent-actions/families/chat-history';
 import { desktopBrowserPort } from './desktop-browser-port';
 import { desktopExperimentsPort } from './desktop-experiments-port';
+import { desktopInventorySyncPort } from './desktop-inventory-sync-port';
 import { desktopInstalledItemsPort } from './desktop-installed-items-port';
 import { desktopSettingsPort } from './desktop-settings-port';
 import { desktopPipelineExecutionsPort } from './desktop-pipeline-executions-port';
@@ -18,6 +19,7 @@ import {
   createTranscriptReadActionFamily,
   createProjectActionFamily,
   createExperimentsActionFamily,
+  createInventorySyncActionFamily,
   createInstalledItemsActionFamily,
   type AgentInstalledItemsPort,
   createSettingsActionFamily,
@@ -28,6 +30,7 @@ import {
   type AgentBrowserPort,
   type AgentCapabilityPackagePort,
   type AgentExperimentsPort,
+  type AgentInventorySyncPort,
   type AgentPipelineExecutionsPort,
   type AgentPipelinesPort,
   type AgentPullRequestReviewPort,
@@ -78,6 +81,7 @@ export const DESKTOP_AGENT_ACTION_HOST = defineAgentActionHost({
     'projects',
     'bots',
     'experiments',
+    'inventory-sync',
     'installed-items',
     'settings',
     'capability-package',
@@ -167,6 +171,8 @@ export interface DesktopAgentActionPorts {
   installedItems?: AgentInstalledItemsPort<CanopyInjectedToolRuntime>;
   capabilityPackage?: AgentCapabilityPackagePort<CanopyInjectedToolRuntime>;
   experiments?: AgentExperimentsPort<CanopyInjectedToolRuntime>;
+  /** This computer's Sync lists to the web switch; turning off always asks. */
+  inventorySync?: AgentInventorySyncPort<CanopyInjectedToolRuntime>;
   /** Opens hosted account and organization settings in the main window. */
   settings?: AgentSettingsPort<CanopyInjectedToolRuntime>;
   /** Starts pipeline runs through the main-process start path. */
@@ -204,6 +210,7 @@ export function desktopAgentActionPorts(): DesktopAgentActionPorts {
       }),
       receipts,
       experiments: desktopExperimentsPort,
+      inventorySync: desktopInventorySyncPort,
       settings: desktopSettingsPort,
       capabilityPackage: desktopCapabilityPackagePort,
       pipelines: desktopPipelinesPort,
@@ -243,6 +250,11 @@ export function desktopAgentActionFamilies(
     }),
     createExperimentsActionFamily({
       port: ports.experiments ?? desktopExperimentsPort,
+      receipts: ports.receipts,
+      limits: capabilities.limits ? ports.limits : null,
+    }),
+    createInventorySyncActionFamily({
+      port: ports.inventorySync ?? desktopInventorySyncPort,
       receipts: ports.receipts,
       limits: capabilities.limits ? ports.limits : null,
     }),

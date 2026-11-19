@@ -8,7 +8,10 @@ import {
   CanopyOperationError,
 } from '../../runtime/errors';
 import type { CanopyHandlerContext } from '../../runtime/types';
-import { GitBranchWriteInterrupted } from './branch-writes';
+import {
+  GitBranchWriteInterrupted,
+  GitBranchWriteRefusal,
+} from './branch-writes';
 import {
   GitMergeRefusal,
   mergeGitBranches,
@@ -85,6 +88,19 @@ export function createWorkerGitMergeHandlers<Checkout>(
               retry: { kind: 'never' },
             },
             error.hostCause ?? error,
+          );
+        // CAN-7169: a branch name Git would not accept never reaches the merge.
+        if (
+          error instanceof GitBranchWriteRefusal &&
+          error.reason === 'invalid-name'
+        )
+          throw new CanopyOperationError(
+            {
+              kind: 'invalid_argument',
+              message: error.message.slice(0, 4096),
+              retry: { kind: 'never' },
+            },
+            error,
           );
         if (error instanceof GitMergeRefusal)
           throw new CanopyOperationError(

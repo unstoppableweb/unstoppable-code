@@ -350,6 +350,8 @@ export async function routeAppAdvisorAction(
       action.type === 'installed_items.inspect_mcp_removal' ||
       action.type === 'installed_items.force_mcp_removal' ||
       action.type === 'experiments.set_enabled' ||
+      action.type === 'inventory_sync.get_state' ||
+      action.type === 'inventory_sync.set_enabled' ||
       action.type === 'settings.open' ||
       action.type === 'settings.ai_gateway.get' ||
       action.type === 'settings.ai_gateway.connect' ||

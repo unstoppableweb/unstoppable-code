@@ -115,11 +115,12 @@ export function DesktopSubagentsPanelHost({
   )
     ? scopeState.selectedRootId
     : null;
+  const capabilities = useSubagentViewerCapabilities(scope);
   const treeQuery = useSubagentTree(scope, selectedRootId, {
     enabled: isVisible,
     reloadEvictedTranscript: true,
+    liveReads: capabilities.stop,
   });
-  const capabilities = useSubagentViewerCapabilities();
   const showWorkspaceDetails = subagentScopeShowsWorkspaceDetails(scope);
   const [selectedNode, setSelectedNode] = useState<SubagentNode | null>(null);
   const [changesTarget, setChangesTarget] =
@@ -205,6 +206,7 @@ export function DesktopSubagentsPanelHost({
   const showChanges = useCallback(
     (node: SubagentNode): void => {
       if (
+        !capabilities.worktreeDetails ||
         node.kind !== 'managed' ||
         node.workspace !== 'isolated' ||
         node.isolatedRevision === undefined ||
@@ -219,7 +221,7 @@ export function DesktopSubagentsPanelHost({
         title: node.title,
       });
     },
-    [scope],
+    [capabilities.worktreeDetails, scope],
   );
   const closeChanges = useCallback((): void => setChangesTarget(null), []);
   const closeWorkflow = useCallback((): void => setWorkflowTarget(null), []);

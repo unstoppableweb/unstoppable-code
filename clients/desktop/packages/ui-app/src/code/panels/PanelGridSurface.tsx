@@ -92,6 +92,7 @@ export interface PanelGridSurfaceServices {
   /** Optional host intent callback; shared rendering never fetches. */
   onTabIntent?: PanelTabBarProps['onTabIntent'];
   getTabTitle: (tab: PanelTabModel) => string;
+  isTabTitlePrivate?: (tab: PanelTabModel) => boolean;
   renderTabAccessibleStatus?: (tab: PanelTabModel) => ReactNode;
   /** Persistent attention remains visible when a fill tab shrinks to its icon. */
   renderTabAttention?: (tab: PanelTabModel) => ReactNode;
@@ -173,6 +174,8 @@ export interface PanelGridSurfaceServices {
   onExportSession?: (chatTabId: string, ownerDocument?: Document) => void;
   /** Opens the host's chat rename dialog; omitted where rename is unsupported. */
   onRenameChat?: (chatTabId: string, ownerDocument?: Document) => void;
+  /** Opens the host's terminal rename dialog; omitted where unsupported. */
+  onRenameTerminal?: (terminalId: string, ownerDocument?: Document) => void;
   /** Chat read state for the tab menu; see `PanelTabContextMenu`. */
   getChatReadState?: (chatTabId: string) => 'read' | 'unread' | undefined;
   /** A tab's archive row in its menu; see `PanelTabContextMenu`. */
@@ -295,6 +298,7 @@ export function PanelGridSurface({
     renderTabLabel,
     onTabIntent,
     getTabTitle,
+    isTabTitlePrivate,
     renderTabAccessibleStatus,
     renderTabAttention,
     renderTabTooltip,
@@ -326,6 +330,7 @@ export function PanelGridSurface({
     canShareSession,
     onExportSession,
     onRenameChat,
+    onRenameTerminal,
     getTabArchiveAction,
     getChatReadState,
     onSetChatUnread,
@@ -856,6 +861,7 @@ export function PanelGridSurface({
               renderTabLabel={renderTabLabel}
               onTabIntent={onTabIntent}
               getTabTitle={getTabTitle}
+              isTabTitlePrivate={isTabTitlePrivate}
               renderTabAccessibleStatus={renderTabAccessibleStatus}
               renderTabTooltip={renderTabTooltip}
               renderTabHoverCard={renderTabHoverCard}
@@ -896,6 +902,7 @@ export function PanelGridSurface({
           canShareSession={canShareSession}
           onExportSession={onExportSession}
           onRenameChat={onRenameChat}
+          onRenameTerminal={onRenameTerminal}
           getArchiveAction={getTabArchiveAction}
           getChatReadState={getChatReadState}
           onSetChatUnread={onSetChatUnread}

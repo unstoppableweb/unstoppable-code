@@ -9,11 +9,16 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
+  promises as fsPromises,
+  readdirSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -41,6 +46,8 @@ import {
   checkoutGitBranch,
   createRecordedWorkerGitHosts,
   createWorkerGitBranchListHandlers,
+  invalidRemoteDefaultCounts,
+  parseGitBranchName,
   type GitRepositoryRead,
 } from '@canopy/core-runtime/node/git';
 import {
@@ -89,9 +96,16 @@ import {
 import { createElectronDaemonCallerLifetime } from '../canopy-runtime/electron-daemon-caller-lifetime';
 import { FakeSender } from '../canopy-runtime/__tests__/daemon-files-route-harness';
 import * as gitHelpers from '../lib/git';
+import * as processCleanup from '../lib/worktree-process-cleanup';
+import * as sharedCliReads from '@canopy/desktop-shared/node/lib/worktree-cli-reads';
+import { removeArchiveWorktree } from '../archive/archive-git-operations';
+import { removeGitWorktree as removeSharedGitWorktree } from '@canopy/desktop-shared/node/lib/worktree-create-effects';
+import { InvalidWorktreePathError } from '@canopy/desktop-shared/node/lib/worktree-path-refusal';
+import { toAppError } from '@canopy/protocol/app-errors';
 import { refreshWorktreeDiffStats } from '../services/worktree-diff-stats-cache';
 import * as defaultBranchHelpers from '../lib/git-default-branch';
 import * as freshnessStore from '../lib/git-default-branch-freshness';
+import * as mainProcessLogging from '../lib/main-process-logging';
 import { READ_ROUTE_TABLE } from '../canopy-runtime/daemon-read-route-guard';
 
 import { AutomationsService } from '../automations/service';
@@ -535,6 +549,58 @@ async function ipc(channel: string, request: unknown): Promise<Outcome> {
   } catch (error) {
     return { error: describeError(error) };
   }
+}
+
+// CAN-7169: names a hostile remote can advertise as its HEAD. Each one is a
+// valid ref name, so a remote can serve it, and each one parses as an option.
+const REFUSED_REMOTE_BRANCH_NAMES = [
+  '--delete',
+  '-a',
+  '--upload-pack=sub/pwned',
+  '-b',
+];
+
+function markerPath(): string {
+  return join(dir, 'PWNED');
+}
+
+/** A program `--upload-pack=sub/pwned` would run from the repository. */
+function plantMarkerProgram(repo: string): void {
+  mkdirSync(join(repo, 'sub'), { recursive: true });
+  writeFileSync(
+    join(repo, 'sub', 'pwned'),
+    `#!/bin/sh\necho ran > '${markerPath()}'\nexec git-upload-pack "$@"\n`,
+    { mode: 0o755 },
+  );
+}
+
+interface GitStateSnapshot {
+  config: string;
+  packedRefs: string;
+  remoteRefs: string;
+  originHead: string;
+  freshness: string;
+}
+
+/** The on-disk state a refused name must leave byte-identical. */
+function gitStateSnapshot(repo: string): GitStateSnapshot {
+  const common = git(repo, [
+    'rev-parse',
+    '--path-format=absolute',
+    '--git-common-dir',
+  ]);
+  const packed = join(common, 'packed-refs');
+  return {
+    config: readFileSync(join(common, 'config'), 'utf8'),
+    packedRefs: existsSync(packed) ? readFileSync(packed, 'utf8') : '(absent)',
+    remoteRefs: git(repo, [
+      'for-each-ref',
+      '--format=%(refname) %(objectname) %(symref)',
+      'refs/remotes',
+    ]),
+    originHead: originHead(repo),
+    freshness: freshnessBytes(),
+  };
 }
 
 const routeSender = new FakeSender(1);
@@ -1503,6 +1569,979 @@ describe('daemon branch-list route equivalence', () => {
     });
     expect(query).toHaveBeenCalledTimes(1);
     expect(neverDirect).not.toHaveBeenCalled();
+  });
+
+  // CAN-7169: a remote whose HEAD names an option-like branch never reaches
+  // Git argv, nothing records the name, and nothing runs. The same table runs
+  // through both paths, so both refuse exactly the same names.
+  describe.each(REFUSED_REMOTE_BRANCH_NAMES)(
+    'option-like remote default branch %s',
+    (name) => {
+      const repo = (): string => repos[REPAIR_WS];
+      let before: GitStateSnapshot;
+      let logs: jest.SpyInstance[] = [];
+      /**
+       * A suppressed default leaves a content-free diagnostic, so
+       * support can tell an invalid default from no default, and no log
+       * line at any level carries the remote's text.
+       */
+      const expectContentFreeDiagnostic = (): void => {
+        const calls = logs.flatMap(
+          (spy): unknown[][] => spy.mock.calls as unknown[][],
+        );
+        const source: unknown = expect.stringMatching(
+          /^(remote-head|origin-head)$/,
+        );
+        expect(calls).toContainEqual([
+          'Suppressed a remote default branch that is not a valid branch name',
+          { source },
+        ]);
+        for (const text of [name, 'upload-pack', 'pwned', '--delete'])
+          expect(JSON.stringify(calls)).not.toContain(text);
+      };
+      beforeEach(async () => {
+        logs = (
+          [
+            'logMainProcessError',
+            'logMainProcessWarn',
+            'logMainProcessInfo',
+            'logMainProcessDebug',
+          ] as const
+        ).map((method) => jest.spyOn(mainProcessLogging, method));
+        const origin = origins[REPAIR_WS];
+        git(origin, [
+          'update-ref',
+          `refs/heads/${name}`,
+          git(origin, ['rev-parse', 'refs/heads/main']),
+        ]);
+        git(origin, ['symbolic-ref', 'HEAD', `refs/heads/${name}`]);
+        git(repo(), ['remote', 'set-head', 'origin', 'develop']);
+        await seedFreshness(
+          repo(),
+          'release',
+          Date.now() - DEFAULT_BRANCH_FRESHNESS_TTL_MS - 60_000,
+        );
+        plantMarkerProgram(repo());
+        before = gitStateSnapshot(repo());
+      });
+      afterEach(async () => {
+        const origin = origins[REPAIR_WS];
+        git(origin, ['symbolic-ref', 'HEAD', 'refs/heads/main']);
+        git(origin, ['update-ref', '-d', `refs/heads/${name}`]);
+        rmSync(join(repo(), 'sub'), { recursive: true, force: true });
+        rmSync(markerPath(), { force: true });
+        for (const spy of logs) spy.mockRestore();
+        await runtime?.shutdown();
+        registerHandlers();
+      });
+
+      it('changes nothing and runs nothing on the in-process path', async () => {
+        await runtime?.shutdown();
+        registerHandlers();
+        await ipc(IPC_CHANNELS.worktreeListBranches, {
+          projectId: REPAIR_WS,
+          worktreeId: WORKTREE,
+        });
+        expect(gitStateSnapshot(repo())).toEqual(before);
+        expect(originHead(repo())).toBe('refs/remotes/origin/develop');
+        expect(JSON.stringify(freshnessEntries())).not.toContain(name);
+        expect(existsSync(markerPath())).toBe(false);
+        expectContentFreeDiagnostic();
+      });
+
+      it('changes nothing and runs nothing on the daemon-result path', async () => {
+        // A live connection of its own: earlier cases end the shared one.
+        const live = new AbortController();
+        await list(
+          routeFor({
+            connections: () => ({
+              get: (): Promise<{
+                client: { signal: AbortSignal; query: typeof query };
+              }> => Promise.resolve({ client: { signal: live.signal, query } }),
+            }),
+          }),
+        );
+        expect(gitStateSnapshot(repo())).toEqual(before);
+        expect(originHead(repo())).toBe('refs/remotes/origin/develop');
+        expect(JSON.stringify(freshnessEntries())).not.toContain(name);
+        expect(existsSync(markerPath())).toBe(false);
+        expectContentFreeDiagnostic();
+      });
+    },
+  );
+});
+
+// CAN-7169: one pure validator decides which remote-derived names may reach
+// Git argv. It accepts exactly what `git check-ref-format --branch` accepts
+// outside a repository, where `--branch` has no branch to expand `@{…}` to.
+describe('remote branch name validator', () => {
+  it.each([
+    'main',
+    'feature/x',
+    'release-1.2',
+    'a.b',
+    'x@y',
+    'ünïcödé',
+    'HEAD',
+    '@',
+    '',
+    'a..b',
+    'a.lock',
+    'x/a.lock/y',
+    '.hidden',
+    'x/.y',
+    'a b',
+    'a~b',
+    'a^b',
+    'a:b',
+    'a?b',
+    'a*b',
+    'a[b',
+    'a\\b',
+    'a/',
+    '/a',
+    'a//b',
+    'a.',
+    'a\tb',
+    '@{-1}',
+    'a@{u}',
+    'a@',
+    '@/x',
+    'HEAD/x',
+    'x/HEAD',
+    'refs/heads/x',
+    'a\u007fb',
+    '-uxyz',
+    ...REFUSED_REMOTE_BRANCH_NAMES,
+  ])('agrees with Git for %j', (name) => {
+    const outside = mkdtempSync(join(dir, 'ref-format-'));
+    let gitAccepts = true;
+    try {
+      execFileSync('git', ['check-ref-format', '--branch', name], {
+        cwd: outside,
+        env: { ...process.env, GIT_CEILING_DIRECTORIES: join(outside, '..') },
+        stdio: 'pipe',
+      });
+    } catch {
+      gitAccepts = false;
+    }
+    expect(parseGitBranchName(name) !== null).toBe(gitAccepts);
+  });
+});
+
+// CAN-7169: linking a remote pulls its default branch. The remote names it,
+// so an invalid name is no default: nothing runs and the local branch keeps
+// its history. A valid default still merges as before.
+describe('addRemoteAndSync with a hostile remote default', () => {
+  const linkFixture = (
+    head: string,
+  ): { local: string; origin: string; seedTip: string } => {
+    const base = mkdtempSync(join(dir, 'link-'));
+    const seed = join(base, 'seed');
+    git(base, ['init', '-q', '-b', 'trunk', seed]);
+    git(seed, ['config', 'user.email', 'golden@example.com']);
+    git(seed, ['config', 'user.name', 'Golden']);
+    writeFileSync(join(seed, 'remote.txt'), 'remote\n');
+    git(seed, ['add', '-A']);
+    git(seed, ['commit', '-q', '-m', 'remote']);
+    const origin = join(base, 'origin.git');
+    execFileSync('git', ['clone', '-q', '--bare', seed, origin], {
+      stdio: 'pipe',
+    });
+    if (head !== 'trunk')
+      git(origin, ['update-ref', `refs/heads/${head}`, 'refs/heads/trunk']);
+    git(origin, ['symbolic-ref', 'HEAD', `refs/heads/${head}`]);
+    const local = join(base, 'local');
+    git(base, ['init', '-q', '-b', 'mine', local]);
+    git(local, ['config', 'user.email', 'golden@example.com']);
+    git(local, ['config', 'user.name', 'Golden']);
+    writeFileSync(join(local, 'local.txt'), 'local\n');
+    git(local, ['add', '-A']);
+    git(local, ['commit', '-q', '-m', 'local']);
+    plantMarkerProgram(local);
+    return { local, origin, seedTip: git(seed, ['rev-parse', 'HEAD']) };
+  };
+  afterEach(() => rmSync(markerPath(), { force: true }));
+
+  it.each(REFUSED_REMOTE_BRANCH_NAMES)(
+    'runs nothing and keeps the local history for %s',
+    async (name) => {
+      const { local, origin } = linkFixture(name);
+      const head = git(local, ['rev-parse', 'HEAD']);
+      const heads = git(local, ['for-each-ref', 'refs/heads']);
+      const outcome: unknown = await gitHelpers
+        .addRemoteAndSync(local, origin)
+        .then(
+          () => 'linked',
+          (error: unknown) => error,
+        );
+      expect(existsSync(markerPath())).toBe(false);
+      expect(outcome).toBe('linked');
+      expect(git(local, ['rev-parse', 'HEAD'])).toBe(head);
+      expect(git(local, ['for-each-ref', 'refs/heads'])).toBe(heads);
+    },
+  );
+
+  it('merges a valid remote default as before', async () => {
+    const { local, origin, seedTip } = linkFixture('trunk');
+    // The link's best-effort push is refused, so origin/trunk shows the pull.
+    writeFileSync(join(origin, 'hooks', 'pre-receive'), '#!/bin/sh\nexit 1\n', {
+      mode: 0o755,
+    });
+    await gitHelpers.addRemoteAndSync(local, origin);
+    git(local, ['merge-base', '--is-ancestor', seedTip, 'HEAD']);
+    expect(existsSync(join(local, 'remote.txt'))).toBe(true);
+    expect(existsSync(markerPath())).toBe(false);
+    // The refs/heads/<name> refspec has the bare name's effects.
+    expect(git(local, ['rev-parse', 'FETCH_HEAD'])).toBe(seedTip);
+    expect(git(local, ['rev-parse', 'refs/remotes/origin/trunk'])).toBe(
+      seedTip,
+    );
+  });
+});
+
+// CAN-7169: a clone checks out the branch the remote's HEAD names. The clone
+// is made without a checkout and its HEAD read first; an invalid name removes
+// the clone and fails closed, so no local branch keeps that name.
+describe('cloning a remote whose HEAD names an option-like branch', () => {
+  const cloneFixture = (head: string): { origin: string; base: string } => {
+    const base = mkdtempSync(join(dir, 'clone-'));
+    const seed = join(base, 'seed');
+    git(base, ['init', '-q', '-b', 'trunk', seed]);
+    git(seed, ['config', 'user.email', 'golden@example.com']);
+    git(seed, ['config', 'user.name', 'Golden']);
+    writeFileSync(join(seed, 'remote.txt'), 'remote\n');
+    git(seed, ['add', '-A']);
+    git(seed, ['commit', '-q', '-m', 'remote']);
+    const origin = join(base, 'origin.git');
+    execFileSync('git', ['clone', '-q', '--bare', seed, origin], {
+      stdio: 'pipe',
+    });
+    if (head !== 'trunk')
+      git(origin, ['update-ref', `refs/heads/${head}`, 'refs/heads/trunk']);
+    git(origin, ['symbolic-ref', 'HEAD', `refs/heads/${head}`]);
+    return { origin, base };
+  };
+  const clones = {
+    cloneRepo: (origin: string, destination: string): Promise<void> =>
+      gitHelpers.cloneRepo(origin, destination),
+    cloneRepoWithProgress: (
+      origin: string,
+      destination: string,
+    ): Promise<void> =>
+      gitHelpers.cloneRepoWithProgress(origin, destination, {
+        nonInteractive: true,
+        onProgress: () => undefined,
+      }),
+    cloneRepoWithLiveProgress: (
+      origin: string,
+      destination: string,
+    ): Promise<void> =>
+      gitHelpers.cloneRepoWithLiveProgress(origin, destination, {
+        onProgress: () => undefined,
+      }),
+  };
+  const CLONES = [
+    'cloneRepo',
+    'cloneRepoWithProgress',
+    'cloneRepoWithLiveProgress',
+  ] as const;
+  const refuse = (
+    clone: (typeof CLONES)[number],
+    origin: string,
+    destination: string,
+  ): Promise<unknown> =>
+    clones[clone](origin, destination).then(
+      () => 'cloned',
+      (error: unknown) => error,
+    );
+  afterEach(() => rmSync(markerPath(), { force: true }));
+
+  describe.each(REFUSED_REMOTE_BRANCH_NAMES)('HEAD %s', (name) => {
+    it.each(CLONES)(
+      '%s refuses before any checkout and leaves nothing behind',
+      async (clone) => {
+        const { origin, base } = cloneFixture(name);
+        const destination = join(base, 'clone');
+        const before = invalidRemoteDefaultCounts().get('clone-head') ?? 0;
+        const outcome: unknown = await clones[clone](origin, destination).then(
+          () => 'cloned',
+          (error: unknown) => error,
+        );
+        expect(existsSync(markerPath())).toBe(false);
+        expect(outcome).toBeInstanceOf(gitHelpers.InvalidRemoteHeadCloneError);
+        expect(outcome).toMatchObject({
+          code: 'invalid-remote-default-branch',
+        });
+        expect(existsSync(destination)).toBe(false);
+        expect(invalidRemoteDefaultCounts().get('clone-head')).toBe(before + 1);
+      },
+    );
+  });
+
+  it.each(CLONES)(
+    '%s still clones and checks out a valid HEAD',
+    async (clone) => {
+      const { origin, base } = cloneFixture('trunk');
+      const destination = join(base, 'clone');
+      await clones[clone](origin, destination);
+      expect(git(destination, ['symbolic-ref', 'HEAD'])).toBe(
+        'refs/heads/trunk',
+      );
+      expect(readFileSync(join(destination, 'remote.txt'), 'utf8')).toBe(
+        'remote\n',
+      );
+      expect(git(destination, ['status', '--porcelain'])).toBe('');
+    },
+  );
+
+  it.each(CLONES)(
+    '%s fails when cancelled right after the clone process exits',
+    async (clone) => {
+      const { origin, base } = cloneFixture('trunk');
+      const destination = join(base, 'clone');
+      const controller = new AbortController();
+      const realStat = fsPromises.stat;
+      // The first stat of the destination is the post-clone HEAD probe's
+      // working-directory check, so the clone process has already exited.
+      const stat = jest
+        .spyOn(fsPromises, 'stat')
+        .mockImplementation((...args: Parameters<typeof fsPromises.stat>) => {
+          if (args[0] === destination) controller.abort();
+          return realStat(...args);
+        });
+      let outcome: unknown;
+      try {
+        outcome = await (
+          clone === 'cloneRepoWithLiveProgress'
+            ? gitHelpers.cloneRepoWithLiveProgress(origin, destination, {
+                signal: controller.signal,
+                onProgress: () => undefined,
+              })
+            : clone === 'cloneRepoWithProgress'
+              ? gitHelpers.cloneRepoWithProgress(origin, destination, {
+                  nonInteractive: true,
+                  signal: controller.signal,
+                  onProgress: () => undefined,
+                })
+              : gitHelpers.cloneRepo(origin, destination, {
+                  signal: controller.signal,
+                })
+        ).then(
+          () => 'completed',
+          (error: unknown) => error,
+        );
+      } finally {
+        stat.mockRestore();
+      }
+      expect(controller.signal.aborted).toBe(true);
+      expect(outcome).not.toBe('completed');
+    },
+  );
+
+  it.each(CLONES)('%s still clones an empty repository', async (clone) => {
+    const base = mkdtempSync(join(dir, 'clone-empty-'));
+    const origin = join(base, 'empty.git');
+    git(base, ['init', '-q', '--bare', '-b', 'trunk', origin]);
+    const destination = join(base, 'clone');
+    await clones[clone](origin, destination);
+    expect(existsSync(join(destination, '.git'))).toBe(true);
+  });
+
+  it('cloneRepoWithLiveProgress reports checkout progress', async () => {
+    const { origin, base } = cloneFixture('trunk');
+    const destination = join(base, 'clone');
+    const phases = new Set<string>();
+    const previous = process.env.GIT_PROGRESS_DELAY;
+    process.env.GIT_PROGRESS_DELAY = '0';
+    try {
+      await gitHelpers.cloneRepoWithLiveProgress(origin, destination, {
+        onProgress: (update) => phases.add(update.phase),
+      });
+    } finally {
+      if (previous === undefined) delete process.env.GIT_PROGRESS_DELAY;
+      else process.env.GIT_PROGRESS_DELAY = previous;
+    }
+    expect(phases).toContain('checkout');
+    expect(readFileSync(join(destination, 'remote.txt'), 'utf8')).toBe(
+      'remote\n',
+    );
+  });
+
+  // The refused clone's cleanup, one case per rule: a pre-existing
+  // destination is never removed; only the exact target path, resolved once;
+  // only after git has exited; never through a symlink; never retried.
+  describe.each(CLONES)('%s cleanup after a refused HEAD', (clone) => {
+    const hostile = '--upload-pack=sub/pwned';
+    const leftInPlace = expect.stringContaining('was left in place') as unknown;
+
+    it('never removes a destination that existed before', async () => {
+      const { origin, base } = cloneFixture(hostile);
+      const destination = join(base, 'existing');
+      mkdirSync(destination);
+      const rm = jest.spyOn(fsPromises, 'rm');
+      let outcome: unknown;
+      try {
+        outcome = await refuse(clone, origin, destination);
+        expect(rm.mock.calls.map(([target]) => target)).not.toContain(
+          destination,
+        );
+      } finally {
+        rm.mockRestore();
+      }
+      expect(outcome).toBeInstanceOf(gitHelpers.InvalidRemoteHeadCloneError);
+      expect(outcome).toMatchObject({
+        message: leftInPlace,
+        cleanupError: { message: 'The destination existed before the clone.' },
+      });
+      expect(lstatSync(destination).isDirectory()).toBe(true);
+    });
+
+    it('removes the exact clone path only, resolved once', async () => {
+      const { origin, base } = cloneFixture(hostile);
+      const destination = join(base, 'clone');
+      writeFileSync(join(base, 'sibling.txt'), 'keep\n');
+      mkdirSync(join(base, 'clone-sibling'));
+      const rm = jest.spyOn(fsPromises, 'rm');
+      try {
+        const outcome = await refuse(
+          clone,
+          origin,
+          `${base}/./clone-sibling/../clone`,
+        );
+        expect(outcome).toBeInstanceOf(gitHelpers.InvalidRemoteHeadCloneError);
+        expect(
+          rm.mock.calls
+            .map(([target]) => target)
+            .filter((target) => String(target).startsWith(base)),
+        ).toEqual([destination]);
+      } finally {
+        rm.mockRestore();
+      }
+      expect(existsSync(destination)).toBe(false);
+      expect(readFileSync(join(base, 'sibling.txt'), 'utf8')).toBe('keep\n');
+      expect(existsSync(join(base, 'clone-sibling'))).toBe(true);
+      expect(existsSync(join(base, 'origin.git', 'HEAD'))).toBe(true);
+    });
+
+    it('removes only after the clone process has exited', async () => {
+      const { origin, base } = cloneFixture(hostile);
+      const destination = join(base, 'clone');
+      // Git's trace2 stream records each process's `atexit` as its last act,
+      // so removal must find the clone's `atexit` already written.
+      const trace = join(base, 'trace2.jsonl');
+      const cloneExited = (): boolean => {
+        if (!existsSync(trace)) return false;
+        const events = readFileSync(trace, 'utf8')
+          .split('\n')
+          .filter((line) => line !== '')
+          .map(
+            (line) =>
+              JSON.parse(line) as { event: string; sid: string; name?: string },
+          );
+        const clones = new Set(
+          events
+            .filter(
+              (event) => event.event === 'cmd_name' && event.name === 'clone',
+            )
+            .map((event) => event.sid),
+        );
+        return (
+          clones.size === 1 &&
+          events.some(
+            (event) => event.event === 'atexit' && clones.has(event.sid),
+          )
+        );
+      };
+      const previous = process.env.GIT_TRACE2_EVENT;
+      process.env.GIT_TRACE2_EVENT = trace;
+      const exitedAtRemoval: boolean[] = [];
+      const realRm = fsPromises.rm;
+      const rm = jest
+        .spyOn(fsPromises, 'rm')
+        .mockImplementation((...args: Parameters<typeof fsPromises.rm>) => {
+          if (args[0] === destination) exitedAtRemoval.push(cloneExited());
+          return realRm(...args);
+        });
+      try {
+        const outcome = await refuse(clone, origin, destination);
+        expect(outcome).toBeInstanceOf(gitHelpers.InvalidRemoteHeadCloneError);
+      } finally {
+        rm.mockRestore();
+        if (previous === undefined) delete process.env.GIT_TRACE2_EVENT;
+        else process.env.GIT_TRACE2_EVENT = previous;
+      }
+      expect(exitedAtRemoval).toEqual([true]);
+      expect(existsSync(destination)).toBe(false);
+    });
+
+    it('never follows a symlink swapped in after the clone', async () => {
+      const { origin, base } = cloneFixture(hostile);
+      const destination = join(base, 'clone');
+      const sentinel = join(base, 'sentinel');
+      const realLstat = fsPromises.lstat;
+      let destinationChecks = 0;
+      // The second lstat of the target is the removal-time check: swap the
+      // finished clone for a symlink to a sentinel folder just before it.
+      const lstat = jest
+        .spyOn(fsPromises, 'lstat')
+        .mockImplementation(
+          async (...args: Parameters<typeof fsPromises.lstat>) => {
+            if (args[0] === destination) {
+              destinationChecks += 1;
+              if (destinationChecks === 2) {
+                renameSync(destination, join(base, 'moved-clone'));
+                mkdirSync(sentinel);
+                writeFileSync(join(sentinel, 'keep.txt'), 'keep\n');
+                symlinkSync(sentinel, destination, 'dir');
+              }
+            }
+            return realLstat(...args);
+          },
+        );
+      const rm = jest.spyOn(fsPromises, 'rm');
+      let outcome: unknown;
+      try {
+        outcome = await refuse(clone, origin, destination);
+      } finally {
+        lstat.mockRestore();
+        rm.mockRestore();
+      }
+      expect(destinationChecks).toBe(2);
+      expect(rm).not.toHaveBeenCalled();
+      expect(outcome).toBeInstanceOf(gitHelpers.InvalidRemoteHeadCloneError);
+      expect(outcome).toMatchObject({
+        message: leftInPlace,
+        cleanupError: {
+          message: 'The destination is no longer a real folder.',
+        },
+      });
+      expect(lstatSync(destination).isSymbolicLink()).toBe(true);
+      expect(readFileSync(join(sentinel, 'keep.txt'), 'utf8')).toBe('keep\n');
+    });
+
+    it.each(['EBUSY', 'EPERM'])(
+      'reports a %s removal failure and does not retry it',
+      async (code) => {
+        const { origin, base } = cloneFixture(hostile);
+        const destination = join(base, 'clone');
+        const failure = Object.assign(new Error(code), { code });
+        const rm = jest.spyOn(fsPromises, 'rm').mockRejectedValue(failure);
+        let outcome: unknown;
+        try {
+          outcome = await refuse(clone, origin, destination);
+          expect(rm).toHaveBeenCalledTimes(1);
+        } finally {
+          rm.mockRestore();
+        }
+        expect(outcome).toBeInstanceOf(gitHelpers.InvalidRemoteHeadCloneError);
+        expect(outcome).toMatchObject({
+          message: leftInPlace,
+          cleanupError: failure,
+        });
+        expect(existsSync(destination)).toBe(true);
+      },
+    );
+  });
+});
+
+// CAN-7169: every fenced `cat-file`/`show` site keeps its options before
+// `--end-of-options`, which turns everything after it into a value. Each form
+// runs through real Git: `-e` (hasLocalCommit), `-s` then `show` (image diff
+// bases), `blob` (text diff bases) and the large-blob prefix reader.
+describe('cat-file sites keep their options before --end-of-options', () => {
+  const PREFIX_LIMIT = (500_000 + 1) * 4;
+  const fixture = (): { repo: string; head: string } => {
+    const repo = mkdtempSync(join(dir, 'cat-file-'));
+    git(repo, ['init', '-q', '-b', 'trunk']);
+    git(repo, ['config', 'user.email', 'golden@example.com']);
+    git(repo, ['config', 'user.name', 'Golden']);
+    writeFileSync(join(repo, 'small.txt'), 'old\n');
+    writeFileSync(join(repo, 'big.txt'), 'a'.repeat(PREFIX_LIMIT + 1024));
+    writeFileSync(
+      join(repo, 'pic.png'),
+      Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+        'base64',
+      ),
+    );
+    git(repo, ['add', '-A']);
+    git(repo, ['commit', '-q', '-m', 'base']);
+    writeFileSync(join(repo, 'small.txt'), 'new\n');
+    writeFileSync(join(repo, 'big.txt'), 'b');
+    writeFileSync(join(repo, 'pic.png'), Buffer.from('not a png any more'));
+    return { repo, head: git(repo, ['rev-parse', 'HEAD']) };
+  };
+
+  it('-e finds a commit and a dash-leading name never reaches Git', async () => {
+    const { repo, head } = fixture();
+    await expect(gitHelpers.hasLocalCommit(repo, head)).resolves.toBe(true);
+    await expect(gitHelpers.hasLocalCommit(repo, '0'.repeat(40))).resolves.toBe(
+      false,
+    );
+    await expect(
+      gitHelpers.hasLocalCommit(repo, '--upload-pack=sub/pwned'),
+    ).resolves.toBe(false);
+  });
+
+  it('blob reads a small text base', async () => {
+    const { repo } = fixture();
+    const diff = await gitHelpers.getFileDiffUncommitted(repo, 'small.txt');
+    expect(diff).toMatchObject({ oldValue: 'old\n', newValue: 'new\n' });
+  });
+
+  it('the prefix reader reads a large text base', async () => {
+    const { repo } = fixture();
+    const diff = await gitHelpers.getFileDiffUncommitted(repo, 'big.txt');
+    expect(diff.oldValue).toBe('a'.repeat(500_000));
+    expect(diff.truncated).toBe(true);
+  });
+
+  it('-s then show read an image base', async () => {
+    const { repo } = fixture();
+    const diff = await gitHelpers.getFileDiffUncommitted(repo, 'pic.png');
+    expect(diff.imagePreview?.oldDataUrl).toMatch(/^data:image\/png;base64,/);
+  });
+});
+
+// CAN-7169: `rev-parse` echoes `--end-of-options` unless `--verify` comes
+// first, so every fenced `rev-parse` must return exactly one object id.
+describe('fenced rev-parse returns exactly one object id', () => {
+  const fixture = (): { repo: string; head: string; tree: string } => {
+    const repo = mkdtempSync(join(dir, 'rev-parse-'));
+    git(repo, ['init', '-q', '-b', 'trunk']);
+    git(repo, ['config', 'user.email', 'golden@example.com']);
+    git(repo, ['config', 'user.name', 'Golden']);
+    writeFileSync(join(repo, 'file.txt'), 'base\n');
+    git(repo, ['add', '-A']);
+    git(repo, ['commit', '-q', '-m', 'base']);
+    return {
+      repo,
+      head: git(repo, ['rev-parse', 'HEAD']),
+      tree: git(repo, ['rev-parse', 'HEAD^{tree}']),
+    };
+  };
+
+  it('resolveRefSha and getTreeSha return one id and refuse a dash-leading name', async () => {
+    const { repo, head, tree } = fixture();
+    await expect(gitHelpers.resolveRefSha(repo, 'trunk')).resolves.toBe(head);
+    await expect(gitHelpers.getTreeSha(repo, 'trunk')).resolves.toBe(tree);
+    await expect(
+      gitHelpers.resolveRefSha(repo, '--upload-pack=sub/pwned'),
+    ).rejects.toThrow();
+    await expect(
+      gitHelpers.getTreeSha(repo, '--upload-pack=sub/pwned'),
+    ).rejects.toThrow();
+  });
+
+  it('createBranchWithEmptyCommit builds on the start point tree', async () => {
+    const { repo, head, tree } = fixture();
+    const commit = await gitHelpers.createBranchWithEmptyCommit(
+      repo,
+      'seeded',
+      'trunk',
+      'Seed',
+    );
+    expect(git(repo, ['rev-parse', 'refs/heads/seeded'])).toBe(commit);
+    expect(git(repo, ['rev-parse', `${commit}^{tree}`])).toBe(tree);
+    expect(git(repo, ['rev-parse', `${commit}^`])).toBe(head);
+  });
+});
+
+// CAN-7169: Git before 2.43 rejects `--end-of-options` in `checkout` and
+// `reset`, so these keep develop's argv (which every Git accepts) and refuse a
+// dash-leading revision before Git runs.
+describe('checkout and reset refuse a dash-leading revision', () => {
+  const fixture = (): { repo: string; first: string; second: string } => {
+    const repo = mkdtempSync(join(dir, 'checkout-reset-'));
+    git(repo, ['init', '-q', '-b', 'trunk']);
+    git(repo, ['config', 'user.email', 'golden@example.com']);
+    git(repo, ['config', 'user.name', 'Golden']);
+    writeFileSync(join(repo, 'file.txt'), 'first\n');
+    git(repo, ['add', '-A']);
+    git(repo, ['commit', '-q', '-m', 'first']);
+    const first = git(repo, ['rev-parse', 'HEAD']);
+    writeFileSync(join(repo, 'file.txt'), 'second\n');
+    git(repo, ['commit', '-q', '-am', 'second']);
+    return { repo, first, second: git(repo, ['rev-parse', 'HEAD']) };
+  };
+  const hostile = '--upload-pack=sub/pwned';
+
+  it('resetHardTo resets to a revision and refuses a dash-leading one', async () => {
+    const { repo, first, second } = fixture();
+    await expect(gitHelpers.resetHardTo(repo, hostile)).rejects.toThrow(
+      'The revision is not a valid revision.',
+    );
+    expect(git(repo, ['rev-parse', 'HEAD'])).toBe(second);
+    await gitHelpers.resetHardTo(repo, 'HEAD~1');
+    expect(git(repo, ['rev-parse', 'HEAD'])).toBe(first);
+  });
+
+  it('checkoutDetachedRef detaches at a revision and refuses a dash-leading one', async () => {
+    const { repo, first } = fixture();
+    await expect(gitHelpers.checkoutDetachedRef(repo, hostile)).rejects.toThrow(
+      'The revision is not a valid revision.',
+    );
+    expect(git(repo, ['symbolic-ref', 'HEAD'])).toBe('refs/heads/trunk');
+    await gitHelpers.checkoutDetachedRef(repo, 'HEAD~1');
+    expect(git(repo, ['rev-parse', 'HEAD'])).toBe(first);
+  });
+
+  it('checkoutPathsFromRef restores paths from a revision and refuses a dash-leading one', async () => {
+    const { repo } = fixture();
+    await expect(
+      gitHelpers.checkoutPathsFromRef(repo, hostile, ['file.txt']),
+    ).rejects.toThrow('The revision is not a valid revision.');
+    expect(readFileSync(join(repo, 'file.txt'), 'utf8')).toBe('second\n');
+    await gitHelpers.checkoutPathsFromRef(repo, 'HEAD~1', ['file.txt']);
+    expect(readFileSync(join(repo, 'file.txt'), 'utf8')).toBe('first\n');
+  });
+});
+
+describe('worktree add with --no-guess-remote keeps a dash-leading path a path', () => {
+  // `--detach` is a real `worktree add` option. Without the '--' fence, Git
+  // would detach a worktree at ./feature instead of checking out the branch.
+  it('createWorktreeForExistingBranch (local namespace) checks the branch out at a path named --detach', async () => {
+    const repo = cloneOrigin(
+      createOrigin('no-guess-remote'),
+      'no-guess-remote',
+    );
+    git(repo, ['branch', 'feature']);
+    const worktreePath = '--detach';
+    const previous = process.cwd();
+    process.chdir(repo);
+    try {
+      await expect(
+        gitHelpers.createWorktreeForExistingBranch(
+          repo,
+          worktreePath,
+          'feature',
+          { namespace: 'local' },
+        ),
+      ).resolves.toBe('feature');
+    } finally {
+      process.chdir(previous);
+    }
+    const added = join(repo, worktreePath);
+    expect(existsSync(join(added, 'README.md'))).toBe(true);
+    expect(git(added, ['symbolic-ref', 'HEAD'])).toBe('refs/heads/feature');
+    expect(existsSync(join(repo, 'feature'))).toBe(false);
+  });
+
+  // The HEAD check reads the relative path from the process directory, where
+  // a decoy checkout on another branch sits, so the cleanup branch runs.
+  it('createWorktreeForExistingBranch cleanup removes only its own --detach worktree', async () => {
+    const repo = cloneOrigin(createOrigin('cleanup-dash'), 'cleanup-dash');
+    git(repo, ['branch', 'feature']);
+    git(repo, ['branch', 'keep']);
+    git(repo, ['worktree', 'add', '-q', '--', './keep-wt', 'keep']);
+    const decoy = mkdtempSync(join(dir, 'decoy-'));
+    const decoyRepo = join(decoy, '--detach');
+    initRepo(decoyRepo);
+    git(decoyRepo, ['checkout', '-q', '-b', 'other']);
+    const previous = process.cwd();
+    process.chdir(decoy);
+    let outcome: string;
+    try {
+      outcome = await gitHelpers
+        .createWorktreeForExistingBranch(repo, '--detach', 'feature', {
+          namespace: 'local',
+        })
+        .then(
+          () => 'resolved',
+          (error: unknown) => String(error),
+        );
+    } finally {
+      process.chdir(previous);
+    }
+    expect(outcome).toContain('Branch "feature" could not be checked out');
+    expect(existsSync(join(repo, '--detach'))).toBe(false);
+    expect(git(decoyRepo, ['symbolic-ref', 'HEAD'])).toBe('refs/heads/other');
+    expect(existsSync(join(decoyRepo, 'README.md'))).toBe(true);
+    expect(git(repo, ['worktree', 'list', '--porcelain'])).toContain(
+      join(realpathSync(repo), 'keep-wt'),
+    );
+  });
+});
+
+describe('worktree remove and move keep a dash-leading path a path', () => {
+  it.each(['-dash', '--force'])(
+    'removeGitWorktree removes only the worktree at %s',
+    async (name) => {
+      const repo = cloneOrigin(createOrigin(`remove${name}`), `remove${name}`);
+      git(repo, ['branch', 'feature']);
+      git(repo, ['branch', 'keep']);
+      git(repo, ['worktree', 'add', '-q', '--', `./${name}`, 'feature']);
+      git(repo, ['worktree', 'add', '-q', '--', './keep-wt', 'keep']);
+      await gitHelpers.removeGitWorktree(repo, name);
+      expect(existsSync(join(repo, name))).toBe(false);
+      const listed = git(repo, ['worktree', 'list', '--porcelain']);
+      expect(listed).not.toContain(join(realpathSync(repo), name));
+      expect(listed).toContain(join(realpathSync(repo), 'keep-wt'));
+    },
+  );
+
+  it('the merge port removes only the worktree at -dash', async () => {
+    const repo = cloneOrigin(
+      createOrigin('merge-port-dash'),
+      'merge-port-dash',
+    );
+    git(repo, ['branch', 'feature']);
+    git(repo, ['branch', 'keep']);
+    git(repo, ['worktree', 'add', '-q', '--', './-dash', 'feature']);
+    git(repo, ['worktree', 'add', '-q', '--', './keep-wt', 'keep']);
+    await gitHelpers.gitMergeWritePort(repo).removeWorktree(repo, '-dash');
+    expect(existsSync(join(repo, '-dash'))).toBe(false);
+    const listed = git(repo, ['worktree', 'list', '--porcelain']);
+    expect(listed).not.toContain(join(realpathSync(repo), '-dash'));
+    expect(listed).toContain(join(realpathSync(repo), 'keep-wt'));
+  });
+
+  it('desktop-shared removeGitWorktree passes -- before the worktree path', async () => {
+    const repo = cloneOrigin(createOrigin('shared-fence'), 'shared-fence');
+    git(repo, ['branch', 'feature']);
+    git(repo, ['worktree', 'add', '-q', '--', './wt', 'feature']);
+    const path = join(realpathSync(repo), 'wt');
+    const sharedGit = jest.spyOn(sharedCliReads, 'runGit');
+    try {
+      await removeSharedGitWorktree(repo, path);
+      expect(sharedGit.mock.calls.map(([args]) => args)).toEqual([
+        ['worktree', 'remove', '--force', '--', path],
+      ]);
+    } finally {
+      sharedGit.mockRestore();
+    }
+    expect(existsSync(path)).toBe(false);
+  });
+
+  it('removeWorktree refuses a worktree path at -dash and removes nothing', async () => {
+    // Stubbed so a regression could never signal a real process.
+    const cleanup = jest
+      .spyOn(processCleanup, 'terminateProcessesReferencingPath')
+      .mockResolvedValue(0);
+    const repo = cloneOrigin(createOrigin('remove-locked'), 'remove-locked');
+    git(repo, ['branch', 'feature']);
+    git(repo, ['worktree', 'add', '-q', '--', './-dash', 'feature']);
+    const before = {
+      listed: git(repo, ['worktree', 'list', '--porcelain']),
+      files: readdirSync(join(repo, '-dash')).sort(),
+    };
+    // GIT_TRACE makes any Git process inheriting the environment append here.
+    const trace = join(mkdtempSync(join(dir, 'git-trace-')), 'trace.log');
+    const previousTrace = process.env.GIT_TRACE;
+    process.env.GIT_TRACE = trace;
+    let thrown: unknown;
+    try {
+      await gitHelpers.removeWorktree(repo, '-dash').catch((error: unknown) => {
+        thrown = error;
+      });
+      expect(existsSync(trace)).toBe(false);
+      expect(cleanup).not.toHaveBeenCalled();
+    } finally {
+      if (previousTrace === undefined) delete process.env.GIT_TRACE;
+      else process.env.GIT_TRACE = previousTrace;
+      cleanup.mockRestore();
+    }
+    expect(thrown).toBeInstanceOf(InvalidWorktreePathError);
+    expect(toAppError(thrown)?.code).toBe('input.not_accepted');
+    expect({
+      listed: git(repo, ['worktree', 'list', '--porcelain']),
+      files: readdirSync(join(repo, '-dash')).sort(),
+    }).toEqual(before);
+  });
+
+  // removeGitWorktree falls back to rm() when Git fails, so an unrefused
+  // '-dash' would delete ./-dash in the process directory: the decoy here.
+  it('desktop-shared removeGitWorktree refuses -dash before Git or rm runs', async () => {
+    const repo = cloneOrigin(createOrigin('shared-remove'), 'shared-remove');
+    git(repo, ['branch', 'feature']);
+    git(repo, ['worktree', 'add', '-q', '--', './-dash', 'feature']);
+    const decoy = mkdtempSync(join(dir, 'shared-decoy-'));
+    mkdirSync(join(decoy, '-dash'));
+    writeFileSync(join(decoy, '-dash', 'keep.txt'), 'keep\n');
+    const listed = git(repo, ['worktree', 'list', '--porcelain']);
+    const sharedGit = jest.spyOn(sharedCliReads, 'runGit');
+    const previous = process.cwd();
+    process.chdir(decoy);
+    let thrown: unknown;
+    try {
+      await removeSharedGitWorktree(repo, '-dash').catch((error: unknown) => {
+        thrown = error;
+      });
+      expect(sharedGit).not.toHaveBeenCalled();
+    } finally {
+      process.chdir(previous);
+      sharedGit.mockRestore();
+    }
+    expect(thrown).toBeInstanceOf(InvalidWorktreePathError);
+    expect(toAppError(thrown)?.code).toBe('input.not_accepted');
+    expect(readFileSync(join(decoy, '-dash', 'keep.txt'), 'utf8')).toBe(
+      'keep\n',
+    );
+    expect(existsSync(join(repo, '-dash', 'README.md'))).toBe(true);
+    expect(git(repo, ['worktree', 'list', '--porcelain'])).toBe(listed);
+  });
+
+  // The archive worker falls back to a filesystem reconcile when Git fails,
+  // so the outcome alone can't show the fence: a wrapper records Git's argv.
+  (process.platform === 'win32' ? it.skip : it)(
+    'removeArchiveWorktree passes -- before a worktree path at -dash',
+    async () => {
+      const repo = cloneOrigin(createOrigin('archive-dash'), 'archive-dash');
+      git(repo, ['branch', 'feature']);
+      git(repo, ['branch', 'keep']);
+      git(repo, ['worktree', 'add', '-q', '--', './-dash', 'feature']);
+      git(repo, ['worktree', 'add', '-q', '--', './keep-wt', 'keep']);
+      const log = join(dir, 'archive-git-argv.log');
+      const wrapper = join(dir, 'archive-git-wrapper.sh');
+      writeFileSync(
+        wrapper,
+        `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\nexec git "$@"\n`,
+        { mode: 0o755 },
+      );
+      const commonDir = git(repo, [
+        'rev-parse',
+        '--path-format=absolute',
+        '--git-common-dir',
+      ]);
+      const previous = process.cwd();
+      process.chdir(repo);
+      try {
+        await removeArchiveWorktree({
+          git: {
+            executable: wrapper,
+            env: { ...process.env } as Record<string, string>,
+          },
+          referenceRepoPath: repo,
+          expectedRepositoryIdentity: commonDir,
+          worktreePath: '-dash',
+          signal: new AbortController().signal,
+          child: { started: () => undefined, exited: () => undefined },
+        });
+      } finally {
+        process.chdir(previous);
+      }
+      expect(
+        readFileSync(log, 'utf8')
+          .split('\n')
+          .filter((line) => line.startsWith('worktree remove')),
+      ).toEqual(['worktree remove --force -- -dash']);
+      expect(existsSync(join(repo, '-dash'))).toBe(false);
+      const listed = git(repo, ['worktree', 'list', '--porcelain']);
+      expect(listed).not.toContain(join(realpathSync(repo), '-dash'));
+      expect(listed).toContain(join(realpathSync(repo), 'keep-wt'));
+    },
+  );
+
+  it('moveWorktree moves a worktree from -old to -new', async () => {
+    const repo = cloneOrigin(createOrigin('move-dash'), 'move-dash');
+    git(repo, ['branch', 'feature']);
+    git(repo, ['worktree', 'add', '-q', '--', './-old', 'feature']);
+    await gitHelpers.moveWorktree(repo, '-old', '-new');
+    expect(existsSync(join(repo, '-old'))).toBe(false);
+    expect(git(join(repo, '-new'), ['symbolic-ref', 'HEAD'])).toBe(
+      'refs/heads/feature',
+    );
   });
 });
 

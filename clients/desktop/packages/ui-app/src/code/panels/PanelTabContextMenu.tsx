@@ -3,7 +3,8 @@
 /**
  * PanelTabContextMenu — the right-click menu for a panel tab, restoring the
  * VS Code / classic ChatTabBar tab menu on the panel grid: pin/unpin, rename
- * and mark as unread / read (chat panels, when the host supports them),
+ * (chat and terminal panels) and mark as unread / read (chat panels), when
+ * the host supports them,
  * split, new window / full screen, the chat and file rows, then the close
  * rows (close / close others / close
  * to the right / close to the left / close all) as the last group, where the
@@ -55,6 +56,10 @@ import {
   usePanelLayoutViewModel,
 } from './panel-layout-store';
 import { splitDirectionToDropEdge } from './split-active-tab';
+import {
+  isUngroupedTerminal,
+  useTerminalStore,
+} from '@canopy/app-state/terminal';
 
 export interface PanelTabContextMenuTarget {
   readonly groupId: string;
@@ -95,6 +100,11 @@ export interface PanelTabContextMenuProps {
    * can persist a chat's custom name; omitted, chat panels offer no Rename.
    */
   onRenameChat?: (chatTabId: string, ownerDocument?: Document) => void;
+  /**
+   * Opens the rename dialog for a terminal panel. Omitted, terminal panels
+   * offer no Rename.
+   */
+  onRenameTerminal?: (terminalId: string, ownerDocument?: Document) => void;
   /**
    * Current read state of a chat panel, read when the menu opens; undefined
    * where the host has none for that chat, which hides the read item.
@@ -210,6 +220,7 @@ export function PanelTabContextMenu({
   canShareSession,
   onExportSession,
   onRenameChat,
+  onRenameTerminal,
   getChatReadState,
   onSetChatUnread,
   onNewWindow,
@@ -407,6 +418,24 @@ export function PanelTabContextMenu({
   ];
 
   const chatTabId = tab.kind === 'chat' ? tab.instance?.chatTabId : undefined;
+  const terminalId =
+    tab.kind === 'terminal' ? tab.instance?.terminalId : undefined;
+  const terminalRenamable =
+    terminalId !== undefined &&
+    !isUngroupedTerminal(useTerminalStore.getState(), terminalId);
+  const rename =
+    onRenameChat && chatTabId
+      ? (): void => onRenameChat(chatTabId, ownerDocument)
+      : onRenameTerminal && terminalId && terminalRenamable
+        ? (): void => onRenameTerminal(terminalId, ownerDocument)
+        : undefined;
+  const renameItem: TabContextMenuItem | undefined = rename && {
+    key: 'rename',
+    label: 'Rename…',
+    icon: <PencilIcon />,
+    testId: 'panel-tab-context-rename',
+    onSelect: rename,
+  };
   const filePath =
     tab.kind === 'file-diff'
       ? ((tab.instance?.fileTabId
@@ -515,21 +544,7 @@ export function PanelTabContextMenu({
   const groups: TabContextMenuItem[][] = closeOnly
     ? [[closeItem, ...archiveItems]]
     : (fileFirstGroups ?? [
-        [
-          pinItem,
-          ...(onRenameChat && chatTabId
-            ? [
-                {
-                  key: 'rename',
-                  label: 'Rename…',
-                  icon: <PencilIcon />,
-                  testId: 'panel-tab-context-rename',
-                  onSelect: (): void => onRenameChat(chatTabId, ownerDocument),
-                },
-              ]
-            : []),
-          ...present([readStateItem]),
-        ],
+        [pinItem, ...present([renameItem, readStateItem])],
         layoutItems,
         chatTabId
           ? [

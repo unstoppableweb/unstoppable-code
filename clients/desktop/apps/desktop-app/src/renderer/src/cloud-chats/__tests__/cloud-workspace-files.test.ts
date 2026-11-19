@@ -224,6 +224,34 @@ describe("a cloud task's Activity on desktop (CAN-6568)", () => {
     expect(uploadWorkspaceFile).not.toHaveBeenCalled();
   });
 
+  it("shows a write main refused without words as the card's own copy, never developer text (CAN-7196)", async () => {
+    // As main answers a reply the client can't read, or an internal error.
+    const uploadWorkspaceFile = jest
+      .fn()
+      .mockResolvedValue({ ok: false, reason: 'rejected' });
+    const host = cloudWorkspaceFilesHost({
+      workspaceId: WORKSPACE,
+      cloudChats: { uploadWorkspaceFile },
+      relay: relayAnswering(() => ({ ok: true, value: {} })),
+      refresh: () => undefined,
+    });
+    const write = host.write;
+    if (write === undefined) throw new Error('The host offers no writes.');
+    const failure = await write
+      .upload(
+        {
+          file: new File(['day,swell'], 'tides.csv', { type: 'text/csv' }),
+          operationId: '22222222-2222-4222-8222-222222222222',
+        },
+        new AbortController().signal,
+      )
+      .then(
+        () => null,
+        (cause: unknown) => host.describeFailure(cause),
+      );
+    expect(failure).toEqual({ message: "Couldn't save the workspace file." });
+  });
+
   it("reads the project's list again whenever a write settles, with no card mounted (CAN-7008)", async () => {
     const refresh = jest.fn();
     const uploadWorkspaceFile = jest

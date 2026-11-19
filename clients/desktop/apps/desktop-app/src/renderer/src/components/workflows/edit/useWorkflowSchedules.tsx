@@ -6,6 +6,10 @@
  * (phase 04).
  */
 import {
+  initializeInputValues,
+  resolvePipelineTriggerInputs,
+} from '@/lib/pipelineTriggerInputs';
+import {
   useCallback,
   useEffect,
   useMemo,
@@ -213,6 +217,18 @@ export interface WorkflowSchedulesApi {
    * from its last (phase 08): what the steps' `inputs.*` stand for.
    */
   readonly firstScheduleInputs: Readonly<Record<string, string>> | undefined;
+  /**
+   * CAN-7186: the run values of the first schedule as edited, which Save
+   * stores, else `firstScheduleInputs`.
+   */
+  readonly editedFirstScheduleInputs:
+    | Readonly<Record<string, string>>
+    | undefined;
+  /**
+   * CAN-7186: the plugin collections each schedule keeps its own
+   * preferences for, as edited, by collection id: their runs use those.
+   */
+  readonly editedCollectionOverrides: ReadonlyMap<string, readonly string[]>;
 }
 
 export interface UseWorkflowSchedulesOptions {
@@ -843,6 +859,49 @@ export function useWorkflowSchedules({
     return action.type === 'worktree_pipeline' ? action.inputs : undefined;
   }, [records, workflowPage]);
 
+  // CAN-7186: what Save stores, kept by content so a re-render that copies
+  // the drafts unchanged reads nothing again.
+  const draftStates = drafts.drafts.map((draft) => draft.state);
+  const editedKey = JSON.stringify([
+    draftStates[0]?.pipelineInputs ?? null,
+    draftStates.map((state) => [
+      state.name,
+      Object.keys(state.pluginCollectionPreferences ?? {}),
+    ]),
+  ]);
+  const [edited, setEdited] = useState({ key: editedKey, states: draftStates });
+  if (edited.key !== editedKey)
+    setEdited({ key: editedKey, states: draftStates });
+  // A schedule's run takes the workflow's declared defaults under the
+  // values it stores, so a draft that clears them reads the defaults.
+  const declaredDefaults = useMemo(
+    () =>
+      initializeInputValues(
+        resolvePipelineTriggerInputs(pipeline, 'dispatch').inputDefs,
+      ),
+    [pipeline],
+  );
+  const editedFirstScheduleInputs = useMemo(() => {
+    const first = edited.states[0];
+    return {
+      ...declaredDefaults,
+      ...(first === undefined
+        ? firstScheduleInputs
+        : Object.fromEntries(
+            first.pipelineInputs
+              .filter((row) => row.key.trim().length > 0)
+              .map((row) => [row.key.trim(), row.value]),
+          )),
+    };
+  }, [edited, firstScheduleInputs, declaredDefaults]);
+  const editedCollectionOverrides = useMemo(() => {
+    const byCollection = new Map<string, string[]>();
+    for (const state of edited.states)
+      for (const id of Object.keys(state.pluginCollectionPreferences ?? {}))
+        byCollection.set(id, [...(byCollection.get(id) ?? []), state.name]);
+    return byCollection;
+  }, [edited]);
+
   return {
     isWorkflowPage,
     records,
@@ -853,6 +912,8 @@ export function useWorkflowSchedules({
     discard,
     triggers,
     firstScheduleInputs,
+    editedFirstScheduleInputs,
+    editedCollectionOverrides,
   };
 }
 
